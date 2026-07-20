@@ -8616,6 +8616,88 @@ export default function middleware() {
 });
 
 describe("Pages Router dev ISR regeneration", () => {
+  it("drains after() callbacks when a Node response finishes", async () => {
+    vi.resetModules();
+
+    try {
+      const [{ createSSRHandler }, { after }] = await Promise.all([
+        import("../packages/vinext/src/server/dev-server.js"),
+        import("../packages/vinext/src/shims/server.js"),
+      ]);
+      const routeFile = "/virtual/after-page.tsx";
+      let callbackRan = false;
+      const runner = {
+        async import(id: string) {
+          if (id === "vinext/head-state" || id === "vinext/router-state") return {};
+          if (id === "next/router") {
+            return {
+              default: {},
+              setSSRContext() {},
+            };
+          }
+          if (id === routeFile) {
+            return {
+              default() {
+                return null;
+              },
+              getServerSideProps({ res }: { res: { end(body: string): void } }) {
+                after(() => {
+                  callbackRan = true;
+                });
+                res.end("done");
+                return { props: {} };
+              },
+            };
+          }
+          throw new Error(`Unexpected module load: ${id}`);
+        },
+      };
+      const server = {
+        config: { root: "/", base: "/" },
+      } as unknown as ViteDevServer;
+      const handler = createSSRHandler(
+        server,
+        runner,
+        [
+          {
+            pattern: "/after",
+            patternParts: ["after"],
+            filePath: routeFile,
+            isDynamic: false,
+            params: [],
+          },
+        ],
+        "/virtual/pages",
+      );
+
+      const listeners = new Map<string, Array<() => void>>();
+      const res = {
+        statusCode: 200,
+        writableEnded: false,
+        on(event: string, listener: () => void) {
+          const eventListeners = listeners.get(event) ?? [];
+          eventListeners.push(listener);
+          listeners.set(event, eventListeners);
+          return this;
+        },
+        getHeaders() {
+          return {};
+        },
+        end(body: string) {
+          expect(body).toBe("done");
+          this.writableEnded = true;
+          for (const listener of listeners.get("finish") ?? []) listener();
+        },
+      } as any;
+
+      await handler({ method: "GET", headers: {} } as any, res, "/after");
+      await vi.waitFor(() => expect(callbackRan).toBe(true));
+    } finally {
+      vi.resetModules();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("wraps stale regeneration in a fresh unified request context", async () => {
     vi.resetModules();
 
@@ -8652,10 +8734,12 @@ describe("Pages Router dev ISR regeneration", () => {
         { createSSRHandler },
         { getRequestContext, isInsideUnifiedScope },
         { getRequestExecutionContext, runWithExecutionContext },
+        { after },
       ] = await Promise.all([
         import("../packages/vinext/src/server/dev-server.js"),
         import("../packages/vinext/src/shims/unified-request-context.js"),
         import("../packages/vinext/src/shims/request-context.js"),
+        import("../packages/vinext/src/shims/server.js"),
       ]);
 
       let parentRequestTags: string[] = [];
@@ -8665,6 +8749,7 @@ describe("Pages Router dev ISR regeneration", () => {
       let regenUnifiedExecutionContext: unknown;
       let regenSsrContext: unknown;
       let regenI18nContext: unknown;
+      let regenAfterRan = false;
       let appTreeWrapCount = 0;
       const App = Object.assign(({ Component, pageProps }: any) => Component(pageProps), {
         getInitialProps: vi.fn(async () => ({
@@ -8712,6 +8797,9 @@ describe("Pages Router dev ISR regeneration", () => {
               regenUnifiedExecutionContext = getRequestContext().executionContext;
               regenSsrContext = getRequestContext().ssrContext;
               regenI18nContext = getRequestContext().i18nContext;
+              after(() => {
+                regenAfterRan = true;
+              });
               return {
                 props: {
                   timestamp: Date.now(),
@@ -8799,6 +8887,7 @@ describe("Pages Router dev ISR regeneration", () => {
         asPath: "/isr-test",
       });
       expect(regenI18nContext).toBeNull();
+      expect(regenAfterRan).toBe(true);
       expect(appTreeWrapCount).toBe(1);
       expect(isrSetSpy).toHaveBeenCalledOnce();
       expect(isrSetSpy.mock.calls[0]?.[1]).toMatchObject({

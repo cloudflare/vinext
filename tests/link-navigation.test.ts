@@ -15,9 +15,11 @@ import {
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
+import type { RouteManifest } from "../packages/vinext/src/routing/app-route-graph.js";
 
 type CapturedEffect = () => void | (() => void);
 
@@ -65,12 +67,20 @@ const linkPrefetchRoutes = [
     isDynamic: true,
     requiresDynamicNavigationRequest: true,
   },
+  {
+    canPrefetchLoadingShell: true,
+    patternParts: ["slow-intercept", "photo"],
+    isDynamic: false,
+  },
 ] satisfies VinextLinkPrefetchRoute[];
 
-function createTestNavigationRuntime(navigate: unknown) {
+function createTestNavigationRuntime(
+  navigate: unknown,
+  routeManifest: RouteManifest | null = null,
+) {
   return {
     bootstrap: {
-      routeManifest: null,
+      routeManifest,
       rsc: undefined,
     },
     functions: {
@@ -1234,6 +1244,7 @@ async function renderIsolatedLink(options: {
   nodeEnv: string;
   props?: Record<string, unknown>;
   requireRef?: boolean;
+  routeManifest?: RouteManifest;
   windowOverrides?: Record<string, unknown>;
 }) {
   vi.resetModules();
@@ -1271,7 +1282,9 @@ async function renderIsolatedLink(options: {
     search: "",
   };
   const navigationRuntime =
-    options.appNavigation === false ? undefined : createTestNavigationRuntime(navigate);
+    options.appNavigation === false
+      ? undefined
+      : createTestNavigationRuntime(navigate, options.routeManifest ?? null);
 
   vi.stubGlobal("fetch", fetch);
   vi.stubGlobal("document", {
@@ -2256,6 +2269,70 @@ describe("Link prefetch scheduling", () => {
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("automatically prefetches intercepted loading shells with their source context", async () => {
+    const observer = stubIntersectionObserver();
+    const interception = {
+      id: "interception:slot:modal:/slow-intercept->/slow-intercept/photo",
+      interceptingRouteId: "route:/slow-intercept",
+      ownerLayoutId: "layout:/slow-intercept",
+      slotId: "slot:modal:/slow-intercept",
+      sourcePattern: "/slow-intercept",
+      sourcePatternParts: ["slow-intercept"],
+      targetPattern: "/slow-intercept/photo",
+      targetPatternParts: ["slow-intercept", "photo"],
+      targetRouteId: "route:/slow-intercept/photo",
+    } as const;
+    const routeManifest: RouteManifest = {
+      graphVersion: "test",
+      segmentGraph: {
+        boundaries: new Map(),
+        defaults: new Map(),
+        interceptions: new Map([[interception.id, interception]]),
+        interceptionsBySlotId: new Map(),
+        layouts: new Map(),
+        pages: new Map(),
+        rootBoundaries: new Map(),
+        routeHandlers: new Map(),
+        routes: new Map(),
+        slotBindings: new Map(),
+        slots: new Map(),
+        templates: new Map(),
+      },
+    };
+    const result = await renderIsolatedLink({
+      href: "/slow-intercept/photo",
+      nodeEnv: "production",
+      routeManifest,
+      windowOverrides: {
+        location: {
+          href: "https://example.com/slow-intercept",
+          origin: "https://example.com",
+          pathname: "/slow-intercept",
+          search: "",
+        },
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/slow-intercept/photo",
+        expect.objectContaining({ credentials: "include", priority: "low" }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers as Headers | undefined;
+      expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect(headers?.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBe("/slow-intercept");
     } finally {
       result.restoreNodeEnv();
     }

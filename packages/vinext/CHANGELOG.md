@@ -1,5 +1,44 @@
 # vinext
 
+## 1.0.0-beta.2
+
+### Features
+
+- **Types:** ship Next-compatible types without Next.js (#2612)
+
+### Bug Fixes
+
+#### Pages
+
+- match encoded string static paths (#2629)
+- isolate static render router state (#2583)
+- validate redirect destinations consistently (#2586)
+- preserve data route path identity (#2580)
+- populate route in app initial props router (#2623)
+
+#### Misc
+
+- **Check:** exclude test-runner files from app compatibility scans (#2596)
+- **App Router:** stream generated metadata after the document shell (#2619)
+- **Cache:** isolate draft route responses (#2591)
+- **Middleware:** align unsafe matcher validation (#2599)
+- **Dev:** refresh routes after server restarts (#2588)
+- **Cache:** guard 'use cache' key against Cloudflare KV's 512-byte limit (#2606)
+- **Config:** keep page extensions out of module resolution (#2594)
+- **Navigation:** avoid rewriting URL for history metadata (#2615)
+- **OG:** resolve dot-hash wasm fallbacks (#2608)
+- **Router:** avoid repeated App path decoding (#2556)
+- **App Router:** preserve Flight stream framing (#2579)
+- **Shims:** align public API with vendored Next types (#2617)
+
+### Contributors
+
+- @blitss
+- @exKAZUu
+- @james-elicx
+- @lyzno1
+- @NathanDrake2406
+
 ## 1.0.0-beta.1
 
 ### Bug Fixes

@@ -52,7 +52,12 @@ import {
 } from "./isr-cache.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { reportRequestError } from "./instrumentation.js";
-import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import {
+  closeAfterResponse,
+  closeAfterResponseWithBody,
+  createRequestContext,
+  runWithRequestContext,
+} from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
@@ -470,7 +475,7 @@ export function createPagesPageHandler(
       executionContext: getRequestExecutionContext(),
     });
 
-    return runWithRequestContext(uCtx, async () => {
+    const response = await runWithRequestContext(uCtx, async () => {
       ensureFetchPatch();
       try {
         const routePattern = patternToNextFormat(route.pattern);
@@ -684,7 +689,11 @@ export function createPagesPageHandler(
             });
             return runWithRequestContext(revalCtx, async () => {
               ensureFetchPatch();
-              return callback();
+              try {
+                return await callback();
+              } finally {
+                await closeAfterResponse(revalCtx);
+              }
             });
           },
           safeJsonStringify,
@@ -942,6 +951,7 @@ export function createPagesPageHandler(
         return new Response("Internal Server Error", { status: 500 });
       }
     });
+    return closeAfterResponseWithBody(response, uCtx);
   }
 
   return renderPage;

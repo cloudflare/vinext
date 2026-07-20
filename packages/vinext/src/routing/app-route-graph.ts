@@ -41,6 +41,10 @@ type InterceptingRoute = {
   layoutPaths: string[];
   /** Normalized branch segments accumulated at each intercept layout. */
   layoutSegments?: string[][];
+  /** Loading conventions inside the intercepted branch, outermost to innermost. */
+  loadingPaths?: string[];
+  /** Tree positions for loadingPaths in the normalized interception branch. */
+  loadingTreePositions?: number[];
   /** Full normalized interception branch segments through the page. */
   branchSegments?: string[];
   /** Nearest not-found convention inside the interception branch. */
@@ -69,6 +73,8 @@ type ParallelSlot = {
   ownerDir: string;
   /** Stable tree path for the directory whose layout owns this slot. */
   ownerTreePath: string;
+  /** Directory depth of the slot owner from app/ root. */
+  ownerTreePosition?: number;
   /** Whether the slot owner directory declares its own page component. */
   hasPage: boolean;
   /** Absolute path to the slot's page component */
@@ -83,6 +89,10 @@ type ParallelSlot = {
   configLayoutTreePositions?: number[];
   /** Absolute path to the slot's loading component */
   loadingPath: string | null;
+  /** Per-segment loading components from the slot root to its active page. */
+  loadingPaths?: string[];
+  /** Slot-root-relative tree positions aligned with loadingPaths. */
+  loadingTreePositions?: number[];
   /** Absolute path to the slot's error component */
   errorPath: string | null;
   /** Nearest not-found convention for the slot's active branch. */
@@ -147,8 +157,12 @@ export type AppRoute = {
    * Empty array when there are no sibling-style interception markers.
    */
   siblingIntercepts: InterceptingRoute[];
-  /** Loading component path */
+  /** Loading component path (leaf directory only) */
   loadingPath: string | null;
+  /** Per-segment loading component paths, aligned with loadingTreePositions. */
+  loadingPaths?: string[];
+  /** Tree position (directory depth from app/ root) for each loading boundary. */
+  loadingTreePositions?: number[];
   /** Error component path (leaf directory only) */
   errorPath: string | null;
   /**
@@ -1154,18 +1168,22 @@ function discoverSlotSubRoutes(
       if (subPage !== undefined) {
         const configLayoutPaths = findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher);
         const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage, matcher);
-        return {
-          ...slot,
-          pagePath: subPage,
-          configLayoutPaths,
-          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
-            slot.ownerDir,
+        return withSlotLoadingEntries(
+          {
+            ...slot,
+            pagePath: subPage,
             configLayoutPaths,
-          ),
-          notFoundPath: notFoundBoundary.path,
-          notFoundTreePosition: notFoundBoundary.treePosition,
-          routeSegments: rawSegments,
-        };
+            configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+              slot.ownerDir,
+              configLayoutPaths,
+            ),
+            notFoundPath: notFoundBoundary.path,
+            notFoundTreePosition: notFoundBoundary.treePosition,
+            routeSegments: rawSegments,
+          },
+          subPage,
+          matcher,
+        );
       }
       return slot;
     });
@@ -1365,18 +1383,22 @@ function discoverSlotSubRoutes(
           matcher,
         );
         const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage ?? null, matcher);
-        return {
-          ...slot,
-          pagePath: subPage || null,
-          configLayoutPaths,
-          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
-            slot.ownerDir,
+        return withSlotLoadingEntries(
+          {
+            ...slot,
+            pagePath: subPage || null,
             configLayoutPaths,
-          ),
-          notFoundPath: notFoundBoundary.path,
-          notFoundTreePosition: notFoundBoundary.treePosition,
-          routeSegments: subPage ? rawSegments : null,
-        };
+            configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+              slot.ownerDir,
+              configLayoutPaths,
+            ),
+            notFoundPath: notFoundBoundary.path,
+            notFoundTreePosition: notFoundBoundary.treePosition,
+            routeSegments: subPage ? rawSegments : null,
+          },
+          subPage ?? null,
+          matcher,
+        );
       });
 
       const newRoute: AppRouteGraphRoute = {
@@ -1402,7 +1424,11 @@ function discoverSlotSubRoutes(
           ownerTreePath: childrenOwnerTreePath,
           state: childrenDefault ? "default" : childrenCatchAll ? "active" : "unmatched",
         },
-        loadingPath: parentRoute.loadingPath,
+        // The parent loading convention becomes an ancestor boundary for the
+        // synthetic sub-route; it is no longer the synthetic route's leaf.
+        loadingPath: null,
+        loadingPaths: parentRoute.loadingPaths,
+        loadingTreePositions: parentRoute.loadingTreePositions,
         errorPath: parentRoute.errorPath,
         layoutErrorPaths: parentRoute.layoutErrorPaths,
         notFoundPath: parentRoute.notFoundPath,
@@ -1550,6 +1576,43 @@ function findSlotConfigLayoutTreePositions(
   });
 }
 
+function findSlotLoadingEntries(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const pageDir = pagePath ? path.dirname(pagePath) : slotDir;
+  if (pageDir !== slotDir && !pageDir.startsWith(`${slotDir}${path.sep}`)) return [];
+
+  const relativeDir = path.relative(slotDir, pageDir);
+  const segments = relativeDir ? relativeDir.split(path.sep).filter(Boolean) : [];
+  const loadings: { path: string; treePosition: number }[] = [];
+  let currentDir = slotDir;
+
+  const rootLoading = findFile(currentDir, "loading", matcher);
+  if (rootLoading) loadings.push({ path: rootLoading, treePosition: 0 });
+
+  for (let index = 0; index < segments.length; index++) {
+    currentDir = path.join(currentDir, segments[index]);
+    const loading = findFile(currentDir, "loading", matcher);
+    if (loading) loadings.push({ path: loading, treePosition: index + 1 });
+  }
+  return loadings;
+}
+
+function withSlotLoadingEntries<TSlot extends ParallelSlot>(
+  slot: TSlot,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): TSlot {
+  const loadingEntries = findSlotLoadingEntries(slot.ownerDir, pagePath, matcher);
+  return {
+    ...slot,
+    loadingPaths: loadingEntries.map((entry) => entry.path),
+    loadingTreePositions: loadingEntries.map((entry) => entry.treePosition),
+  };
+}
+
 function findSlotNotFoundBoundary(
   slotDir: string,
   pagePath: string | null,
@@ -1672,6 +1735,9 @@ function directoryToAppRoute(
   // In Next.js, each segment independently wraps its children with an ErrorBoundary.
   // This array enables interleaving error boundaries with layouts in the rendering.
   const layoutErrorPaths = discoverLayoutAlignedErrors(segments, appDir, matcher);
+  const loadingEntries = discoverSegmentLoadings(segments, appDir, matcher);
+  const loadingPaths = loadingEntries.map((entry) => entry.path);
+  const loadingTreePositions = loadingEntries.map((entry) => entry.treePosition);
   const errorEntries = discoverSegmentErrors(segments, appDir, matcher);
   const errorPaths = errorEntries.map((entry) => entry.path);
   const errorTreePositions = errorEntries.map((entry) => entry.treePosition);
@@ -1725,6 +1791,8 @@ function directoryToAppRoute(
     templates,
     parallelSlots,
     loadingPath,
+    loadingPaths,
+    loadingTreePositions,
     errorPath,
     layoutErrorPaths,
     errorPaths,
@@ -1938,6 +2006,37 @@ function discoverSegmentErrors(
 }
 
 /**
+ * Discover loading.tsx files by segment tree position.
+ *
+ * Loading conventions belong to loader-tree segments rather than layouts. A
+ * segment without layout.tsx can therefore provide the boundary that suspends
+ * while its child layout renders.
+ */
+function discoverSegmentLoadings(
+  segments: string[],
+  appDir: string,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const loadings: { path: string; treePosition: number }[] = [];
+
+  const rootLoading = findFile(appDir, "loading", matcher);
+  if (rootLoading) {
+    loadings.push({ path: rootLoading, treePosition: 0 });
+  }
+
+  let currentDir = appDir;
+  for (let index = 0; index < segments.length; index++) {
+    currentDir = path.join(currentDir, segments[index]);
+    const loading = findFile(currentDir, "loading", matcher);
+    if (loading) {
+      loadings.push({ path: loading, treePosition: index + 1 });
+    }
+  }
+
+  return loadings;
+}
+
+/**
  * Discover error.tsx files aligned with the layouts array.
  *
  * Route manifests still model layout-owned boundary facts by layout index.
@@ -2102,20 +2201,24 @@ function discoverInheritedParallelSlots(
           mirror?.pagePath ?? null,
           matcher,
         );
-        const inheritedSlot: AppRouteGraphParallelSlot = {
-          ...slot,
-          pagePath: mirror?.pagePath ?? null,
-          configLayoutPaths,
-          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
-            slot.ownerDir,
+        const inheritedSlot = withSlotLoadingEntries(
+          {
+            ...slot,
+            pagePath: mirror?.pagePath ?? null,
             configLayoutPaths,
-          ),
-          layoutIndex: slotLayoutIdx,
-          routeSegments: mirror?.segments ?? null,
-          slotPatternParts,
-          slotParamNames,
-          // defaultPath, loadingPath, errorPath, interceptingRoutes remain
-        };
+            configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+              slot.ownerDir,
+              configLayoutPaths,
+            ),
+            layoutIndex: slotLayoutIdx,
+            routeSegments: mirror?.segments ?? null,
+            slotPatternParts,
+            slotParamNames,
+            // defaultPath, loadingPath, errorPath, interceptingRoutes remain
+          },
+          mirror?.pagePath ?? null,
+          matcher,
+        );
         slotMap.set(slot.key, inheritedSlot);
       }
     }
@@ -2269,7 +2372,10 @@ function segmentTreeNodeType(seg: string): string {
   return "dynamic";
 }
 
-function patternsStructurallyEquivalent(a: readonly string[], b: readonly string[]): boolean {
+export function patternsStructurallyEquivalent(
+  a: readonly string[],
+  b: readonly string[],
+): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (segmentTreeNodeType(a[i]) !== segmentTreeNodeType(b[i])) return false;
@@ -2350,6 +2456,7 @@ function discoverParallelSlots(
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
     const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
+    const loadingEntries = findSlotLoadingEntries(slotDir, pagePath, matcher);
     const notFoundBoundary = findSlotNotFoundBoundary(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
@@ -2357,6 +2464,7 @@ function discoverParallelSlots(
       name: slotName,
       ownerDir: slotDir,
       ownerTreePath,
+      ownerTreePosition: ownerSegments.length,
       hasPage: pagePath !== null,
       pagePath,
       defaultPath,
@@ -2364,6 +2472,8 @@ function discoverParallelSlots(
       configLayoutPaths,
       configLayoutTreePositions: findSlotConfigLayoutTreePositions(slotDir, configLayoutPaths),
       loadingPath: findFile(slotDir, "loading", matcher),
+      loadingPaths: loadingEntries.map((loading) => loading.path),
+      loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
       errorPath: findFile(slotDir, "error", matcher),
       notFoundPath: notFoundBoundary.path,
       notFoundTreePosition: notFoundBoundary.treePosition,
@@ -2576,6 +2686,7 @@ function scanForInterceptingPages(
   appDir: string,
   results: InterceptingRoute[],
   matcher: ValidFileMatcher,
+  parentLoadingEntries: readonly { path: string; treePosition: number }[] = [],
 ): void {
   if (!fs.existsSync(currentDir)) return;
 
@@ -2610,10 +2721,32 @@ function scanForInterceptingPages(
         slotRootDir,
         results,
         matcher,
+        [],
+        parentLoadingEntries,
+        path.relative(slotRootDir, currentDir).split(path.sep).filter(Boolean).length,
       );
     } else {
       // Regular subdirectory — keep scanning for intercepting dirs
-      scanForInterceptingPages(interceptDir, slotRootDir, routeDir, appDir, results, matcher);
+      const loading = findFile(interceptDir, "loading", matcher);
+      const loadingEntries = loading
+        ? [
+            ...parentLoadingEntries,
+            {
+              path: loading,
+              treePosition: path.relative(slotRootDir, interceptDir).split(path.sep).filter(Boolean)
+                .length,
+            },
+          ]
+        : parentLoadingEntries;
+      scanForInterceptingPages(
+        interceptDir,
+        slotRootDir,
+        routeDir,
+        appDir,
+        results,
+        matcher,
+        loadingEntries,
+      );
     }
   }
 }
@@ -2654,11 +2787,22 @@ function collectInterceptingPages(
   results: InterceptingRoute[],
   matcher: ValidFileMatcher,
   parentLayoutPaths: readonly string[] = [],
+  parentLoadingEntries: readonly { path: string; treePosition: number }[] = [],
+  treePositionOffset = 0,
 ): void {
   const currentLayoutPath = findFile(currentDir, "layout", matcher);
   const layoutPaths = currentLayoutPath
     ? [...parentLayoutPaths, currentLayoutPath]
     : parentLayoutPaths;
+  const currentLoadingPath = findFile(currentDir, "loading", matcher);
+  const relativeCurrentDir = path.relative(interceptRoot, currentDir);
+  const currentTreePosition =
+    treePositionOffset +
+    1 +
+    (relativeCurrentDir ? relativeCurrentDir.split(path.sep).filter(Boolean).length : 0);
+  const loadingEntries = currentLoadingPath
+    ? [...parentLoadingEntries, { path: currentLoadingPath, treePosition: currentTreePosition }]
+    : parentLoadingEntries;
 
   // Check for page.tsx in current directory
   const page = findFile(currentDir, "page", matcher);
@@ -2678,22 +2822,29 @@ function collectInterceptingPages(
         page,
         matcher,
       );
-      const branchSegments = [
-        interceptSegment,
-        ...path.relative(interceptRoot, path.dirname(page)).split(path.sep).filter(Boolean),
-      ];
       const slotParentSegments = slotRootDir
         ? path.relative(slotRootDir, interceptParentDir).split(path.sep).filter(Boolean)
         : [];
+      const branchSegments = [
+        ...slotParentSegments,
+        interceptSegment,
+        ...path.relative(interceptRoot, path.dirname(page)).split(path.sep).filter(Boolean),
+      ];
       results.push({
         branchSegments,
         convention,
         layoutPaths: [...layoutPaths],
         layoutSegments: layoutPaths.map((layoutPath) => {
           const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
-          return [interceptSegment, ...relativeDir.split(path.sep).filter(Boolean)];
+          return [
+            ...slotParentSegments,
+            interceptSegment,
+            ...relativeDir.split(path.sep).filter(Boolean),
+          ];
         }),
-        notFoundBranchSegments: [...slotParentSegments, ...branchSegments],
+        loadingPaths: loadingEntries.map((loading) => loading.path),
+        loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
+        notFoundBranchSegments: branchSegments,
         notFoundPath: notFoundBoundary.path,
         notFoundTreePosition:
           notFoundBoundary.treePosition === null
@@ -2729,6 +2880,8 @@ function collectInterceptingPages(
       results,
       matcher,
       layoutPaths,
+      loadingEntries,
+      treePositionOffset,
     );
   }
 }

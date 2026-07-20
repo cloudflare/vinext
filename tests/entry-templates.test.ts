@@ -9,7 +9,11 @@ import fs from "node:fs";
 import os from "node:os";
 import vm from "node:vm";
 import { describe, it, expect } from "vite-plus/test";
-import { generateBrowserEntry } from "../packages/vinext/src/entries/app-browser-entry.js";
+import {
+  generateBrowserEntry,
+  toLinkPrefetchRoute,
+  toLinkPrefetchRoutes,
+} from "../packages/vinext/src/entries/app-browser-entry.js";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateClientEntry } from "../packages/vinext/src/entries/pages-client-entry.js";
@@ -145,7 +149,27 @@ describe("App Router generated manifest construction", () => {
         routePath: null,
         layouts: ["/tmp/test/app/layout.tsx", "/tmp/test/app/modal-host/layout.tsx"],
         templates: [],
-        parallelSlots: [],
+        parallelSlots: [
+          {
+            id: "slot:panel:/modal-host",
+            key: "panel@modal-host/@panel",
+            name: "panel",
+            ownerDir: "/tmp/test/app/modal-host/@panel",
+            ownerTreePath: "/modal-host",
+            ownerTreePosition: 1,
+            hasPage: true,
+            pagePath: "/tmp/test/app/modal-host/@panel/slow/page.tsx",
+            defaultPath: null,
+            layoutPath: null,
+            loadingPath: null,
+            loadingPaths: ["/tmp/test/app/modal-host/@panel/slow/loading.tsx"],
+            loadingTreePositions: [1],
+            errorPath: null,
+            interceptingRoutes: [],
+            layoutIndex: 1,
+            routeSegments: ["slow"],
+          },
+        ],
         loadingPath: null,
         errorPath: null,
         layoutErrorPaths: [null, null],
@@ -251,6 +275,16 @@ describe("App Router generated manifest construction", () => {
         params: [],
         siblingIntercepts: [],
       },
+      {
+        ...minimalAppRoutes[0],
+        pattern: "/ancestor-loading/slow",
+        patternParts: ["ancestor-loading", "slow"],
+        pagePath: "/tmp/test/app/ancestor-loading/slow/page.tsx",
+        loadingPath: null,
+        loadingPaths: ["/tmp/test/app/ancestor-loading/loading.tsx"],
+        loadingTreePositions: [1],
+        routeSegments: ["ancestor-loading", "slow"],
+      },
     ]);
 
     expect(code).toContain("import { registerNavigationRuntimeBootstrap } from ");
@@ -267,14 +301,114 @@ describe("App Router generated manifest construction", () => {
       '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
+      '{"canPrefetchLoadingShell":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
+    );
+    expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":false,"patternParts":["modal-host"],"isDynamic":false}',
+      '{"canPrefetchLoadingShell":true,"patternParts":["modal-host"],"isDynamic":false}',
     );
     expect(code).not.toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["api"],"isDynamic":false}',
     );
+  });
+
+  it("advertises loading-shell prefetch for intercept-only loading boundaries", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/slow-intercept/photo",
+      patternParts: ["slow-intercept", "photo"],
+      parallelSlots: [
+        {
+          id: "slot:modal:/slow-intercept",
+          key: "modal@slow-intercept/@modal",
+          name: "modal",
+          ownerDir: "/tmp/test/app/slow-intercept/@modal",
+          ownerTreePath: "/slow-intercept",
+          ownerTreePosition: 1,
+          hasPage: false,
+          pagePath: null,
+          defaultPath: "/tmp/test/app/slow-intercept/@modal/default.tsx",
+          layoutPath: null,
+          loadingPath: null,
+          loadingPaths: [],
+          loadingTreePositions: [],
+          errorPath: null,
+          interceptingRoutes: [
+            {
+              convention: ".",
+              targetPattern: "/slow-intercept/photo",
+              sourceMatchPattern: "/slow-intercept",
+              pagePath: "/tmp/test/app/slow-intercept/@modal/(.)photo/page.tsx",
+              layoutPaths: [],
+              loadingPaths: ["/tmp/test/app/slow-intercept/@modal/(.)photo/loading.tsx"],
+              loadingTreePositions: [1],
+              params: [],
+            },
+          ],
+          layoutIndex: 0,
+          routeSegments: null,
+        },
+      ],
+      routeSegments: ["slow-intercept", "photo"],
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+    expect(
+      toLinkPrefetchRoute({
+        ...route,
+        pattern: "/slow-intercept",
+        patternParts: ["slow-intercept"],
+        routeSegments: ["slow-intercept"],
+      }).canPrefetchLoadingShell,
+    ).toBe(false);
+  });
+
+  it("advertises sibling-intercept loading only on the target route", () => {
+    const sourceRoute = {
+      ...minimalAppRoutes[0],
+      pattern: "/feed",
+      patternParts: ["feed"],
+      routeSegments: ["feed"],
+      siblingIntercepts: [
+        {
+          convention: ".",
+          targetPattern: "/feed/photo/:photoId",
+          sourceMatchPattern: "/feed",
+          pagePath: "/tmp/test/app/feed/(.)photo/[photoId]/page.tsx",
+          layoutPaths: [],
+          loadingPaths: ["/tmp/test/app/feed/(.)photo/[photoId]/loading.tsx"],
+          loadingTreePositions: [1],
+          params: ["photoId"],
+        },
+      ],
+    } satisfies AppRoute;
+    const targetRoute = {
+      ...minimalAppRoutes[0],
+      pattern: "/feed/photo/:id",
+      patternParts: ["feed", "photo", ":id"],
+      routeSegments: ["feed", "photo", ":id"],
+      isDynamic: true,
+      params: ["id"],
+    } satisfies AppRoute;
+    const unrelatedRoute = {
+      ...minimalAppRoutes[0],
+      pattern: "/feed/video/:id",
+      patternParts: ["feed", "video", ":id"],
+      routeSegments: ["feed", "video", ":id"],
+      isDynamic: true,
+      params: ["id"],
+    } satisfies AppRoute;
+
+    const [source, target, unrelated] = toLinkPrefetchRoutes([
+      sourceRoute,
+      targetRoute,
+      unrelatedRoute,
+    ]);
+    expect(source.canPrefetchLoadingShell).toBe(false);
+    expect(target.canPrefetchLoadingShell).toBe(true);
+    expect(unrelated.canPrefetchLoadingShell).toBe(false);
   });
 
   it("embeds the RouteManifest read model in the browser entry", async () => {
@@ -449,6 +583,83 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([{ load: load_5 }], ["id"]),',
     ]);
+  });
+
+  it("emits lazy per-segment loading modules with their tree positions", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/parent/slow",
+      patternParts: ["parent", "slow"],
+      pagePath: "/tmp/test/app/parent/slow/page.tsx",
+      loadingPath: "/tmp/test/app/parent/slow/loading.tsx",
+      loadingPaths: ["/tmp/test/app/parent/loading.tsx", "/tmp/test/app/parent/slow/loading.tsx"],
+      loadingTreePositions: [1, 2],
+      routeSegments: ["parent", "slow"],
+    } satisfies AppRoute;
+
+    const manifest = buildAppRscManifestCode({ routes: [route] });
+    const routeEntry = manifest.routeEntries[0];
+
+    expect(manifest.imports.join("\n")).toContain("/tmp/test/app/parent/loading.tsx");
+    expect(manifest.imports.join("\n")).toContain("/tmp/test/app/parent/slow/loading.tsx");
+    expect(routeEntry).toContain("loadings: [null, null]");
+    expect(routeEntry).toContain("__loadLoadings: [load_");
+    expect(routeEntry).toContain("loadingTreePositions: [1,2]");
+  });
+
+  it("emits positional loading modules for named slots and intercepted branches", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      parallelSlots: [
+        {
+          id: "slot:modal:/",
+          key: "modal@modal",
+          name: "modal",
+          ownerDir: "/tmp/test/app/@modal",
+          ownerTreePath: "/",
+          ownerTreePosition: 0,
+          hasPage: true,
+          pagePath: "/tmp/test/app/@modal/nested/page.tsx",
+          defaultPath: null,
+          layoutPath: null,
+          configLayoutPaths: [],
+          configLayoutTreePositions: [],
+          loadingPath: "/tmp/test/app/@modal/loading.tsx",
+          loadingPaths: [
+            "/tmp/test/app/@modal/loading.tsx",
+            "/tmp/test/app/@modal/nested/loading.tsx",
+          ],
+          loadingTreePositions: [0, 1],
+          errorPath: null,
+          interceptingRoutes: [
+            {
+              convention: ".",
+              targetPattern: "/photo/:id",
+              sourceMatchPattern: "/",
+              pagePath: "/tmp/test/app/@modal/(.)photo/[id]/page.tsx",
+              layoutPaths: [],
+              loadingPaths: ["/tmp/test/app/@modal/(.)photo/loading.tsx"],
+              loadingTreePositions: [1],
+              params: ["id"],
+            },
+          ],
+          layoutIndex: 0,
+          routeSegments: ["nested"],
+        },
+      ],
+    } satisfies AppRoute;
+
+    const manifest = buildAppRscManifestCode({ routes: [route] });
+    const imports = manifest.imports.join("\n");
+    const routeEntry = manifest.routeEntries[0];
+
+    expect(imports).toContain("/tmp/test/app/@modal/nested/loading.tsx");
+    expect(imports).toContain("/tmp/test/app/@modal/(.)photo/loading.tsx");
+    expect(routeEntry).toContain("ownerTreePosition: 0");
+    expect(routeEntry).toContain("loadings: [null, null]");
+    expect(routeEntry).toContain("loadingTreePositions: [0,1]");
+    expect(routeEntry).toContain("interceptLoadings: [null]");
+    expect(routeEntry).toContain("interceptLoadingTreePositions: [1]");
   });
 
   it("derives route-miss root boundaries when the app has no root page", () => {
