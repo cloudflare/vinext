@@ -67,9 +67,11 @@ type PagesRequestCookiesCarrier = {
 };
 
 type CreatePagesReqResOptions = {
+  allowedRevalidateHeaderKeys?: readonly string[];
   body: unknown;
   query: PagesRequestQuery;
   request: Request;
+  trustedRevalidateOrigin?: string;
   url: string;
 };
 
@@ -257,6 +259,8 @@ class PagesResponseStream extends Writable {
     private readonly resolveResponse: (value: Response) => void,
     private readonly rejectResponse: (error: Error) => void,
     private readonly requestHeaders: Headers,
+    private readonly trustedRevalidateOrigin?: string,
+    private readonly allowedRevalidateHeaderKeys: readonly string[] = [],
   ) {
     super();
     this.once("error", (err) => {
@@ -358,7 +362,13 @@ class PagesResponseStream extends Writable {
   }
 
   async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
-    await performOnDemandRevalidate(this.requestHeaders, urlPath, opts);
+    await performOnDemandRevalidate(
+      this.requestHeaders,
+      urlPath,
+      opts,
+      this.trustedRevalidateOrigin,
+      this.allowedRevalidateHeaderKeys,
+    );
   }
 
   setPreviewData(
@@ -527,6 +537,11 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     resolveResponse,
     rejectResponse,
     options.request.headers,
+    // Fetch runtimes do not expose a listening socket origin. Fall back to the
+    // platform-provided Request URL origin and deliberately ignore any raw Host
+    // header carried in request.headers.
+    options.trustedRevalidateOrigin ?? new URL(options.request.url).origin,
+    options.allowedRevalidateHeaderKeys,
   ) as PagesReqResResponse;
   attachPagesPreviewApi(req, res);
 

@@ -139,7 +139,7 @@ export type DevAppInitialPropsResult =
   | {
       kind: "render";
       pageProps: Record<string, unknown>;
-      renderProps: Record<string, unknown> & { pageProps: unknown };
+      renderProps: Record<string, unknown> & { pageProps?: unknown };
     };
 
 export type DevAppInitialPropsContext = {
@@ -206,8 +206,6 @@ export async function loadDevAppInitialProps(
   // only for merging data-function props and direct page rendering.
   const initialPageProps = isPropsObject(initialProps) ? initialProps.pageProps : undefined;
   const pageProps = isPropsObject(initialPageProps) ? initialPageProps : {};
-  const renderProps = isPropsObject(initialProps)
-    ? { ...initialProps, pageProps: initialPageProps }
-    : { pageProps: initialPageProps };
+  const renderProps = isPropsObject(initialProps) ? initialProps : {};
   return { kind: "render", pageProps, renderProps };
 }

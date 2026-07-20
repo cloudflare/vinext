@@ -1,11 +1,15 @@
 interface IsrBasePathProps {
+  generation: number;
   generatedAt: number;
 }
 
-export default function IsrBasePath({ generatedAt }: IsrBasePathProps) {
+let generation = 0;
+
+export default function IsrBasePath({ generation, generatedAt }: IsrBasePathProps) {
   return (
     <main>
       <h1>ISR BasePath</h1>
+      <p data-testid="generation">{generation}</p>
       <p data-testid="generated-at">{generatedAt}</p>
     </main>
   );
@@ -13,7 +17,7 @@ export default function IsrBasePath({ generatedAt }: IsrBasePathProps) {
 
 export function getStaticProps() {
   return {
-    props: { generatedAt: Date.now() },
+    props: { generation: ++generation, generatedAt: Date.now() },
     revalidate: 1,
   };
 }

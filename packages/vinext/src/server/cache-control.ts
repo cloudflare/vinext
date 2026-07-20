@@ -62,9 +62,11 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/cache-control.ts
  */
 export function buildRevalidateCacheControl(
-  revalidateSeconds: number,
+  revalidateSeconds: number | false,
   expireSeconds?: number,
 ): string {
+  if (revalidateSeconds === false) return STATIC_CACHE_CONTROL;
+
   if (expireSeconds === undefined) {
     return `s-maxage=${revalidateSeconds}, stale-while-revalidate`;
   }
@@ -89,10 +91,10 @@ export function buildRevalidateCacheControl(
  */
 export function buildCachedRevalidateCacheControl(
   cacheState: "HIT" | "STALE",
-  revalidateSeconds: number,
+  revalidateSeconds: number | false,
   expireSeconds?: number,
 ): string {
-  if (revalidateSeconds === Infinity) {
+  if (revalidateSeconds === false || revalidateSeconds === Infinity) {
     return STATIC_CACHE_CONTROL;
   }
 

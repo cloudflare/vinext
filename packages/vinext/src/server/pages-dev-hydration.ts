@@ -38,7 +38,6 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
   element = React.createElement(AppComponent, {
     ...props,
     Component: PageComponent,
-    pageProps: rawPageProps,
     router: appRouter,
   });
   `

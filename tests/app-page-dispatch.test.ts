@@ -33,7 +33,7 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
-import { connection } from "../packages/vinext/src/shims/server.js";
+import { after, connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -68,6 +68,8 @@ type TestRoute = {
   layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
   layoutTreePositions?: readonly number[];
   loading?: { default?: unknown } | null;
+  loadings?: readonly ({ default?: unknown } | null | undefined)[];
+  loadingTreePositions?: readonly number[];
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
   params: readonly string[];
   pattern: string;
@@ -77,6 +79,9 @@ type TestRoute = {
       string,
       {
         default?: { default?: unknown } | null;
+        loading?: { default?: unknown } | null;
+        loadings?: readonly ({ default?: unknown } | null | undefined)[] | null;
+        loadingTreePositions?: readonly number[] | null;
         page?: { default?: unknown; generateMetadata?: unknown } | null;
         slotParamNames?: readonly string[] | null;
         slotPatternParts?: readonly string[] | null;
@@ -575,6 +580,28 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
+  it("does not probe layouts below an active ancestor loading boundary", async () => {
+    const probeLayoutAt = vi.fn((_layoutIndex: number) => null);
+    const probePage = vi.fn(() => null);
+    const route = createRoute({
+      layouts: [{}, {}, {}],
+      layoutTreePositions: [0, 1, 2],
+      loading: null,
+      loadings: [{ default: () => null }],
+      loadingTreePositions: [1],
+      routeSegments: ["parent", "slow"],
+    });
+    const { options } = createDispatchOptions({ probeLayoutAt, probePage, route });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+
+    // The loading at position 1 catches descendants, but not a layout at the
+    // same position. Probe the root and co-located layout only.
+    expect(probeLayoutAt.mock.calls.map(([layoutIndex]) => layoutIndex)).toEqual([1, 0]);
+    expect(probePage).not.toHaveBeenCalled();
+  });
+
   it("disables streaming metadata while producing prerendered HTML", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
@@ -2647,10 +2674,14 @@ describe("app page dispatch", () => {
     let capturedWaitForAllReady: boolean | undefined;
     let capturedFallbackToErrorDocument: boolean | undefined;
     let capturedServeStreamingMetadata: boolean | undefined;
+    let afterRan = false;
     const isrSet = vi.fn(async () => {});
     const { options } = createDispatchOptions({
       buildPageElement: async (_route, _params, _opts, _searchParams, _layout, buildOptions) => {
         capturedServeStreamingMetadata = buildOptions?.serveStreamingMetadata;
+        after(() => {
+          afterRan = true;
+        });
         return React.createElement("main", null, "fresh");
       },
       cleanPathname: "/posts/hello",
@@ -2696,6 +2727,7 @@ describe("app page dispatch", () => {
     expect(capturedServeStreamingMetadata).toBe(false);
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
+    expect(afterRan).toBe(true);
   });
 
   it.each(["page", "metadata"] as const)(

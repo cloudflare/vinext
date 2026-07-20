@@ -50,9 +50,23 @@ const projectServers = {
       "**/app-router/nextjs-compat/client-cache.spec.ts",
       "**/app-router/nextjs-compat/route-handler-draft-cache.spec.ts",
       "**/app-router/nextjs-compat/segment-cache-client-params.spec.ts",
+      "**/app-router/isr.spec.ts",
     ],
     use: { baseURL: "http://localhost:4174" },
     server: appRouterServer,
+  },
+  "app-router-isr-prod": {
+    testDir: "./tests/e2e/app-router",
+    testMatch: "isr.spec.ts",
+    use: { baseURL: "http://localhost:4198" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4198",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4198,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
   },
   "app-router-client-cache": {
     testDir: "./tests/e2e/app-router/nextjs-compat",
@@ -111,7 +125,7 @@ const projectServers = {
     ],
     use: { baseURL: "http://localhost:4177" },
     server: {
-      command: "npx vp build && npx wrangler dev --port 4177",
+      command: "VINEXT_E2E_REVALIDATION_PROXY=1 npx vp build && npx wrangler dev --port 4177",
       cwd: "./examples/pages-router-cloudflare",
       port: 4177,
       reuseExistingServer: !process.env.CI,
@@ -129,6 +143,7 @@ const projectServers = {
       port: 4175,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+      env: { NEXT_DEPLOYMENT_ID: "pages-production-deployment" },
     },
   },
   "pages-scroll-restoration": {

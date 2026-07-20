@@ -265,6 +265,10 @@ describe("decideIsr — STALE", () => {
 // ─── buildMissIsrCacheControl ─────────────────────────────────────────────────
 
 describe("buildMissIsrCacheControl", () => {
+  it("formats indefinite revalidation as the static one-year HTTP policy", () => {
+    expect(buildMissIsrCacheControl(false)).toBe("s-maxage=31536000, stale-while-revalidate");
+  });
+
   it("without expire: unbounded SWR", () => {
     expect(buildMissIsrCacheControl(60)).toBe("s-maxage=60, stale-while-revalidate");
   });

@@ -58,12 +58,7 @@ import {
   generateImageAdaptersModule,
   type VinextImageConfig,
 } from "./image/image-adapters-virtual.js";
-import {
-  generateBrowserEntry,
-  isLinkPrefetchRoute,
-  toDocumentOnlyAppRoute,
-  toLinkPrefetchRoute,
-} from "./entries/app-browser-entry.js";
+import { generateBrowserEntry, toLinkPrefetchRoutes } from "./entries/app-browser-entry.js";
 import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
@@ -104,6 +99,7 @@ import {
   MIDDLEWARE_REWRITE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
@@ -127,6 +123,7 @@ import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
+import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 
 import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
@@ -871,20 +868,26 @@ function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Reco
   return Object.fromEntries(Object.entries(aliases).sort((a, b) => b[0].length - a[0].length));
 }
 
-function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
-  if (_tsconfigAliasCache.has(projectRoot)) {
-    return _tsconfigAliasCache.get(projectRoot)!;
+function resolveTsconfigAliases(
+  projectRoot: string,
+  configuredPath?: string,
+): Record<string, string> {
+  const configPath = configuredPath ? path.resolve(projectRoot, configuredPath) : undefined;
+  const cacheKey = configPath ?? projectRoot;
+  if (_tsconfigAliasCache.has(cacheKey)) {
+    return _tsconfigAliasCache.get(cacheKey)!;
   }
 
   let aliases: Record<string, string> = {};
-  for (const name of TSCONFIG_FILES) {
-    const candidate = path.join(projectRoot, name);
+  for (const candidate of configPath
+    ? [configPath]
+    : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
     if (!fs.existsSync(candidate)) continue;
     aliases = sortTsconfigAliasesBySpecificity(loadTsconfigPathAliases(candidate, projectRoot));
     break;
   }
 
-  _tsconfigAliasCache.set(projectRoot, aliases);
+  _tsconfigAliasCache.set(cacheKey, aliases);
   return aliases;
 }
 
@@ -1433,9 +1436,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
     // #1526 for the Next.js parity rationale.
     const appPrefetchRoutes = hasAppDir
-      ? (await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)).map((route) =>
-          isLinkPrefetchRoute(route) ? toLinkPrefetchRoute(route) : toDocumentOnlyAppRoute(route),
-        )
+      ? toLinkPrefetchRoutes(await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
       : [];
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
@@ -1867,21 +1868,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         isServeCommand = env.command === "serve";
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
-        const shouldEnableNativeTsconfigPaths = userResolve?.tsconfigPaths === undefined;
-        const tsconfigPathAliases = resolveTsconfigAliases(root);
+        let tsconfigPathAliases: Record<string, string> = {};
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
-
-        // tsconfig-derived alias entries carry a customResolver, which Vite 8
-        // reports as deprecated during config resolution. Filter that warning
-        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
-        // config.customLogger (rather than returning it) keeps mergeConfig
-        // from deep-cloning the logger and flattening its hasWarned getter.
-        if (Object.keys(tsconfigPathAliases).length > 0) {
-          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
-            config.customLogger ??
-              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
-          );
-        }
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -2012,6 +2000,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (sharedBuildId && sharedBuildId.length > 0) {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
+        }
+        const configuredTsconfigPath = isRecord(nextConfig.typescript)
+          ? typeof nextConfig.typescript.tsconfigPath === "string"
+            ? nextConfig.typescript.tsconfigPath
+            : undefined
+          : undefined;
+        tsconfigPathAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
+        // Vite's native option discovers tsconfig.json and cannot receive Next's
+        // typescript.tsconfigPath. Only auto-enable it for the default config;
+        // an explicit user resolve.tsconfigPaths value remains untouched.
+        const shouldAutoEnableNativeTsconfigPaths =
+          userResolve?.tsconfigPaths === undefined && configuredTsconfigPath === undefined;
+
+        // tsconfig-derived alias entries carry a customResolver, which Vite 8
+        // reports as deprecated during config resolution. Filter that warning
+        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
+        // config.customLogger (rather than returning it) keeps mergeConfig
+        // from deep-cloning the logger and flattening its hasWarned getter.
+        if (Object.keys(tsconfigPathAliases).length > 0) {
+          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
+            config.customLogger ??
+              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
+          );
         }
         // RSC-compat ID coordination across plugin instances — same rationale as
         // the build ID above. createRscCompatibilityId() falls back to a random
@@ -2740,7 +2751,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // causing cryptic "Invalid hook call" errors. This is a no-op
             // when only one copy exists.
             dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
-            ...(shouldEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
+            ...(shouldAutoEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
           },
           // NOTE: top-level optimizeDeps is now set below (after capturing
           // incoming values from earlier plugins) so both Pages Router and
@@ -4163,6 +4174,22 @@ export const loadServerActionClient = ${
         // fully registered before we inspect them. We prefer "ssr", then any
         // non-"rsc" environment, then whatever is available.
         let pagesRunner: import("vite/module-runner").ModuleRunner | null = null;
+        const getTrustedDevRevalidateOrigin = () => {
+          const resolved = server.resolvedUrls?.local[0];
+          if (resolved) {
+            try {
+              return new URL(resolved).origin;
+            } catch {
+              // Fall through to the HTTP server address below.
+            }
+          }
+          const address = server.httpServer?.address();
+          const port =
+            typeof address === "object" && address
+              ? address.port
+              : (server.config.server.port ?? 3000);
+          return `http://localhost:${port}`;
+        };
         // Reuse the Pages SSR handler across requests. Every createSSRHandler
         // input is stable for the dev session (server, runner, config,
         // middlewarePath) except `routes`, which is the cached pagesRouter array
@@ -4740,9 +4767,22 @@ export const loadServerActionClient = ${
                 res.end("Forbidden");
                 return;
               }
+              let revalidationHostname: string | null = null;
+              if (req.headers[VINEXT_REVALIDATE_HOST_HEADER] !== undefined) {
+                const revalidationHeaders = new Headers();
+                for (const [name, value] of Object.entries(req.headers)) {
+                  if (value === undefined || name.startsWith(":")) continue;
+                  revalidationHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
+                }
+                revalidationHostname = readTrustedRevalidationHostname(
+                  revalidationHeaders,
+                  nextConfig?.i18n,
+                );
+              }
               const requestHost =
-                (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
-                "localhost";
+                revalidationHostname ??
+                ((Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
+                  "localhost");
               const requestOrigin = `http://${requestHost}`;
               const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
 
@@ -5030,6 +5070,7 @@ export const loadServerActionClient = ${
               // Both the middleware Request (built below) and the SSR handler
               // (which reads req.headers directly) must see clean headers.
               const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
+              if (revalidationHostname) nodeRequestHeaders.set("host", revalidationHostname);
               for (const header of INTERNAL_HEADERS) {
                 delete req.headers[header];
               }
@@ -5305,6 +5346,8 @@ export const loadServerActionClient = ${
                   {
                     basePath: nextConfig?.basePath,
                     i18n: nextConfig?.i18n,
+                    trustedRevalidateOrigin: getTrustedDevRevalidateOrigin(),
+                    allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
                   },
                 );
@@ -5366,6 +5409,7 @@ export const loadServerActionClient = ${
                       nextConfig?.clientTraceMetadata,
                       nextConfig?.htmlLimitedBots,
                       nextConfig?.reactStrictMode === true,
+                      nextConfig?.expireTime,
                     ),
                   };
                 }

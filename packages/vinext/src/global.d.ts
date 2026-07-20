@@ -77,7 +77,7 @@ declare global {
     __VINEXT_APP__:
       | React.ComponentType<{
           Component: React.ComponentType<Record<string, unknown>>;
-          pageProps: unknown;
+          pageProps?: unknown;
           router?: unknown;
           [key: string]: unknown;
         }>

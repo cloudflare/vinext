@@ -45,7 +45,75 @@ function buildCachedRouteValue(
   };
 }
 
+type ReadAppRouteHandlerCacheOptions = Parameters<typeof readAppRouteHandlerCacheResponse>[0];
+
+function createReadOptions(
+  overrides: Partial<ReadAppRouteHandlerCacheOptions> = {},
+): ReadAppRouteHandlerCacheOptions {
+  return {
+    buildPageCacheTags(pathname, extraTags) {
+      return [pathname, ...extraTags];
+    },
+    cleanPathname: "/api/cached",
+    clearRequestContext() {},
+    consumeDynamicUsage() {
+      return false;
+    },
+    getCollectedFetchTags() {
+      return [];
+    },
+    async handlerFn() {
+      return new Response("fresh");
+    },
+    isAutoHead: false,
+    async isrGet() {
+      return null;
+    },
+    isrRouteKey(pathname) {
+      return `route:${pathname}`;
+    },
+    async isrSet() {},
+    markDynamicUsage() {},
+    middlewareContext: { headers: null, status: null },
+    params: {},
+    requestUrl: "https://example.com/api/cached",
+    revalidateSearchParams: new URLSearchParams(),
+    revalidateSeconds: 60,
+    routePattern: "/api/cached",
+    async runInRevalidationContext(renderFn) {
+      await renderFn();
+    },
+    scheduleBackgroundRegeneration() {},
+    setHeadersAccessPhase() {
+      return "render";
+    },
+    setNavigationContext() {},
+    ...overrides,
+  };
+}
+
 describe("app route handler cache helpers", () => {
+  it("does not serve or background-regenerate hard-expired route handlers", async () => {
+    const scheduleBackgroundRegeneration = vi.fn();
+    const clearRequestContext = vi.fn();
+    const response = await readAppRouteHandlerCacheResponse(
+      createReadOptions({
+        clearRequestContext,
+        async isrGet() {
+          return {
+            ...buildISRCacheEntry(buildCachedRouteValue("expired"), true),
+            isExpired: true,
+          };
+        },
+        scheduleBackgroundRegeneration,
+      }),
+    );
+
+    expect(response).toBeNull();
+    expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(clearRequestContext).not.toHaveBeenCalled();
+  });
+
   it("returns HIT responses from cached APP_ROUTE entries", async () => {
     let didClearRequestContext = false;
 

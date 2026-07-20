@@ -16,6 +16,7 @@ describe("createPagesDevHydrationScript", () => {
     expect(script).toContain('() => import("/pages/index.tsx")');
     expect(script).toContain('() => import("/pages/_app.tsx")');
     expect(script).toContain("const appRouter = Router;");
+    expect(script).not.toContain("pageProps: rawPageProps,");
     expect(script).toContain("if (nextData.isFallback)");
     expect(script).not.toContain("window.__VINEXT_PAGE_PATTERNS__ = [nextData.page]");
   });

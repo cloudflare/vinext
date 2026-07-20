@@ -25,7 +25,7 @@ jobs:
       CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
       CNA_CLOUDFLARE_EXPECTED_TEXT: Get started
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup

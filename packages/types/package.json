@@ -1,6 +1,6 @@
 {
   "name": "@vinext/types",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "description": "Type declarations for vinext's Next.js-compatible public API.",
   "license": "MIT",
   "repository": {

@@ -15,6 +15,7 @@ import {
   MIDDLEWARE_SKIP_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ export {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 
 /** Internal endpoint used to evaluate App Router generateStaticParams exports. */
@@ -219,4 +221,5 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 ];

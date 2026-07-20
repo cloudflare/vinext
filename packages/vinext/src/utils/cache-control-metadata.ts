@@ -16,3 +16,11 @@ export function readCacheControlNumberField(
   const value = cacheControl?.[field] ?? ctx?.[field];
   return typeof value === "number" ? value : undefined;
 }
+
+export function readCacheControlRevalidateField(
+  ctx: Record<string, unknown> | undefined,
+): number | false | undefined {
+  const cacheControl = readRecordField(ctx, "cacheControl");
+  const value = cacheControl?.revalidate ?? ctx?.revalidate;
+  return typeof value === "number" || value === false ? value : undefined;
+}
