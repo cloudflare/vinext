@@ -297,12 +297,12 @@ export class MemoryCacheHandler implements CacheHandler {
 
     let effectiveRevalidate = readCacheControlRevalidateField(ctx);
     const effectiveExpire = readCacheControlNumberField(ctx, "expire");
-    if (
-      data &&
-      "revalidate" in data &&
-      (typeof data.revalidate === "number" || data.revalidate === false)
-    ) {
+    if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
+    } else if (data && "revalidate" in data && data.revalidate === false) {
+      // Preserve a non-expiring value when no context policy was supplied,
+      // but never let it override an explicit `ctx.revalidate: 0` no-store.
+      effectiveRevalidate ??= false;
     }
     if (effectiveRevalidate === 0) return;
 

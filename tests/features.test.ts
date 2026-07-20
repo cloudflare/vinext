@@ -1500,7 +1500,7 @@ describe("i18n domain routing (Pages Router)", () => {
 
     const revalidate = await requestNodeServerWithHost(
       domainPort,
-      "/api/revalidate?path=%2Fisr-about",
+      "/api/revalidate?path=%2Fisr-about&includeState=1",
       "example.fr",
     );
     expect(revalidate.status).toBe(200);

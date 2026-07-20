@@ -10,7 +10,10 @@ export default async function handler(
     await res.revalidate(path, {
       unstable_onlyGenerated: req.query.onlyGenerated === "1",
     });
-    res.json({ revalidated: true, state: getDomainRevalidateState() });
+    res.json({
+      revalidated: true,
+      ...(req.query.includeState === "1" ? { state: getDomainRevalidateState() } : {}),
+    });
   } catch {
     res.status(500).json({ revalidated: false });
   }
