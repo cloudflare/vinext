@@ -20,11 +20,13 @@ test("only-generated revalidation leaves an unseen blocking fallback path ungene
   const firstPageHtml = await firstPage.text();
   expect(firstPageHtml).toContain("Generated");
   expect(firstPageHtml).toContain(slug);
+  expect(firstPageHtml).toContain('data-testid="generation">1</span>');
 
   const repeatedPage = await request.get(pathname);
   expect(repeatedPage.headers()["x-nextjs-cache"]).toBe("HIT");
   expect(repeatedPage.headers()["x-vinext-cache"]).toBeUndefined();
   expect(repeatedPage.headers()["cache-control"]).toBe("no-cache, must-revalidate");
+  expect(await repeatedPage.text()).toContain('data-testid="generation">2</span>');
 });
 
 test("rejects nested and self-targeting dev revalidation", async ({ request }) => {

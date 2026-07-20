@@ -40,10 +40,10 @@ describe("Next.js compat: revalidate-reason (Pages Router)", () => {
     await ctx.server.close();
   });
 
-  // NOTE: these run in declaration order and share one server (and therefore
-  // one ISR cache). The negative security test runs FIRST, while the cached
-  // reason is still "stale", so that a forged header being (incorrectly)
-  // honored would be observable as a flip to "on-demand".
+  // NOTE: these run in declaration order and share one server, so the fixture's
+  // module state records consecutive development renders. The negative
+  // security test runs first so a forged header being incorrectly honored is
+  // observable as a flip from the ordinary "stale" reason to "on-demand".
 
   it("rejects a forged x-prerender-revalidate header (not the secret)", async () => {
     // SECURITY: on-demand revalidation must require the process revalidate
@@ -52,16 +52,15 @@ describe("Next.js compat: revalidate-reason (Pages Router)", () => {
     // treated as on-demand revalidation — otherwise any external client could
     // force synchronous regeneration of any ISR page (cache-stampede/DoS).
 
-    // Prime the cache. In dev there is no build-time prerender, so the initial
-    // miss surfaces as "stale".
+    // Establish the ordinary development-render baseline. Pages response
+    // entries are not cached in dev, so each request reports "stale".
     const primeRes = await fetch(`${ctx.baseUrl}/revalidate-reason`);
     expect(primeRes.status).toBe(200);
     expect(reasonFromHtml(await primeRes.text())).toBe("stale");
 
     // Spoofed values: plain presence ("1"), empty, and a random guess. None
-    // equals the secret, so each must be IGNORED: the fresh-cache short-circuit
-    // still serves the cached "stale" entry and never regenerates as
-    // "on-demand".
+    // equals the secret, so each must be ignored and execute another ordinary
+    // "stale" render rather than an authenticated "on-demand" render.
     for (const value of ["1", "", "not-the-secret"]) {
       const forged = await fetch(`${ctx.baseUrl}/revalidate-reason`, {
         headers: { "x-prerender-revalidate": value },
