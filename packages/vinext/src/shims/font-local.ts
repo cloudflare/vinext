@@ -15,6 +15,7 @@
  *   // myFont.style -> { fontFamily: "'__local_font_0', sans-serif" }
  *   // myFont.variable -> generated class name when requested
  */
+import { fnv1a64 } from "../utils/hash.js";
 import {
   escapeCSSString,
   formatFontClassRule,
@@ -52,7 +53,6 @@ function sanitizeInternalFontFamily(name: unknown): string | undefined {
 // copies, so the reader sees an empty array even though the loader pushed.
 // Backing every piece of mutable state with a `Symbol.for` slot on
 // globalThis collapses the copies onto a single shared store.
-const _CLASS_COUNTER_KEY = Symbol.for("vinext.fontLocal.classCounter");
 const _INJECTED_FONTS_KEY = Symbol.for("vinext.fontLocal.injectedFonts");
 const _INJECTED_CLASS_RULES_KEY = Symbol.for("vinext.fontLocal.injectedClassRules");
 const _INJECTED_VARIABLE_RULES_KEY = Symbol.for("vinext.fontLocal.injectedVariableRules");
@@ -62,7 +62,6 @@ const _SSR_FONT_PRELOADS_KEY = Symbol.for("vinext.fontLocal.ssrFontPreloads");
 const _SSR_FONT_PRELOAD_HREFS_KEY = Symbol.for("vinext.fontLocal.ssrFontPreloadHrefs");
 
 type _FontLocalGlobal = typeof globalThis & {
-  [_CLASS_COUNTER_KEY]?: { value: number };
   [_INJECTED_FONTS_KEY]?: Set<string>;
   [_INJECTED_CLASS_RULES_KEY]?: Set<string>;
   [_INJECTED_VARIABLE_RULES_KEY]?: Set<string>;
@@ -73,10 +72,6 @@ type _FontLocalGlobal = typeof globalThis & {
 };
 const _g = globalThis as _FontLocalGlobal;
 
-// A counter binding is *reassigned* rather than mutated in place, so a bare
-// `??=` alias would still diverge per module copy — box it in a shared
-// mutable object so `classCounter.value++` is visible to every copy.
-const classCounter = (_g[_CLASS_COUNTER_KEY] ??= { value: 0 });
 const injectedFonts = (_g[_INJECTED_FONTS_KEY] ??= new Set<string>());
 
 type LocalFontSrc = {
@@ -291,6 +286,31 @@ function normalizeSources(options: LocalFontOptions): LocalFontSrc[] {
 }
 
 /**
+ * Derive a stable class identity from the inputs that affect the generated
+ * font CSS. Next.js hashes the generated font CSS for the same reason: class
+ * names must match across the RSC, SSR, and browser module graphs regardless
+ * of which graph evaluates a font call first.
+ */
+function createLocalFontIdentity(
+  options: LocalFontOptions,
+  sources: LocalFontSrc[],
+  internalFamily: string | undefined,
+): string {
+  return fnv1a64(
+    JSON.stringify([
+      internalFamily ?? "",
+      sources.map((source) => [source.path, source.weight ?? "", source.style ?? ""]),
+      options.display ?? "swap",
+      options.weight ?? "",
+      options.style ?? "",
+      options.fallback ?? ["sans-serif"],
+      options.variable ?? "",
+      options.declarations?.map((declaration) => [declaration.prop, declaration.value]) ?? [],
+    ]),
+  );
+}
+
+/**
  * Collect font source URLs for preload link generation.
  * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
  */
@@ -313,10 +333,11 @@ function localFont<T extends CssVariable | undefined = undefined>(
   options: LocalFontOptions<T>,
 ): T extends undefined ? NextFont : NextFontWithVariable;
 function localFont(options: LocalFontOptions): FontResult {
-  const id = classCounter.value++;
   const sources = normalizeSources(options);
+  const internalFamily = sanitizeInternalFontFamily(options._vinext?.font?.family);
+  const id = createLocalFontIdentity(options, sources, internalFamily);
   const singleSource = sources.length === 1 ? sources[0] : undefined;
-  const family = sanitizeInternalFontFamily(options._vinext?.font?.family) ?? `__local_font_${id}`;
+  const family = internalFamily ?? `__local_font_${id}`;
   const className = `__font_local_${id}`;
   const fallback = options.fallback ?? ["sans-serif"];
   // Sanitize each fallback name to prevent CSS injection via crafted values

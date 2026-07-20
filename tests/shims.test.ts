@@ -13322,14 +13322,16 @@ describe("next/font/local shim", () => {
     expect(matches.length).toBe(1);
   });
 
-  it("shares SSR collection state and class counter across module copies", async () => {
+  // Next.js derives next/font class names from a hash of the generated CSS,
+  // keeping the export stable across its server and client compilations.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-font-loader/index.ts
+  it("shares SSR collection state with stable class identities across module copies", async () => {
     // Regression: in Vite's multi-environment dev mode the shim can be loaded
     // more than once in the same worker (different resolved IDs / different
     // environments), so the localFont() call site and the SSR readers can land
     // on different module copies. Dynamic imports are intentional here — this
     // test exercises the module-loading boundary itself.
     const slotNames = [
-      "vinext.fontLocal.classCounter",
       "vinext.fontLocal.injectedFonts",
       "vinext.fontLocal.injectedClassRules",
       "vinext.fontLocal.injectedVariableRules",
@@ -13343,6 +13345,7 @@ describe("next/font/local shim", () => {
       const a = copyA.default({
         src: "/assets/multi-copy-a.woff2",
         variable: "--font-multi-copy-a",
+        _vinext: { font: { family: "multiCopyA" } },
       });
 
       // Simulate a second, genuinely fresh module copy: reset the module
@@ -13357,13 +13360,24 @@ describe("next/font/local shim", () => {
         true,
       );
 
-      // The class counter must continue across copies — a fresh copy
-      // restarting at 0 would mint a className that collides with copy A's.
-      const b = copyB.default({ src: "/assets/multi-copy-b.woff2" });
+      // The same logical call must have the same identity in every module
+      // graph so SSR markup and browser hydration agree. A distinct font must
+      // still receive a distinct class and variable identity.
+      const sameA = copyB.default({
+        src: "/assets/multi-copy-a.woff2",
+        variable: "--font-multi-copy-a",
+        _vinext: { font: { family: "multiCopyA" } },
+      });
+      expect(sameA.className).toBe(a.className);
+      expect(sameA.variable).toBe(a.variable);
+
+      const b = copyB.default({
+        src: "/assets/multi-copy-b.woff2",
+        variable: "--font-multi-copy-b",
+        _vinext: { font: { family: "multiCopyB" } },
+      });
       expect(b.className).not.toBe(a.className);
-      const aId = Number(a.className.replace("__font_local_", ""));
-      const bId = Number(b.className.replace("__font_local_", ""));
-      expect(bId).toBe(aId + 1);
+      expect(b.variable).not.toBe(a.variable);
     } finally {
       // Symbol.for slots survive vi.resetModules() by design — clear them so
       // other tests observe pristine module state on their next import.
