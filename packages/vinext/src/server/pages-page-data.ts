@@ -55,7 +55,7 @@ export type ResolvedPagesRedirect = {
 const ALLOWED_PAGES_REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
 
 /** Headers that are part of a cached Pages representation, never request state. */
-export function isCachedPagesRepresentationHeader(name: string): boolean {
+function isCachedPagesRepresentationHeader(name: string): boolean {
   const lowerName = name.toLowerCase();
   return lowerName === "location" || lowerName === "content-type";
 }
@@ -571,7 +571,7 @@ export function buildPagesRedirectProps(
   };
 }
 
-export function normalizePagesRenderProps(props: Record<string, unknown>): PagesRenderProps {
+function normalizePagesRenderProps(props: Record<string, unknown>): PagesRenderProps {
   if (!("pageProps" in props)) {
     // Legacy vinext PAGES entries stored pageProps directly. Accept those
     // during the migration window while all new writes use the full envelope.
@@ -770,7 +770,7 @@ function buildCachedPagesRedirectResponse(
   );
 }
 
-export function getCachedPagesRedirect(
+function getCachedPagesRedirect(
   cached: CacheHandlerValue["value"] | undefined,
 ): CachedRedirectValue | null {
   if (cached?.kind === "REDIRECT") return cached;
