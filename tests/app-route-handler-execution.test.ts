@@ -25,6 +25,11 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 // The fetch-cache shim captures `originalFetch` from globalThis at import
 // time, so stub fetch BEFORE importing it (same pattern as
@@ -288,6 +293,96 @@ describe("app route handler execution helpers", () => {
     expect(didClearRequestContext).toBe(true);
     expect(reportCalls).toEqual([]);
   });
+
+  it.each([{ lateDynamic: true }, { lateDynamic: false }])(
+    "keeps a deferred edge route private until its stream proves static (late dynamic: $lateDynamic)",
+    async ({ lateDynamic }) => {
+      const dynamicUsage = createDynamicUsageState();
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const writtenTags: string[][] = [];
+      const collectedTags: string[] = [];
+      let didClearRequestContext = false;
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => {
+        releaseStream = resolve;
+      });
+
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      try {
+        const response = await executeAppRouteHandler({
+          buildPageCacheTags(pathname, extraTags) {
+            return [pathname, ...extraTags];
+          },
+          cleanPathname: "/api/deferred-edge",
+          clearRequestContext() {
+            didClearRequestContext = true;
+          },
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: {
+            waitUntil(promise) {
+              waitUntilPromises.push(promise);
+            },
+          },
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [...collectedTags];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto" },
+          handlerFn() {
+            return new Response(
+              new ReadableStream({
+                async pull(controller) {
+                  await streamGate;
+                  collectedTags.push("post:deferred");
+                  if (lateDynamic) dynamicUsage.markDynamicUsage();
+                  controller.enqueue(new TextEncoder().encode("personalized"));
+                  controller.close();
+                },
+              }),
+            );
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          async isrSet(_key, _value, _revalidateSeconds, tags) {
+            writtenTags.push(tags);
+          },
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: {},
+          reportRequestError() {},
+          request: new Request("https://example.com/api/deferred-edge"),
+          revalidateSeconds: 60,
+          routePattern: `/api/deferred-edge-${Date.now()}`,
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        });
+
+        expect(response.headers.get("cache-control")).toMatch(/no-store/);
+        expect(response.headers.get("cdn-cache-control")).toBeNull();
+        expect(didClearRequestContext).toBe(false);
+
+        releaseStream();
+        await Promise.all(waitUntilPromises);
+
+        expect(writtenTags).toEqual(lateDynamic ? [] : [["/api/deferred-edge", "post:deferred"]]);
+        expect(didClearRequestContext).toBe(true);
+        await expect(response.text()).resolves.toBe("personalized");
+      } finally {
+        releaseStream();
+        setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      }
+    },
+  );
 
   it.each([
     { enabled: true, initialDraftMode: false, expectedCookie: "__prerender_bypass=draft-secret" },

@@ -22,6 +22,7 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { isrSet as persistIsrEntry } from "../packages/vinext/src/server/isr-cache.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -35,6 +36,8 @@ import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
+  type CdnCacheAdapter,
+  type CdnCacheableHeaderInput,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import {
@@ -69,6 +72,29 @@ function createDeferred<T = void>() {
     reject = promiseReject;
   });
   return { promise, reject, resolve };
+}
+
+class HybridCdnCacheAdapter implements CdnCacheAdapter {
+  readonly pageCacheMode = "hybrid";
+  readonly ownsBackgroundRevalidation = false;
+  readonly writes: Array<Parameters<CdnCacheAdapter["set"]>> = [];
+
+  async get() {
+    return null;
+  }
+
+  async set(...args: Parameters<CdnCacheAdapter["set"]>) {
+    this.writes.push(args);
+  }
+
+  buildResponseHeaders(input: CdnCacheableHeaderInput) {
+    if (input.pendingDynamicCheck || !input.cacheControl) {
+      return { "Cache-Control": "no-store", "CDN-Cache-Control": null };
+    }
+    return { "Cache-Control": "no-store", "CDN-Cache-Control": input.cacheControl };
+  }
+
+  async revalidateTag() {}
 }
 
 function createCommonOptions() {
@@ -335,8 +361,9 @@ describe("SSR shell error recovery", () => {
   it("returns an uncached 500 response for a recovered dynamic shell error", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const common = createCommonOptions();
+    const releaseHtml = createDeferred();
     try {
-      const response = await renderAppPageLifecycle({
+      const responsePromise = renderAppPageLifecycle({
         ...common.options,
         isProduction: true,
         middlewareContext: {
@@ -352,7 +379,14 @@ describe("SSR shell error recovery", () => {
         loadSsrHandler: async () => ({
           async handleSsr() {
             return {
-              htmlStream: createStream(['<html id="__next_error__"></html>']),
+              htmlStream: new ReadableStream<Uint8Array>({
+                async pull(controller) {
+                  controller.enqueue(new TextEncoder().encode('<html id="__next_error__">'));
+                  await releaseHtml.promise;
+                  controller.enqueue(new TextEncoder().encode("</html>"));
+                  controller.close();
+                },
+              }),
               metadataReady: Promise.resolve(),
               capturedRscData: null,
               shellErrorRecovered: true,
@@ -360,6 +394,16 @@ describe("SSR shell error recovery", () => {
           },
         }),
       });
+
+      const timeout = Symbol("timeout");
+      const responseBeforeRelease = await Promise.race([
+        responsePromise,
+        new Promise<typeof timeout>((resolve) => setTimeout(() => resolve(timeout), 50)),
+      ]);
+      releaseHtml.resolve();
+      const response = await responsePromise;
+
+      expect(responseBeforeRelease).not.toBe(timeout);
 
       expect(response.status).toBe(500);
       expect(response.headers.get("cache-control")).toBe(
@@ -371,6 +415,7 @@ describe("SSR shell error recovery", () => {
       await expect(response.text()).resolves.toContain("__next_error__");
       expect(common.isrSet).not.toHaveBeenCalled();
     } finally {
+      releaseHtml.resolve();
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }
   });
@@ -815,6 +860,74 @@ describe("app page render lifecycle", () => {
     );
   });
 
+  it("streams a hybrid cache miss privately while admitting it to the origin cache", async () => {
+    const hybrid = new HybridCdnCacheAdapter();
+    setCdnCacheAdapter(hybrid);
+    const common = createCommonOptions();
+
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        isrSet: persistIsrEntry,
+        revalidateSeconds: 30,
+      });
+
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+
+      expect(common.waitUntilPromises).toHaveLength(1);
+      await Promise.all(common.waitUntilPromises);
+      expect(hybrid.writes).toHaveLength(2);
+      expect(hybrid.writes.map(([key]) => key)).toEqual(["html:/posts/post", "rsc:/posts/post"]);
+      expect(hybrid.writes[0]?.[1]).toEqual(expect.objectContaining({ kind: "APP_PAGE" }));
+      expect(hybrid.writes[0]?.[2]).toEqual({
+        cacheControl: { revalidate: 30 },
+        revalidate: 30,
+        tags: ["_N_T_/posts/post"],
+      });
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("keeps a failed hybrid stream private and does not admit a partial artifact", async () => {
+    const hybrid = new HybridCdnCacheAdapter();
+    setCdnCacheAdapter(hybrid);
+    const common = createCommonOptions();
+    const failure = new Error("stream failed during admission");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        isrSet: persistIsrEntry,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            return new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.error(failure);
+              },
+            });
+          },
+        }),
+        revalidateSeconds: 30,
+      });
+
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      await expect(response.text()).rejects.toBe(failure);
+      await Promise.all(common.waitUntilPromises);
+      expect(hybrid.writes).toHaveLength(0);
+      expect(consoleError).toHaveBeenCalledWith("[vinext] ISR cache write error:", failure);
+    } finally {
+      consoleError.mockRestore();
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("does not wait for cacheLife-only RSC capture before returning production HTML responses", async () => {
     const common = createCommonOptions();
     const releaseRsc = createDeferred();
@@ -1238,21 +1351,50 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("disables HTML ISR caching when the response carries a script nonce", async () => {
+  it("keeps nonce-bearing no-store HTML responses streaming", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const common = createCommonOptions();
+    const releaseHtml = createDeferred();
 
-    const response = await renderAppPageLifecycle({
-      ...common.options,
-      isProduction: true,
-      revalidateSeconds: 30,
-      scriptNonce: "vinext-test-nonce",
-    });
+    try {
+      const responsePromise = renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            return new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                controller.enqueue(new TextEncoder().encode("<html>part1"));
+                await releaseHtml.promise;
+                controller.enqueue(new TextEncoder().encode("part2</html>"));
+                controller.close();
+              },
+            });
+          },
+        }),
+        revalidateSeconds: 30,
+        scriptNonce: "vinext-test-nonce",
+      });
 
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
-    await expect(response.text()).resolves.toBe("<html>page</html>");
-    expect(common.waitUntilPromises).toHaveLength(0);
-    expect(common.isrSet).not.toHaveBeenCalled();
+      const timeout = Symbol("timeout");
+      const responseBeforeRelease = await Promise.race([
+        responsePromise,
+        new Promise<typeof timeout>((resolve) => setTimeout(() => resolve(timeout), 50)),
+      ]);
+      releaseHtml.resolve();
+      const response = await responsePromise;
+
+      expect(responseBeforeRelease).not.toBe(timeout);
+
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
+      await expect(response.text()).resolves.toBe("<html>part1part2</html>");
+      expect(common.waitUntilPromises).toHaveLength(0);
+      expect(common.isrSet).not.toHaveBeenCalled();
+    } finally {
+      releaseHtml.resolve();
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("emits the dynamic stale time header on RSC responses during dynamic renders", async () => {

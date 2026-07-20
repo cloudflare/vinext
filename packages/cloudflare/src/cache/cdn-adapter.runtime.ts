@@ -1,16 +1,19 @@
 /**
- * Cloudflare CDN cache adapter — edge-managed page-level ISR backed by the
- * Cloudflare Workers Cache (`ctx.cache`).
+ * Cloudflare CDN cache adapter — page-level ISR admitted through the data
+ * cache before promotion to the Cloudflare Workers Cache (`ctx.cache`).
  *
- * Unlike the origin-managed default adapter (which stores rendered artifacts in
- * the data cache and serves HIT/STALE itself), this adapter delegates serving
- * to Cloudflare's edge:
+ * A fresh App Router stream cannot safely emit public edge-cache headers until
+ * rendering has finished: request APIs may be used after the shell has already
+ * started streaming. Waiting in front of the response would destroy streaming
+ * and make a suspended render hang before returning any bytes. Instead this
+ * adapter uses deterministic two-stage admission:
  *
- * - The origin never serves from a store — `get` returns `null`, so any
- *   request that reaches the Worker renders fresh. The edge absorbs HIT/STALE
- *   traffic and revalidates in the background (the `UPDATING` cache status).
- * - `set` is a no-op: the platform caches the *response* based on its
- *   cache headers, so there is nothing to persist at the origin.
+ * - A fresh response streams immediately with `no-store`. In parallel, the
+ *   normal ISR finalizer consumes the cache branch and persists it only if the
+ *   completed render did not use request-specific APIs.
+ * - The next request reads that proven-static artifact from the data cache and
+ *   returns it with public edge-cache headers. Cloudflare then owns subsequent
+ *   HIT/STALE traffic.
  * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control`
  *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
  *   revalidates, while the browser-facing `Cache-Control` is
@@ -40,6 +43,7 @@ import type {
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
+import { getDataCacheHandler } from "vinext/shims/cache-handler";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
@@ -65,6 +69,9 @@ const NO_STORE = "no-store";
  * always sees edge-fresh content while still permitting conditional 304s.
  */
 const BROWSER_REVALIDATE = "public, max-age=0, must-revalidate";
+
+/** A stale origin artifact must be rechecked at the origin before edge reuse. */
+const STALE_EDGE_REVALIDATE = "public, max-age=0, must-revalidate";
 
 /**
  * A concrete stale window (1 year) substituted for a value-less
@@ -121,28 +128,43 @@ function formatCacheTag(tags: readonly string[]): string | null {
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
-  // The Cloudflare edge revalidates by re-requesting the origin (UPDATING),
-  // so the origin must not also run in-process background regeneration.
-  readonly ownsBackgroundRevalidation = false;
+  // Fresh streams are admitted through the data cache before the proven-static
+  // artifact is promoted to Cloudflare's edge on a subsequent request.
+  readonly pageCacheMode = "hybrid";
+  // The data-cache copy must regenerate when it is stale; otherwise an edge
+  // revalidation would repeatedly receive the same stale origin artifact.
+  readonly ownsBackgroundRevalidation = true;
 
   /**
-   * The origin keeps no page store — return null so the request renders fresh.
-   * The edge serves cached HIT/STALE responses without reaching the origin.
+   * Read the admission artifact. Most requests never reach this method after
+   * Cloudflare has cached the response at the edge.
    */
-  async get(): Promise<CacheHandlerValue | null> {
-    return null;
+  async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    return getDataCacheHandler().get(key, ctx);
   }
 
-  /** No-op: the platform caches the response via its headers, not an origin store. */
+  /** Persist a completed, proven-static artifact for edge admission. */
   async set(
-    _key: string,
-    _data: IncrementalCacheValue | null,
-    _ctx?: Record<string, unknown>,
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx?: Record<string, unknown>,
   ): Promise<void> {
-    // intentionally empty
+    await getDataCacheHandler().set(key, data, ctx);
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // Edge headers are irreversible once the response leaves the Worker. A
+    // streaming render can still discover request-specific data after its
+    // shell is ready, so only cache responses whose dynamic check completed.
+    if (input.pendingDynamicCheck) {
+      return {
+        "Cache-Control": NO_STORE,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      };
+    }
+
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
       return { "Cache-Control": NO_STORE };
@@ -164,7 +186,10 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // is told to revalidate every reuse so it never serves a stale stored copy.
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
-      "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
+      "CDN-Cache-Control":
+        input.cacheState === "STALE"
+          ? STALE_EDGE_REVALIDATE
+          : toEdgeCacheControl(input.cacheControl),
     };
 
     if (input.tags && input.tags.length > 0) {

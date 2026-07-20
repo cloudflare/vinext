@@ -94,6 +94,14 @@ type KVCacheEntry = {
   cacheControl?: CacheControlMetadata;
 };
 
+const INFINITE_CACHE_CONTROL_VALUE = "infinity";
+type SerializedCacheControlMetadata = {
+  revalidate: number | typeof INFINITE_CACHE_CONTROL_VALUE;
+  expire?: number | typeof INFINITE_CACHE_CONTROL_VALUE;
+};
+type SerializedKVCacheEntry = Omit<KVCacheEntry, "cacheControl"> & {
+  cacheControl?: SerializedCacheControlMetadata;
+};
 /** Prefix used by revalidatePath for path-based tags. */
 const PATH_TAG_PREFIX = "_N_T_";
 
@@ -103,18 +111,15 @@ const MAX_TAG_LENGTH = 256;
 /** Matches a valid base64 string (standard alphabet with optional padding). */
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 
-/**
- * Validate a cache tag. Returns null if invalid.
- * Note: `:` is rejected because TAG_PREFIX and ENTRY_PREFIX use `:` as a
- * separator — allowing `:` in user tags could cause ambiguous key lookups.
- */
+/** Validate a cache tag. Returns null if invalid. */
 function validateTag(tag: string): string | null {
   if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_LENGTH) return null;
-  // Block control characters and reserved separators used in our own key format.
+  // Block control characters and backslashes. Colons are valid tag content:
+  // tag keys are built from the entire logical tag and never parsed by separator.
   // Slash is allowed because revalidatePath() relies on pathname tags like
   // "/posts/hello" and "_N_T_/posts/hello".
   // oxlint-disable-next-line no-control-regex -- intentional: reject control chars in tags
-  if (/[\x00-\x1f\\:]/.test(tag)) return null;
+  if (/[\x00-\x1f\\]/.test(tag)) return null;
   return tag;
 }
 
@@ -247,7 +252,8 @@ export class KVCacheHandler implements CacheHandler {
       }
     }
 
-    if (await this._hasRevalidatedTag(validUniqueTags(entry.tags), entry.lastModified)) {
+    const tags = validUniqueTags(entry.tags);
+    if (await this._hasRevalidatedTag(tags, entry.lastModified)) {
       this._deleteInBackground(kvKey);
       return null;
     }
@@ -277,6 +283,7 @@ export class KVCacheHandler implements CacheHandler {
         value: restoredValue,
         cacheState: "stale",
         cacheControl: entry.cacheControl,
+        ...(tags.length > 0 ? { tags } : {}),
       };
     }
 
@@ -284,6 +291,7 @@ export class KVCacheHandler implements CacheHandler {
       lastModified: entry.lastModified,
       value: restoredValue,
       cacheControl: entry.cacheControl,
+      ...(tags.length > 0 ? { tags } : {}),
     };
   }
 
@@ -373,24 +381,37 @@ export class KVCacheHandler implements CacheHandler {
 
     const now = Date.now();
     const revalidateAt =
-      typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
+      typeof effectiveRevalidate === "number" &&
+      Number.isFinite(effectiveRevalidate) &&
+      effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
         : null;
     const expireAt =
-      typeof effectiveExpire === "number" && effectiveExpire > 0
+      typeof effectiveExpire === "number" && Number.isFinite(effectiveExpire) && effectiveExpire > 0
         ? now + effectiveExpire * 1000
         : null;
-    const cacheControl =
+    const cacheControl: SerializedCacheControlMetadata | undefined =
       typeof effectiveRevalidate === "number"
         ? effectiveExpire === undefined
-          ? { revalidate: effectiveRevalidate }
-          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+          ? {
+              revalidate:
+                effectiveRevalidate === Infinity
+                  ? INFINITE_CACHE_CONTROL_VALUE
+                  : effectiveRevalidate,
+            }
+          : {
+              revalidate:
+                effectiveRevalidate === Infinity
+                  ? INFINITE_CACHE_CONTROL_VALUE
+                  : effectiveRevalidate,
+              expire: effectiveExpire === Infinity ? INFINITE_CACHE_CONTROL_VALUE : effectiveExpire,
+            }
         : undefined;
 
     // Prepare entry — convert ArrayBuffers to base64 for JSON storage
     const serializable = data ? serializeForJSON(data) : null;
 
-    const entry: KVCacheEntry = {
+    const entry: SerializedKVCacheEntry = {
       value: serializable,
       tags,
       lastModified: now,
@@ -569,12 +590,33 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   if (obj.expireAt !== undefined && obj.expireAt !== null && typeof obj.expireAt !== "number") {
     return null;
   }
+  let cacheControl: CacheControlMetadata | undefined;
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    if (typeof obj.cacheControl.revalidate !== "number") return null;
-    if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
+    const serializedRevalidate = obj.cacheControl.revalidate;
+    if (
+      typeof serializedRevalidate !== "number" &&
+      serializedRevalidate !== INFINITE_CACHE_CONTROL_VALUE
+    ) {
       return null;
     }
+    const serializedExpire = obj.cacheControl.expire;
+    if (
+      serializedExpire !== undefined &&
+      typeof serializedExpire !== "number" &&
+      serializedExpire !== INFINITE_CACHE_CONTROL_VALUE
+    ) {
+      return null;
+    }
+    cacheControl = {
+      revalidate:
+        serializedRevalidate === INFINITE_CACHE_CONTROL_VALUE ? Infinity : serializedRevalidate,
+      ...(serializedExpire === undefined
+        ? {}
+        : {
+            expire: serializedExpire === INFINITE_CACHE_CONTROL_VALUE ? Infinity : serializedExpire,
+          }),
+    };
   }
 
   // value must be null or a valid cache value object with a known kind
@@ -584,7 +626,7 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind)) return null;
   }
 
-  return raw as KVCacheEntry;
+  return { ...(raw as KVCacheEntry), cacheControl };
 }
 
 // ---------------------------------------------------------------------------

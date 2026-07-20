@@ -6,6 +6,8 @@ export type CacheHandlerValue = {
   age?: number;
   cacheState?: string;
   cacheControl?: CacheControlMetadata;
+  /** Canonical tags persisted with this entry for response-edge invalidation. */
+  tags?: string[];
   value: IncrementalCacheValue | null;
 };
 
@@ -264,6 +266,7 @@ export class MemoryCacheHandler implements CacheHandler {
         value: entry.value,
         cacheState: "stale",
         cacheControl: entry.cacheControl,
+        ...(entry.tags.length > 0 ? { tags: entry.tags } : {}),
       };
     }
 
@@ -271,6 +274,7 @@ export class MemoryCacheHandler implements CacheHandler {
       lastModified: entry.lastModified,
       value: entry.value,
       cacheControl: entry.cacheControl,
+      ...(entry.tags.length > 0 ? { tags: entry.tags } : {}),
     };
   }
 

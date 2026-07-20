@@ -6,6 +6,7 @@ import {
 } from "vinext/shims/headers";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { NextRequest } from "vinext/shims/server";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
@@ -227,12 +228,23 @@ export async function executeAppRouteHandler(
       markKnownDynamicAppRoute(options.routePattern);
     }
 
-    // The route's cache tags, shared by the response Cache-Tag header (so edge
-    // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
+    // Snapshot the tags available when the handler returns for response headers.
+    // The cache write recomputes them after a streaming body fully drains.
     const routeTags = options.buildPageCacheTags(
       options.cleanPathname,
       options.getCollectedFetchTags(),
     );
+
+    const shouldWriteResponseCache = shouldWriteAppRouteHandlerCache({
+      dynamicConfig: options.handler.dynamic,
+      dynamicUsedInHandler,
+      handlerSetCacheControl,
+      isAutoHead: options.isAutoHead,
+      isDraftMode: shouldApplyDraftPolicy,
+      isProduction: options.isProduction,
+      method: options.method,
+      revalidateSeconds: options.revalidateSeconds,
+    });
 
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
@@ -253,21 +265,13 @@ export async function executeAppRouteHandler(
         revalidateSeconds,
         options.expireSeconds,
         routeTags,
+        shouldWriteResponseCache && getCdnCacheAdapter().pageCacheMode !== "origin",
       );
     }
 
-    if (
-      shouldWriteAppRouteHandlerCache({
-        dynamicConfig: options.handler.dynamic,
-        dynamicUsedInHandler,
-        handlerSetCacheControl,
-        isAutoHead: options.isAutoHead,
-        isDraftMode: shouldApplyDraftPolicy,
-        isProduction: options.isProduction,
-        method: options.method,
-        revalidateSeconds: options.revalidateSeconds,
-      })
-    ) {
+    let requestContextCleanupDeferred = false;
+    if (shouldWriteResponseCache) {
+      requestContextCleanupDeferred = true;
       markRouteHandlerCacheMiss(response);
       const routeClone = response.clone();
       const routeKey = options.isrRouteKey(options.cleanPathname);
@@ -278,22 +282,39 @@ export async function executeAppRouteHandler(
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);
+
+          // A streaming handler can use request APIs or collect fetch tags only
+          // after returning its Response. Re-check after the cache clone drains
+          // so an edge MISS stays private and only proven-static bytes persist.
+          if (options.consumeDynamicUsage()) {
+            markKnownDynamicAppRoute(options.routePattern);
+            options.isrDebug?.("route cache write skipped (dynamic stream)", routeKey);
+            return;
+          }
+          const completedRouteTags = options.buildPageCacheTags(
+            options.cleanPathname,
+            options.getCollectedFetchTags(),
+          );
           await options.isrSet(
             routeKey,
             routeCacheValue,
             revalidateSeconds,
-            routeTags,
+            completedRouteTags,
             options.expireSeconds,
           );
           options.isrDebug?.("route cache written", routeKey);
         } catch (cacheErr) {
           console.error("[vinext] ISR route cache write error:", cacheErr);
+        } finally {
+          options.clearRequestContext();
         }
       })();
       options.executionContext?.waitUntil(routeWritePromise);
     }
 
-    options.clearRequestContext();
+    if (!requestContextCleanupDeferred) {
+      options.clearRequestContext();
+    }
 
     return applyDraftModeCachePolicy(
       applyRouteHandlerMiddlewareContext(

@@ -398,6 +398,31 @@ describe("route handler responses route through the CDN cache adapter", () => {
     expect(response.headers.get("Cache-Tag")).toBe("_N_T_/api/feed,posts");
   });
 
+  it("preserves tags on cached hits and immediately revalidates stale artifacts", () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const cachedValue = buildCachedRouteValue("from-cache");
+
+    const hit = buildRouteHandlerCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isHead: false,
+      revalidateSeconds: 60,
+      tags: ["_N_T_/api/feed", "posts"],
+    });
+    expect(hit.headers.get("CDN-Cache-Control")).toBe(
+      "public, max-age=60, stale-while-revalidate=31536000",
+    );
+    expect(hit.headers.get("Cache-Tag")).toBe("_N_T_/api/feed,posts");
+
+    const stale = buildRouteHandlerCachedResponse(cachedValue, {
+      cacheState: "STALE",
+      isHead: false,
+      revalidateSeconds: 60,
+      tags: ["_N_T_/api/feed", "posts"],
+    });
+    expect(stale.headers.get("CDN-Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(stale.headers.get("Cache-Tag")).toBe("_N_T_/api/feed,posts");
+  });
+
   it("does not promote a revalidate=0 (non-cacheable) response to the edge", () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const response = new Response("dynamic");

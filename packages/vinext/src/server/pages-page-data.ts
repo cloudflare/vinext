@@ -577,6 +577,7 @@ function buildPagesCacheResponse(
   revalidateSeconds?: number,
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
+  tags?: readonly string[],
   status?: number,
 ): Response {
   // Legacy cache entries written before cacheControl metadata existed can still
@@ -584,8 +585,8 @@ function buildPagesCacheResponse(
   // 60-second fallback for that migration window.
   const effectiveRevalidateSeconds = revalidateSeconds ?? 60;
   // HIT/STALE served from the origin store: route the cache header through the
-  // CDN adapter (default: identical single Cache-Control). Edge adapters never
-  // reach this path because their get() returns null.
+  // CDN adapter (default: identical single Cache-Control). Hybrid adapters use
+  // this path to promote an admitted artifact to the response edge cache.
   const { cacheControl: cacheControlHeader } = decideIsr({
     cacheState,
     kind: "pages",
@@ -597,7 +598,11 @@ function buildPagesCacheResponse(
     "Content-Type": "text/html; charset=utf-8",
     ...buildCacheStateHeaders(cacheState),
   });
-  applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
+  applyCdnResponseHeaders(headers, {
+    cacheControl: cacheControlHeader,
+    cacheState,
+    tags,
+  });
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);
@@ -905,6 +910,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
+        cached.value.tags,
         cachedValue.status,
       );
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
@@ -1011,6 +1017,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
+        cached.value.tags,
         cachedValue.status,
       );
       // Bot / crawler ETag consistency: same as the HIT branch — attach an

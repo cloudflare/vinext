@@ -56,12 +56,27 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   });
 
   test("keeps draft and anonymous route-handler ISR responses isolated", async ({ request }) => {
-    const forged = await request.get(`${BASE_URL}/api/draft-isr/forged-${Date.now()}`, {
+    const forgedScenario = `forged-${Date.now()}`;
+    const forged = await request.get(`${BASE_URL}/api/draft-isr/${forgedScenario}`, {
       headers: { Cookie: "__prerender_bypass=forged" },
     });
     expect(forged.status()).toBe(200);
-    expect(await forged.json()).toMatchObject({ draftMode: false });
-    expect(forged.headers()["cache-control"]).not.toContain("no-store");
+    const forgedPayload = (await forged.json()) as { draftMode: boolean; token: string };
+    expect(forgedPayload.draftMode).toBe(false);
+    expect(forged.headers()["x-vinext-cache"]).toBe("MISS");
+    expect(forged.headers()["cache-control"]).toContain("no-store");
+    expect(forged.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(forged.headers()["cache-tag"]).toBeUndefined();
+
+    // The invalid draft cookie is still an anonymous/public request. Once its
+    // private MISS has fully drained, the admitted static artifact can be
+    // reused and promoted without crossing the real draft-mode boundary.
+    const publicAfterForged = await readDraftIsrRoute(request, forgedScenario);
+    expect(publicAfterForged.payload).toEqual(forgedPayload);
+    expect(publicAfterForged.cacheState).toBe("HIT");
+    expect(publicAfterForged.cacheControl).not.toContain("no-store");
+    expect(publicAfterForged.cdnCacheControl).toContain("public, max-age=60");
+    expect(publicAfterForged.cacheTag).toContain(`/api/draft-isr/${forgedScenario}`);
 
     await setDraftMode(request, true);
     const draftFirstScenario = `draft-first-${Date.now()}`;

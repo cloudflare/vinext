@@ -77,6 +77,7 @@ type BuildAppPageCachedResponseOptions = {
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
   revalidateSeconds: number;
+  tags?: readonly string[];
 };
 
 type ReadAppPageCacheResponseOptions = {
@@ -162,6 +163,7 @@ function buildAppPageCachedHeaders(options: {
   isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
+  tags?: readonly string[];
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
@@ -169,7 +171,11 @@ function buildAppPageCachedHeaders(options: {
   });
   // Page artifacts served from the origin store get their cache headers from the
   // CDN adapter (default: a single Cache-Control identical to the prior behavior).
-  applyCdnResponseHeaders(headers, { cacheControl: options.cacheControl });
+  applyCdnResponseHeaders(headers, {
+    cacheControl: options.cacheControl,
+    cacheState: options.cacheState,
+    tags: options.tags,
+  });
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
@@ -246,6 +252,7 @@ export function buildAppPageCachedResponse(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      tags: options.tags,
     });
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
@@ -267,6 +274,7 @@ export function buildAppPageCachedResponse(
     isEdgeRuntime: options.isEdgeRuntime,
     linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
+    tags: options.tags,
   });
 
   return new Response(cachedValue.html, {
@@ -318,6 +326,7 @@ async function serveAppPageCachedHtml(
     middlewareHeaders: options.middlewareHeaders,
     middlewareStatus: options.middlewareStatus,
     revalidateSeconds: options.revalidateSeconds,
+    tags: options.cached?.value.tags,
   });
 
   if (!response) return null;
@@ -386,6 +395,7 @@ export async function readAppPageCacheResponse(
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
+        tags: cached?.value.tags,
       });
 
       if (hitResponse) {
@@ -488,6 +498,7 @@ export async function readAppPageCacheResponse(
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
+        tags: cached.value.tags,
       });
 
       if (staleResponse) {

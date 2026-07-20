@@ -43,7 +43,12 @@ function normalizeAppPrefix(appPrefix: string | undefined): string {
 
 function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: string): string {
   const key = `${prefix}${categoryPrefix}${logicalKey}`;
-  if (kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) return key;
+  // Keep the internal hashed-key marker disjoint from literal logical keys.
+  // Otherwise a user key like `__hash:<digest>` could alias the storage key
+  // produced for an oversized logical key with that digest.
+  if (!logicalKey.startsWith(HASHED_KEY_PREFIX) && kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) {
+    return key;
+  }
 
   return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${fnv1a64(logicalKey)}`;
 }

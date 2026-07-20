@@ -39,6 +39,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
+  dynamicUsageCheckComplete?: boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
   createHtmlRenderObservation?: BuildAppPageCacheRenderObservation;
   createRscRenderObservation?: BuildAppPageCacheRenderObservation;
@@ -53,6 +54,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  skipCacheWrite?: boolean;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -63,6 +65,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   consumeRenderObservationState?: () => AppPageRenderObservationState;
   createRscRenderObservation?: BuildAppPageCacheRenderObservation;
   dynamicUsedDuringBuild: boolean;
+  dynamicUsageCheckComplete?: boolean;
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
@@ -75,16 +78,21 @@ type ScheduleAppPageRscCacheWriteOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  skipCacheWrite?: boolean;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
 function applyPendingDynamicCdnHeaders(
   headers: Headers,
   tags?: readonly string[],
-  options: { omitCacheState?: boolean } = {},
+  options: { dynamicUsageCheckComplete?: boolean; omitCacheState?: boolean } = {},
 ): void {
   const cacheable = headers.get("Cache-Control") ?? "";
-  applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
+  applyCdnResponseHeaders(headers, {
+    cacheControl: cacheable,
+    pendingDynamicCheck: options.dynamicUsageCheckComplete !== true,
+    tags,
+  });
   if (options.omitCacheState === true) {
     headers.delete(VINEXT_CACHE_HEADER);
     headers.delete(NEXTJS_CACHE_HEADER);
@@ -127,6 +135,21 @@ export function finalizeAppPageHtmlCacheResponse(
     return response;
   }
 
+  if (options.skipCacheWrite) {
+    const clientHeaders = new Headers(response.headers);
+    if (options.preserveClientResponseHeaders !== true) {
+      applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+        dynamicUsageCheckComplete: options.dynamicUsageCheckComplete,
+        omitCacheState: options.omitPendingDynamicCacheState === true,
+      });
+    }
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: clientHeaders,
+    });
+  }
+
   const [streamForClient, streamForCache] = response.body.tee();
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
   const rscKey = options.isrRscKey(
@@ -138,6 +161,7 @@ export function finalizeAppPageHtmlCacheResponse(
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
     applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+      dynamicUsageCheckComplete: options.dynamicUsageCheckComplete,
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
   }
@@ -226,8 +250,8 @@ export function finalizeAppPageRscCacheResponse(
   response: Response,
   options: ScheduleAppPageRscCacheWriteOptions,
 ): Response {
-  const didSchedule = scheduleAppPageRscCacheWrite(options);
-  if (!didSchedule) {
+  const didSchedule = options.skipCacheWrite ? false : scheduleAppPageRscCacheWrite(options);
+  if (!didSchedule && !options.skipCacheWrite) {
     return response;
   }
 
@@ -237,6 +261,7 @@ export function finalizeAppPageRscCacheResponse(
 
   const clientHeaders = new Headers(response.headers);
   applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+    dynamicUsageCheckComplete: options.dynamicUsageCheckComplete,
     omitCacheState: options.omitPendingDynamicCacheState === true,
   });
 

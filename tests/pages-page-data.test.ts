@@ -7,6 +7,8 @@ import {
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 function createOptions(
   overrides: Partial<ResolvePagesPageDataOptions> = {},
@@ -1305,6 +1307,89 @@ describe("pages page data", () => {
     expect(result.response.headers.get("cache-control")).toBe(
       "s-maxage=15, stale-while-revalidate=285",
     );
+  });
+
+  it("preserves tags when promoting a cached Pages response to the edge", async () => {
+    const cdnKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+
+    try {
+      const result = await resolvePagesPageData(
+        createOptions({
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: false,
+            value: {
+              cacheControl: { revalidate: 15, expire: 300 },
+              lastModified: 1,
+              tags: ["_N_T_/posts/post", "posts"],
+              value: {
+                kind: "PAGES",
+                html: "<html><body>cached</body></html>",
+                pageData: { cached: true },
+                headers: undefined,
+                status: undefined,
+              },
+            },
+          }),
+          pageModule: {
+            async getStaticProps() {
+              return { props: { title: "fresh" }, revalidate: 15 };
+            },
+          },
+        }),
+      );
+
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") throw new Error("expected response result");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBe(
+        "public, max-age=15, stale-while-revalidate=285",
+      );
+      expect(result.response.headers.get("Cache-Tag")).toBe("_N_T_/posts/post,posts");
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[cdnKey];
+    }
+  });
+
+  it("does not give a stale Pages artifact another fresh edge lifetime", async () => {
+    const cdnKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+
+    try {
+      const result = await resolvePagesPageData(
+        createOptions({
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: true,
+            value: {
+              cacheControl: { revalidate: 15, expire: 300 },
+              lastModified: 1,
+              tags: ["_N_T_/posts/post", "posts"],
+              value: {
+                kind: "PAGES",
+                html: "<html><body>stale</body></html>",
+                pageData: { cached: true },
+                headers: undefined,
+                status: undefined,
+              },
+            },
+          }),
+          pageModule: {
+            async getStaticProps() {
+              return { props: { title: "fresh" }, revalidate: 15 };
+            },
+          },
+        }),
+      );
+
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") throw new Error("expected response result");
+      expect(result.response.headers.get("x-vinext-cache")).toBe("STALE");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBe(
+        "public, max-age=0, must-revalidate",
+      );
+      expect(result.response.headers.get("Cache-Tag")).toBe("_N_T_/posts/post,posts");
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[cdnKey];
+    }
   });
 
   it("returns normalized render data for cache misses", async () => {

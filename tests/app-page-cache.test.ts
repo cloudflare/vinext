@@ -22,6 +22,8 @@ import {
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 function buildISRCacheEntry(
   value: CachedAppPageValue,
@@ -124,6 +126,36 @@ describe("app page cache helpers", () => {
     expect(rscResponse?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(rscResponse?.headers.get("x-nextjs-cache")).toBe("STALE");
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
+  });
+
+  it("preserves tags on cached edge hits and immediately revalidates stale artifacts", () => {
+    const cdnKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>");
+
+    try {
+      const hit = buildAppPageCachedResponse(cachedValue, {
+        cacheState: "HIT",
+        isRscRequest: false,
+        revalidateSeconds: 60,
+        tags: ["_N_T_/posts/post", "posts"],
+      });
+      expect(hit?.headers.get("CDN-Cache-Control")).toBe(
+        "public, max-age=60, stale-while-revalidate=31536000",
+      );
+      expect(hit?.headers.get("Cache-Tag")).toBe("_N_T_/posts/post,posts");
+
+      const stale = buildAppPageCachedResponse(cachedValue, {
+        cacheState: "STALE",
+        isRscRequest: false,
+        revalidateSeconds: 60,
+        tags: ["_N_T_/posts/post", "posts"],
+      });
+      expect(stale?.headers.get("CDN-Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(stale?.headers.get("Cache-Tag")).toBe("_N_T_/posts/post,posts");
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[cdnKey];
+    }
   });
 
   it("merges middleware response headers into cached HTML responses", async () => {

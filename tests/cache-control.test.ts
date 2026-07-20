@@ -85,9 +85,23 @@ describe("applyCdnResponseHeaders", () => {
     expect(headers.get("CDN-Cache-Control")).toBeNull();
   });
 
+  it("keeps pending streamed renders no-store in Next deploy mode", () => {
+    process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
+    const headers = new Headers();
+
+    applyCdnResponseHeaders(headers, {
+      cacheControl: "s-maxage=60, stale-while-revalidate",
+      pendingDynamicCheck: true,
+    });
+
+    expect(headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
   it("routes through the active adapter (edge: CDN-Cache-Control + Cache-Tag) and clears stale headers", () => {
     // Minimal edge adapter that splits headers and emits a tag header.
     const edge: CdnCacheAdapter = {
+      pageCacheMode: "edge",
       ownsBackgroundRevalidation: false,
       async get() {
         return null;
@@ -114,6 +128,7 @@ describe("applyCdnResponseHeaders", () => {
 
   it("applies adapter-owned header removals", () => {
     const edge: CdnCacheAdapter = {
+      pageCacheMode: "edge",
       ownsBackgroundRevalidation: false,
       async get() {
         return null;

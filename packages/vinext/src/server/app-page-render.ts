@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
@@ -756,13 +757,28 @@ export async function renderAppPageLifecycle(
   const shouldWaitForAllReady =
     options.isPrerender === true && options.isSpeculativePrerender !== true;
   const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
+  const cdnCacheAdapter = getCdnCacheAdapter();
+  const needsOriginAdmissionForEdge =
+    options.isProduction &&
+    options.isPrerender !== true &&
+    cdnCacheAdapter.pageCacheMode === "hybrid";
   const shouldCaptureRscForCacheMetadata =
     options.isProgressiveActionRender !== true &&
     (options.isProduction || options.isPrerender === true) &&
-    (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
+    (revalidateSeconds === null ||
+      (revalidateSeconds > 0 && (revalidateSeconds !== Infinity || needsOriginAdmissionForEdge))) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCacheForSkipTransport;
+  const usesResponseEdgeCache =
+    options.isProduction &&
+    options.isPrerender !== true &&
+    cdnCacheAdapter.pageCacheMode !== "origin";
+  const skipOriginCacheWrite =
+    options.isProduction &&
+    options.isPrerender !== true &&
+    cdnCacheAdapter.pageCacheMode === "edge";
+  const shouldCaptureRscBytes = shouldCaptureRscForCacheMetadata && !skipOriginCacheWrite;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -777,9 +793,9 @@ export async function renderAppPageLifecycle(
   const rscCapture = pprFallbackShellRsc
     ? {
         ssrStream: createBufferedRscStream(false),
-        ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
+        ...(shouldCaptureRscBytes ? { sideStream: createBufferedRscStream(true) } : {}),
       }
-    : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
+    : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscBytes);
   const rscForResponse = rscCapture.ssrStream;
 
   // When the fused tee (#981) is active, the sideStream carries both the embed
@@ -903,13 +919,15 @@ export async function renderAppPageLifecycle(
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
-      preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
+      preserveClientResponseHeaders:
+        !usesResponseEdgeCache && rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
       revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
         isDynamicError: options.isDynamicError,
         isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
+      skipCacheWrite: skipOriginCacheWrite,
       waitUntil(promise) {
         options.waitUntil?.(promise);
       },
@@ -1195,6 +1213,7 @@ export async function renderAppPageLifecycle(
         isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
+      skipCacheWrite: skipOriginCacheWrite,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },

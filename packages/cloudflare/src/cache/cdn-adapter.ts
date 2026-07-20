@@ -1,12 +1,13 @@
 import { fileURLToPath } from "node:url";
 
 /**
- * Cloudflare CDN cache adapter - edge-managed page-level ISR backed by the
- * Cloudflare Workers Cache.
+ * Cloudflare CDN cache adapter - page-level ISR backed by the configured data
+ * cache and Cloudflare Workers Cache.
  *
- * Unlike the data adapter (which stores cache entries in a durable store and
- * serves HIT/STALE itself), this adapter delegates serving to Cloudflare's
- * edge cache.
+ * Fresh streaming responses are first admitted through the data cache after
+ * rendering proves they are static. A later request promotes the admitted
+ * artifact to Cloudflare's edge cache. This preserves streaming without ever
+ * exposing request-specific output to a shared cache.
  *
  * Workers Cache must be enabled in your Wrangler config for this to work.
  * ```jsonc

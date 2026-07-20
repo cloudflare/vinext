@@ -68,7 +68,9 @@ describe("data cache handler aliases", () => {
 
 describe("DefaultCdnCacheAdapter", () => {
   it("owns background revalidation (origin-managed ISR)", () => {
-    expect(new DefaultCdnCacheAdapter().ownsBackgroundRevalidation).toBe(true);
+    const adapter = new DefaultCdnCacheAdapter();
+    expect(adapter.pageCacheMode).toBe("origin");
+    expect(adapter.ownsBackgroundRevalidation).toBe(true);
   });
 
   it("delegates get/set to the active data cache handler", async () => {
@@ -126,6 +128,7 @@ describe("getCdnCacheAdapter / setCdnCacheAdapter", () => {
 
 /** Minimal edge adapter: never serves from origin, emits split headers, purges. */
 class EdgeCdnAdapter implements CdnCacheAdapter {
+  readonly pageCacheMode = "edge";
   readonly ownsBackgroundRevalidation = false;
   readonly purges: string[] = [];
   writes = 0;

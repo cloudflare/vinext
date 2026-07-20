@@ -90,6 +90,7 @@ export async function readAppRouteHandlerCacheResponse(
           expireSeconds: options.expireSeconds,
           isHead: options.isAutoHead,
           revalidateSeconds: options.revalidateSeconds,
+          tags: cached?.value.tags,
         }),
         options.middlewareContext,
       );
@@ -155,6 +156,7 @@ export async function readAppRouteHandlerCacheResponse(
           expireSeconds: options.expireSeconds,
           isHead: options.isAutoHead,
           revalidateSeconds: options.revalidateSeconds,
+          tags: cached.value.tags,
         }),
         options.middlewareContext,
       );

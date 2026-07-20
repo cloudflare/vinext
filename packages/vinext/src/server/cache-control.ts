@@ -33,7 +33,11 @@ function isSharedCacheControl(cacheControl: string): boolean {
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");
-  if (shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl)) {
+  if (
+    shouldUseNextDeployCacheControl() &&
+    !input.pendingDynamicCheck &&
+    isSharedCacheControl(input.cacheControl)
+  ) {
     headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
     return;
   }
