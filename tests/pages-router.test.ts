@@ -1143,6 +1143,249 @@ describe("Pages Router integration", () => {
     expect(html).toContain("does not exist");
   });
 
+  // Ported from Next.js: test/e2e/not-found-revalidate/not-found-revalidate.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/not-found-revalidate/not-found-revalidate.test.ts
+  it("runs custom 404 getStaticProps for getStaticProps notFound in dev", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-dev-gsp-notfound-404-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(path.join(pagesDir, "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      `let renders = 0;
+
+export async function getStaticProps(context) {
+  return {
+    props: {
+      marker: \`404 page \${++renders}\`,
+      paramsAreNull: context.params === null,
+    },
+    revalidate: 6000,
+  };
+}
+
+export default function Custom404({ marker }: { marker: string }) {
+  return <p id="not-found">{marker}</p>;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "[slug].tsx"),
+      `export default function Page() {
+  return <p>unexpected page</p>;
+}
+
+export async function getStaticProps() {
+  return { notFound: true, revalidate: 1 };
+}
+
+export async function getStaticPaths() {
+  return { paths: [], fallback: "blocking" };
+}
+`,
+    );
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const first = await fetch(`${started.baseUrl}/first`);
+      expect(first.status).toBe(404);
+      const firstHtml = await first.text();
+      expect(firstHtml).toContain('<p id="not-found">404 page 1</p>');
+      expect(firstHtml).toContain('"paramsAreNull":true');
+
+      const second = await fetch(`${started.baseUrl}/first`);
+      expect(second.status).toBe(404);
+      const secondHtml = await second.text();
+      expect(secondHtml).toContain('<p id="not-found">404 page 2</p>');
+      expect(secondHtml).toContain('"paramsAreNull":true');
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("honors a custom 404 getStaticProps redirect in dev", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-dev-404-redirect-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      'export default { generateBuildId: async () => "test-build-id" };\n',
+    );
+    fs.writeFileSync(path.join(pagesDir, "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      `export async function getStaticProps() {
+  return { redirect: { destination: "/target", permanent: false } };
+}
+
+export default function Custom404() {
+  return <p>unexpected 404 render</p>;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "target.tsx"),
+      `export default function Target() {
+  return <p>target</p>;
+}
+`,
+    );
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const response = await fetch(`${started.baseUrl}/missing`, { redirect: "manual" });
+      expect(response.status).toBe(307);
+      expect(response.headers.get("location")).toBe("/target");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
+
+      const dataResponse = await fetch(`${started.baseUrl}/_next/data/test-build-id/404.json`, {
+        redirect: "manual",
+      });
+      expect(dataResponse.status).toBe(200);
+      expect(dataResponse.headers.get("location")).toBeNull();
+      await expect(dataResponse.json()).resolves.toMatchObject({
+        pageProps: { __N_REDIRECT: "/target", __N_REDIRECT_STATUS: 307 },
+      });
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects notFound returned by custom 404 getStaticProps in dev", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-dev-404-not-found-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      'export default { generateBuildId: async () => "test-build-id" };\n',
+    );
+    fs.writeFileSync(path.join(pagesDir, "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      `export async function getStaticProps() {
+  return { notFound: true };
+}
+
+export default function Custom404() {
+  return <p>unexpected 404 render</p>;
+}
+`,
+    );
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const response = await fetch(`${started.baseUrl}/missing`);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toContain("The /404 page can not return notFound");
+
+      const dataResponse = await fetch(`${started.baseUrl}/_next/data/test-build-id/404.json`);
+      expect(dataResponse.status).toBe(500);
+      expect(await dataResponse.text()).toContain("Internal Server Error");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: test/e2e/revalidate-reason/revalidate-reason.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/revalidate-reason/revalidate-reason.test.ts
+  it("does not cache terminal getStaticProps results in dev", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-dev-terminal-gsp-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(path.join(pagesDir, "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      `export default function Custom404() {
+  return <p id="not-found">404 page</p>;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "not-found.tsx"),
+      `let renders = 0;
+
+export async function getStaticProps() {
+  renders += 1;
+  return renders === 1
+    ? { notFound: true, revalidate: 60 }
+    : { props: { marker: \`notFound render \${renders}\` }, revalidate: 60 };
+}
+
+export default function Page({ marker }: { marker: string }) {
+  return <p id="marker">{marker}</p>;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "redirect.tsx"),
+      `let renders = 0;
+
+export async function getStaticProps() {
+  renders += 1;
+  return renders === 1
+    ? { redirect: { destination: "/target", permanent: false }, revalidate: 60 }
+    : { props: { marker: \`redirect render \${renders}\` }, revalidate: 60 };
+}
+
+export default function Page({ marker }: { marker: string }) {
+  return <p id="marker">{marker}</p>;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "target.tsx"),
+      `export default function Target() {
+  return <p>redirect target</p>;
+}
+`,
+    );
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const firstNotFound = await fetch(`${started.baseUrl}/not-found`);
+      expect(firstNotFound.status).toBe(404);
+      const secondNotFound = await fetch(`${started.baseUrl}/not-found`);
+      expect(secondNotFound.status).toBe(200);
+      expect(await secondNotFound.text()).toContain("notFound render 2");
+
+      const firstRedirect = await fetch(`${started.baseUrl}/redirect`, { redirect: "manual" });
+      expect(firstRedirect.status).toBe(307);
+      expect(firstRedirect.headers.get("location")).toBe("/target");
+      const secondRedirect = await fetch(`${started.baseUrl}/redirect`, { redirect: "manual" });
+      expect(secondRedirect.status).toBe(200);
+      expect(await secondRedirect.text()).toContain("redirect render 2");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("renders next/head tags in SSR HTML <head>", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
@@ -5390,6 +5633,88 @@ export async function getStaticPaths() {
     }
   });
 
+  // Ported from Next.js: test/e2e/not-found-revalidate/not-found-revalidate.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/not-found-revalidate/not-found-revalidate.test.ts
+  it("renders an ISR custom 404 when getStaticProps returns notFound", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-gsp-notfound-isr-404-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(path.join(tmpRoot, "next.config.mjs"), `export default {};\n`);
+      await fsp.writeFile(path.join(tmpRoot, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "404.tsx"),
+        `let renders = 0;
+
+export async function getStaticProps() {
+  return { props: { marker: \`404 page \${++renders}\` }, revalidate: 6000 };
+}
+
+export default function Custom404({ marker }: { marker: string }) {
+  return <p id="not-found">{marker}</p>;
+}
+`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "[slug].tsx"),
+        `export default function Page() {
+  return <p>unexpected page</p>;
+}
+
+export async function getStaticProps() {
+  return { notFound: true, revalidate: 1 };
+}
+
+export async function getStaticPaths() {
+  return { paths: [], fallback: "blocking" };
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+        }),
+      );
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+        const requests = [
+          { pathname: "/first", cacheState: "MISS" },
+          { pathname: "/first", cacheState: "HIT" },
+          { pathname: "/second", cacheState: "MISS" },
+        ];
+        for (const { pathname, cacheState } of requests) {
+          const res = await fetch(`${baseUrl}${pathname}`);
+          expect(res.status).toBe(404);
+          expect(res.headers.get("cache-control")).toBe(
+            "s-maxage=1, stale-while-revalidate=31535999",
+          );
+          expect(res.headers.get("x-nextjs-cache")).toBe(cacheState);
+          expect(res.headers.get("x-vinext-cache")).toBe(cacheState);
+          const html = await res.text();
+          expect(html).toContain('<p id="not-found">404 page 1</p>');
+          expect(html).toContain('"page":"/404"');
+        }
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it("passes the original error to _error.getInitialProps when getServerSideProps throws", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-gssp-throw-error-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
@@ -5463,7 +5788,9 @@ export async function getServerSideProps() {
     }
   });
 
-  it("preserves 404 status for cached ISR custom 404 route misses", async () => {
+  // Ported from Next.js: test/e2e/404-page/404-page.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/404-page/404-page.test.ts
+  it("does not publicly cache custom ISR 404 route misses", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-isr-404-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     const fixtureOutDir = path.join(tmpRoot, "dist");
@@ -5476,8 +5803,10 @@ export async function getServerSideProps() {
       await fsp.writeFile(path.join(tmpRoot, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
       await fsp.writeFile(
         path.join(tmpRoot, "pages", "404.tsx"),
-        `export async function getStaticProps() {
-  return { props: { marker: "custom ISR 404" }, revalidate: 60 };
+        `let renders = 0;
+
+export async function getStaticProps() {
+  return { props: { marker: \`custom ISR 404 \${++renders}\` }, revalidate: 60 };
 }
 
 export default function Custom404({ marker }: { marker: string }) {
@@ -5504,17 +5833,27 @@ export default function Custom404({ marker }: { marker: string }) {
 
         const first = await fetch(missingUrl);
         expect(first.status).toBe(404);
+        expect(first.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        expect(first.headers.get("x-nextjs-cache")).toBe("MISS");
         expect(first.headers.get("x-vinext-cache")).toBe("MISS");
         const firstHtml = await first.text();
         expect(firstHtml).toContain('id="custom-404"');
-        expect(firstHtml).toContain("custom ISR 404");
+        expect(firstHtml).toContain("custom ISR 404 1");
 
         const second = await fetch(missingUrl);
         expect(second.status).toBe(404);
+        expect(second.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        expect(second.headers.get("x-nextjs-cache")).toBe("HIT");
         expect(second.headers.get("x-vinext-cache")).toBe("HIT");
         const secondHtml = await second.text();
         expect(secondHtml).toContain('id="custom-404"');
-        expect(secondHtml).toContain("custom ISR 404");
+        // The response is not publicly cacheable, but Next still reuses the
+        // custom /404 page's own internal ISR entry.
+        expect(secondHtml).toContain("custom ISR 404 1");
       } finally {
         await new Promise<void>((resolve) => prodServer.close(() => resolve()));
       }

@@ -186,15 +186,17 @@ type RenderPagesPageResponseOptions = {
   documentReqRes?: PagesDocumentReqRes | null;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
+  /** Filesystem-route identity used for ISR persistence and cache tags. */
+  isrCachePathname?: string;
   expireSeconds?: number;
-  isrRevalidateSeconds: number | null;
+  isrRevalidateSeconds: number | false | null;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (
     key: string,
     data: CachedPagesValue,
-    revalidateSeconds: number,
+    revalidateSeconds: number | false,
     tags?: string[],
     expireSeconds?: number,
   ) => Promise<void>;
@@ -427,7 +429,7 @@ async function writePagesIsrCache(options: {
   cacheKey: string;
   expireSeconds?: number;
   pageData: Record<string, unknown>;
-  revalidateSeconds: number;
+  revalidateSeconds: number | false;
   routePattern: string;
   shellPrefix: string;
   shellSuffix: string;
@@ -631,12 +633,12 @@ export async function renderPagesPageResponse(
     // later matches the cached __NEXT_DATA__ block via a bare <script> marker.
     !options.scriptNonce &&
     options.isrRevalidateSeconds !== null &&
-    options.isrRevalidateSeconds > 0
+    (options.isrRevalidateSeconds === false || options.isrRevalidateSeconds > 0)
   ) {
     const cacheBodyStreamPair = bodyStream.tee();
     responseBodyStream = cacheBodyStreamPair[0];
     const cacheBodyStream = cacheBodyStreamPair[1];
-    const isrPathname = options.routeUrl.split("?")[0];
+    const isrPathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", isrPathname);
 
     const cacheWriteOptions = {
@@ -681,11 +683,11 @@ export async function renderPagesPageResponse(
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
-  } else if (options.isrRevalidateSeconds) {
+  } else if (options.isrRevalidateSeconds !== null) {
     // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
     // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
     // which Pages Router invalidation uses) while the default emits Cache-Control.
-    const isrPathname = options.routeUrl.split("?")[0];
+    const isrPathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
     applyCdnResponseHeaders(responseHeaders, {
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),

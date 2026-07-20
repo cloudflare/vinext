@@ -10,7 +10,7 @@ import type {
   CacheControlMetadata,
 } from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
-import { decideIsr } from "./isr-decision.js";
+import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
@@ -37,6 +37,7 @@ import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -85,17 +86,31 @@ type PagesPagePropsResult = {
   revalidate?: unknown;
 };
 
+export function assertPages404DoesNotReturnNotFound(
+  routePattern: string,
+  result: Pick<PagesPagePropsResult, "notFound"> | null | undefined,
+): void {
+  if (routePattern === "/404" && result?.notFound) {
+    throw new Error(
+      'The /404 page can not return notFound in "getStaticProps", please remove it to continue!',
+    );
+  }
+}
+
 /**
- * Next.js normalizes an omitted/false Pages `revalidate` result to its
- * one-year sentinel when the response is persisted in the incremental cache.
- * Regeneration must use the value returned by the current invocation rather
- * than inheriting the previous entry's lifetime.
+ * Next.js preserves an omitted/false Pages `revalidate` result as an indefinite
+ * cache lifetime. The one-year sentinel is only an HTTP Cache-Control detail;
+ * storing it as a revalidation deadline would incorrectly regenerate static
+ * pages after one year.
  *
  * Next.js source:
  * - packages/next/src/server/render.tsx (`metadata.cacheControl`)
  * - packages/next/src/server/route-modules/pages/pages-handler.ts
  */
-export function resolvePagesRevalidateSeconds(result: PagesPagePropsResult, routeUrl = ""): number {
+export function resolvePagesRevalidateSeconds(
+  result: PagesPagePropsResult,
+  routeUrl = "",
+): number | false {
   const revalidate = result.revalidate;
   if (revalidate === true) return 1;
   if (typeof revalidate === "number") {
@@ -111,7 +126,7 @@ export function resolvePagesRevalidateSeconds(result: PagesPagePropsResult, rout
     }
     return revalidate;
   }
-  if (revalidate === false || revalidate === undefined) return 31_536_000;
+  if (revalidate === false || revalidate === undefined) return false;
   throw new Error(
     `A page's revalidate option must be seconds expressed as a natural number. Mixed numbers and strings cannot be used. Received '${JSON.stringify(revalidate)}' for ${routeUrl}`,
   );
@@ -246,7 +261,7 @@ export type ResolvePagesPageDataOptions = {
   isrSet: (
     key: string,
     data: CachedPagesValue | CachedRedirectValue | null,
-    revalidateSeconds: number,
+    revalidateSeconds: number | false,
     tags?: string[],
     expireSeconds?: number,
   ) => Promise<void>;
@@ -303,6 +318,12 @@ export type ResolvePagesPageDataOptions = {
   route: Pick<Route, "isDynamic">;
   routePattern: string;
   routeUrl: string;
+  /**
+   * Filesystem-route identity used for Pages ISR reads and writes. Error pages
+   * render against the original request URL but cache under /404, /500, or
+   * /_error, matching Next.js's error-page cache-key override.
+   */
+  isrCachePathname?: string;
   runInFreshUnifiedContext: <T>(callback: () => Promise<T>) => Promise<T>;
   safeJsonStringify: (value: unknown) => string;
   sanitizeDestination: (destination: string) => string;
@@ -343,7 +364,7 @@ type ResolvePagesPageDataRenderResult = {
   kind: "render";
   documentReqRes: PagesGsspContextResponse | null;
   gsspRes: PagesGsspResponse | null;
-  isrRevalidateSeconds: number | null;
+  isrRevalidateSeconds: number | false | null;
   isrExpireSeconds?: number;
   pageProps: Record<string, unknown>;
   props: PagesRenderProps;
@@ -359,14 +380,16 @@ type ResolvePagesPageDataRenderResult = {
 type ResolvePagesPageDataResponseResult = {
   kind: "response";
   response: Response;
+  /** False when an on-demand request must be reported as a failed revalidation. */
+  onDemandRevalidateSuccess?: boolean;
 };
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
   /** Current getStaticProps cache lifetime, when this is an SSG result. */
-  revalidateSeconds?: number;
-  cacheState?: "HIT" | "STALE";
-  cacheControl?: string;
+  revalidateSeconds?: number | false;
+  expireSeconds?: number;
+  cacheState?: "MISS" | "HIT" | "STALE";
 };
 
 type ResolvePagesPageDataResult =
@@ -391,7 +414,9 @@ function buildPagesDataNotFoundResponse(deploymentId?: string): Response {
 
 function buildPagesNotFoundResult(
   options: Pick<ResolvePagesPageDataOptions, "isDataReq" | "deploymentId">,
-  revalidateSeconds?: number,
+  revalidateSeconds?: number | false,
+  cacheState?: "MISS" | "HIT" | "STALE",
+  expireSeconds?: number,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
@@ -400,7 +425,24 @@ function buildPagesNotFoundResult(
     };
   }
 
-  return { kind: "notFound", revalidateSeconds };
+  return { kind: "notFound", revalidateSeconds, expireSeconds, cacheState };
+}
+
+function applyPagesTerminalMissHeaders(
+  response: Response,
+  revalidateSeconds: number | false,
+  isrCachePathname: string,
+  expireSeconds?: number,
+): Response {
+  const stem = isrCachePathname.endsWith("/") ? isrCachePathname.slice(0, -1) : isrCachePathname;
+  applyCdnResponseHeaders(response.headers, {
+    cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
+    tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+  });
+  for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
+    response.headers.set(name, value);
+  }
+  return response;
 }
 
 function applyCachedPagesRepresentationHeaders(
@@ -430,24 +472,20 @@ function buildCachedPagesNotFoundResult(
   entry: CacheHandlerValue,
   cacheState: "HIT" | "STALE",
 ): ResolvePagesPageDataResult {
-  const result = buildPagesNotFoundResult(options);
+  const revalidateSeconds = entry.cacheControl?.revalidate ?? 60;
+  const result = buildPagesNotFoundResult(
+    options,
+    revalidateSeconds,
+    cacheState,
+    entry.cacheControl?.expire,
+  );
   if (result.kind === "response") {
     return {
       kind: "response",
       response: applyCachedPagesRepresentationHeaders(result.response, cacheState, entry, options),
     };
   }
-  const response = applyCachedPagesRepresentationHeaders(
-    new Response(null),
-    cacheState,
-    entry,
-    options,
-  );
-  return {
-    ...result,
-    cacheState,
-    cacheControl: response.headers.get("cache-control") ?? undefined,
-  };
+  return result;
 }
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
@@ -863,7 +901,7 @@ function buildPagesCacheResponse(
   html: string,
   cacheState: "HIT" | "STALE",
   fontLinkHeader: string,
-  revalidateSeconds?: number,
+  revalidateSeconds?: number | false,
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
   status?: number,
@@ -1040,6 +1078,13 @@ export async function resolvePagesPageData(
     );
 
     if (fallback === false && !isValidPath && previewData === false) {
+      if (options.isOnDemandRevalidate && !options.revalidateOnlyGenerated) {
+        return {
+          kind: "response",
+          response: new Response("This page could not be found", { status: 404 }),
+          onDemandRevalidateSuccess: false,
+        };
+      }
       // For data requests (`/_next/data/...json`), return a JSON-shaped 404
       // so the client router can `res.json()` without blowing up — matches
       // Next.js' behavior. HTML navigations still get the configured 404 page.
@@ -1068,7 +1113,7 @@ export async function resolvePagesPageData(
     options.isOnDemandRevalidate &&
     options.revalidateOnlyGenerated
   ) {
-    const pathname = options.routeUrl.split("?")[0];
+    const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     onDemandPreviousCacheEntry = await options.isrGet(options.isrCacheKey("pages", pathname));
     if (!onDemandPreviousCacheEntry) {
       return {
@@ -1115,7 +1160,7 @@ export async function resolvePagesPageData(
   }
 
   if (isFallback) {
-    const pathname = options.routeUrl.split("?")[0];
+    const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
     if (cached?.value.value?.kind !== "PAGES") {
       const appShortCircuit = await loadForegroundAppInitialRenderProps();
@@ -1200,11 +1245,11 @@ export async function resolvePagesPageData(
     gsspRes = res;
   }
 
-  let isrRevalidateSeconds: number | null = null;
+  let isrRevalidateSeconds: number | false | null = null;
   let isrExpireSeconds: number | undefined;
 
   if (typeof options.pageModule.getStaticProps === "function") {
-    const pathname = options.routeUrl.split("?")[0];
+    const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", pathname);
     const cached =
       onDemandPreviousCacheEntry !== undefined
@@ -1239,6 +1284,7 @@ export async function resolvePagesPageData(
               revalidateReason: "stale",
             });
             if (!freshResult) return;
+            assertPages404DoesNotReturnNotFound(options.routePattern, freshResult);
 
             const revalidateSeconds = resolvePagesRevalidateSeconds(freshResult, options.routeUrl);
             const expireSeconds = resolvePagesExpireSeconds(freshResult, options.expireSeconds);
@@ -1327,7 +1373,13 @@ export async function resolvePagesPageData(
       );
     };
 
-    if (!options.isOnDemandRevalidate && cached && !cached.isStale && previewData === false) {
+    if (
+      !options.isOnDemandRevalidate &&
+      cached &&
+      !cached.isStale &&
+      !cached.isExpired &&
+      previewData === false
+    ) {
       if (cachedValue === null) return buildCachedPagesNotFoundResult(options, cached.value, "HIT");
       // Legacy vinext entries persisted the rendered custom 404 as PAGES.
       // Treat those as canonical notFound markers so request-derived 404 props
@@ -1369,6 +1421,7 @@ export async function resolvePagesPageData(
     if (
       !options.isOnDemandRevalidate &&
       cached?.isStale === false &&
+      !cached.isExpired &&
       cachedValue?.kind === "PAGES" &&
       !cachedValue.generatedFromDataRequest &&
       cached &&
@@ -1403,6 +1456,7 @@ export async function resolvePagesPageData(
       !options.isOnDemandRevalidate &&
       cached &&
       cached.isStale &&
+      !cached.isExpired &&
       !options.scriptNonce &&
       previewData === false &&
       (cachedValue === null ||
@@ -1448,6 +1502,7 @@ export async function resolvePagesPageData(
       !cachedValue.generatedFromDataRequest &&
       cached &&
       cached.isStale &&
+      !cached.isExpired &&
       !options.scriptNonce &&
       !options.isDataReq &&
       previewData === false
@@ -1478,6 +1533,7 @@ export async function resolvePagesPageData(
       !options.isOnDemandRevalidate &&
       previewData === false &&
       cached?.isStale === false &&
+      !cached.isExpired &&
       cachedValue?.kind === "PAGES" &&
       cachedValue.generatedFromDataRequest &&
       isUnknownRecord(cachedValue.pageData)
@@ -1501,6 +1557,7 @@ export async function resolvePagesPageData(
               ? "build"
               : "stale",
         });
+    assertPages404DoesNotReturnNotFound(options.routePattern, result);
 
     if (generatedPageData) {
       renderProps = normalizePagesRenderProps(generatedPageData);
@@ -1532,6 +1589,7 @@ export async function resolvePagesPageData(
           undefined,
           expireSeconds,
         );
+        applyPagesTerminalMissHeaders(response, revalidateSeconds, pathname, expireSeconds);
       }
       return {
         kind: "response",
@@ -1541,16 +1599,25 @@ export async function resolvePagesPageData(
 
     if (result?.notFound) {
       const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
+      const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
       if (previewData === false) {
-        await options.isrSet(
-          cacheKey,
-          null,
+        await options.isrSet(cacheKey, null, revalidateSeconds, undefined, expireSeconds);
+      }
+      const notFoundResult = buildPagesNotFoundResult(
+        options,
+        revalidateSeconds,
+        previewData === false ? "MISS" : undefined,
+        expireSeconds,
+      );
+      if (notFoundResult.kind === "response" && previewData === false) {
+        applyPagesTerminalMissHeaders(
+          notFoundResult.response,
           revalidateSeconds,
-          undefined,
-          resolvePagesExpireSeconds(result, options.expireSeconds),
+          pathname,
+          expireSeconds,
         );
       }
-      return buildPagesNotFoundResult(options, revalidateSeconds);
+      return notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
@@ -1572,18 +1639,18 @@ export async function resolvePagesPageData(
       // `revalidate: false` (and an omitted `revalidate`) still participates in
       // on-demand regeneration. Persist the current invocation's normalized
       // lifetime instead of inheriting stale metadata from the previous entry.
-      isrRevalidateSeconds = 31_536_000;
+      isrRevalidateSeconds = false;
     } else if (
       previewData === false &&
       cachedValue?.kind === "PAGES" &&
       cachedValue.generatedFromDataRequest
     ) {
-      isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
+      isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? false;
       isrExpireSeconds = cached?.value.cacheControl?.expire;
     }
 
     if (shouldPersistFallbackData && previewData === false) {
-      const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
+      const revalidateSeconds = isrRevalidateSeconds ?? false;
       await options.isrSet(
         cacheKey,
         {

@@ -250,6 +250,30 @@ describe("pages page response", () => {
     );
   });
 
+  it("persists indefinite Pages results while formatting a static response policy", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: null,
+      getSSRHeadHTML: undefined,
+      isrRevalidateSeconds: false,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
+    await response.text();
+    await settleMicrotasks();
+
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({ kind: "PAGES" }),
+      false,
+      undefined,
+      undefined,
+    );
+  });
+
   it("records split UTF-8 chunks without corrupting cached ISR HTML", async () => {
     const common = createCommonOptions();
     common.renderToReadableStream.mockResolvedValue(

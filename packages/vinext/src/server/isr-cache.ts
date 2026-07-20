@@ -87,10 +87,11 @@ export { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER };
  *
  * When the build-time define is absent — dev mode, and any path that doesn't
  * run through `vinext build` — we fall back to a lazily-generated random secret.
- * Those paths are single-process, so a module-scoped value is shared by sender
- * and receiver there — no regression.
+ * Those paths are single-process, but Vite can evaluate this module separately
+ * in its RSC and SSR module graphs. Store the fallback on `globalThis` under a
+ * registry symbol so every module copy in the process reads the same value.
  */
-let devRevalidateSecret: string | undefined;
+const _DEV_REVALIDATE_SECRET_KEY = Symbol.for("vinext.isrCache.devRevalidateSecret");
 
 export function getRevalidateSecret(): string {
   // Production: the build baked the shared secret into every server bundle.
@@ -100,16 +101,18 @@ export function getRevalidateSecret(): string {
   if (baked) return baked;
 
   // Dev/standalone fallback: no build-time define. Generate a single
-  // process-shared secret lazily — sufficient because there is exactly one dev
-  // process, so sender and receiver always read the same value. 32 random bytes
-  // (256 bits) hex-encoded, matching the build-time secret's entropy. Web
-  // Crypto's `getRandomValues` works in both Node and the Workers/edge runtime.
-  if (devRevalidateSecret === undefined) {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    devRevalidateSecret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  return devRevalidateSecret;
+  // process-shared secret lazily. 32 random bytes (256 bits) hex-encoded match
+  // the build-time secret's entropy. Web Crypto's `getRandomValues` works in
+  // both Node and the Workers/edge runtime.
+  const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+  const existing = globals[_DEV_REVALIDATE_SECRET_KEY];
+  if (typeof existing === "string") return existing;
+
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  globals[_DEV_REVALIDATE_SECRET_KEY] = secret;
+  return secret;
 }
 
 /**
@@ -149,27 +152,29 @@ export function isOnDemandRevalidateRequest(
 export type ISRCacheEntry = {
   value: CacheHandlerValue;
   isStale: boolean;
+  /** The entry crossed its hard expire boundary and must not be served. */
+  isExpired?: boolean;
 };
 
 /**
  * Get a cache entry with staleness information.
  *
  * Returns { value, isStale: false } for fresh entries,
- * { value, isStale: true } for expired-but-usable entries,
- * or null for cache misses.
+ * { value, isStale: true } for stale-but-usable entries,
+ * { value, isStale: true, isExpired: true } for entries that must be retained
+ * as regeneration input but not served, or null for cache misses.
  */
 export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   // Page-level reads go through the CDN cache adapter. The default adapter
   // reads the data cache; an edge adapter may return null so the CDN serves.
   const result = await getCdnCacheAdapter().get(key);
   if (!result) return null;
-  // Built-in handlers hard-delete expired entries and return null, but custom
-  // CacheHandler implementations may surface expiry explicitly.
-  if (result.cacheState === "expired") return null;
+  const isExpired = result.cacheState === "expired";
 
   return {
     value: result,
-    isStale: result.cacheState === "stale",
+    isStale: isExpired || result.cacheState === "stale",
+    ...(isExpired ? { isExpired: true } : {}),
   };
 }
 
@@ -179,7 +184,7 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
 export async function isrSet(
   key: string,
   data: IncrementalCacheValue | null,
-  revalidateSeconds: number,
+  revalidateSeconds: number | false,
   tags?: string[],
   expireSeconds?: number,
 ): Promise<void> {

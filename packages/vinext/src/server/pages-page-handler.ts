@@ -58,9 +58,15 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
-import { NEXTJS_CACHE_HEADER, NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import {
+  NEXTJS_CACHE_HEADER,
+  NEXTJS_DEPLOYMENT_ID_HEADER,
+  VINEXT_CACHE_HEADER,
+} from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { setCacheStateHeaders } from "./cache-headers.js";
 import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
@@ -69,7 +75,12 @@ import {
 function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewState): Response {
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
-  if (preview.data !== false) headers.set("Cache-Control", PAGES_PREVIEW_CACHE_CONTROL);
+  if (preview.data !== false) {
+    headers.set("Cache-Control", PAGES_PREVIEW_CACHE_CONTROL);
+    headers.delete("CDN-Cache-Control");
+    headers.delete("Cloudflare-CDN-Cache-Control");
+    headers.delete("Cache-Tag");
+  }
   if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
   return new Response(response.body, {
     headers,
@@ -78,9 +89,62 @@ function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewS
   });
 }
 
-function withPagesCacheState(response: Response, state: "HIT" | "STALE" | "REVALIDATED"): Response {
+function withPagesCacheState(
+  response: Response,
+  state: "MISS" | "HIT" | "STALE" | "REVALIDATED",
+): Response {
   const headers = new Headers(response.headers);
-  headers.set(NEXTJS_CACHE_HEADER, state);
+  if (state === "REVALIDATED") {
+    headers.set(NEXTJS_CACHE_HEADER, state);
+    headers.delete(VINEXT_CACHE_HEADER);
+  } else {
+    setCacheStateHeaders(headers, state);
+  }
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function applyPagesErrorCachePolicy(
+  response: Response,
+  revalidateSeconds: number | false | undefined,
+  expireSeconds: number | undefined,
+  cacheTagPathname: string,
+): Response {
+  const headers = new Headers(response.headers);
+  const browserPolicy = headers.get("Cache-Control");
+  const sharedPolicies = [
+    headers.get("CDN-Cache-Control"),
+    headers.get("Cloudflare-CDN-Cache-Control"),
+  ];
+  const hasCacheableSharedPolicy = sharedPolicies.some(
+    (value) => value && /(?:^|,)\s*s-maxage\s*=/i.test(value),
+  );
+  const hasExplicitSharedNoStore = sharedPolicies.some(
+    (value) => value && /(?:private|no-store|no-cache)/i.test(value),
+  );
+  if (
+    hasExplicitSharedNoStore ||
+    (!hasCacheableSharedPolicy &&
+      browserPolicy &&
+      /(?:private|no-store|no-cache)/i.test(browserPolicy))
+  ) {
+    return response;
+  }
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cloudflare-CDN-Cache-Control");
+  headers.delete("Cache-Tag");
+  if (revalidateSeconds === undefined) {
+    applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+  } else {
+    const stem = cacheTagPathname.endsWith("/") ? cacheTagPathname.slice(0, -1) : cacheTagPathname;
+    applyCdnResponseHeaders(headers, {
+      cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
+      tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+    });
+  }
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -235,6 +299,12 @@ type RenderPageOptions = {
   renderErrorPageOnMiss?: boolean;
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
+  /** Source-page cache lifetime forwarded while rendering a notFound error page. */
+  __notFoundRevalidateSeconds?: number | false;
+  /** Source-page expire ceiling forwarded for the outgoing notFound response. */
+  __notFoundExpireSeconds?: number;
+  /** Source-page identity used for the outgoing notFound cache tag. */
+  __notFoundCachePathname?: string;
   /** Internal recursion guard while a top-level on-demand request owns the batch. */
   __skipOnDemandCoalesce?: boolean;
   err?: unknown;
@@ -444,6 +514,7 @@ export function createPagesPageHandler(
       options && options.__forcedRoute
         ? { route: options.__forcedRoute, params: {} as Record<string, string | string[]> }
         : matchRoute(routeUrl, pageRoutes);
+    let isRouteMissErrorRender = false;
 
     let renderStatusCodeOverride = statusCode;
     let renderAsPath = asPath;
@@ -458,6 +529,7 @@ export function createPagesPageHandler(
       const notFoundRoute = findNotFoundRoute();
       if (notFoundRoute) {
         match = { route: notFoundRoute, params: {} };
+        isRouteMissErrorRender = true;
         renderStatusCodeOverride = 404;
         renderAsPath = routeUrl;
       } else {
@@ -518,6 +590,30 @@ export function createPagesPageHandler(
         const routePattern = patternToNextFormat(route.pattern);
         const renderStatusCode =
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
+        // Error pages have their own ISR identity even though they render for
+        // the original request URL. Otherwise a cached notFound marker for the
+        // source page can short-circuit the recursive /404 render before the
+        // custom 404 module (and its getStaticProps) runs. Keep this separate
+        // from routeUrl so router, _document, and getInitialProps contexts
+        // continue to observe the original request-facing URL.
+        const isrCachePathname =
+          isStaticPropsRender &&
+          (routePattern === "/404" || routePattern === "/500" || routePattern === "/_error")
+            ? routePattern
+            : renderRouteUrl.split("?")[0];
+        const isNotFoundErrorRender =
+          routePattern === "/404" || (routePattern === "/_error" && renderStatusCode === 404);
+        const isStatusErrorRender =
+          isNotFoundErrorRender ||
+          routePattern === "/500" ||
+          (routePattern === "/_error" && renderStatusCode === 500);
+        const errorPageRevalidateSeconds = isNotFoundErrorRender
+          ? options?.__notFoundRevalidateSeconds
+          : undefined;
+        const errorPageExpireSeconds = isNotFoundErrorRender
+          ? options?.__notFoundExpireSeconds
+          : undefined;
+        const errorResponseCachePathname = options?.__notFoundCachePathname ?? isrCachePathname;
         const query = mergeRouteParamsIntoQuery(parseQuery(renderRouteUrl), params);
 
         // Model Pages Router readiness for `next/navigation` compat hooks. The
@@ -637,6 +733,11 @@ export function createPagesPageHandler(
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
+        const shouldApplyErrorResponsePolicy =
+          previewData === false &&
+          !scriptNonce &&
+          isStatusErrorRender &&
+          (isStaticPropsRoute || isRouteMissErrorRender || options?.__forcedRoute !== undefined);
 
         // Build font Link header early — available for ISR cached responses too.
         let fontLinkHeader = "";
@@ -724,6 +825,7 @@ export function createPagesPageHandler(
           route: { isDynamic: route.isDynamic },
           routePattern,
           routeUrl: renderRouteUrl,
+          isrCachePathname,
           runInFreshUnifiedContext(callback) {
             const revalCtx = createRequestContext({
               executionContext: null,
@@ -754,6 +856,9 @@ export function createPagesPageHandler(
               asPath: routerAsPath,
               renderErrorPageOnMiss: false,
               __forcedRoute: notFoundRoute,
+              __notFoundRevalidateSeconds: pageDataResult.revalidateSeconds,
+              __notFoundExpireSeconds: pageDataResult.expireSeconds,
+              __notFoundCachePathname: isrCachePathname,
             });
           } else {
             notFoundResponse = buildDefaultPagesNotFoundResponse();
@@ -763,16 +868,22 @@ export function createPagesPageHandler(
             notFoundResponse = withPagesCacheState(notFoundResponse, "REVALIDATED");
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
-            if (pageDataResult.cacheControl) {
-              notFoundResponse.headers.set("Cache-Control", pageDataResult.cacheControl);
-            }
           }
           return finalizePagesPreviewResponse(notFoundResponse, preview);
         }
         if (pageDataResult.kind === "response") {
-          const response = isOnDemandRevalidate
-            ? withPagesCacheState(pageDataResult.response, "REVALIDATED")
-            : pageDataResult.response;
+          let response =
+            isOnDemandRevalidate && pageDataResult.onDemandRevalidateSuccess !== false
+              ? withPagesCacheState(pageDataResult.response, "REVALIDATED")
+              : pageDataResult.response;
+          if (shouldApplyErrorResponsePolicy) {
+            response = applyPagesErrorCachePolicy(
+              response,
+              errorPageRevalidateSeconds,
+              errorPageExpireSeconds,
+              errorResponseCachePathname,
+            );
+          }
           return finalizePagesPreviewResponse(response, preview);
         }
 
@@ -792,6 +903,9 @@ export function createPagesPageHandler(
           serializedPagesNextData.autoExport === true
             ? null
             : (pageDataResult.documentReqRes ?? createPageReqRes());
+        // The error page keeps its own ISR policy and cache identity. A source
+        // getStaticProps `notFound` lifetime only controls the outgoing 404
+        // response and must not shorten `/404`'s internal cache lifetime.
         const isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
         const isrExpireSeconds = pageDataResult.isrExpireSeconds;
         const isFallbackRender = pageDataResult.isFallback === true;
@@ -838,7 +952,7 @@ export function createPagesPageHandler(
               init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
             }
           } else if (isStaticPropsRoute) {
-            if (isrRevalidateSeconds) {
+            if (isrRevalidateSeconds !== null) {
               const headers = new Headers(init.headers);
               applyCdnResponseHeaders(headers, {
                 cacheControl: buildMissIsrCacheControl(
@@ -888,70 +1002,72 @@ export function createPagesPageHandler(
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
         });
 
-        return finalizePagesPreviewResponse(
-          await renderPagesPageResponse({
-            assetTags,
-            buildId,
-            clearSsrContext() {
-              if (typeof setSSRContext === "function") setSSRContext(null);
-            },
-            createPageElement(currentProps) {
-              const el = createPageElement(PageComponent, AppComponent, currentProps);
-              return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
-            },
-            enhancePageElement(renderPageOpts) {
-              const el = enhancePageElement(
-                PageComponent,
-                AppComponent,
-                renderProps,
-                renderPageOpts,
-              );
-              return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
-            },
-            DocumentComponent,
-            err: err instanceof Error ? err : undefined,
-            flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
-            fontLinkHeader,
-            fontPreloads: allFontPreloads,
-            getFontLinks,
-            getFontStyles,
-            getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
-            clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
-              ? vinextConfig.clientTraceMetadata
-              : undefined,
-            documentReqRes,
-            gsspRes,
-            isrCacheKey: pageIsrCacheKey,
-            expireSeconds: isrExpireSeconds,
-            isrRevalidateSeconds,
-            isOnDemandRevalidate,
-            isStaticPropsRoute,
-            isrSet,
-            i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
-            isFallback: isFallbackRender,
-            pageProps,
-            props: renderProps,
-            params,
-            query,
-            renderDocumentToString(element) {
-              return renderToStringAsync(element);
-            },
-            renderToReadableStream,
-            resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
-            setDocumentInitialHead:
-              typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
-            routePattern,
-            routeUrl: renderRouteUrl,
-            safeJsonStringify,
-            scriptNonce,
-            statusCode: renderStatusCode,
-            nextData: serializedPagesNextData,
-            userAgent: request.headers.get("user-agent") ?? undefined,
-            ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
-            requestCacheControl: request.headers.get("cache-control") ?? undefined,
-          }),
-          preview,
-        );
+        let pageResponse = await renderPagesPageResponse({
+          assetTags,
+          buildId,
+          clearSsrContext() {
+            if (typeof setSSRContext === "function") setSSRContext(null);
+          },
+          createPageElement(currentProps) {
+            const el = createPageElement(PageComponent, AppComponent, currentProps);
+            return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
+          },
+          enhancePageElement(renderPageOpts) {
+            const el = enhancePageElement(PageComponent, AppComponent, renderProps, renderPageOpts);
+            return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
+          },
+          DocumentComponent,
+          err: err instanceof Error ? err : undefined,
+          flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+          fontLinkHeader,
+          fontPreloads: allFontPreloads,
+          getFontLinks,
+          getFontStyles,
+          getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+          clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
+            ? vinextConfig.clientTraceMetadata
+            : undefined,
+          documentReqRes,
+          gsspRes,
+          isrCacheKey: pageIsrCacheKey,
+          isrCachePathname,
+          expireSeconds: isrExpireSeconds,
+          isrRevalidateSeconds,
+          isOnDemandRevalidate,
+          isStaticPropsRoute,
+          isrSet,
+          i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
+          isFallback: isFallbackRender,
+          pageProps,
+          props: renderProps,
+          params,
+          query,
+          renderDocumentToString(element) {
+            return renderToStringAsync(element);
+          },
+          renderToReadableStream,
+          resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+          setDocumentInitialHead:
+            typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
+          routePattern,
+          routeUrl: renderRouteUrl,
+          safeJsonStringify,
+          scriptNonce,
+          statusCode: renderStatusCode,
+          nextData: serializedPagesNextData,
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+          requestCacheControl: request.headers.get("cache-control") ?? undefined,
+        });
+        if (shouldApplyErrorResponsePolicy) {
+          pageResponse = applyPagesErrorCachePolicy(
+            pageResponse,
+            errorPageRevalidateSeconds,
+            errorPageExpireSeconds,
+            errorResponseCachePathname,
+          );
+        }
+        return finalizePagesPreviewResponse(pageResponse, preview);
       } catch (e) {
         console.error("[vinext] SSR error:", e);
         reportRequestError(

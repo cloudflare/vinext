@@ -18,7 +18,6 @@ import {
   isrSet,
   isrCacheKey,
   buildPagesCacheValue,
-  coalesceOnDemandRevalidation,
   triggerBackgroundRegeneration,
   setRevalidateDuration,
   getRevalidateDuration,
@@ -66,6 +65,7 @@ import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import {
+  assertPages404DoesNotReturnNotFound,
   buildPagesRedirectProps,
   getCachedPagesRedirect,
   getPagesRouteParams,
@@ -758,6 +758,13 @@ export function createSSRHandler(
       }
     }
 
+    const errorPageContext = {
+      basePath,
+      locale: locale ?? currentDefaultLocale,
+      locales: i18nConfig?.locales,
+      defaultLocale: currentDefaultLocale,
+    };
+
     const i18nCacheVariant = i18nConfig
       ? currentDomainLocaleDomain
         ? "domain:" + currentDomainLocaleDomain.toLowerCase()
@@ -808,6 +815,7 @@ export function createSSRHandler(
           matcher,
           undefined,
           reactStrictMode,
+          errorPageContext,
         );
       });
       return;
@@ -988,7 +996,7 @@ export function createSSRHandler(
         let pageProps: Record<string, unknown> = {};
         let renderProps: Record<string, unknown> = { pageProps };
         if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
-        let isrRevalidateSeconds: number | null = null;
+        let isrRevalidateSeconds: number | false | null = null;
         let isOnDemandRevalidate = false;
         // Set when `getStaticPaths: { fallback: true }` is configured and the
         // requested path is NOT in the pre-rendered list. Triggers the loading
@@ -1043,6 +1051,7 @@ export function createSSRHandler(
               matcher,
               undefined,
               reactStrictMode,
+              errorPageContext,
             );
             return;
           }
@@ -1215,6 +1224,7 @@ export function createSSRHandler(
               undefined,
               undefined,
               reactStrictMode,
+              errorPageContext,
             );
             return;
           }
@@ -1359,61 +1369,10 @@ export function createSSRHandler(
             !isOnDemandRevalidate &&
             cached &&
             !cached.isStale &&
+            !cached.isExpired &&
             !scriptNonce &&
             previewData === false
           ) {
-            if (cachedValue === null || isLegacyCachedNotFound) {
-              applyCachedRepresentationHeaders("HIT");
-              applyDevPagesPreviewResponse(res, requestPreview);
-              if (isDataReq) {
-                res.writeHead(404, { "Content-Type": "application/json" });
-                res.end('{"notFound":true}');
-                return;
-              }
-              await renderErrorPage(
-                server,
-                runner,
-                req,
-                res,
-                url,
-                pagesDir,
-                404,
-                routerShim.wrapWithRouterContext,
-                undefined,
-                undefined,
-                reactStrictMode,
-              );
-              return;
-            }
-            if (cachedRedirect) {
-              applyCachedRepresentationHeaders("HIT");
-              const cachedProps = normalizePagesRenderProps(
-                cachedRedirect.props as Record<string, unknown>,
-              );
-              const redirectPageProps = isUnknownRecord(cachedProps.pageProps)
-                ? cachedProps.pageProps
-                : {};
-              if (typeof redirectPageProps.__N_REDIRECT !== "string") {
-                throw new Error("Invalid cached Pages redirect: missing __N_REDIRECT");
-              }
-              writeGsspRedirect(
-                res,
-                {
-                  destination: redirectPageProps.__N_REDIRECT,
-                  statusCode:
-                    typeof redirectPageProps.__N_REDIRECT_STATUS === "number"
-                      ? redirectPageProps.__N_REDIRECT_STATUS
-                      : undefined,
-                  ...(redirectPageProps.__N_REDIRECT_BASE_PATH === undefined
-                    ? {}
-                    : { basePath: redirectPageProps.__N_REDIRECT_BASE_PATH as boolean }),
-                },
-                isDataReq,
-                cachedProps,
-                { basePath, method: "getStaticProps", routeUrl: url },
-              );
-              return;
-            }
             if (isDataReq && cachedValue?.kind === "PAGES") {
               applyCachedRepresentationHeaders("HIT");
               res.writeHead(200, { "Content-Type": "application/json" });
@@ -1430,6 +1389,7 @@ export function createSSRHandler(
             !isOnDemandRevalidate &&
             cached &&
             !cached.isStale &&
+            !cached.isExpired &&
             cached.value.value?.kind === "PAGES" &&
             !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
@@ -1473,6 +1433,7 @@ export function createSSRHandler(
                 undefined,
                 undefined,
                 reactStrictMode,
+                errorPageContext,
               );
               return;
             }
@@ -1486,13 +1447,11 @@ export function createSSRHandler(
             !isOnDemandRevalidate &&
             cached &&
             cached.isStale &&
+            !cached.isExpired &&
             !scriptNonce &&
             previewData === false &&
-            (cachedValue === null ||
-              cachedRedirect !== null ||
-              isLegacyCachedNotFound ||
-              (cachedValue?.kind === "PAGES" &&
-                (isDataReq || !cachedValue.generatedFromDataRequest)))
+            cachedValue?.kind === "PAGES" &&
+            (isDataReq || !cachedValue.generatedFromDataRequest)
           ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cachedValue?.kind === "PAGES" ? cachedValue : null;
@@ -1598,32 +1557,13 @@ export function createSSRHandler(
                   });
                   const revalidate = resolvePagesRevalidateSeconds(freshResult);
                   if (freshResult && "notFound" in freshResult && freshResult.notFound) {
-                    await isrSet(cacheKey, null, revalidate);
-                    setRevalidateDuration(cacheKey, revalidate);
                     return;
                   }
                   if (freshResult && "redirect" in freshResult) {
-                    const redirect = resolvePagesRedirect(freshResult.redirect, {
-                      method: "getStaticProps",
-                      routeUrl: url,
-                      sanitizeDestination,
-                    });
-                    await isrSet(
-                      cacheKey,
-                      {
-                        kind: "REDIRECT",
-                        props: buildPagesRedirectProps(redirect, {
-                          ...freshRenderProps,
-                          pageProps: freshPageProps,
-                        }),
-                      },
-                      revalidate,
-                    );
-                    setRevalidateDuration(cacheKey, revalidate);
                     return;
                   }
                   if (freshResult && "props" in freshResult) {
-                    if (revalidate > 0) {
+                    if (revalidate === false || revalidate > 0) {
                       freshPageProps = mergePagesDataProps(
                         freshRenderProps.pageProps,
                         await Promise.resolve(freshResult.props),
@@ -1643,7 +1583,7 @@ export function createSSRHandler(
                           },
                           revalidate,
                         );
-                        setRevalidateDuration(cacheKey, revalidate);
+                        if (revalidate !== false) setRevalidateDuration(cacheKey, revalidate);
                         return;
                       }
 
@@ -1737,7 +1677,7 @@ export function createSSRHandler(
                         buildPagesCacheValue(freshHtml, freshRenderProps),
                         revalidate,
                       );
-                      setRevalidateDuration(cacheKey, revalidate);
+                      if (revalidate !== false) setRevalidateDuration(cacheKey, revalidate);
                     }
                   }
                 });
@@ -1798,6 +1738,7 @@ export function createSSRHandler(
                 undefined,
                 undefined,
                 reactStrictMode,
+                errorPageContext,
               );
               return;
             }
@@ -1872,6 +1813,7 @@ export function createSSRHandler(
             !isOnDemandRevalidate &&
             previewData === false &&
             cached?.isStale === false &&
+            !cached.isExpired &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest &&
             isUnknownRecord(cached.value.value.pageData)
@@ -1880,13 +1822,8 @@ export function createSSRHandler(
           if (!generatedPageData && (await loadAppInitialProps())) {
             return;
           }
-          const result = generatedPageData
-            ? null
-            : isOnDemandRevalidate
-              ? await coalesceOnDemandRevalidation(cacheKey, () =>
-                  pageModule.getStaticProps(context),
-                )
-              : await pageModule.getStaticProps(context);
+          const result = generatedPageData ? null : await pageModule.getStaticProps(context);
+          assertPages404DoesNotReturnNotFound(patternToNextFormat(route.pattern), result);
           if (generatedPageData) {
             renderProps = generatedPageData;
             pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
@@ -1900,24 +1837,12 @@ export function createSSRHandler(
           }
           if (result && "redirect" in result) {
             if (previewData === false) {
-              const redirect = resolvePagesRedirect(result.redirect, {
+              resolvePagesRedirect(result.redirect, {
                 method: "getStaticProps",
                 routeUrl: url,
                 sanitizeDestination,
               });
-              const revalidateSeconds = resolvePagesRevalidateSeconds(result);
-              await isrSet(
-                cacheKey,
-                {
-                  kind: "REDIRECT",
-                  props: buildPagesRedirectProps(redirect, {
-                    ...renderProps,
-                    pageProps,
-                  }),
-                },
-                revalidateSeconds,
-              );
-              setRevalidateDuration(cacheKey, revalidateSeconds);
+              resolvePagesRevalidateSeconds(result);
               if (isOnDemandRevalidate) res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
             }
             writeGsspRedirect(res, result.redirect, isDataReq, renderProps, {
@@ -1928,13 +1853,8 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
-            const revalidateSeconds = resolvePagesRevalidateSeconds(result);
             if (previewData === false) {
-              // Persist a not-found marker, not rendered error HTML. The
-              // custom 404 is rendered per request, matching Next.js and
-              // avoiding caching request-specific `_app`/404 props.
-              await isrSet(cacheKey, null, revalidateSeconds);
-              setRevalidateDuration(cacheKey, revalidateSeconds);
+              resolvePagesRevalidateSeconds(result);
             }
             if (isOnDemandRevalidate) {
               res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
@@ -1965,6 +1885,7 @@ export function createSSRHandler(
               undefined,
               undefined,
               reactStrictMode,
+              errorPageContext,
             );
             return;
           }
@@ -1987,13 +1908,13 @@ export function createSSRHandler(
           ) {
             isrRevalidateSeconds = result.revalidate;
           } else if (previewData === false && isOnDemandRevalidate) {
-            isrRevalidateSeconds = result ? resolvePagesRevalidateSeconds(result) : 31_536_000;
+            isrRevalidateSeconds = result ? resolvePagesRevalidateSeconds(result) : false;
           } else if (
             previewData === false &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest
           ) {
-            isrRevalidateSeconds = cached.value.cacheControl?.revalidate ?? 31_536_000;
+            isrRevalidateSeconds = cached.value.cacheControl?.revalidate ?? false;
           }
         }
 
@@ -2042,7 +1963,7 @@ export function createSSRHandler(
         if (isDataReq) {
           if (shouldPersistFallbackData && staticPropsPreviewData === false) {
             const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
-            const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
+            const revalidateSeconds = isrRevalidateSeconds ?? false;
             await isrSet(
               cacheKey,
               {
@@ -2055,7 +1976,7 @@ export function createSSRHandler(
               },
               revalidateSeconds,
             );
-            setRevalidateDuration(cacheKey, revalidateSeconds);
+            if (revalidateSeconds !== false) setRevalidateDuration(cacheKey, revalidateSeconds);
           }
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
@@ -2261,7 +2182,7 @@ export function createSSRHandler(
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
         };
-        if (requestPreviewData === false && isrRevalidateSeconds) {
+        if (requestPreviewData === false && isrRevalidateSeconds !== null) {
           if (scriptNonce) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
@@ -2284,7 +2205,13 @@ export function createSSRHandler(
         }
 
         const persistRenderedIsr = async () => {
-          if (scriptNonce || isrRevalidateSeconds === null || isrRevalidateSeconds <= 0) return;
+          if (
+            scriptNonce ||
+            isrRevalidateSeconds === null ||
+            (isrRevalidateSeconds !== false && isrRevalidateSeconds <= 0)
+          ) {
+            return;
+          }
           let isrElement = AppComponent
             ? createElement(AppComponent, {
                 ...renderProps,
@@ -2299,7 +2226,9 @@ export function createSSRHandler(
           const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, renderProps), isrRevalidateSeconds);
-          setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+          if (isrRevalidateSeconds !== false) {
+            setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+          }
         };
 
         // Next.js waits for its mocked response stream before resolving
@@ -2436,6 +2365,7 @@ export function createSSRHandler(
             matcher,
             e instanceof Error ? e : new Error(String(e)),
             reactStrictMode,
+            errorPageContext,
           );
         } catch (fallbackErr) {
           // If error page itself fails, fall back to plain text.
@@ -2471,6 +2401,12 @@ async function renderErrorPage(
   fileMatcher?: ValidFileMatcher,
   err?: Error,
   reactStrictMode = false,
+  context: {
+    basePath: string;
+    locale?: string;
+    locales?: string[];
+    defaultLocale?: string;
+  } = { basePath: "" },
 ): Promise<void> {
   attachPagesRequestCookies(req);
   const matcher = fileMatcher ?? createValidFileMatcher();
@@ -2481,11 +2417,14 @@ async function renderErrorPage(
   for (const candidate of candidates) {
     // oxlint-disable-next-line typescript/no-explicit-any
     let errorRouterShim: any = null;
+    let candidateLoaded = false;
+    let errorAssetPath: string | null = null;
     try {
-      const errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
+      errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
       if (!errorAssetPath && candidate !== "_error") continue;
 
       const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
+      candidateLoaded = true;
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -2533,7 +2472,41 @@ async function renderErrorPage(
         asPath: url,
       });
       if (res.headersSent || res.writableEnded) return;
-      const errorProps = { ...initialErrorProps, statusCode };
+      let errorProps: Record<string, unknown> = { ...initialErrorProps, statusCode };
+      if (typeof errorModule.getStaticProps === "function") {
+        const staticResult = await errorModule.getStaticProps({
+          params: null,
+          locale: context.locale,
+          locales: context.locales,
+          defaultLocale: context.defaultLocale,
+          revalidateReason: "stale",
+        });
+        assertPages404DoesNotReturnNotFound(errorPage, staticResult);
+        if (staticResult?.redirect) {
+          res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+          for (const [name, value] of Object.entries(buildCacheStateHeaders("HIT"))) {
+            res.setHeader(name, value);
+          }
+          writeGsspRedirect(
+            res,
+            staticResult.redirect,
+            false,
+            { pageProps: errorProps },
+            {
+              basePath: context.basePath,
+              method: "getStaticProps",
+              routeUrl: url,
+            },
+          );
+          return;
+        }
+        if (staticResult?.props !== undefined) {
+          const staticProps = await Promise.resolve(staticResult.props);
+          isSerializableProps(errorPage, "getStaticProps", staticProps);
+          errorProps = mergePagesDataProps(errorProps, staticProps);
+        }
+        if (staticResult) resolvePagesRevalidateSeconds(staticResult, errorPage);
+      }
       let renderProps: Record<string, unknown>;
       if (AppComponent && hasPagesGetInitialProps(AppComponent)) {
         const appInitialProps = await loadPagesGetInitialProps(AppComponent, {
@@ -2557,7 +2530,11 @@ async function renderErrorPage(
           },
         });
         if (res.headersSent || res.writableEnded) return;
-        renderProps = appInitialProps ?? {};
+        const appRenderProps = appInitialProps ?? {};
+        renderProps = {
+          ...appRenderProps,
+          pageProps: mergePagesDataProps(appRenderProps.pageProps, errorProps),
+        };
       } else {
         renderProps = { pageProps: errorProps };
       }
@@ -2684,9 +2661,12 @@ async function renderErrorPage(
         res.end(transformedHtml);
       }
       return;
-    } catch {
+    } catch (error) {
       if (res.headersSent || res.writableEnded) return;
-      // This candidate doesn't exist, try next
+      // Missing framework fallbacks may try the next candidate. Once a user
+      // error module exists or loads, its evaluation/data/render failures are
+      // real request errors and must surface instead of silently falling back.
+      if (errorAssetPath || candidateLoaded) throw error;
       continue;
     } finally {
       if (typeof errorRouterShim?.setSSRContext === "function") {

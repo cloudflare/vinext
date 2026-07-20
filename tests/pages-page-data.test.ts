@@ -4,9 +4,26 @@ import {
   getPagesRouteParams,
   matchesPagesStaticPath,
   renderPagesIsrHtml,
+  resolvePagesRevalidateSeconds,
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
+import type { IncrementalCacheValue } from "../packages/vinext/src/shims/cache-handler.js";
+
+const expiredPagesRepresentations: Array<[string, IncrementalCacheValue | null]> = [
+  [
+    "PAGES",
+    {
+      kind: "PAGES",
+      html: "<html>expired</html>",
+      pageData: { pageProps: { slug: "expired" } },
+      headers: undefined,
+      status: undefined,
+    },
+  ],
+  ["REDIRECT", { kind: "REDIRECT", props: { pageProps: { __N_REDIRECT: "/old" } } }],
+  ["notFound", null],
+];
 
 function createOptions(
   overrides: Partial<ResolvePagesPageDataOptions> = {},
@@ -65,6 +82,11 @@ function createOptions(
 }
 
 describe("pages page data", () => {
+  it("preserves omitted and explicit false revalidation as indefinite", () => {
+    expect(resolvePagesRevalidateSeconds({})).toBe(false);
+    expect(resolvePagesRevalidateSeconds({ revalidate: false })).toBe(false);
+  });
+
   // Next.js passes its ServerRouter to App.getInitialProps. Its `route` is the
   // route pattern, not the concrete URL: packages/next/src/server/render.tsx.
   it("provides the route pattern to App.getInitialProps router consumers", async () => {
@@ -583,6 +605,61 @@ describe("pages page data", () => {
     await expect(result.response.json()).resolves.toEqual({ notFound: true });
   });
 
+  it("rejects notFound returned by /404 getStaticProps", async () => {
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            async getStaticProps() {
+              return { notFound: true };
+            },
+          },
+          routePattern: "/404",
+          routeUrl: "/404",
+        }),
+      ),
+    ).rejects.toThrow('The /404 page can not return notFound in "getStaticProps"');
+  });
+
+  it("applies the source getStaticProps cache policy to fresh terminal responses", async () => {
+    const redirect = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return {
+              redirect: { destination: "/target", permanent: false },
+              revalidate: 7,
+            };
+          },
+        },
+      }),
+    );
+    expect(redirect.kind).toBe("response");
+    if (redirect.kind !== "response") throw new Error("expected redirect response");
+    expect(redirect.response.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(redirect.response.headers.get("cache-control")).toBe(
+      "s-maxage=7, stale-while-revalidate=293",
+    );
+
+    const notFound = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true, revalidate: 7 };
+          },
+        },
+      }),
+    );
+    expect(notFound.kind).toBe("response");
+    if (notFound.kind !== "response") throw new Error("expected notFound response");
+    expect(notFound.response.status).toBe(404);
+    expect(notFound.response.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(notFound.response.headers.get("cache-control")).toBe(
+      "s-maxage=7, stale-while-revalidate=293",
+    );
+  });
+
   it("returns JSON 404 envelope for data requests when getServerSideProps returns notFound", async () => {
     const result = await resolvePagesPageData(
       createOptions({
@@ -793,6 +870,101 @@ describe("pages page data", () => {
 
     expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
     expect(getStaticProps).toHaveBeenCalledOnce();
+  });
+
+  it.each(expiredPagesRepresentations)(
+    "treats an expired %s representation as generated for only-generated revalidation",
+    async (_kind, cachedValue) => {
+      const getStaticProps = vi.fn(async () => ({
+        props: { slug: "regenerated" },
+        revalidate: 60,
+      }));
+      const result = await resolvePagesPageData(
+        createOptions({
+          isOnDemandRevalidate: true,
+          revalidateOnlyGenerated: true,
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: true,
+            isExpired: true,
+            value: {
+              cacheControl: { revalidate: 60, expire: 300 },
+              cacheState: "expired",
+              lastModified: 1,
+              value: cachedValue,
+            },
+          }),
+          pageModule: { getStaticProps },
+        }),
+      );
+
+      expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(getStaticProps).toHaveBeenCalledWith(
+        expect.objectContaining({ revalidateReason: "on-demand" }),
+      );
+    },
+  );
+
+  it.each(expiredPagesRepresentations)(
+    "blocking-regenerates an expired %s representation instead of serving it stale",
+    async (_kind, cachedValue) => {
+      const getStaticProps = vi.fn(async () => ({
+        props: { slug: "regenerated" },
+        revalidate: 60,
+      }));
+      const triggerBackgroundRegeneration = vi.fn();
+      const result = await resolvePagesPageData(
+        createOptions({
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: true,
+            isExpired: true,
+            value: {
+              cacheControl: { revalidate: 60, expire: 300 },
+              cacheState: "expired",
+              lastModified: 1,
+              value: cachedValue,
+            },
+          }),
+          pageModule: { getStaticProps },
+          triggerBackgroundRegeneration,
+        }),
+      );
+
+      expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(triggerBackgroundRegeneration).not.toHaveBeenCalled();
+    },
+  );
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+  it("reports whether on-demand revalidation of an unlisted fallback:false path succeeded", async () => {
+    const getStaticProps = vi.fn(async () => ({ props: { slug: "generated" }, revalidate: 60 }));
+    const pageModule = {
+      getStaticPaths() {
+        return { paths: [], fallback: false as const };
+      },
+      getStaticProps,
+    };
+    const routeOptions = {
+      isOnDemandRevalidate: true,
+      pageModule,
+      route: { isDynamic: true },
+      routePattern: "/no-fallback/[slug]",
+      routeUrl: "/no-fallback/unseen",
+    };
+
+    const ordinary = await resolvePagesPageData(createOptions(routeOptions));
+    expect(ordinary.kind).toBe("response");
+    if (ordinary.kind !== "response") throw new Error("expected response result");
+    expect(ordinary.response.status).toBe(404);
+    expect(ordinary.onDemandRevalidateSuccess).toBe(false);
+
+    const onlyGenerated = await resolvePagesPageData(
+      createOptions({ ...routeOptions, revalidateOnlyGenerated: true }),
+    );
+    expect(onlyGenerated.kind).toBe("notFound");
+    expect(getStaticProps).not.toHaveBeenCalled();
   });
 
   it("reruns getStaticProps when generated fallback data is stale", async () => {
@@ -1027,7 +1199,7 @@ describe("pages page data", () => {
         html: expect.stringContaining("<div>fresh-body</div>"),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      31_536_000,
+      false,
       undefined,
       undefined,
     );
@@ -1038,7 +1210,7 @@ describe("pages page data", () => {
         html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      31_536_000,
+      false,
       undefined,
       undefined,
     );
