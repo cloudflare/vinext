@@ -5416,6 +5416,7 @@ export const loadServerActionClient = ${
                       nextConfig?.clientTraceMetadata,
                       nextConfig?.htmlLimitedBots,
                       nextConfig?.reactStrictMode === true,
+                      nextConfig?.expireTime,
                     ),
                   };
                 }

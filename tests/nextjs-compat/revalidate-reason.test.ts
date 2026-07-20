@@ -71,7 +71,7 @@ describe("Next.js compat: revalidate-reason (Pages Router)", () => {
     }
   });
 
-  it('accepts the secret and surfaces revalidateReason: "on-demand"', async () => {
+  it("accepts the secret without persisting the on-demand dev render", async () => {
     // Trigger on-demand revalidation via res.revalidate() in the API route,
     // which attaches the real process revalidate secret to the internal
     // request — the only value the receiver authorizes.
@@ -79,9 +79,11 @@ describe("Next.js compat: revalidate-reason (Pages Router)", () => {
     expect(revalidateRes.status).toBe(200);
     expect(await revalidateRes.json()).toEqual({ revalidated: true });
 
-    // The regenerated page must now record the "on-demand" reason.
+    // Next.js does not cache Pages route responses in development. The
+    // internal revalidation render observes "on-demand", but this independent
+    // page request must execute GSP again and observe "stale".
     const res = await fetch(`${ctx.baseUrl}/revalidate-reason`);
     expect(res.status).toBe(200);
-    expect(reasonFromHtml(await res.text())).toBe("on-demand");
+    expect(reasonFromHtml(await res.text())).toBe("stale");
   });
 });

@@ -811,26 +811,26 @@ describe("Pages Router integration", () => {
     );
   });
 
-  it("does not serve cached Pages ISR HTML to CSP nonce requests", async () => {
+  it("renders Pages GSP HTML afresh for CSP nonce requests", async () => {
     const first = await fetch(`${baseUrl}/isr-test`);
     expect(first.status).toBe(200);
-    expect(first.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(first.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(first.headers.get("x-vinext-cache")).toBeNull();
+    expect(first.headers.get("cache-control")).toBe("no-cache, must-revalidate");
     const firstHtml = await first.text();
     expect(firstHtml).not.toContain("nonce=");
 
-    const cached = await fetch(`${baseUrl}/isr-test`);
-    expect(cached.status).toBe(200);
-    expect(cached.headers.get("x-vinext-cache")).toBe("HIT");
-    expect(cached.headers.get("x-nextjs-cache")).toBe("HIT");
-    await cached.text();
+    const repeated = await fetch(`${baseUrl}/isr-test`);
+    expect(repeated.status).toBe(200);
+    expect(repeated.headers.get("x-vinext-cache")).toBeNull();
+    expect(repeated.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+    await repeated.text();
 
     const second = await fetch(`${baseUrl}/isr-test?mw-csp-nonce=pages-isr`);
     expect(second.status).toBe(200);
     expect(second.headers.get("content-security-policy")).toBe(
       "script-src 'nonce-pages-isr' 'strict-dynamic';",
     );
-    expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(second.headers.get("cache-control")).toBe("no-cache, must-revalidate");
     expect(second.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await second.text();
     expect(secondHtml).toContain(
@@ -1160,7 +1160,7 @@ export async function getStaticProps(context) {
   return {
     props: {
       marker: \`404 page \${++renders}\`,
-      paramsAreNull: context.params === null,
+      paramsAreUndefined: context.params === undefined,
     },
     revalidate: 6000,
   };
@@ -1194,15 +1194,21 @@ export async function getStaticPaths() {
 
       const first = await fetch(`${started.baseUrl}/first`);
       expect(first.status).toBe(404);
+      expect(first.headers.get("x-nextjs-cache")).toBe("HIT");
+      expect(first.headers.get("x-vinext-cache")).toBeNull();
+      expect(first.headers.get("cache-control")).toBe("no-cache, must-revalidate");
       const firstHtml = await first.text();
       expect(firstHtml).toContain('<p id="not-found">404 page 1</p>');
-      expect(firstHtml).toContain('"paramsAreNull":true');
+      expect(firstHtml).toContain('"paramsAreUndefined":true');
 
       const second = await fetch(`${started.baseUrl}/first`);
       expect(second.status).toBe(404);
+      expect(second.headers.get("x-nextjs-cache")).toBe("HIT");
+      expect(second.headers.get("x-vinext-cache")).toBeNull();
+      expect(second.headers.get("cache-control")).toBe("no-cache, must-revalidate");
       const secondHtml = await second.text();
       expect(secondHtml).toContain('<p id="not-found">404 page 2</p>');
-      expect(secondHtml).toContain('"paramsAreNull":true');
+      expect(secondHtml).toContain('"paramsAreUndefined":true');
     } finally {
       await tempServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1398,10 +1404,10 @@ export default function Page({ marker }: { marker: string }) {
     expect(headSection).toContain("Hello vinext");
   });
 
-  it("caches the streamed ISR render without carrying prior render state", async () => {
+  it("rerenders GSP pages without carrying prior render state", async () => {
     const firstRes = await fetch(`${baseUrl}/isr-second-render-state`);
     expect(firstRes.status).toBe(200);
-    expect(firstRes.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(firstRes.headers.get("x-vinext-cache")).toBeNull();
     const firstHtml = await firstRes.text();
     expect(firstHtml).toContain('data-testid="head-before">0<');
     expect(firstHtml).toContain('data-testid="private-cache-before">0<');
@@ -1409,7 +1415,7 @@ export default function Page({ marker }: { marker: string }) {
 
     const secondRes = await fetch(`${baseUrl}/isr-second-render-state`);
     expect(secondRes.status).toBe(200);
-    expect(secondRes.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(secondRes.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await secondRes.text();
     expect(secondHtml).toContain('data-testid="head-before">0<');
     expect(secondHtml).toContain('data-testid="private-cache-before">0<');
@@ -2490,6 +2496,9 @@ export default function Page({ marker }: { marker: string }) {
     // See: .nextjs-ref/packages/next/src/server/render.tsx — `if (isSSG && !isFallback)`.
     const res = await fetch(`${baseUrl}/products/unknown`);
     expect(res.status).toBe(200);
+    expect(res.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
     const html = await res.text();
     expect(html).toContain("Loading product...");
     // The full-content branch must NOT render — getStaticProps was skipped.
@@ -2516,7 +2525,7 @@ export default function Page({ marker }: { marker: string }) {
     expect(json.pageProps).toMatchObject({ pid: "unknown" });
   });
 
-  it("serves generated content after fallback data hydration", async () => {
+  it("does not persist fallback data hydration in dev", async () => {
     const slug = `hydrated-${Math.random().toString(36).slice(2)}`;
     const initialRes = await fetch(`${baseUrl}/products/${slug}`);
     expect(await initialRes.text()).toContain("Loading product...");
@@ -2527,9 +2536,11 @@ export default function Page({ marker }: { marker: string }) {
     expect(dataRes.status).toBe(200);
 
     const finalRes = await fetch(`${baseUrl}/products/${slug}`);
+    expect(finalRes.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(finalRes.headers.get("x-vinext-cache")).toBeNull();
+    expect(finalRes.headers.get("cache-control")).toBe("no-cache, must-revalidate");
     const finalHtml = await finalRes.text();
-    expect(finalHtml).not.toContain("Loading product...");
-    expect(finalHtml).toMatch(new RegExp(`Product ID:.*${slug}`));
+    expect(finalHtml).toContain("Loading product...");
   });
 
   // Refs #1543: bot/crawler requests must bypass the `fallback: true` loading
@@ -3583,7 +3594,7 @@ describe("Virtual server entry generation", () => {
     }
   });
 
-  it("dev Pages cached ISR HTML keeps initial stylesheet links", async () => {
+  it("dev Pages repeated GSP renders keep initial stylesheet links", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-isr-"));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     const testServer = await createServer({
@@ -3603,7 +3614,8 @@ describe("Virtual server entry generation", () => {
       const firstRes = await fetch(`${baseUrl}/isr`);
       const firstHtml = await firstRes.text();
       expect(firstRes.status).toBe(200);
-      expect(firstRes.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(firstRes.headers.get("x-vinext-cache")).toBeNull();
+      expect(firstRes.headers.get("cache-control")).toBe("no-cache, must-revalidate");
       expect(firstHtml).toContain("Global CSS ISR Test");
       for (const href of fixture.isrDevStylesheetHrefs) {
         expect(getStylesheetHrefs(firstHtml)).toContain(href);
@@ -3612,7 +3624,8 @@ describe("Virtual server entry generation", () => {
       const secondRes = await fetch(`${baseUrl}/isr`);
       const secondHtml = await secondRes.text();
       expect(secondRes.status).toBe(200);
-      expect(secondRes.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(secondRes.headers.get("x-vinext-cache")).toBeNull();
+      expect(secondRes.headers.get("cache-control")).toBe("no-cache, must-revalidate");
       expect(secondHtml).toContain("Global CSS ISR Test");
       for (const href of fixture.isrDevStylesheetHrefs) {
         expect(getStylesheetHrefs(secondHtml)).toContain(href);
@@ -9045,17 +9058,20 @@ describe("custom App optional pageProps envelope parity", () => {
     });
   }
 
-  // Next.js renders App with `{ ...props, router }` and its ISR E2E suite
-  // verifies the MISS -> HIT transition used here.
+  // Next.js renders App with `{ ...props, router }`. Production verifies the
+  // ISR MISS -> HIT transition; development reruns GSP for each request.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
   // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
   for (const mode of ["dev", "prod"] as const) {
-    it(`merges primitive App props and preserves router across ISR MISS/HIT in ${mode}`, async () => {
+    it(`merges primitive App props and preserves router across repeated GSP renders in ${mode}`, async () => {
       const baseUrl = mode === "dev" ? devUrl : prodUrl;
 
       const missResponse = await fetch(`${baseUrl}/gsp-string`);
       expect(missResponse.status).toBe(200);
-      expect(missResponse.headers.get("x-nextjs-cache")).toBe("MISS");
+      expect(missResponse.headers.get("x-nextjs-cache")).toBe(mode === "dev" ? "HIT" : "MISS");
+      if (mode === "dev") {
+        expect(missResponse.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+      }
       const missHtml = await missResponse.text();
       expect(missHtml).toContain(
         '<div id="page-props-json">{&quot;0&quot;:&quot;h&quot;,&quot;1&quot;:&quot;i&quot;,&quot;fromData&quot;:&quot;gsp&quot;}</div>',
@@ -9072,211 +9088,4 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(hitHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
     });
   }
-});
-
-describe("Pages Router dev ISR regeneration", () => {
-  it("wraps stale regeneration in a fresh unified request context", async () => {
-    vi.resetModules();
-
-    let regenPromise: Promise<void> | null = null;
-    const isrSetSpy = vi.fn().mockResolvedValue(undefined);
-
-    vi.doMock("../packages/vinext/src/server/isr-cache.js", async () => {
-      const actual = await vi.importActual<
-        typeof import("../packages/vinext/src/server/isr-cache.js")
-      >("../packages/vinext/src/server/isr-cache.js");
-
-      return {
-        ...actual,
-        getRevalidateDuration: vi.fn(() => 1),
-        isrGet: vi.fn().mockResolvedValue({
-          isStale: true,
-          value: {
-            value: actual.buildPagesCacheValue("<html><body>stale</body></html>", {
-              timestamp: 1,
-              message: "stale",
-            }),
-            cacheState: "stale",
-          },
-        }),
-        isrSet: isrSetSpy,
-        triggerBackgroundRegeneration: vi.fn((_key: string, renderFn: () => Promise<void>) => {
-          regenPromise = renderFn();
-        }),
-      };
-    });
-
-    try {
-      const [
-        { createSSRHandler },
-        { getRequestContext, isInsideUnifiedScope },
-        { getRequestExecutionContext, runWithExecutionContext },
-      ] = await Promise.all([
-        import("../packages/vinext/src/server/dev-server.js"),
-        import("../packages/vinext/src/shims/unified-request-context.js"),
-        import("../packages/vinext/src/shims/request-context.js"),
-      ]);
-
-      let parentRequestTags: string[] = [];
-      let regenSawUnifiedScope = false;
-      let regenTags: string[] = [];
-      let regenExecutionContext: unknown;
-      let regenUnifiedExecutionContext: unknown;
-      let regenSsrContext: unknown;
-      let regenI18nContext: unknown;
-      let appTreeWrapCount = 0;
-      const App = Object.assign(({ Component, pageProps }: any) => Component(pageProps), {
-        getInitialProps: vi.fn(async () => ({
-          appLevel: "preserved",
-          pageProps: { fromApp: true },
-        })),
-      });
-      const outerExecutionContext = {
-        waitUntil() {},
-      };
-
-      const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
-      const loadModule = async (id: string) => {
-        // ALS registration side-effects loaded at createSSRHandler startup
-        if (id === "vinext/head-state" || id === "vinext/router-state") {
-          return {};
-        }
-
-        if (id === "next/router") {
-          return {
-            setSSRContext() {
-              getRequestContext().currentRequestTags.push("outer-tag");
-              parentRequestTags = [...getRequestContext().currentRequestTags];
-            },
-            wrapWithRouterContext(element: unknown) {
-              appTreeWrapCount += 1;
-              return element;
-            },
-          };
-        }
-
-        if (id === path.join(FIXTURE_DIR, "pages", "_app")) {
-          return { default: App };
-        }
-
-        if (id === routeFile) {
-          return {
-            default() {
-              return null;
-            },
-            async getStaticProps() {
-              regenSawUnifiedScope = isInsideUnifiedScope();
-              regenTags = [...getRequestContext().currentRequestTags];
-              regenExecutionContext = getRequestExecutionContext();
-              regenUnifiedExecutionContext = getRequestContext().executionContext;
-              regenSsrContext = getRequestContext().ssrContext;
-              regenI18nContext = getRequestContext().i18nContext;
-              return {
-                props: {
-                  timestamp: Date.now(),
-                  message: "fresh",
-                },
-                revalidate: 1,
-              };
-            },
-          };
-        }
-
-        throw new Error(`Unexpected module load: ${id}`);
-      };
-      const server = {
-        config: {
-          root: FIXTURE_DIR,
-          base: "/docs/",
-        },
-        transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
-      } as unknown as ViteDevServer;
-      const runner = { import: loadModule };
-
-      const handler = createSSRHandler(
-        server,
-        runner,
-        [
-          {
-            pattern: "/isr-test",
-            patternParts: ["isr-test"],
-            filePath: routeFile,
-            isDynamic: false,
-            params: [],
-          },
-        ],
-        path.join(FIXTURE_DIR, "pages"),
-      );
-
-      const finishListeners: Array<() => void> = [];
-      const res = {
-        statusCode: 200,
-        on(event: string, listener: () => void) {
-          if (event === "finish") {
-            finishListeners.push(listener);
-          }
-          return this;
-        },
-        writeHead: vi.fn(function (this: { statusCode: number }, status: number) {
-          this.statusCode = status;
-          return this;
-        }),
-        end: vi.fn(() => {
-          for (const listener of finishListeners) {
-            listener();
-          }
-        }),
-      } as any;
-
-      await runWithExecutionContext(outerExecutionContext, () =>
-        handler({ method: "GET", headers: {} } as any, res, "/isr-test"),
-      );
-
-      expect(parentRequestTags).toEqual(["outer-tag"]);
-      expect(res.writeHead).toHaveBeenCalledWith(
-        200,
-        expect.objectContaining({
-          "X-Vinext-Cache": "STALE",
-          "x-nextjs-cache": "STALE",
-        }),
-      );
-
-      if (!regenPromise) {
-        throw new Error("expected stale ISR request to start background regeneration");
-      }
-      const pendingRegen = regenPromise;
-
-      await Promise.resolve(pendingRegen);
-
-      expect(regenSawUnifiedScope).toBe(true);
-      expect(regenTags).toEqual([]);
-      expect(regenExecutionContext).toBeNull();
-      expect(regenUnifiedExecutionContext).toBeNull();
-      expect(regenSsrContext).toMatchObject({
-        pathname: "/isr-test",
-        query: {},
-        asPath: "/isr-test",
-      });
-      expect(regenI18nContext).toBeNull();
-      expect(appTreeWrapCount).toBe(1);
-      expect(isrSetSpy).toHaveBeenCalledOnce();
-      expect(isrSetSpy.mock.calls[0]?.[1]).toMatchObject({
-        kind: "PAGES",
-        pageData: {
-          appLevel: "preserved",
-          pageProps: {
-            fromApp: true,
-            message: "fresh",
-          },
-        },
-      });
-      const regeneratedHtml = isrSetSpy.mock.calls[0]?.[1].html as string;
-      expect(regeneratedHtml).toContain('"pageModuleUrl":"/docs/pages/isr-test.tsx"');
-      expect(regeneratedHtml).toContain('"appModuleUrl":"/docs/pages/_app"');
-    } finally {
-      vi.doUnmock("../packages/vinext/src/server/isr-cache.js");
-      vi.resetModules();
-      vi.restoreAllMocks();
-    }
-  });
 });
