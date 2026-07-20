@@ -29,6 +29,8 @@ type LazyModuleLoaderArray = readonly (LazyModuleThunk | null | undefined)[];
 type LazyLoadableIntercept = {
   interceptLayouts?: readonly unknown[] | null;
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
+  interceptLoadings?: readonly unknown[] | null;
+  __loadInterceptLoadings?: LazyModuleLoaderArray | null;
   __loadState?: {
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
@@ -40,6 +42,7 @@ type LazyLoadableSlot = {
   layout?: unknown;
   configLayouts?: readonly unknown[];
   loading?: unknown;
+  loadings?: readonly unknown[];
   error?: unknown;
   notFound?: unknown;
   __loadPage?: LazyModuleThunk | null;
@@ -47,6 +50,7 @@ type LazyLoadableSlot = {
   __loadLayout?: LazyModuleThunk | null;
   __loadConfigLayouts?: LazyModuleLoaderArray | null;
   __loadLoading?: LazyModuleThunk | null;
+  __loadLoadings?: LazyModuleLoaderArray | null;
   __loadError?: LazyModuleThunk | null;
   __loadNotFound?: LazyModuleThunk | null;
   /** Hydrated only after an intercept matches, not with the slot's base modules. */
@@ -58,6 +62,7 @@ export type LazyLoadableRoute = {
   routeHandler?: unknown;
   layouts?: unknown[];
   templates?: unknown[];
+  loadings?: unknown[];
   errors?: unknown[];
   errorPaths?: unknown[];
   notFounds?: unknown[];
@@ -76,6 +81,7 @@ export type LazyLoadableRoute = {
   __loadRouteHandler?: LazyModuleThunk | null;
   __loadLayouts?: LazyModuleLoaderArray | null;
   __loadTemplates?: LazyModuleLoaderArray | null;
+  __loadLoadings?: LazyModuleLoaderArray | null;
   __loadErrors?: LazyModuleLoaderArray | null;
   __loadErrorPaths?: LazyModuleLoaderArray | null;
   __loadNotFounds?: LazyModuleLoaderArray | null;
@@ -137,6 +143,7 @@ export function loadAppInterceptLayouts(
 
   const loads: Promise<unknown>[] = [];
   pushArrayLoads(loads, intercept.interceptLayouts, intercept.__loadInterceptLayouts);
+  pushArrayLoads(loads, intercept.interceptLoadings, intercept.__loadInterceptLoadings);
   if (loads.length === 0) return Promise.resolve(intercept.interceptLayouts ?? []);
 
   const loading = Promise.all(loads)
@@ -177,6 +184,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   pushFieldLoad(loads, route as Record<string, unknown>, "unauthorized", route.__loadUnauthorized);
   pushArrayLoads(loads, route.layouts, route.__loadLayouts);
   pushArrayLoads(loads, route.templates, route.__loadTemplates);
+  pushArrayLoads(loads, route.loadings, route.__loadLoadings);
   pushArrayLoads(loads, route.errors, route.__loadErrors);
   pushArrayLoads(loads, route.errorPaths, route.__loadErrorPaths);
   pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
@@ -189,6 +197,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     pushFieldLoad(loads, slot as Record<string, unknown>, "layout", slot.__loadLayout);
     pushArrayLoads(loads, slot.configLayouts, slot.__loadConfigLayouts);
     pushFieldLoad(loads, slot as Record<string, unknown>, "loading", slot.__loadLoading);
+    pushArrayLoads(loads, slot.loadings, slot.__loadLoadings);
     pushFieldLoad(loads, slot as Record<string, unknown>, "error", slot.__loadError);
     pushFieldLoad(loads, slot as Record<string, unknown>, "notFound", slot.__loadNotFound);
   }

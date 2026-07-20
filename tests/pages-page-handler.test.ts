@@ -24,6 +24,7 @@ import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
+import { after } from "../packages/vinext/src/shims/server.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -150,6 +151,35 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
     const app = Object.assign(() => null, { getInitialProps: async () => ({}) });
     expect(shouldEmitPagesClientTraceMetadata(makePageModule({ default: page }), null)).toBe(true);
     expect(shouldEmitPagesClientTraceMetadata(makePageModule(), app)).toBe(true);
+  });
+});
+
+describe("createPagesPageHandler — after() lifecycle", () => {
+  it("runs callbacks only after the response body closes", async () => {
+    let callbackRan = false;
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async () => {
+                after(() => {
+                  callbackRan = true;
+                });
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(callbackRan).toBe(false);
+
+    await response.text();
+    await vi.waitFor(() => expect(callbackRan).toBe(true));
   });
 });
 

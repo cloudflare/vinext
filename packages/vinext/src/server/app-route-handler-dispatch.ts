@@ -19,7 +19,11 @@ import {
 } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import {
+  closeAfterResponse,
+  createRequestContext,
+  runWithRequestContext,
+} from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
   getAppRouteHandlerRevalidateSeconds,
@@ -131,7 +135,7 @@ async function runInRouteHandlerRevalidationContext(
     unstableCacheRevalidation: "foreground",
   });
 
-  await runWithRequestContext(requestContext, async () => {
+  const revalidation = runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
     setCurrentFetchSoftTags(
       buildRouteHandlerPageCacheTags(options.cleanPathname, [], options.routeSegments),
@@ -149,6 +153,11 @@ async function runInRouteHandlerRevalidationContext(
       await _drainPendingRevalidations();
     }
   });
+  try {
+    await revalidation;
+  } finally {
+    await closeAfterResponse(requestContext);
+  }
 }
 
 export async function dispatchAppRouteHandler(

@@ -8,6 +8,7 @@ import {
 } from "../packages/vinext/src/shims/cache-handler.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
+import { after } from "../packages/vinext/src/shims/server.js";
 
 function buildCachedRouteValue(body: string): CachedRouteValue {
   return {
@@ -513,6 +514,7 @@ describe("app route handler dispatch", () => {
     let scheduledRender: (() => Promise<void>) | undefined;
     let forceDynamicDefaultAtRegenTime: boolean | undefined;
     let fetchCacheModeAtRegenTime: unknown = "unset";
+    let afterRan = false;
 
     const response = await dispatchAppRouteHandler({
       cleanPathname: "/api/stale-fetch-cache",
@@ -540,6 +542,9 @@ describe("app route handler dispatch", () => {
           GET() {
             forceDynamicDefaultAtRegenTime = forceDynamicSpy.mock.calls.at(-1)?.[0];
             fetchCacheModeAtRegenTime = modeSpy.mock.calls.at(-1)?.[0];
+            after(() => {
+              afterRan = true;
+            });
             return new Response("regenerated");
           },
         },
@@ -561,6 +566,7 @@ describe("app route handler dispatch", () => {
 
     expect(forceDynamicDefaultAtRegenTime).toBe(false);
     expect(fetchCacheModeAtRegenTime).toBe("force-cache");
+    expect(afterRan).toBe(true);
 
     modeSpy.mockRestore();
     forceDynamicSpy.mockRestore();

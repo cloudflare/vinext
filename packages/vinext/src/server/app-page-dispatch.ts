@@ -22,7 +22,11 @@ import {
   setHeadersContext,
 } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import {
+  closeAfterResponse,
+  createRequestContext,
+  runWithRequestContext,
+} from "vinext/shims/unified-request-context";
 import {
   ensureFetchPatch,
   type FetchCacheMode,
@@ -128,6 +132,8 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
+  interceptLoadings?: readonly unknown[] | null;
+  interceptLoadingTreePositions?: readonly number[] | null;
   interceptNotFoundBranchSegments?: readonly string[] | null;
   notFound?: unknown;
   notFoundTreePosition?: number | null;
@@ -145,6 +151,8 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
+  interceptLoadings?: readonly unknown[] | null;
+  interceptLoadingTreePositions?: readonly number[] | null;
   interceptNotFoundBranchSegments?: readonly string[] | null;
   interceptNotFound?: unknown;
   interceptNotFoundTreePosition?: number | null;
@@ -164,6 +172,8 @@ type AppPageModule = {
 
 type AppPageDispatchSlot = {
   default?: AppPageModule | null;
+  loading?: AppPageModule | null;
+  loadings?: readonly (AppPageModule | null | undefined)[] | null;
   page?: AppPageModule | null;
   slotPatternParts?: readonly string[] | null;
   slotParamNames?: readonly string[] | null;
@@ -191,6 +201,8 @@ export type AppPageDispatchRoute = {
   layouts: readonly AppPageModule[];
   layoutTreePositions?: readonly number[];
   loading?: AppPageModule | null;
+  loadings?: readonly (AppPageModule | null | undefined)[];
+  loadingTreePositions?: readonly number[];
   notFound?: AppPageModule | null;
   notFounds?: readonly (AppPageModule | null | undefined)[];
   params: readonly string[];
@@ -201,6 +213,38 @@ export type AppPageDispatchRoute = {
   unauthorizedTreePosition?: number | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
+
+function getActiveLoadingTreePositions(route: AppPageDispatchRoute): number[] {
+  const positions: number[] = [];
+  for (const [index, loadingModule] of (route.loadings ?? []).entries()) {
+    if (!loadingModule?.default) continue;
+    const treePosition = route.loadingTreePositions?.[index];
+    if (treePosition !== undefined) positions.push(treePosition);
+  }
+
+  // Older/eager route fixtures may only expose the leaf field. Keep that
+  // representation working while the generated manifest carries both forms.
+  if (positions.length === 0 && route.loading?.default) {
+    positions.push(route.routeSegments.length);
+  }
+  return positions;
+}
+
+function getAppPageLayoutProbeCount(
+  route: AppPageDispatchRoute,
+  loadingTreePositions: readonly number[],
+): number {
+  const firstLoadingTreePosition = loadingTreePositions.reduce<number | null>(
+    (first, position) => (first === null || position < first ? position : first),
+    null,
+  );
+  if (firstLoadingTreePosition === null) return route.layouts.length;
+
+  const firstSuspendedLayoutIndex = (route.layoutTreePositions ?? []).findIndex(
+    (position) => position > firstLoadingTreePosition,
+  );
+  return firstSuspendedLayoutIndex === -1 ? route.layouts.length : firstSuspendedLayoutIndex;
+}
 
 function resolveAppPageRouteBoundaryModule(
   route: AppPageDispatchRoute,
@@ -524,7 +568,7 @@ async function runAppPageRevalidationContext<
     unstableCacheRevalidation: "foreground",
   });
 
-  return runWithRequestContext(requestContext, async () => {
+  const revalidation = runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
     setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
     setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
@@ -535,6 +579,11 @@ async function runAppPageRevalidationContext<
     });
     return await runWithFetchDedupe(renderFn);
   });
+  try {
+    return await revalidation;
+  } finally {
+    await closeAfterResponse(requestContext);
+  }
 }
 
 function toInterceptOptions(
@@ -546,6 +595,8 @@ function toInterceptOptions(
     interceptLayouts: intercept.interceptLayouts,
     interceptLayoutSegments: intercept.interceptLayoutSegments,
     interceptBranchSegments: intercept.interceptBranchSegments,
+    interceptLoadings: intercept.interceptLoadings,
+    interceptLoadingTreePositions: intercept.interceptLoadingTreePositions,
     interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
     interceptNotFound: intercept.notFound,
     interceptNotFoundTreePosition: intercept.notFoundTreePosition,
@@ -598,7 +649,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     ? new URLSearchParams()
     : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
-  const hasActiveLoadingBoundary = Boolean(route.loading?.default);
+  const activeLoadingTreePositions = getActiveLoadingTreePositions(route);
+  const hasActiveLoadingBoundary = activeLoadingTreePositions.length > 0;
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -954,7 +1006,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       async probePageSpecialError() {
-        if (route.loading?.default) {
+        if (hasActiveLoadingBoundary) {
           return null;
         }
         const pageError = await probeAppPageThrownError({
@@ -1070,7 +1122,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrSet: options.isrSet,
     interceptionContext: options.interceptionContext,
     expireSeconds: options.expireSeconds,
-    layoutCount: route.layouts.length,
+    // A loading convention at tree position N wraps descendants, but not a
+    // layout co-located at N. Probing any deeper async layout before creating
+    // the RSC stream would serialize on work that its ancestor Suspense
+    // boundary is specifically meant to stream behind.
+    layoutCount: getAppPageLayoutProbeCount(route, activeLoadingTreePositions),
     loadSsrHandler: options.loadSsrHandler,
     middlewareContext: options.middlewareContext,
     navigationParams,

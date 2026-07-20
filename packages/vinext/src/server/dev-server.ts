@@ -13,7 +13,11 @@ import {
   isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
-import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import {
+  closeAfterResponse,
+  createRequestContext,
+  runWithRequestContext,
+} from "vinext/shims/unified-request-context";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
 import "vinext/shims/router-state";
@@ -772,6 +776,9 @@ export function createSSRHandler(
       }
       // No route matched — try to render custom 404 page
       const requestContext = createRequestContext();
+      const closeRequest = () => void closeAfterResponse(requestContext);
+      res.on("finish", closeRequest);
+      res.on("close", closeRequest);
       await runWithRequestContext(requestContext, async () => {
         await _alsRegistration;
         await renderErrorPage(
@@ -815,6 +822,9 @@ export function createSSRHandler(
     let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
+    const closeRequest = () => void closeAfterResponse(requestContext);
+    res.on("finish", closeRequest);
+    res.on("close", closeRequest);
     return runWithRequestContext(requestContext, async () => {
       ensureFetchPatch();
       try {

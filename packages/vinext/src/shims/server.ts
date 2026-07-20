@@ -18,6 +18,12 @@ import { encodeMiddlewareRequestHeaders } from "../utils/middleware-request-head
 import { validateCookieAttributeValue, validateCookieName } from "./internal/cookie-serialize.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import {
+  bindRequestContextSnapshot,
+  getRequestContext,
+  isInsideUnifiedScope,
+  queueAfterCallback,
+} from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 
@@ -1201,8 +1207,7 @@ export type UserAgent = {
  *
  * Uses the platform's `waitUntil` (via the per-request ExecutionContext) when
  * available so the task survives past the response on Cloudflare Workers.
- * Falls back to a fire-and-forget microtask on runtimes without an execution
- * context (e.g. Node.js dev server).
+ * Node.js dev drains callbacks from its response finish/close lifecycle.
  *
  * Throws when called inside a cached scope — request-specific
  * side-effects must not leak into cached results.
@@ -1210,29 +1215,39 @@ export type UserAgent = {
 export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
   _throwIfInsideCacheScope("after()");
 
-  const promise = typeof task === "function" ? Promise.resolve().then(task) : task;
-  // NOTE: vinext runs function tasks concurrently with response streaming (next microtask),
-  // whereas Next.js queues them to run strictly after the response is sent via onClose.
-  // This is a known simplification — function tasks here are not guaranteed to run
-  // after the response completes, only after the current synchronous execution.
-  //
-  // `.catch()` is attached synchronously in the same tick as `promise` is created, so
-  // there is no window where a pre-rejected `task` promise could trigger an
-  // `unhandledrejection` event before the handler is in place.
-  const guarded = promise.catch((err) => {
-    console.error("[vinext] after() task failed:", err);
-  });
+  const requestContext = isInsideUnifiedScope() ? getRequestContext() : null;
 
-  // TODO: Next.js throws when after() is called outside a request context or when
-  // waitUntil is unavailable, preventing silent task loss. vinext falls back to
-  // fire-and-forget here, which is correct for the Node.js dev server (where
-  // getRequestExecutionContext() always returns null). On Workers, a misconfigured
-  // entry that omits runWithExecutionContext would silently drop tasks — consider
-  // a one-time console.warn on the fallback path, gated to production only (e.g.
-  // `process.env.NODE_ENV === 'production'` or `typeof caches !== 'undefined'` for
-  // a Workers runtime check) with a module-level `let _warned = false` guard so it
-  // fires at most once and doesn't spam the dev-server console.
-  getRequestExecutionContext()?.waitUntil(guarded);
+  if (!requestContext) {
+    const executionContext = getRequestExecutionContext();
+    if (executionContext) {
+      if (
+        typeof task !== "function" &&
+        (task == null || typeof (task as PromiseLike<T>).then !== "function")
+      ) {
+        throw new TypeError("`after()`: Argument must be a promise or a function");
+      }
+      const promise = typeof task === "function" ? Promise.resolve().then(task) : task;
+      const guarded = Promise.resolve(promise).catch((error) => {
+        console.error("[vinext] after() task failed:", error);
+      });
+      executionContext.waitUntil(guarded);
+      return;
+    }
+    throw new Error("`after()` was called outside a request scope");
+  }
+
+  if (typeof task !== "function") {
+    if (task == null || typeof (task as PromiseLike<T>).then !== "function") {
+      throw new TypeError("`after()`: Argument must be a promise or a function");
+    }
+    const guarded = Promise.resolve(task).catch((error) => {
+      console.error("[vinext] after() task failed:", error);
+    });
+    getRequestExecutionContext()?.waitUntil(guarded);
+    return;
+  }
+
+  queueAfterCallback(requestContext, bindRequestContextSnapshot(requestContext, task));
 }
 
 /**

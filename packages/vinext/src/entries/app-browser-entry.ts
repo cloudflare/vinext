@@ -4,7 +4,7 @@ import type {
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
 import type { AppRoute } from "../routing/app-router.js";
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
 import type { NextRewrite } from "../config/next-config.js";
 
 /**
@@ -26,9 +26,7 @@ export function generateBrowserEntry(
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
-  const prefetchRoutes: VinextLinkPrefetchRoute[] = routes.map((route) =>
-    isLinkPrefetchRoute(route) ? toLinkPrefetchRoute(route) : toDocumentOnlyAppRoute(route),
-  );
+  const prefetchRoutes = toLinkPrefetchRoutes(routes);
 
   return `import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
 
@@ -51,12 +49,12 @@ import ${JSON.stringify(entryPath)};`;
  * emitting the same manifest for hybrid builds — see issue #1526 and
  * `pages-client-entry.ts`.
  */
-export function isLinkPrefetchRoute(route: AppRoute): boolean {
+function isLinkPrefetchRoute(route: AppRoute): boolean {
   if (route.pagePath !== null) return true;
   return route.routePath === null && route.layouts.length > 0;
 }
 
-export function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
+function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: false,
     documentOnly: true,
@@ -69,14 +67,73 @@ function requiresDynamicNavigationRequest(route: AppRoute): boolean {
   return route.isDynamic && route.parallelSlots.length > 0;
 }
 
+function splitPatternParts(pattern: string): string[] {
+  return pattern.split("/").filter(Boolean);
+}
+
+function interceptTargetsRoute(interceptTargetPattern: string, route: AppRoute): boolean {
+  return patternsStructurallyEquivalent(
+    splitPatternParts(interceptTargetPattern),
+    route.patternParts,
+  );
+}
+
+function hasLoadingBoundary(route: AppRoute, hasSiblingInterceptLoading: boolean): boolean {
+  return (
+    route.loadingPath !== null ||
+    (route.loadingPaths?.length ?? 0) > 0 ||
+    route.parallelSlots.some(
+      (slot) =>
+        slot.loadingPath !== null ||
+        (slot.loadingPaths?.length ?? 0) > 0 ||
+        slot.interceptingRoutes.some(
+          (intercept) =>
+            interceptTargetsRoute(intercept.targetPattern, route) &&
+            (intercept.loadingPaths?.length ?? 0) > 0,
+        ),
+    ) ||
+    hasSiblingInterceptLoading
+  );
+}
+
 /** Project an `AppRoute` down to the public `VinextLinkPrefetchRoute` shape. */
-export function toLinkPrefetchRoute(route: AppRoute): VinextLinkPrefetchRoute {
+export function toLinkPrefetchRoute(
+  route: AppRoute,
+  hasSiblingInterceptLoading = route.siblingIntercepts.some(
+    (intercept) =>
+      interceptTargetsRoute(intercept.targetPattern, route) &&
+      (intercept.loadingPaths?.length ?? 0) > 0,
+  ),
+): VinextLinkPrefetchRoute {
   return {
-    canPrefetchLoadingShell: route.loadingPath !== null,
+    canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
   };
+}
+
+/** Project App routes together so sibling-intercept loading is applied to its target route. */
+export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPrefetchRoute[] {
+  const siblingInterceptLoadingTargets: string[][] = [];
+  for (const route of routes) {
+    for (const intercept of route.siblingIntercepts) {
+      if ((intercept.loadingPaths?.length ?? 0) > 0) {
+        siblingInterceptLoadingTargets.push(splitPatternParts(intercept.targetPattern));
+      }
+    }
+  }
+
+  return routes.map((route) =>
+    isLinkPrefetchRoute(route)
+      ? toLinkPrefetchRoute(
+          route,
+          siblingInterceptLoadingTargets.some((targetParts) =>
+            patternsStructurallyEquivalent(targetParts, route.patternParts),
+          ),
+        )
+      : toDocumentOnlyAppRoute(route),
+  );
 }
 
 function buildRouteManifestExpression(routeManifest: RouteManifest | null): string {

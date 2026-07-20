@@ -8970,6 +8970,90 @@ export default function middleware() {
   });
 });
 
+describe("Pages Router response lifecycle", () => {
+  it("drains after() callbacks when a Node response finishes", async () => {
+    vi.resetModules();
+
+    try {
+      const [{ createSSRHandler }, { after }] = await Promise.all([
+        import("../packages/vinext/src/server/dev-server.js"),
+        import("../packages/vinext/src/shims/server.js"),
+      ]);
+      const routeFile = "/virtual/after-page.tsx";
+      let callbackRan = false;
+      const runner = {
+        async import(id: string) {
+          if (id === "vinext/head-state" || id === "vinext/router-state") return {};
+          if (id === "next/router") {
+            return {
+              default: {},
+              setSSRContext() {},
+            };
+          }
+          if (id === routeFile) {
+            return {
+              default() {
+                return null;
+              },
+              getServerSideProps({ res }: { res: { end(body: string): void } }) {
+                after(() => {
+                  callbackRan = true;
+                });
+                res.end("done");
+                return { props: {} };
+              },
+            };
+          }
+          throw new Error(`Unexpected module load: ${id}`);
+        },
+      };
+      const server = {
+        config: { root: "/", base: "/" },
+      } as unknown as ViteDevServer;
+      const handler = createSSRHandler(
+        server,
+        runner,
+        [
+          {
+            pattern: "/after",
+            patternParts: ["after"],
+            filePath: routeFile,
+            isDynamic: false,
+            params: [],
+          },
+        ],
+        "/virtual/pages",
+      );
+
+      const listeners = new Map<string, Array<() => void>>();
+      const res = {
+        statusCode: 200,
+        writableEnded: false,
+        on(event: string, listener: () => void) {
+          const eventListeners = listeners.get(event) ?? [];
+          eventListeners.push(listener);
+          listeners.set(event, eventListeners);
+          return this;
+        },
+        getHeaders() {
+          return {};
+        },
+        end(body: string) {
+          expect(body).toBe("done");
+          this.writableEnded = true;
+          for (const listener of listeners.get("finish") ?? []) listener();
+        },
+      } as any;
+
+      await handler({ method: "GET", headers: {} } as any, res, "/after");
+      await vi.waitFor(() => expect(callbackRan).toBe(true));
+    } finally {
+      vi.resetModules();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
 // Next.js passes the exact object returned by custom App.getInitialProps through
 // renderPageTree, so an omitted pageProps key remains absent until page data adds it.
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
