@@ -95,13 +95,30 @@ describe("typeof window compilation", () => {
       },
     };
     const source = `if (typeof window !== "undefined") import("browser-only")`;
+    const appPageId = path.join(root, "app/page.js");
 
     expect(
       await transform.call(context as never, source, path.join(cacheDir, "deps_ssr/react.js")),
     ).toBeNull();
+    const cachedServerResult = await transform.call(context as never, source, appPageId);
+    expect(cachedServerResult).not.toBeNull();
+    expect(await transform.call(context as never, source, appPageId)).toBe(cachedServerResult);
+
+    const clientContext = {
+      environment: {
+        config: {
+          ...context.environment.config,
+          consumer: "client",
+        },
+      },
+    };
+    const clientResult = await transform.call(clientContext as never, source, appPageId);
+    expect(clientResult).not.toBe(cachedServerResult);
+    expect(await transform.call(clientContext as never, source, appPageId)).toBe(clientResult);
+    expect(clientResult).toMatchObject({ code: expect.stringContaining("browser-only") });
     expect(
-      await transform.call(context as never, source, path.join(root, "app/page.js")),
-    ).not.toBeNull();
+      await transform.call(context as never, `${source}\nconsole.log("changed")`, appPageId),
+    ).not.toBe(cachedServerResult);
   });
 
   it("only folds references to the global window binding", () => {

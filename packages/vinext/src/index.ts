@@ -251,6 +251,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
+import { createTransformCache } from "./plugins/transform-cache.js";
 import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import {
   assertSupportedViteVersion,
@@ -1793,6 +1794,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       return fn.call(this, config, env);
     },
   };
+
+  const cachedTypeofWindowTransform = createTransformCache<
+    ReturnType<typeof getTypeofWindowReplacement>,
+    ReturnType<typeof replaceTypeofWindow>
+  >();
 
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
@@ -5709,7 +5715,11 @@ export const loadServerActionClient = ${
           }
           const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
           if (toSlash(id).startsWith(cacheDir)) return null;
-          return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
+
+          const replacement = getTypeofWindowReplacement(this.environment);
+          return cachedTypeofWindowTransform(id, code, replacement, () =>
+            replaceTypeofWindow(code, replacement, id),
+          );
         },
       },
     },

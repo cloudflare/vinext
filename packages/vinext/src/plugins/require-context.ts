@@ -29,6 +29,7 @@ import {
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
+import { createTransformCache } from "./transform-cache.js";
 
 const TRANSFORMABLE_EXTENSIONS = new Set([
   ".js",
@@ -50,6 +51,8 @@ type ParsedCall = {
 };
 
 export function createRequireContextPlugin(): Plugin {
+  const cached = createTransformCache<undefined, TransformResult>();
+
   return {
     name: "vinext:require-context",
     // Run before TypeScript/JSX stripping so we still see the
@@ -61,29 +64,38 @@ export function createRequireContextPlugin(): Plugin {
         code: /\brequire\b[\s\S]*\.context/,
       },
       handler(code, id) {
-        const lang = langForId(id)!;
-
-        let ast: unknown;
-        try {
-          ast = parseAst(code, { lang });
-        } catch {
-          return null;
-        }
-
-        const calls = collectRequireContextCalls(ast);
-        if (calls.length === 0) return null;
-
-        const output = new MagicString(code);
-        for (const call of calls) {
-          output.overwrite(call.range.start, call.range.end, buildReplacement(call));
-        }
-
-        return {
-          code: output.toString(),
-          map: output.generateMap({ hires: "boundary" }),
-        };
+        return cached(id, code, undefined, () => transformRequireContext(code, id));
       },
     },
+  };
+}
+
+type TransformResult = {
+  code: string;
+  map: ReturnType<MagicString["generateMap"]>;
+} | null;
+
+function transformRequireContext(code: string, id: string): TransformResult {
+  const lang = langForId(id)!;
+
+  let ast: unknown;
+  try {
+    ast = parseAst(code, { lang });
+  } catch {
+    return null;
+  }
+
+  const calls = collectRequireContextCalls(ast);
+  if (calls.length === 0) return null;
+
+  const output = new MagicString(code);
+  for (const call of calls) {
+    output.overwrite(call.range.start, call.range.end, buildReplacement(call));
+  }
+
+  return {
+    code: output.toString(),
+    map: output.generateMap({ hires: "boundary" }),
   };
 }
 
