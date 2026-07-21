@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.3
+
+### Bug Fixes
+
+- **Cloudflare:** report custom-domain deploy URLs (#2630)
+
+### Contributors
+
+- @NathanDrake2406
+
 ## 1.0.0-beta.2
 
 ### Bug Fixes
