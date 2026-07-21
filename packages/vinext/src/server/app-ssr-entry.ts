@@ -111,7 +111,19 @@ function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPr
   );
 }
 
-async function loadStaticPrerender(): Promise<StaticPrerender> {
+let staticPrerenderPromise: Promise<StaticPrerender> | undefined;
+
+function loadStaticPrerender(): Promise<StaticPrerender> {
+  if (!staticPrerenderPromise) {
+    staticPrerenderPromise = loadStaticPrerenderImpl();
+    staticPrerenderPromise.catch(() => {
+      staticPrerenderPromise = undefined;
+    });
+  }
+  return staticPrerenderPromise;
+}
+
+async function loadStaticPrerenderImpl(): Promise<StaticPrerender> {
   // Prefer the stable ESM entry in all environments. Future React dev builds
   // may export prerender() here, so this is the first path we attempt.
   const staticRenderer: unknown = await import("react-dom/static.edge");
@@ -754,6 +766,23 @@ export async function handleSsr(
   }) as Promise<AppSsrRenderResult>;
 }
 
+type RscEntryModule = {
+  default(request: Request): Promise<Response | string | null | undefined>;
+};
+
+let rscModulePromise: Promise<RscEntryModule> | undefined;
+
+function loadRscModule(): Promise<RscEntryModule> {
+  // In dev, the Vite module runner must re-import so HMR invalidations of the
+  // RSC entry (which bundles user code) are picked up. In production the
+  // target module is immutable, so memoize to avoid a dynamic import() on
+  // every request (each one round-trips through registered ESM loader hooks).
+  if (process.env.NODE_ENV !== "production") {
+    return import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index");
+  }
+  return (rscModulePromise ??= import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index"));
+}
+
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -763,9 +792,7 @@ export default {
       return notFoundResponse();
     }
 
-    const rscModule = await import.meta.viteRsc.loadModule<{
-      default(request: Request): Promise<Response | string | null | undefined>;
-    }>("rsc", "index");
+    const rscModule = await loadRscModule();
     const result = await rscModule.default(request);
 
     if (result instanceof Response) {

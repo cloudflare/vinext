@@ -270,7 +270,7 @@ export function generateRscEntry(
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
 async function __loadPrerenderPagesRoutes() {
-  const __gspSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+  const __gspSsrEntry = await __loadSsrModule();
   return __gspSsrEntry.pageRoutes;
 }
 `
@@ -330,20 +330,31 @@ ${
 } from ${JSON.stringify(appRouteHandlerResponsePath)};`
     : ""
 }
-const __loadAppRouteHandlerDispatch = () => import(${JSON.stringify(appRouteHandlerDispatchPath)});
+const __memoizeLoad = (load) => {
+  let promise;
+  return () => (promise ??= load());
+};
+let __ssrModulePromise;
+function __loadSsrModule() {
+  if (process.env.NODE_ENV !== "production") {
+    return import.meta.viteRsc.loadModule("ssr", "index");
+  }
+  return (__ssrModulePromise ??= import.meta.viteRsc.loadModule("ssr", "index"));
+}
+const __loadAppRouteHandlerDispatch = __memoizeLoad(() => import(${JSON.stringify(appRouteHandlerDispatchPath)}));
 ${
   hasServerActions
-    ? `const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});`
+    ? `const __loadAppServerActionExecution = __memoizeLoad(() => import(${JSON.stringify(appServerActionExecutionPath)}));`
     : ""
 }
 ${
   (metadataRoutes?.length ?? 0) > 0
-    ? `const __loadMetadataRouteResponse = () => import(${JSON.stringify(metadataRouteResponsePath)});`
+    ? `const __loadMetadataRouteResponse = __memoizeLoad(() => import(${JSON.stringify(metadataRouteResponsePath)}));`
     : ""
 }
 ${
   (metadataRoutes?.length ?? 0) > 0
-    ? `const __loadFileBasedMetadata = () => import(${JSON.stringify(fileBasedMetadataPath)});
+    ? `const __loadFileBasedMetadata = __memoizeLoad(() => import(${JSON.stringify(fileBasedMetadataPath)}));
 async function __applyFileBasedMetadata(...args) {
   const { applyFileBasedMetadata } = await __loadFileBasedMetadata();
   return applyFileBasedMetadata(...args);
@@ -592,7 +603,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   globalNotFoundEnabled: ${config?.globalNotFound === true},
   metadataRoutes,
   ssrLoader() {
-    return import.meta.viteRsc.loadModule("ssr", "index");
+    return __loadSsrModule();
   },
   fontProviders: {
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
@@ -870,7 +881,7 @@ export default createAppRscHandler({
       isrRscKey: __isrRscKey,
       isrSet: __isrSet,
       loadSsrHandler() {
-        return import.meta.viteRsc.loadModule("ssr", "index");
+        return __loadSsrModule();
       },
       middlewareContext,
       mountedSlotsHeader,
@@ -1247,7 +1258,7 @@ export default createAppRscHandler({
       { allowRscDocumentFallback, appRouteMatch, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
       {
         loadPagesEntry() {
-          return import.meta.viteRsc.loadModule("ssr", "index");
+          return __loadSsrModule();
         },
         buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
         decodePathParams: __decodePathParams,
