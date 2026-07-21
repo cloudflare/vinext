@@ -1,5 +1,6 @@
 import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
 import type { ModuleImporter } from "./instrumentation.js";
@@ -502,6 +503,7 @@ async function streamPageToResponse(
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
   let documentAssetProps: DocumentAssetProps = {};
+  const documentAuthoredAssetMarker = `data-vinext-document-authored-${randomUUID()}`;
 
   if (DocumentComponent) {
     // When the renderPage path already invoked getInitialProps, reuse its
@@ -516,7 +518,7 @@ async function streamPageToResponse(
       : React.createElement(DocumentComponent);
     const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
     documentAssetProps = renderedDocument.props;
-    let docHtml = markDocumentAuthoredAssetTags(renderedDocument.html);
+    let docHtml = markDocumentAuthoredAssetTags(renderedDocument.html, documentAuthoredAssetMarker);
     const generatedFontHeadHTML = applyDocumentAssetProps(
       fontHeadHTML,
       { headNonce: renderedDocument.props.headNonce },
@@ -534,7 +536,7 @@ async function streamPageToResponse(
     if (headHTML || generatedFontHeadHTML || generatedAssetHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
+        `  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}\n  ${generatedAssetHeadHTML}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -552,7 +554,7 @@ async function streamPageToResponse(
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML)}
+  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}
   ${generatedAssetHeadHTML}
 </head>
 <body>
@@ -566,7 +568,13 @@ async function streamPageToResponse(
   // shell template, then split at the body marker.
   let transformedShell = await server.transformIndexHtml(url, shellTemplate);
   transformedShell = stripDocumentAuthoredAssetMarkers(
-    applyDocumentAssetProps(transformedShell, documentAssetProps, crossOrigin),
+    applyDocumentAssetProps(
+      transformedShell,
+      documentAssetProps,
+      crossOrigin,
+      documentAuthoredAssetMarker,
+    ),
+    documentAuthoredAssetMarker,
   );
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);

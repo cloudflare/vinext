@@ -11,30 +11,35 @@ const HEAD_NONCE_ATTR = "data-vinext-head-nonce";
 const HEAD_CROSS_ORIGIN_ATTR = "data-vinext-head-cross-origin";
 const SCRIPT_NONCE_ATTR = "data-vinext-script-nonce";
 const SCRIPT_CROSS_ORIGIN_ATTR = "data-vinext-script-cross-origin";
-const DOCUMENT_AUTHORED_ASSET_ATTR = "data-vinext-document-authored-asset";
-
-function readAttribute(html: string, name: string): string | undefined {
-  const match = html.match(new RegExp(`\\s${name}="([^"]*)"`));
+function readAttribute(tag: string | undefined, name: string): string | undefined {
+  if (!tag) return undefined;
+  const match = tag.match(new RegExp(`\\s${name}="([^"]*)"`));
   return match?.[1];
+}
+
+function removeAttributes(tag: string, names: readonly string[]): string {
+  return tag.replace(new RegExp(`\\s(?:${names.join("|")})="[^"]*"`, "g"), "");
 }
 
 export function extractDocumentAssetProps(html: string): {
   html: string;
   props: DocumentAssetProps;
 } {
+  const headTag = html.match(/<head\b[^>]*>/i)?.[0];
+  const nextScriptTag = html.match(/<span\b[^>]*>(?=<!-- __NEXT_SCRIPTS__ -->)/i)?.[0];
   const props = {
-    headNonce: readAttribute(html, HEAD_NONCE_ATTR),
-    headCrossOrigin: readAttribute(html, HEAD_CROSS_ORIGIN_ATTR),
-    scriptNonce: readAttribute(html, SCRIPT_NONCE_ATTR),
-    scriptCrossOrigin: readAttribute(html, SCRIPT_CROSS_ORIGIN_ATTR),
+    headNonce: readAttribute(headTag, HEAD_NONCE_ATTR),
+    headCrossOrigin: readAttribute(headTag, HEAD_CROSS_ORIGIN_ATTR),
+    scriptNonce: readAttribute(nextScriptTag, SCRIPT_NONCE_ATTR),
+    scriptCrossOrigin: readAttribute(nextScriptTag, SCRIPT_CROSS_ORIGIN_ATTR),
   };
-  const cleanedHtml = html.replace(
-    new RegExp(
-      `\\s(?:${HEAD_NONCE_ATTR}|${HEAD_CROSS_ORIGIN_ATTR}|${SCRIPT_NONCE_ATTR}|${SCRIPT_CROSS_ORIGIN_ATTR})="[^"]*"`,
-      "g",
-    ),
-    "",
-  );
+  const cleanedHtml = html
+    .replace(/<head\b[^>]*>/i, (tag) =>
+      removeAttributes(tag, [HEAD_NONCE_ATTR, HEAD_CROSS_ORIGIN_ATTR]),
+    )
+    .replace(/<span\b[^>]*>(?=<!-- __NEXT_SCRIPTS__ -->)/i, (tag) =>
+      removeAttributes(tag, [SCRIPT_NONCE_ATTR, SCRIPT_CROSS_ORIGIN_ATTR]),
+    );
   return { html: cleanedHtml, props };
 }
 
@@ -57,8 +62,8 @@ function addAttribute(
   });
 }
 
-function isDocumentAuthoredAsset(tag: string): boolean {
-  return new RegExp(`\\s${DOCUMENT_AUTHORED_ASSET_ATTR}(?:="[^"]*")?`, "i").test(tag);
+function hasAttribute(tag: string, name: string | undefined): boolean {
+  return name !== undefined && new RegExp(`\\s${name}(?:="[^"]*")?`, "i").test(tag);
 }
 
 /**
@@ -67,22 +72,26 @@ function isDocumentAuthoredAsset(tag: string): boolean {
  * unmarked, so the framework props can be applied to them without overwriting
  * explicit attributes on user tags.
  */
-export function markDocumentAuthoredAssetTags(html: string): string {
+export function markDocumentAuthoredAssetTags(html: string, markerAttribute: string): string {
   return html
-    .replace(/<script\b[^>]*>/gi, (tag) => addAttribute(tag, DOCUMENT_AUTHORED_ASSET_ATTR, ""))
+    .replace(/<script\b[^>]*>/gi, (tag) => addAttribute(tag, markerAttribute, ""))
     .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, (tag) =>
-      addAttribute(tag, DOCUMENT_AUTHORED_ASSET_ATTR, ""),
+      addAttribute(tag, markerAttribute, ""),
     );
 }
 
-export function stripDocumentAuthoredAssetMarkers(html: string): string {
-  return html.replace(new RegExp(`\\s${DOCUMENT_AUTHORED_ASSET_ATTR}(?:="[^"]*")?`, "gi"), "");
+export function stripDocumentAuthoredAssetMarkers(html: string, markerAttribute: string): string {
+  const stripMarker = (tag: string) => removeAttributes(tag, [markerAttribute]);
+  return html
+    .replace(/<script\b[^>]*>/gi, stripMarker)
+    .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, stripMarker);
 }
 
 export function applyDocumentAssetProps(
   html: string,
   props: DocumentAssetProps,
   configuredCrossOrigin?: string,
+  documentAuthoredAssetMarker?: string,
 ): string {
   const scriptNonce = props.scriptNonce;
   const preloadNonce = props.headNonce;
@@ -91,7 +100,7 @@ export function applyDocumentAssetProps(
 
   return html
     .replace(/<script\b[^>]*>/gi, (tag) => {
-      if (isDocumentAuthoredAsset(tag)) return tag;
+      if (hasAttribute(tag, documentAuthoredAssetMarker)) return tag;
       return addAttribute(
         addAttribute(tag, "nonce", scriptNonce, true),
         "crossorigin",
@@ -100,7 +109,7 @@ export function applyDocumentAssetProps(
       );
     })
     .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, (tag) => {
-      if (isDocumentAuthoredAsset(tag)) return tag;
+      if (hasAttribute(tag, documentAuthoredAssetMarker)) return tag;
       return addAttribute(
         addAttribute(tag, "nonce", preloadNonce, true),
         "crossorigin",
