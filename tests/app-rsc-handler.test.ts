@@ -602,7 +602,7 @@ describe("createAppRscHandler", () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("intercepted", { status: 200 }));
     const matchInterceptRoute = vi.fn((pathname: string, sourcePathname: string) => {
       if (pathname !== "/photos/%5Fhidden" || sourcePathname !== "/feed/a%252Fb") return null;
-      return { route: sourceRoute, params: { slug: "%5Fhidden" } };
+      return { route: sourceRoute, params: { slug: "a%2Fb" } };
     });
     const handler = createHandler({
       configHeaders: [],
@@ -620,7 +620,7 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         interceptionPathname: "/photos/%5Fhidden",
-        params: { slug: "%5Fhidden" },
+        params: { slug: "a%2Fb" },
         route: sourceRoute,
       }),
     );
