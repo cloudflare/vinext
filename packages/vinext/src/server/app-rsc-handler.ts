@@ -95,7 +95,6 @@ import {
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
-import { memoizeModuleLoader } from "../utils/memoize-module-loader.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -109,8 +108,18 @@ const HAS_CONFIG_REWRITES = process.env.__VINEXT_HAS_CONFIG_REWRITES !== "false"
 // never changes at runtime, so re-running import() per request only pays
 // resolution overhead (amplified to a synchronous hooks-thread round-trip
 // when ESM loader hooks are registered, e.g. by OTel/Sentry).
-const loadConfigMatchers = memoizeModuleLoader(() => import("../config/config-matchers.js"));
-const loadConfigHeaders = memoizeModuleLoader(() => import("./config-headers.js"));
+let loadConfigMatchersPromise: Promise<typeof import("../config/config-matchers.js")> | undefined;
+const loadConfigMatchers = () =>
+  (loadConfigMatchersPromise ??= import("../config/config-matchers.js").catch((error) => {
+    loadConfigMatchersPromise = undefined;
+    throw error;
+  }));
+let loadConfigHeadersPromise: Promise<typeof import("./config-headers.js")> | undefined;
+const loadConfigHeaders = () =>
+  (loadConfigHeadersPromise ??= import("./config-headers.js").catch((error) => {
+    loadConfigHeadersPromise = undefined;
+    throw error;
+  }));
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
