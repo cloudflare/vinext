@@ -11,6 +11,7 @@ const HEAD_NONCE_ATTR = "data-vinext-head-nonce";
 const HEAD_CROSS_ORIGIN_ATTR = "data-vinext-head-cross-origin";
 const SCRIPT_NONCE_ATTR = "data-vinext-script-nonce";
 const SCRIPT_CROSS_ORIGIN_ATTR = "data-vinext-script-cross-origin";
+const DOCUMENT_AUTHORED_ASSET_ATTR = "data-vinext-document-authored-asset";
 
 function readAttribute(html: string, name: string): string | undefined {
   const match = html.match(new RegExp(`\\s${name}="([^"]*)"`));
@@ -56,6 +57,28 @@ function addAttribute(
   });
 }
 
+function isDocumentAuthoredAsset(tag: string): boolean {
+  return new RegExp(`\\s${DOCUMENT_AUTHORED_ASSET_ATTR}(?:="[^"]*")?`, "i").test(tag);
+}
+
+/**
+ * Protect user-authored `_document` and `next/head` asset tags while Vite runs
+ * its HTML transforms. Tags injected by Vite after this marker pass remain
+ * unmarked, so the framework props can be applied to them without overwriting
+ * explicit attributes on user tags.
+ */
+export function markDocumentAuthoredAssetTags(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>/gi, (tag) => addAttribute(tag, DOCUMENT_AUTHORED_ASSET_ATTR, ""))
+    .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, (tag) =>
+      addAttribute(tag, DOCUMENT_AUTHORED_ASSET_ATTR, ""),
+    );
+}
+
+export function stripDocumentAuthoredAssetMarkers(html: string): string {
+  return html.replace(new RegExp(`\\s${DOCUMENT_AUTHORED_ASSET_ATTR}(?:="[^"]*")?`, "gi"), "");
+}
+
 export function applyDocumentAssetProps(
   html: string,
   props: DocumentAssetProps,
@@ -64,24 +87,25 @@ export function applyDocumentAssetProps(
   const scriptNonce = props.scriptNonce;
   const preloadNonce = props.headNonce;
   const scriptCrossOrigin = props.scriptCrossOrigin ?? configuredCrossOrigin;
-  const preloadCrossOrigin =
-    props.headCrossOrigin ?? props.scriptCrossOrigin ?? configuredCrossOrigin;
+  const preloadCrossOrigin = props.headCrossOrigin ?? configuredCrossOrigin;
 
   return html
-    .replace(/<script\b[^>]*>/gi, (tag) =>
-      addAttribute(
+    .replace(/<script\b[^>]*>/gi, (tag) => {
+      if (isDocumentAuthoredAsset(tag)) return tag;
+      return addAttribute(
         addAttribute(tag, "nonce", scriptNonce, true),
         "crossorigin",
         scriptCrossOrigin,
         true,
-      ),
-    )
-    .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, (tag) =>
-      addAttribute(
+      );
+    })
+    .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, (tag) => {
+      if (isDocumentAuthoredAsset(tag)) return tag;
+      return addAttribute(
         addAttribute(tag, "nonce", preloadNonce, true),
         "crossorigin",
         preloadCrossOrigin,
         true,
-      ),
-    );
+      );
+    });
 }

@@ -31,6 +31,9 @@ import {
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
+  markDocumentAuthoredAssetTags,
+  stripDocumentAuthoredAssetMarkers,
+  type DocumentAssetProps,
 } from "./pages-document-asset-props.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
@@ -364,8 +367,6 @@ function writeGsspRedirect(
 
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
-const GENERATED_SCRIPTS_START = "<!--VINEXT_GENERATED_SCRIPTS_START-->";
-const GENERATED_SCRIPTS_END = "<!--VINEXT_GENERATED_SCRIPTS_END-->";
 
 /**
  * Stream a Pages Router page response using progressive SSR.
@@ -500,6 +501,7 @@ async function streamPageToResponse(
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
+  let documentAssetProps: DocumentAssetProps = {};
 
   if (DocumentComponent) {
     // When the renderPage path already invoked getInitialProps, reuse its
@@ -513,7 +515,8 @@ async function streamPageToResponse(
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
     const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
-    let docHtml = renderedDocument.html;
+    documentAssetProps = renderedDocument.props;
+    let docHtml = markDocumentAuthoredAssetTags(renderedDocument.html);
     const generatedFontHeadHTML = applyDocumentAssetProps(
       fontHeadHTML,
       { headNonce: renderedDocument.props.headNonce },
@@ -531,7 +534,7 @@ async function streamPageToResponse(
     if (headHTML || generatedFontHeadHTML || generatedAssetHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `  ${generatedFontHeadHTML}${headHTML}\n  ${generatedAssetHeadHTML}\n</head>`,
+        `  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -549,12 +552,12 @@ async function streamPageToResponse(
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${generatedFontHeadHTML}${headHTML}
+  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML)}
   ${generatedAssetHeadHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
-  ${GENERATED_SCRIPTS_START}${scripts}${GENERATED_SCRIPTS_END}
+  ${scripts}
 </body>
 </html>`;
   }
@@ -562,25 +565,9 @@ async function streamPageToResponse(
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
   let transformedShell = await server.transformIndexHtml(url, shellTemplate);
-  const generatedScriptsStart = transformedShell.indexOf(GENERATED_SCRIPTS_START);
-  if (generatedScriptsStart !== -1) {
-    const generatedScriptsEnd = transformedShell.indexOf(
-      GENERATED_SCRIPTS_END,
-      generatedScriptsStart,
-    );
-    if (generatedScriptsEnd !== -1) {
-      const scriptsStart = generatedScriptsStart + GENERATED_SCRIPTS_START.length;
-      const generatedScripts = applyDocumentAssetProps(
-        transformedShell.slice(scriptsStart, generatedScriptsEnd),
-        {},
-        crossOrigin,
-      );
-      transformedShell =
-        transformedShell.slice(0, generatedScriptsStart) +
-        generatedScripts +
-        transformedShell.slice(generatedScriptsEnd + GENERATED_SCRIPTS_END.length);
-    }
-  }
+  transformedShell = stripDocumentAuthoredAssetMarkers(
+    applyDocumentAssetProps(transformedShell, documentAssetProps, crossOrigin),
+  );
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);

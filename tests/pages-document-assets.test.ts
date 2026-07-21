@@ -33,6 +33,7 @@ function getStartTags(html: string, tagName: string): string[] {
 function assertDocumentAssetProps(html: string, requirePreloads: boolean): void {
   expect(html).not.toContain("data-vinext-head-nonce");
   expect(html).not.toContain("data-vinext-script-nonce");
+  expect(html).not.toContain("data-vinext-document-authored-asset");
 
   const scripts = getStartTags(html, "script").filter((tag) => tag.includes('nonce="test-nonce"'));
   const preloads = getStartTags(html, "link").filter(
@@ -43,7 +44,11 @@ function assertDocumentAssetProps(html: string, requirePreloads: boolean): void 
   expect(scripts.length).toBeGreaterThan(0);
   if (requirePreloads) expect(preloads.length).toBeGreaterThan(0);
 
-  for (const tag of [...scripts, ...preloads]) {
+  for (const tag of scripts) {
+    expect(tag).toContain('nonce="test-nonce"');
+    expect(tag).toContain('crossorigin="use-credentials"');
+  }
+  for (const tag of preloads) {
     expect(tag).toContain('nonce="test-nonce"');
     expect(tag).toContain('crossorigin="anonymous"');
   }
@@ -88,10 +93,10 @@ describe("Pages _document script and preload props", () => {
       path.join(root, "pages", "_document.tsx"),
       `import { Html, Head, Main, NextScript } from "next/document";
 export default function Document() {
-  return <Html><Head nonce="test-nonce">
+  return <Html><Head nonce="test-nonce" crossOrigin="anonymous">
     <script id="user-script" src="/user.js" nonce="user-nonce" crossOrigin="use-credentials" />
     <link id="user-preload" rel="preload" href="/user.js" as="script" nonce="user-preload-nonce" crossOrigin="use-credentials" />
-  </Head><body><Main /><NextScript nonce="test-nonce" /></body></Html>;
+  </Head><body><Main /><NextScript nonce="test-nonce" crossOrigin="use-credentials" /></body></Html>;
 }
 `,
     );
@@ -146,13 +151,13 @@ export default function Document() {
     expect(response.status).toBe(200);
     const html = await response.text();
     assertDocumentAssetProps(html, false);
-    const viteScripts = getStartTags(html, "script").filter(
-      (tag) => !tag.includes('id="user-script"') && !tag.includes('nonce="test-nonce"'),
+    const viteScripts = getStartTags(html, "script").filter((tag) =>
+      tag.includes('src="/@vite/client"'),
     );
     expect(viteScripts.length).toBeGreaterThan(0);
     for (const tag of viteScripts) {
-      expect(tag).not.toContain("nonce=");
-      expect(tag).not.toContain("crossorigin=");
+      expect(tag).toContain('nonce="test-nonce"');
+      expect(tag).toContain('crossorigin="use-credentials"');
     }
   });
 
@@ -211,7 +216,7 @@ export default function Document() {
       );
       expect(viteScripts.length).toBeGreaterThan(0);
       for (const tag of viteScripts) {
-        expect(tag).not.toContain("crossorigin=");
+        expect(tag).toContain('crossorigin="anonymous"');
       }
     } finally {
       await noDocumentServer?.close();

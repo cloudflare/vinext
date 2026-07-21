@@ -382,10 +382,10 @@ describe("pages page response", () => {
 
   // Ported from Next.js: test/e2e/app-document/rendering.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-document/rendering.test.ts
-  it("applies _document nonce and configured crossOrigin to generated scripts and preloads", async () => {
+  it("keeps Head and NextScript crossOrigin ownership separate", async () => {
     const common = createCommonOptions();
     common.renderDocumentToString.mockResolvedValue(
-      '<!DOCTYPE html><html><head data-vinext-head-nonce="test-nonce"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="test-nonce"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+      '<!DOCTYPE html><html><head data-vinext-head-nonce="test-nonce" data-vinext-head-cross-origin="anonymous"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="test-nonce" data-vinext-script-cross-origin="use-credentials"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
     );
 
     const response = await renderPagesPageResponse({
@@ -401,7 +401,7 @@ describe("pages page response", () => {
     expect(html).not.toContain("data-vinext-script-nonce");
     for (const tag of getStartTags(html, "script")) {
       expect(tag).toContain('nonce="test-nonce"');
-      expect(tag).toContain('crossorigin="anonymous"');
+      expect(tag).toContain('crossorigin="use-credentials"');
     }
     const preloads = getStartTags(html, "link").filter(
       (tag) => tag.includes('rel="preload"') || tag.includes('rel="modulepreload"'),
