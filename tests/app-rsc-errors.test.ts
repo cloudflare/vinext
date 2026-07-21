@@ -312,6 +312,29 @@ describe("app RSC error primitives", () => {
     }
   });
 
+  it.each(["AbortError", "ResponseAborted"])(
+    "does not report or log expected %s cancellations",
+    (name) => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const reportRequestError = vi.fn();
+        const onError = createRscOnErrorHandler({
+          errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+          nodeEnv: "development",
+          reportRequestError,
+          requestInfo: { path: "/feed", method: "GET", headers: {} },
+        });
+        const error = Object.assign(new Error("cancelled"), { name });
+
+        expect(onError(error)).toBeUndefined();
+        expect(reportRequestError).not.toHaveBeenCalled();
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
+    },
+  );
+
   it("logs the original server error when a wrapped transport error reaches dev logging", () => {
     // In production `sanitizeErrorForClient` wraps the real error behind a
     // digest-only transport error keyed by ORIGINAL_SERVER_ERROR. If such a

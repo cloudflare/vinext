@@ -36,6 +36,12 @@ export function hasDigest(error: unknown): error is { digest: unknown } {
 const BAILOUT_TO_CSR_DIGEST = "BAILOUT_TO_CLIENT_SIDE_RENDERING";
 const DYNAMIC_SERVER_USAGE_DIGEST = "DYNAMIC_SERVER_USAGE";
 
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = Reflect.get(error, "name");
+  return name === "AbortError" || name === "ResponseAborted";
+}
+
 /**
  * vinext's mirror of Next.js's `getDigestForWellKnownError`: returns the digest
  * string only when the error is a genuine control-flow signal — a redirect,
@@ -111,6 +117,12 @@ export function createRscOnErrorHandler(
 ): (error: unknown) => string | undefined {
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
+
+    // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
+    // Expected response/HMR cancellations are not render failures.
+    if (isAbortError(error)) {
+      return undefined;
+    }
 
     // Well-known control-flow signals (redirect / notFound / bailout-to-CSR /
     // dynamic-server) carry a recognized digest and are not real failures:
