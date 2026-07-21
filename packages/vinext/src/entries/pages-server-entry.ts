@@ -467,11 +467,12 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 
-export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin) {
+export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker") {
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     ctx,
+    edgeRuntime,
     match,
     nextConfig: vinextConfig,
     request,

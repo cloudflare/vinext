@@ -1971,6 +1971,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                   apiUrl,
                   createNodeExecutionContext(),
                   resolveTrustedNodeRevalidateOrigin(req, host, port),
+                  "node",
                 )
             : null,
         // ── 5b. Serve public-directory static files (post-middleware) ──
