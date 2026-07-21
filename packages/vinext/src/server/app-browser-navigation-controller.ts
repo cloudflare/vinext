@@ -33,6 +33,7 @@ import {
   applyApprovedVisibleCommit,
   approveHmrVisibleCommit,
   approvePendingNavigationCommit,
+  approveRestoredHistorySnapshotCommit,
   resolveAndClassifyNavigationCommit,
   type ApprovedVisibleCommit,
 } from "./app-browser-visible-commit.js";
@@ -130,6 +131,7 @@ type BrowserNavigationController = {
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
   restoreHistorySnapshotVisibleState(options: {
+    allowUnclassifiedRestore?: boolean;
     beforeCommit?: () => void;
     navId: number;
     state: AppRouterState;
@@ -673,6 +675,7 @@ export function createAppBrowserNavigationController(
   }
 
   function restoreHistorySnapshotVisibleState(options: {
+    allowUnclassifiedRestore?: boolean;
     beforeCommit?: () => void;
     navId: number;
     state: AppRouterState;
@@ -688,7 +691,7 @@ export function createAppBrowserNavigationController(
       renderId: allocateRenderId(),
       restoredState: options.state,
     });
-    const approval = approvePendingNavigationCommit({
+    const classifiedApproval = approvePendingNavigationCommit({
       activeNavigationId,
       currentState,
       pending,
@@ -696,13 +699,20 @@ export function createAppBrowserNavigationController(
       startedNavigationId: options.navId,
       targetHref: options.targetHref,
     });
+    const approval =
+      classifiedApproval.approvedCommit ??
+      (options.allowUnclassifiedRestore === true &&
+      classifiedApproval.decision.disposition === "no-commit" &&
+      currentState.routeId === options.state.routeId &&
+      activeNavigationId === options.navId &&
+      currentState.visibleCommitVersion === pending.action.operation.startedVisibleCommitVersion
+        ? approveRestoredHistorySnapshotCommit(pending)
+        : null);
 
-    if (approval.approvedCommit === null) {
-      return false;
-    }
+    if (approval === null) return false;
 
     options.beforeCommit?.();
-    dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    dispatchSynchronousVisibleCommit(approval);
     return true;
   }
 

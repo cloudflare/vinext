@@ -1416,6 +1416,29 @@ describe("app browser entry navigation scheduling", () => {
     expect(stateRef.current.visibleCommitVersion).toBe(8);
   });
 
+  it("restores a captured shallow URL that is absent from the route manifest", () => {
+    const currentState = createState({ visibleCommitVersion: 7 });
+    const snapshotState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/my-non-existent-path",
+        {},
+      ),
+      routeId: "route:/pushstate-new-pathname",
+    });
+    const { controller, stateRef } = createControllerHarness(currentState);
+    const navId = controller.beginNavigation();
+
+    const restored = controller.restoreHistorySnapshotVisibleState({
+      navId,
+      state: snapshotState,
+      targetHref: "https://example.com/my-non-existent-path",
+    });
+
+    expect(restored).toBe(true);
+    expect(stateRef.current.routeId).toBe("route:/pushstate-new-pathname");
+    expect(stateRef.current.navigationSnapshot.pathname).toBe("/my-non-existent-path");
+  });
+
   it("rejects visible history snapshots for stale navigation lifecycles", () => {
     const currentState = createState({ visibleCommitVersion: 7 });
     const snapshotState = createState({

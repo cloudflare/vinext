@@ -232,6 +232,167 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
   });
 });
 
+describe("AppBrowserHistoryController external history navigation", () => {
+  it("allocates a distinct push entry and snapshots the shallow visible URL", () => {
+    const initialState = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 1,
+    });
+    const { controller, store } = createController({
+      initialState,
+      initialHref: "https://example.com/target",
+    });
+    const snapshotState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/missing", {}),
+      routeId: "route:/target",
+    });
+
+    controller.commitExternalHistoryNavigation({
+      callerState: { caller: true },
+      href: "https://example.com/missing",
+      historyUpdateMode: "push",
+      snapshotState,
+    });
+
+    expect(store.pushed).toHaveLength(1);
+    expect(readHistoryStateTraversalIndex(store.pushed[0]?.state)).toBe(2);
+    expect(controller.currentHistoryTraversalIndex).toBe(2);
+
+    controller.commitHistoryTraversalIndex(1);
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      expect(candidate.state).toBe(snapshotState);
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: store.pushed[0]?.state,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(controller.currentHistoryTraversalIndex).toBe(2);
+  });
+
+  it("replaces the current entry without advancing its traversal index", () => {
+    const initialState = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 4,
+    });
+    const { controller, store } = createController({
+      initialState,
+      initialHref: "https://example.com/target",
+    });
+    const snapshotState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/replaced", {}),
+      routeId: "route:/target",
+    });
+
+    controller.commitExternalHistoryNavigation({
+      callerState: { caller: true },
+      href: "https://example.com/replaced",
+      historyUpdateMode: "replace",
+      snapshotState,
+    });
+
+    expect(store.pushed).toHaveLength(0);
+    expect(store.replaced).toHaveLength(1);
+    expect(readHistoryStateTraversalIndex(store.replaced[0]?.state)).toBe(4);
+    expect(controller.currentHistoryTraversalIndex).toBe(4);
+  });
+
+  it("does not mark copied app history state as a shallow snapshot", () => {
+    const staleState = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [AppElementsWire.encodeLayoutId("/")]: "stale-layout" },
+      bfcacheVersion: 0,
+      previousNextUrl: "/x/1",
+      traversalIndex: 1,
+    });
+    const initialState = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [AppElementsWire.encodeLayoutId("/")]: "current-layout" },
+      bfcacheVersion: 0,
+      previousNextUrl: "/x/2",
+      traversalIndex: 2,
+    });
+    const { controller, store } = createController({
+      initialState,
+      initialHref: "https://example.com/x/2",
+    });
+
+    controller.commitExternalHistoryNavigation({
+      callerState: staleState,
+      href: "https://example.com/redirect-to-y",
+      historyUpdateMode: "push",
+      snapshotState: createRouterState({
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/redirect-to-y",
+          {},
+        ),
+        routeId: "route:/x/2",
+      }),
+    });
+    controller.rememberHistoryStateSnapshot(
+      createRouterState({
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/redirect-to-y",
+          {},
+        ),
+        routeId: "route:/x/2",
+      }),
+    );
+
+    controller.commitHistoryTraversalIndex(1);
+    const approveVisibleRestore = vi.fn();
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: store.pushed[0]?.state,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(false);
+    expect(approveVisibleRestore).not.toHaveBeenCalled();
+  });
+
+  it("marks copied current history state as a shallow snapshot", () => {
+    const initialState = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [AppElementsWire.encodeLayoutId("/")]: "current-layout" },
+      bfcacheVersion: 0,
+      previousNextUrl: "/x/1",
+      traversalIndex: 1,
+    });
+    const { controller, store } = createController({
+      initialState,
+      initialHref: "https://example.com/x/1",
+    });
+    const snapshotState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/missing", {}),
+      routeId: "route:/x/1",
+    });
+
+    controller.commitExternalHistoryNavigation({
+      callerState: structuredClone(initialState),
+      href: "https://example.com/missing",
+      historyUpdateMode: "push",
+      snapshotState,
+    });
+
+    controller.commitHistoryTraversalIndex(1);
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      expect(candidate.allowUnclassifiedRestore).toBe(true);
+      expect(candidate.state).toBe(snapshotState);
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: store.pushed[0]?.state,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("AppBrowserHistoryController history metadata sync", () => {
   it("canonicalizes a bare trailing query marker during bootstrap", () => {
     const { controller, store } = createController({

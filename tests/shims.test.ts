@@ -664,7 +664,7 @@ describe("next/navigation shim", () => {
     }
   });
 
-  it("keeps pending render snapshot active when external history.pushState syncs the URL", async () => {
+  it("clears a superseded render snapshot when external history.pushState syncs the URL", async () => {
     const previousWindow = (globalThis as any).window;
     const win = {
       location: {
@@ -736,10 +736,9 @@ describe("next/navigation shim", () => {
 
       win.history.pushState(null, "", "/ownerless?from=history");
 
-      expect(readHookValues()).toEqual({
-        pathname: "/pending",
-        search: "from=snapshot",
-      });
+      expect(navigation.getClientNavigationState()?.navigationSnapshotActiveCount).toBe(0);
+      expect(win.location.pathname).toBe("/ownerless");
+      expect(win.location.search).toBe("?from=history");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -829,6 +828,75 @@ describe("next/navigation shim", () => {
         [historyTraversalIndexKey]: 7,
         next: true,
       });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("only dispatches external history navigation for URL-bearing writes", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalPushState = vi.fn();
+    const originalReplaceState = vi.fn();
+    const commitExternalHistoryNavigation = vi.fn();
+    const win = {
+      location: {
+        pathname: "/current",
+        search: "",
+        hash: "",
+        href: "http://localhost/current",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null,
+        pushState: originalPushState,
+        replaceState: originalReplaceState,
+      },
+      addEventListener: vi.fn(),
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          commitExternalHistoryNavigation,
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/navigation.js");
+
+      win.history.pushState({ push: true }, "");
+      win.history.replaceState({ replace: true }, "");
+
+      expect(originalPushState).toHaveBeenCalledWith({ push: true }, "", undefined);
+      expect(originalReplaceState).toHaveBeenCalledWith({ replace: true }, "", undefined);
+      expect(commitExternalHistoryNavigation).not.toHaveBeenCalled();
+
+      win.history.pushState({ push: true }, "", "/pushed");
+      win.history.replaceState({ replace: true }, "", "/replaced");
+
+      expect(commitExternalHistoryNavigation).toHaveBeenNthCalledWith(
+        1,
+        { push: true },
+        "/pushed",
+        "push",
+      );
+      expect(commitExternalHistoryNavigation).toHaveBeenNthCalledWith(
+        2,
+        { replace: true },
+        "/replaced",
+        "replace",
+      );
+      expect(originalPushState).toHaveBeenCalledTimes(1);
+      expect(originalReplaceState).toHaveBeenCalledTimes(1);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

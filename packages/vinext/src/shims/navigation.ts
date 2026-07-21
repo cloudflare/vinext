@@ -1243,7 +1243,9 @@ type ClientNavigationState = {
 };
 
 type CommitClientNavigationStateOptions = {
+  clearPendingPathname?: boolean;
   releaseSnapshot?: boolean;
+  resetSnapshots?: boolean;
 };
 
 type ClientNavigationGlobal = typeof globalThis & {
@@ -1756,9 +1758,13 @@ export function commitClientNavigationState(
   // Only navigation-owned commits may release a render snapshot. Ownerless URL
   // syncs still update committed pathname/search state, but must not consume
   // the active snapshot for an in-flight App Router transition.
-  const shouldReleaseSnapshot = options?.releaseSnapshot ?? navId !== undefined;
-  if (shouldReleaseSnapshot && state.navigationSnapshotActiveCount > 0) {
-    state.navigationSnapshotActiveCount -= 1;
+  if (options?.resetSnapshots === true) {
+    state.navigationSnapshotActiveCount = 0;
+  } else {
+    const shouldReleaseSnapshot = options?.releaseSnapshot ?? navId !== undefined;
+    if (shouldReleaseSnapshot && state.navigationSnapshotActiveCount > 0) {
+      state.navigationSnapshotActiveCount -= 1;
+    }
   }
 
   const urlChanged = syncCommittedUrlStateFromLocation();
@@ -1776,6 +1782,7 @@ export function commitClientNavigationState(
   // - navId is undefined only for non-owning callers, which must not clear
   //   pendingPathname for an active navigation.
   const canClearPendingPathname =
+    options?.clearPendingPathname === true ||
     state.pendingPathnameNavId === null ||
     (navId !== undefined && state.pendingPathnameNavId === navId);
   if (canClearPendingPathname) {
@@ -2481,7 +2488,9 @@ if (!isServer) {
 
     window.addEventListener("popstate", (event) => {
       if (!hasAppNavigationRuntime()) {
-        commitClientNavigationState();
+        commitClientNavigationState(undefined, {
+          clearPendingPathname: true,
+        });
         restoreScrollPosition(event.state);
       }
     });
@@ -2491,17 +2500,34 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      state.originalPushState.call(
-        window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
-        unused,
-        url,
-      );
       if (state.suppressUrlNotifyCount === 0) {
+        const commitExternalHistoryNavigation =
+          getNavigationRuntime()?.functions.commitExternalHistoryNavigation;
+        if (commitExternalHistoryNavigation && url != null) {
+          commitExternalHistoryNavigation(data, url, "push");
+        } else {
+          state.originalPushState.call(
+            window.history,
+            createExternalHistoryStatePreservingMetadata(data, window.history.state),
+            unused,
+            url,
+          );
+        }
+        if (url == null) return;
         // A raw history.pushState (shallow routing) starts a navigation that did
         // not go through navigateClientSide; clear any sticky pending link.
         getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
-        commitClientNavigationState();
+        commitClientNavigationState(undefined, {
+          clearPendingPathname: true,
+          resetSnapshots: true,
+        });
+      } else {
+        state.originalPushState.call(
+          window.history,
+          createExternalHistoryStatePreservingMetadata(data, window.history.state),
+          unused,
+          url,
+        );
       }
     };
 
@@ -2510,15 +2536,32 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      state.originalReplaceState.call(
-        window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
-        unused,
-        url,
-      );
       if (state.suppressUrlNotifyCount === 0) {
+        const commitExternalHistoryNavigation =
+          getNavigationRuntime()?.functions.commitExternalHistoryNavigation;
+        if (commitExternalHistoryNavigation && url != null) {
+          commitExternalHistoryNavigation(data, url, "replace");
+        } else {
+          state.originalReplaceState.call(
+            window.history,
+            createExternalHistoryStatePreservingMetadata(data, window.history.state),
+            unused,
+            url,
+          );
+        }
+        if (url == null) return;
         getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
-        commitClientNavigationState();
+        commitClientNavigationState(undefined, {
+          clearPendingPathname: true,
+          resetSnapshots: true,
+        });
+      } else {
+        state.originalReplaceState.call(
+          window.history,
+          createExternalHistoryStatePreservingMetadata(data, window.history.state),
+          unused,
+          url,
+        );
       }
     };
   }

@@ -5,6 +5,7 @@ import {
   startTransition,
   use,
   useEffect,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -55,6 +56,7 @@ import {
   type ClientNavigationRenderSnapshot,
   type PrefetchCacheEntry,
 } from "vinext/shims/navigation";
+import { createExternalHistoryStatePreservingMetadata } from "./app-history-state.js";
 import {
   getNavigationRuntime,
   registerNavigationRuntimeBootstrap,
@@ -365,8 +367,9 @@ function restoreHistoryStateSnapshot(
     restored = historyController.restoreHistorySnapshot({
       historyState,
       stageClientParams,
-      approveVisibleRestore: ({ state, beforeCommit }) =>
+      approveVisibleRestore: ({ allowUnclassifiedRestore, state, beforeCommit }) =>
         browserNavigationController.restoreHistorySnapshotVisibleState({
+          allowUnclassifiedRestore,
           beforeCommit: () => {
             onApprovedBeforeCommit?.();
             beforeCommit();
@@ -379,7 +382,10 @@ function restoreHistoryStateSnapshot(
   });
   if (!restored) return false;
 
-  commitClientNavigationState(navId, { releaseSnapshot: false });
+  commitClientNavigationState(navId, {
+    clearPendingPathname: true,
+    resetSnapshots: true,
+  });
   return true;
 }
 
@@ -1051,12 +1057,12 @@ function BrowserRoot({
   const stateRef = useRef(treeState);
   stateRef.current = treeState;
 
-  // Publish the stable ref object and dispatch during layout commit. This keeps
+  // Publish the stable ref object and dispatch during insertion commit. This keeps
   // the module-level escape hatches aligned with React's committed tree without
-  // performing module writes during render. The navigation runtime is registered
-  // after hydrateRoot() returns; by then this layout effect has already run for
-  // the hydration commit, so getBrowserRouterState() never observes a null ref.
-  useLayoutEffect(() => {
+  // performing module writes during render. Insertion effects run before descendant
+  // layout effects, so a client component may safely call history.pushState() from
+  // its initial layout effect without racing App Router state publication.
+  useInsertionEffect(() => {
     const setAppRouterStateValue = (value: AppRouterState | Promise<AppRouterState>) => {
       setTreeStateValue(value);
     };
@@ -2322,6 +2328,56 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
+    commitExternalHistoryNavigation: (callerState, href, historyUpdateMode) => {
+      const targetHref = new URL(href ?? window.location.href, window.location.href).href;
+      // bootstrapHydration registers this seam before BrowserRoot's insertion
+      // effect publishes committed router state. Preserve native History API
+      // behavior during that brief window instead of throwing from the router
+      // state getter.
+      if (!hasBrowserRouterState()) {
+        const historyState = createExternalHistoryStatePreservingMetadata(
+          callerState,
+          window.history.state,
+        );
+        if (historyUpdateMode === "replace") {
+          replaceHistoryStateWithoutNotify(historyState, "", targetHref);
+        } else {
+          pushHistoryStateWithoutNotify(historyState, "", targetHref);
+        }
+        return;
+      }
+      // Next.js dispatches ACTION_RESTORE for both raw pushState and
+      // replaceState, so either successful write supersedes pending router work
+      // before publishing the externally selected URL.
+      const currentState = getBrowserRouterState();
+      historyController.commitExternalHistoryNavigation({
+        callerState,
+        href: targetHref,
+        historyUpdateMode,
+        snapshotState: {
+          ...currentState,
+          navigationSnapshot: createClientNavigationRenderSnapshot(
+            targetHref,
+            currentState.navigationSnapshot.params,
+          ),
+        },
+      });
+      activeNavigationAbortController?.abort();
+      activeNavigationAbortController = null;
+      const navId = browserNavigationController.beginNavigation();
+      browserNavigationController.restoreHistorySnapshotVisibleState({
+        allowUnclassifiedRestore: true,
+        navId,
+        state: {
+          ...currentState,
+          navigationSnapshot: createClientNavigationRenderSnapshot(
+            targetHref,
+            currentState.navigationSnapshot.params,
+          ),
+        },
+        targetHref,
+      });
+    },
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
     navigate: navigateRsc,
@@ -2360,11 +2416,25 @@ function bootstrapHydration(
     // restore scroll directly and skip the RSC dispatch.
     const href = window.location.href;
     if (isSameAppRoutePopstateTarget(href)) {
+      activeNavigationAbortController?.abort();
+      activeNavigationAbortController = null;
+      browserNavigationController.beginNavigation();
       notifyAppRouterTransitionStart(href, "traverse");
       historyController.commitTraversalIndexFromHistoryState(event.state);
+      commitClientNavigationState(undefined, {
+        clearPendingPathname: true,
+        resetSnapshots: true,
+      });
       restorePopstateScrollPosition(event.state);
       return;
     }
+    // Prefer an explicitly captured history snapshot before starting an RSC
+    // traversal. Starting navigateRsc first clears the restorable client-state
+    // cache, which makes a forward traversal to a shallow pushState URL fall
+    // through to a fresh request even though the matching snapshot exists. The
+    // navigation lifecycle is started before approval so stale HMR work cannot
+    // win the visible commit; older RSC work is aborted only once the snapshot
+    // restore is accepted.
     const snapshotNavigationId = browserNavigationController.beginNavigation();
     if (
       restoreHistoryStateSnapshot(event.state, snapshotNavigationId, () => {
@@ -2422,7 +2492,7 @@ function bootstrapHydration(
         window.location.reload();
         return;
       }
-      // HMR can also fire before BrowserRoot's layout effect publishes
+      // HMR can also fire before BrowserRoot's insertion effect publishes
       // the browser router state (e.g. saving a file while the initial RSC
       // stream is still suspended). Wait for readiness, then re-check the
       // mounted state — readiness can race with cleanup, which nulls it again.

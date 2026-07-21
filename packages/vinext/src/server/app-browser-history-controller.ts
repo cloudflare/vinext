@@ -2,6 +2,7 @@ import {
   RestorableClientStateController,
   createHistoryStateWithNavigationMetadata,
   readHistoryStateBfcacheIds,
+  readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveHistoryTraversalIntent,
@@ -43,6 +44,7 @@ type AppBrowserHistoryControllerDeps = {
  * the `ApprovedVisibleCommit` boundary.
  */
 export type RestorableSnapshotCandidate = {
+  allowUnclassifiedRestore: boolean;
   state: AppRouterState;
   beforeCommit: () => void;
 };
@@ -60,6 +62,13 @@ type CommitNavigationHistoryOptions = {
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
   stageClientParams: () => void;
+};
+
+type CommitExternalHistoryNavigationOptions = {
+  callerState: unknown;
+  href: string;
+  historyUpdateMode: HistoryUpdateMode;
+  snapshotState: AppRouterState;
 };
 
 export function createCanonicalBrowserHistoryHref(href: string): string {
@@ -110,6 +119,8 @@ export class AppBrowserHistoryController {
   // still continue from the highest known app history.
   #currentHistoryTraversalIndex: number | null;
   #nextHistoryTraversalIndex: number;
+  readonly #externalShallowSnapshotIndices = new Set<number>();
+  readonly #nonRestorableExternalHistoryIndices = new Set<number>();
 
   constructor(deps: AppBrowserHistoryControllerDeps) {
     this.#readHistoryState = deps.readHistoryState;
@@ -185,6 +196,8 @@ export class AppBrowserHistoryController {
 
   invalidateRestorableClientState(): void {
     this.#restorableClientState.invalidateClientState();
+    this.#externalShallowSnapshotIndices.clear();
+    this.#nonRestorableExternalHistoryIndices.clear();
   }
 
   rememberHistoryStateSnapshot(state: AppRouterState): void {
@@ -192,6 +205,60 @@ export class AppBrowserHistoryController {
       historyIndex: this.#currentHistoryTraversalIndex,
       state,
     });
+  }
+
+  commitExternalHistoryNavigation(options: CommitExternalHistoryNavigationOptions): void {
+    const navigationHistoryIndex = this.allocateNavigationHistoryTraversalIndex(
+      options.historyUpdateMode,
+    );
+    const currentHistoryState = this.#readHistoryState();
+    const visible = this.#readVisibleNavigationMetadata();
+    const bfcacheIds = visible
+      ? visible.bfcacheIds
+      : this.#restorableClientState.readCurrentBfcacheVersionHistoryIds(currentHistoryState);
+    const historyState = createHistoryStateWithNavigationMetadata(options.callerState, {
+      bfcacheIds,
+      bfcacheVersion:
+        bfcacheIds === null ? undefined : this.#restorableClientState.currentBfcacheVersion,
+      previousNextUrl: visible
+        ? visible.previousNextUrl
+        : readHistoryStatePreviousNextUrl(currentHistoryState),
+      traversalIndex: navigationHistoryIndex,
+    });
+
+    if (options.historyUpdateMode === "replace") {
+      this.#replaceHistoryState(historyState, options.href);
+    } else {
+      this.#pushHistoryState(historyState, options.href);
+    }
+    this.commitHistoryTraversalIndex(navigationHistoryIndex);
+    const callerCarriesNavigationMetadata =
+      readHistoryStateTraversalIndex(options.callerState) !== null ||
+      readHistoryStatePreviousNextUrl(options.callerState) !== null ||
+      readHistoryStateBfcacheIds(options.callerState) !== null ||
+      readHistoryStateBfcacheVersion(options.callerState) !== null;
+    const callerCopiesCurrentNavigationMetadata =
+      callerCarriesNavigationMetadata &&
+      readHistoryStateTraversalIndex(options.callerState) ===
+        readHistoryStateTraversalIndex(currentHistoryState) &&
+      readHistoryStatePreviousNextUrl(options.callerState) ===
+        readHistoryStatePreviousNextUrl(currentHistoryState) &&
+      readHistoryStateBfcacheVersion(options.callerState) ===
+        readHistoryStateBfcacheVersion(currentHistoryState) &&
+      areBfcacheIdMapsEqual(
+        readHistoryStateBfcacheIds(options.callerState),
+        readHistoryStateBfcacheIds(currentHistoryState),
+      );
+    if (navigationHistoryIndex !== null) {
+      if (!callerCarriesNavigationMetadata || callerCopiesCurrentNavigationMetadata) {
+        this.rememberHistoryStateSnapshot(options.snapshotState);
+        this.#externalShallowSnapshotIndices.add(navigationHistoryIndex);
+        this.#nonRestorableExternalHistoryIndices.delete(navigationHistoryIndex);
+      } else {
+        this.#externalShallowSnapshotIndices.delete(navigationHistoryIndex);
+        this.#nonRestorableExternalHistoryIndices.add(navigationHistoryIndex);
+      }
+    }
   }
 
   // --- History metadata writes ---
@@ -227,6 +294,9 @@ export class AppBrowserHistoryController {
       this.#pushHistoryState(nextHistoryState, href);
     }
     this.commitHistoryTraversalIndex(navigationHistoryIndex);
+    if (navigationHistoryIndex !== null) {
+      this.#nonRestorableExternalHistoryIndices.delete(navigationHistoryIndex);
+    }
   }
 
   #createHashOnlyNavigationBaseHistoryState(
@@ -272,11 +342,17 @@ export class AppBrowserHistoryController {
       this.#replaceHistoryState(historyState, options.href);
       wroteHistoryState = true;
       this.commitHistoryTraversalIndex(navigationHistoryIndex);
+      if (navigationHistoryIndex !== null) {
+        this.#nonRestorableExternalHistoryIndices.delete(navigationHistoryIndex);
+      }
     } else if (options.historyUpdateMode === "push" && currentHref !== targetHref) {
       options.stageClientParams();
       this.#pushHistoryState(historyState, options.href);
       wroteHistoryState = true;
       this.commitHistoryTraversalIndex(navigationHistoryIndex);
+      if (navigationHistoryIndex !== null) {
+        this.#nonRestorableExternalHistoryIndices.delete(navigationHistoryIndex);
+      }
     }
 
     if (!wroteHistoryState) {
@@ -392,8 +468,14 @@ export class AppBrowserHistoryController {
     if (decision.kind === "skip") {
       return false;
     }
+    if (this.#nonRestorableExternalHistoryIndices.has(decision.targetHistoryIndex)) {
+      return false;
+    }
 
     return options.approveVisibleRestore({
+      allowUnclassifiedRestore: this.#externalShallowSnapshotIndices.has(
+        decision.targetHistoryIndex,
+      ),
       state: decision.state,
       beforeCommit: () => {
         this.commitHistoryTraversalIndex(decision.targetHistoryIndex);
