@@ -538,7 +538,12 @@ describe("renderPagesFallback", () => {
     );
 
     expect(matchApiRoute).toHaveBeenCalledWith("/api/café?value=hello%20world", request);
-    expect(handleApiRoute).toHaveBeenCalledWith(request, "/api/café?value=hello%20world");
+    expect(handleApiRoute).toHaveBeenCalledWith(
+      request,
+      "/api/café?value=hello%20world",
+      undefined,
+      "http://localhost",
+    );
   });
 
   it("appends the middleware draft cookie to an API fallback response (#1520)", async () => {

@@ -72,9 +72,11 @@ describe("HTTP-access fallback metadata planning", () => {
   it("snapshots the active viewport convention at each fallback leaf", async () => {
     const boundary = { viewport: { width: "primary-only" } };
     const seenParams: unknown[] = [];
+    const seenParents: unknown[] = [];
     const slotBoundary = {
-      generateViewport({ params }: { params: Promise<unknown> }) {
+      async generateViewport({ params }: { params: Promise<unknown> }, parent: Promise<unknown>) {
         seenParams.push(params);
+        seenParents.push(await parent);
         return { themeColor: "slot" };
       },
     };
@@ -95,9 +97,17 @@ describe("HTTP-access fallback metadata planning", () => {
       routeSegments: ["[locale]", "posts"],
     });
 
-    expect(viewport.themeColor).toBe("slot");
+    expect(viewport.themeColor).toEqual([{ color: "slot" }]);
     expect(viewport.width).toBe("primary-only");
     expect(await Promise.all(seenParams)).toEqual([{ locale: "en", slug: "hello" }]);
+    expect(seenParents).toEqual([
+      {
+        colorScheme: null,
+        initialScale: 1,
+        themeColor: null,
+        width: "primary-only",
+      },
+    ]);
   });
 
   it("uses a sibling intercept as the primary leaf without inventing another leaf", () => {

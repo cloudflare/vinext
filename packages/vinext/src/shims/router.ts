@@ -2085,15 +2085,18 @@ async function renderPagesNavigationTarget(
   const React = (await import("react")).default;
   assertStillCurrent();
 
-  const rawPageProps = props.pageProps;
-  const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
+  // Next.js normalizes every successful client transition through
+  // `Object.assign({}, props.pageProps)`. Besides ensuring an own pageProps
+  // key, this preserves Object.assign semantics for null and primitive values.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  const pageProps = Object.assign({}, props.pageProps) as Record<string, unknown>;
+  props.pageProps = pageProps;
 
   let element: ReactElement;
   if (AppComponent) {
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: singletonRouter,
     });
   } else {
@@ -2383,8 +2386,10 @@ async function navigateClientHtml(
 
   const nextData = parseVinextNextDataJson(nextDataJson);
   const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
-  const rawPageProps = props.pageProps;
-  const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
+  // Keep the HTML fallback transport aligned with the manifest/data paths.
+  // Next.js installs this cloned object into routeInfo.props before rendering.
+  const pageProps = Object.assign({}, props.pageProps) as Record<string, unknown>;
+  props.pageProps = pageProps;
   // Defer writing window.__NEXT_DATA__ until just before root.render() —
   // writing it here would let a stale navigation briefly pollute the global
   // between this assertStillCurrent() and the next one after await import().
@@ -2460,7 +2465,6 @@ async function navigateClientHtml(
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: singletonRouter,
     });
   } else {
@@ -3017,10 +3021,9 @@ async function performNavigation(
   //
   // Match-source priority: `as` first (extracts param values from the
   // resolved display URL), query second (object-form callers passing
-  // `{pathname, query}`). When neither yields all required params, fall back
-  // to the display URL — the user's typical intent for a literal bracket
-  // pathname is "navigate to the address as written", and `resolved` is the
-  // best concrete URL we have.
+  // `{pathname, query}`). An explicit dynamic href with unresolved required
+  // params throws Next.js's canonical interpolation error. UrlObjects that
+  // merely inherit the current pathname keep their existing display fallback.
   let interpolatedRoute = resolvedRoute;
   if (resolvedRoute.includes("[")) {
     const projection = interpolateDynamicRouteHref(
@@ -3055,9 +3058,36 @@ async function performNavigation(
         );
       }
     } else {
-      // Required params missing — `resolved` (display URL) is the best
-      // concrete URL we can use. Matches the pre-mask behaviour and avoids
-      // serving a 404 from the data endpoint.
+      const missingParams = projection
+        ? routePatternParts(projection.routePathname)
+            .filter((part) => part.startsWith(":") && !part.endsWith("*"))
+            .map((part) => part.slice(1, part.endsWith("+") ? -1 : undefined))
+            .filter((paramName) => {
+              const value = projection.query[paramName];
+              return (
+                value === undefined || value === "" || (Array.isArray(value) && value.length === 0)
+              );
+            })
+        : [];
+      const hasExplicitHrefPathname = typeof url === "string" || url.pathname !== undefined;
+      const isMiddlewareMatch =
+        options?.shallow !== true && getPagesMiddlewareDataHref(resolved, __basePath) !== null;
+      if (missingParams.length > 0 && hasExplicitHrefPathname && !isMiddlewareMatch) {
+        const asPathname = stripHash(resolved).split("?", 1)[0];
+        const routePathname =
+          projection?.routePathname ?? stripHash(resolvedRoute).split("?", 1)[0];
+        const shouldInterpolate = asPathname === routePathname;
+        throw new HrefInterpolationError(
+          shouldInterpolate
+            ? `The provided \`href\` (${resolvedRoute}) value is missing query values (${missingParams.join(
+                ", ",
+              )}) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed`
+            : `The provided \`as\` value (${asPathname}) is incompatible with the \`href\` value (${routePathname}). Read more: https://nextjs.org/docs/messages/incompatible-href-as`,
+        );
+      }
+
+      // If the bracket syntax was not a recognized dynamic route pattern,
+      // keep the display URL as the safest navigation fallback.
       interpolatedRoute = resolved;
     }
   }

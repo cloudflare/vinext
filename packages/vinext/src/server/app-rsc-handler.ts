@@ -19,6 +19,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -55,6 +56,7 @@ import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
@@ -643,9 +645,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   };
   let didMiddlewareRewrite = false;
   let didMiddlewareRewritePathname = false;
+  const runMiddleware = isOnDemandRevalidateRequest(
+    request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  )
+    ? undefined
+    : options.runMiddleware;
 
-  if (options.runMiddleware) {
-    const middlewareResult = await options.runMiddleware({
+  if (runMiddleware) {
+    const middlewareResult = await runMiddleware({
       cleanPathname,
       context: middlewareContext,
       hadBasePath,
@@ -1085,7 +1092,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (pagesDataRequest) {
     options.clearRequestContext();
     if (
-      options.runMiddleware &&
+      runMiddleware &&
       (middlewareContext.status === null ||
         middlewareContext.status === 200 ||
         middlewareContext.status === 404)
@@ -1351,6 +1358,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       return pagesDataNormalization.notFoundResponse;
     }
     const isPagesDataRequest = pagesDataNormalization?.isDataReq === true;
+    const executionContext = isExecutionContextLike(ctx)
+      ? ctx
+      : (getRequestExecutionContext() ?? null);
     // Read the trusted prerender route params before filtering strips the
     // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
     // validated value below so the second read in handleAppRscRequest still sees
@@ -1364,7 +1374,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       process.env.VINEXT_PRERENDER === "1" &&
       rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null &&
       rawRequest.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
-    const filteredHeaders = filterInternalHeaders(rawRequest.headers);
+    const filteredHeaders = executionContext?.isInternalPagesRevalidation
+      ? new Headers(rawRequest.headers)
+      : filterInternalHeaders(rawRequest.headers);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
     }
@@ -1388,9 +1401,6 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       ? cloneRequestWithHeaders(pagesDataCandidate!, filteredHeaders)
       : null;
 
-    const executionContext = isExecutionContextLike(ctx)
-      ? ctx
-      : (getRequestExecutionContext() ?? null);
     const headersContext = headersContextFromRequest(request, {
       draftModeSecret: options.draftModeSecret,
     });

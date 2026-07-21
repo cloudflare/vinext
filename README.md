@@ -345,30 +345,27 @@ Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and
 
 #### Custom Vite configuration
 
-If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. This is required for Cloudflare Workers deployment with the App Router (RSC needs explicit plugin configuration):
+If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. For Cloudflare Workers deployment with the App Router, configure `@cloudflare/vite-plugin` so the RSC environment runs in workerd:
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import rsc from "@vitejs/plugin-rsc";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
   plugins: [
     vinext(),
-    rsc({
-      entries: {
-        rsc: "virtual:vinext-rsc-entry",
-        ssr: "virtual:vinext-app-ssr-entry",
-        client: "virtual:vinext-app-browser-entry",
-      },
-    }),
     cloudflare({
       viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
     }),
   ],
 });
 ```
+
+> **Do not register `@vitejs/plugin-rsc` yourself.** It is an optional peer dependency, so it must be
+> _installed_ in your project, but vinext auto-registers it whenever an `app/` directory is detected.
+> Adding an explicit `rsc()` call fails the build with `[vinext] Duplicate @vitejs/plugin-rsc detected`.
+> Pass `rsc: false` to `vinext()` only if you want to own that registration.
 
 See the [examples](#live-examples) for complete working configurations.
 

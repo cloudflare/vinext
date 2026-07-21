@@ -1610,8 +1610,11 @@ describe("App Router integration", () => {
     expect(html).toMatch(/name="viewport".*content="[^"]*width=device-width/);
     expect(html).toMatch(/name="viewport".*content="[^"]*initial-scale=1/);
     expect(html).toMatch(/name="viewport".*content="[^"]*maximum-scale=1/);
+    expect(html).toMatch(/name="viewport".*content="[^"]*viewport-fit=cover/);
+    expect(html).toMatch(/name="viewport".*content="[^"]*interactive-widget=resizes-visual/);
     // Theme color
     expect(html).toMatch(/name="theme-color".*content="#0070f3"/);
+    expect(html).toMatch(/name="theme-color".*media="\(prefers-color-scheme: light\)"/);
     // Color scheme
     expect(html).toMatch(/name="color-scheme".*content="light dark"/);
   });

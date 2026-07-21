@@ -156,27 +156,84 @@ export function detectLocaleFromAcceptLanguage(
 ): string | null {
   if (!acceptLang) return null;
 
-  const langs = acceptLang
-    .split(",")
-    .map((part) => {
-      const [lang, qPart] = part.trim().split(";");
-      const q = qPart ? parseFloat(qPart.replace("q=", "")) : 1;
-      return { lang: lang.trim().toLowerCase(), q };
-    })
-    .sort((a, b) => b.q - a.q);
-
-  for (const { lang } of langs) {
-    const exactMatch = i18nConfig.locales.find((locale) => locale.toLowerCase() === lang);
-    if (exactMatch) return exactMatch;
-
-    const prefix = lang.split("-")[0];
-    const prefixMatch = i18nConfig.locales.find((locale) => {
-      const lowered = locale.toLowerCase();
-      return lowered === prefix || lowered.startsWith(prefix + "-");
-    });
-    if (prefixMatch) return prefixMatch;
+  // Ported from Next.js's acceptLanguage() preference selection. In
+  // particular, configured locale order breaks equal-quality ties, language
+  // ranges match configured regional variants, q=0 excludes a selection, and
+  // `*` chooses the first configured locale that was not explicitly listed.
+  const configured = new Map<string, { locale: string; position: number }>();
+  let position = 0;
+  for (const locale of i18nConfig.locales) {
+    const lower = locale.toLowerCase();
+    configured.set(lower, { locale, position: position++ });
+    const parts = lower.split("-");
+    while (parts.length > 1) {
+      parts.pop();
+      const prefix = parts.join("-");
+      if (!configured.has(prefix)) {
+        configured.set(prefix, { locale, position: position++ });
+      }
+    }
   }
 
+  type Selection = { token: string; headerPosition: number; quality: number; preference?: number };
+  const selections: Selection[] = [];
+  const listedTokens = new Set<string>();
+
+  try {
+    const parts = acceptLang.replace(/[ \t]/g, "").split(",");
+    for (let headerPosition = 0; headerPosition < parts.length; headerPosition++) {
+      const part = parts[headerPosition];
+      if (!part) continue;
+
+      const params = part.split(";");
+      if (params.length > 2) throw new Error("Invalid Accept-Language header");
+
+      const token = params[0].toLowerCase();
+      if (!token) throw new Error("Invalid Accept-Language header");
+
+      const selection: Selection = { token, headerPosition, quality: 1 };
+      const configuredMatch = configured.get(token);
+      if (configuredMatch) selection.preference = configuredMatch.position;
+      listedTokens.add(token);
+
+      if (params.length === 2) {
+        const [key, value] = params[1].split("=");
+        if (!value || (key !== "q" && key !== "Q")) {
+          throw new Error("Invalid Accept-Language header");
+        }
+        const quality = parseFloat(value);
+        if (quality === 0) continue;
+        if (Number.isFinite(quality) && quality >= 0.001 && quality <= 1) {
+          selection.quality = quality;
+        }
+      }
+
+      selections.push(selection);
+    }
+  } catch {
+    return null;
+  }
+
+  selections.sort((a, b) => {
+    if (b.quality !== a.quality) return b.quality - a.quality;
+    if (a.preference !== b.preference) {
+      if (a.preference === undefined) return 1;
+      if (b.preference === undefined) return -1;
+      return a.preference - b.preference;
+    }
+    return a.headerPosition - b.headerPosition;
+  });
+
+  for (const { token } of selections) {
+    if (token === "*") {
+      for (const [preference, { locale }] of configured) {
+        if (!listedTokens.has(preference)) return locale;
+      }
+      continue;
+    }
+    const match = configured.get(token);
+    if (match) return match.locale;
+  }
   return null;
 }
 

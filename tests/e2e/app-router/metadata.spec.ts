@@ -37,11 +37,18 @@ test.describe("Static Metadata", () => {
     await expect(ogType).toHaveAttribute("content", "website");
   });
 
-  test("viewport export renders theme-color and color-scheme", async ({ page }) => {
+  test("viewport export renders all viewport metadata", async ({ page }) => {
     await page.goto(`${BASE}/metadata-test`);
+
+    const viewport = page.locator('meta[name="viewport"]');
+    await expect(viewport).toHaveAttribute(
+      "content",
+      "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-visual",
+    );
 
     const themeColor = page.locator('meta[name="theme-color"]');
     await expect(themeColor).toHaveAttribute("content", "#0070f3");
+    await expect(themeColor).toHaveAttribute("media", "(prefers-color-scheme: light)");
 
     const colorScheme = page.locator('meta[name="color-scheme"]');
     await expect(colorScheme).toHaveAttribute("content", "light dark");

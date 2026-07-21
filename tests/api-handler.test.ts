@@ -950,6 +950,45 @@ describe("handleApiRoute", () => {
     });
   });
 
+  describe("res.revalidate()", () => {
+    it("uses the trusted origin instead of the request Host header", async () => {
+      const originalFetch = globalThis.fetch;
+      let capturedUrl: URL | undefined;
+      globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+        capturedUrl =
+          typeof input === "string"
+            ? new URL(input)
+            : input instanceof URL
+              ? input
+              : new URL(input.url);
+        expect(input instanceof Request ? input.method : init?.method).toBe("HEAD");
+        return new Response(null, { status: 200 });
+      };
+
+      try {
+        const handler = vi.fn(async (_req: any, res: any) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        });
+        const server = mockServer({ default: handler });
+        const req = mockReq("GET", "/api/revalidate", undefined, {
+          host: "127.0.0.1:9999",
+        });
+        const res = mockRes();
+
+        await handleApiRoute(server, req, res, "/api/revalidate", [route("/api/revalidate")], {
+          trustedRevalidateOrigin: "http://app.local:3000",
+        });
+
+        expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+        expect(res._statusCode).toBe(200);
+        expect(res._body).toBe(JSON.stringify({ revalidated: true }));
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
   // ── Query and dynamic params ───────────────────────────────────────
 
   describe("query and dynamic params", () => {

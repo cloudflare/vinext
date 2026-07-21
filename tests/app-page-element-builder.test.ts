@@ -1805,6 +1805,60 @@ describe("buildPageElements", () => {
     expect(boundaryParents).toEqual(["Intercept layout"]);
   });
 
+  it("resolves a sibling intercept viewport before active slot viewports", async () => {
+    const viewportParents: Array<{ source: string; width: unknown }> = [];
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => React.createElement("div", null, "source")),
+      layouts: [],
+      routeSegments: ["feed"],
+      pattern: "/feed",
+      slots: {
+        sidebar: {
+          name: "sidebar",
+          layoutIndex: 0,
+          page: {
+            default: () => React.createElement("aside", null, "sidebar"),
+            async generateViewport(
+              _props: Record<string, unknown>,
+              parent: Promise<{ width?: unknown }>,
+            ) {
+              viewportParents.push({ source: "slot", width: (await parent).width });
+              return { width: "slot-width" };
+            },
+          } as AppPageModule,
+        },
+      },
+    });
+    const interceptPage = {
+      default: () => React.createElement("div", null, "intercept"),
+      async generateViewport(
+        _props: Record<string, unknown>,
+        parent: Promise<{ width?: unknown }>,
+      ) {
+        viewportParents.push({ source: "intercept", width: (await parent).width });
+        return { width: "intercept-width" };
+      },
+    } as AppPageModule;
+
+    await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/photo/42",
+        opts: {
+          interceptPage,
+          interceptParams: {},
+          interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          interceptSourcePageSegments: ["feed", "(..)photo", "[id]"],
+        },
+      }),
+    );
+
+    expect(viewportParents).toEqual([
+      { source: "intercept", width: "device-width" },
+      { source: "slot", width: "intercept-width" },
+    ]);
+  });
+
   it("does not inherit not-found metadata from an intercepted slot's ordinary sibling branch", async () => {
     // Next walks conventions on the active intercept loader-tree branch; a
     // not-found below the ordinary slot page is not an intercept ancestor.

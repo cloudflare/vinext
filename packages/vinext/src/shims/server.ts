@@ -621,7 +621,10 @@ export class NextURL {
       nextConfig.trailingSlash = true;
     }
     const config: NextURLConfig = {
-      basePath: this._basePath,
+      // Preserve the configured basePath even when it is not active for the
+      // current pathname. Next.js retains the original constructor options in
+      // clone(), allowing a later href assignment to re-activate the prefix.
+      basePath: this._configBasePath,
       nextConfig: Object.keys(nextConfig).length > 0 ? nextConfig : undefined,
     };
     // Pass the full href (with locale/basePath re-added) so the constructor

@@ -36,6 +36,9 @@ import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
+import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -56,9 +59,11 @@ type PagesWorkerEnv = {
 type PagesWorkerExecutionContext = {
   waitUntil?(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
+  cache?: unknown;
 };
 
 const {
+  authorizeOnDemandRevalidate,
   handleApiRoute,
   hasMiddleware,
   matchPageRoute,
@@ -102,8 +107,12 @@ export default {
 async function handleRequest(
   request: Request,
   env: PagesWorkerEnv | undefined,
-  ctx: PagesWorkerExecutionContext | undefined,
+  platformCtx: PagesWorkerExecutionContext | ExecutionContextLike | undefined,
 ): Promise<Response> {
+  const ctx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
+    handleRequest(internalRequest, env, internalCtx),
+  );
+
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
   registerConfiguredCacheAdapters(env);
@@ -135,7 +144,11 @@ async function handleRequest(
 
     // Strip internal headers from inbound requests so callers cannot forge
     // framework state. Request.headers is immutable in Workers.
-    request = cloneRequestWithHeaders(request, filterInternalHeaders(request.headers));
+    const filteredHeaders = ctx.isInternalPagesRevalidation
+      ? new Headers(request.headers)
+      : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+    request = cloneRequestWithHeaders(request, filteredHeaders);
 
     // Track basePath presence on the original request so matcher gating can
     // distinguish requests inside basePath from requests outside it.
@@ -185,6 +198,8 @@ async function handleRequest(
       isDataRequest: isDataReq,
       hasMiddleware,
       ctx,
+      authorizeOnDemandRevalidate:
+        typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:
         typeof runMiddleware === "function"
@@ -197,7 +212,7 @@ async function handleRequest(
           : null,
       handleApi:
         typeof handleApiRoute === "function"
-          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx)
+          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)
           : null,
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
         if (!env?.ASSETS) return false;

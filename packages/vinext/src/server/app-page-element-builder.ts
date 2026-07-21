@@ -334,8 +334,8 @@ export async function buildPageElements<
       }
     : null;
   const parallelRoutes = [
-    ...activeParallelRouteHeadInputs.map((input) => input.head),
     ...(primaryParallelRouteHeadInput ? [primaryParallelRouteHeadInput.head] : []),
+    ...activeParallelRouteHeadInputs.map((input) => input.head),
   ];
   const metadataSearchParamsObserver = observeMetadataSearchParamsAccess
     ? createAppPageSearchParamsObserver()

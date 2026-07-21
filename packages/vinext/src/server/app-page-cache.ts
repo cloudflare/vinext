@@ -48,6 +48,7 @@ export type AppPageCacheOutcomeMetric = Readonly<{
   outcome: "hit" | "miss" | "stale";
   reason:
     | "empty-entry"
+    | "expired"
     | "no-entry"
     | "non-app-page-entry"
     | "query-variant-unproven"
@@ -207,7 +208,9 @@ function resolveRegeneratedAppPageCachePolicy(options: {
 }): { expireSeconds?: number; revalidateSeconds: number } {
   let revalidateSeconds = options.routeRevalidateSeconds;
   const renderRevalidateSeconds = options.renderCacheControl?.revalidate;
-  if (renderRevalidateSeconds !== undefined) {
+  // An indefinite nested cache lifetime does not tighten the route's own
+  // finite revalidation policy.
+  if (typeof renderRevalidateSeconds === "number") {
     revalidateSeconds =
       revalidateSeconds > 0
         ? Math.min(revalidateSeconds, renderRevalidateSeconds)
@@ -295,6 +298,11 @@ async function serveAppPageCachedHtml(
   options: ServeAppPageCachedHtmlOptions,
   transformValue?: (value: CachedAppPageValue) => CachedAppPageValue,
 ): Promise<Response | null> {
+  if (options.cached?.isExpired) {
+    options.isrDebug?.("MISS (expired)", options.pathname);
+    return null;
+  }
+
   if (typeof options.cachedValue.html !== "string" || options.cachedValue.html.length === 0) {
     if (options.cached?.isStale) {
       options.scheduleRegeneration();
@@ -348,6 +356,17 @@ export async function readAppPageCacheResponse(
   try {
     const cached = await options.isrGet(isrKey);
     const cachedValue = getCachedAppPageValue(cached);
+
+    if (cached?.isExpired) {
+      recordAppPageCacheOutcome(options.recordCacheOutcome, {
+        artifact,
+        cacheKey: isrKey,
+        outcome: "miss",
+        reason: "expired",
+      });
+      options.isrDebug?.("MISS (expired)", options.cleanPathname);
+      return null;
+    }
 
     if (cached && !cachedValue) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {

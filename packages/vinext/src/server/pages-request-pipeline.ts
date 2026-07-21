@@ -38,6 +38,7 @@ import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pa
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -114,6 +115,14 @@ export type PagesPipelineDeps = {
   // matching and capture substitution. Filesystem routing keeps using the
   // normalized pathname from request.url.
   configMatchPathname?: string;
+
+  /**
+   * Validate an on-demand revalidation credential using the runtime's
+   * authoritative build secret. Production adapters must inject the verifier
+   * exported by the generated server entry so this early middleware decision
+   * uses the same baked secret as the eventual page renderer.
+   */
+  authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
@@ -257,6 +266,10 @@ export async function runPagesRequest(
   const url = new URL(request.url);
   let pathname = url.pathname;
   const search = url.search;
+  const revalidateHeader = request.headers.get(PRERENDER_REVALIDATE_HEADER);
+  const isOnDemandRevalidate = deps.authorizeOnDemandRevalidate
+    ? deps.authorizeOnDemandRevalidate(revalidateHeader)
+    : isOnDemandRevalidateRequest(revalidateHeader);
   const requestConfigPathname = deps.configMatchPathname ?? pathname;
 
   // Step 1: Reconstruct basePathState
@@ -336,7 +349,10 @@ export async function runPagesRequest(
     return served ? { type: "handled" } : null;
   };
 
-  if (typeof deps.runMiddleware === "function") {
+  // Next.js skips middleware for authenticated on-demand revalidation. Besides
+  // parity, this keeps the internal credential out of user middleware and any
+  // external destination it may choose.
+  if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
 
     // Bubble waitUntil promises

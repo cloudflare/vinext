@@ -92,6 +92,8 @@ import {
   parseAcceptedEncodings,
   selectContentEncoding,
 } from "./accept-encoding.js";
+import type { NextI18nConfig } from "../config/next-config.js";
+import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -837,13 +839,20 @@ function nodeToWebRequest(
   req: IncomingMessage,
   urlOverride?: string,
   prerenderSecret?: string,
+  i18nConfig?: NextI18nConfig | null,
+  authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean,
 ): Request {
   const proto = resolveRequestProtocol(req);
-  const host = resolveHost(req, "localhost");
+  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
+  const revalidationHostname = readTrustedRevalidationHostname(
+    rawHeaders,
+    i18nConfig,
+    authorizeOnDemandRevalidate,
+  );
+  const host = revalidationHostname ?? resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParamsFromHeaders(
     rawHeaders,
     prerenderSecret,
@@ -855,6 +864,7 @@ function nodeToWebRequest(
     rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
+  if (revalidationHostname) headers.set("host", revalidationHostname);
   const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
     prerenderRouteParamsPayload,
   );
@@ -1040,7 +1050,7 @@ type WorkerAppRouterEntry = {
   fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
 };
 
-function createNodeExecutionContext(): ExecutionContextLike {
+function createNodeExecutionContext(trustedRevalidateOrigin?: string): ExecutionContextLike {
   return {
     waitUntil(promise: Promise<unknown>) {
       // Node doesn't provide a Workers lifecycle, but we still attach a
@@ -1049,19 +1059,45 @@ function createNodeExecutionContext(): ExecutionContextLike {
       void Promise.resolve(promise).catch(() => {});
     },
     passThroughOnException() {},
+    trustedRevalidateOrigin,
   };
 }
 
-function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<Response> {
+function resolveTrustedNodeRevalidateOrigin(
+  req: IncomingMessage,
+  configuredHost: string,
+  configuredPort: number,
+): string {
+  const port = req.socket.localPort ?? configuredPort;
+  const host = normalizeInternalFetchHost(configuredHost);
+  return `http://${host}:${port}`;
+}
+
+function normalizeInternalFetchHost(host: string): string {
+  if (!host || host === "0.0.0.0" || host === "::") {
+    return "localhost";
+  }
+  if (host.includes(":") && !host.startsWith("[")) {
+    return `[${host}]`;
+  }
+  return host;
+}
+
+function resolveAppRouterHandler(
+  entry: unknown,
+): (request: Request, ctx: ExecutionContextLike) => Promise<Response> {
   if (typeof entry === "function") {
-    return (request) => Promise.resolve(entry(request));
+    const handler = entry as (
+      request: Request,
+      ctx?: ExecutionContextLike,
+    ) => Promise<Response> | Response;
+    return (request, ctx) => Promise.resolve(handler(request, ctx));
   }
 
   if (entry && typeof entry === "object" && "fetch" in entry) {
     const workerEntry = entry as WorkerAppRouterEntry;
     if (typeof workerEntry.fetch === "function") {
-      return (request) =>
-        Promise.resolve(workerEntry.fetch(request, undefined, createNodeExecutionContext()));
+      return (request, ctx) => Promise.resolve(workerEntry.fetch(request, undefined, ctx));
     }
   }
 
@@ -1262,6 +1298,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
   const appRouterInlineCss = rscModule.__inlineCss === true;
   const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
+  const appRouterI18nConfig: NextI18nConfig | null = rscModule.__i18nConfig ?? null;
+  const appRouterAuthorizeOnDemandRevalidate =
+    typeof rscModule.authorizeOnDemandRevalidate === "function"
+      ? rscModule.authorizeOnDemandRevalidate
+      : undefined;
   const appImageAllowedWidths: number[] = Array.isArray(rscModule.__imageAllowedWidths)
     ? rscModule.__imageAllowedWidths
     : [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
@@ -1442,8 +1483,17 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // handler must receive the original URL so its request boundary decodes
       // each segment exactly once. Passing `pathname` here would make encoded
       // percent signs eligible for a second decode inside normalizeRscRequest.
-      const request = nodeToWebRequest(req, rawUrl, prerenderSecret);
-      const response = await rscHandler(request);
+      const request = nodeToWebRequest(
+        req,
+        rawUrl,
+        prerenderSecret,
+        appRouterI18nConfig,
+        appRouterAuthorizeOnDemandRevalidate,
+      );
+      const response = await rscHandler(
+        request,
+        createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
+      );
 
       // Preserve the canonical build-asset 404 even when the RSC handler also
       // identifies the request as a public/static-file lookup. Middleware may
@@ -1560,7 +1610,9 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  *
  * Uses the server entry (dist/server/entry.js) which exports:
  * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
- * - handleApiRoute(request, url, ctx?) — API route handling (ctx optional; pass for ctx.waitUntil() on Workers)
+ * - handleApiRoute(request, url, ctx?, trustedRevalidateOrigin?) — API route handling
+ *   (ctx optional; pass for ctx.waitUntil() on Workers)
+ * - authorizeOnDemandRevalidate(header) — validates against the bundled build secret
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
  */
@@ -1575,6 +1627,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const {
     renderPage,
     handleApiRoute: handleApi,
+    authorizeOnDemandRevalidate,
     runMiddleware,
     vinextConfig,
     buildId: pagesBuildId,
@@ -1846,6 +1899,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
+      const revalidationHostname = readTrustedRevalidationHostname(
+        rawReqHeaders,
+        i18nConfig,
+        typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
+      );
       // Only a successfully parsed `/_next/data/...json` URL is a data
       // request. The inbound x-nextjs-data header is internal and must not let
       // callers opt normal URLs into the data redirect protocol.
@@ -1853,9 +1911,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
+      if (revalidationHostname) reqHeaders.set("host", revalidationHostname);
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
-      const webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
+      const webRequest = new Request(`${protocol}://${revalidationHostname ?? hostHeader}${url}`, {
         method,
         headers: reqHeaders,
         body: hasBody ? readNodeStream(req) : undefined,
@@ -1878,6 +1937,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
+        authorizeOnDemandRevalidate:
+          typeof authorizeOnDemandRevalidate === "function"
+            ? authorizeOnDemandRevalidate
+            : undefined,
         configMatchPathname,
         matchPageRoute: matchPageRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
@@ -1903,7 +1966,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         handleApi:
           typeof handleApi === "function"
             ? (request: Request, apiUrl: string) =>
-                handleApi(request, apiUrl, createNodeExecutionContext())
+                handleApi(
+                  request,
+                  apiUrl,
+                  createNodeExecutionContext(),
+                  resolveTrustedNodeRevalidateOrigin(req, host, port),
+                )
             : null,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served

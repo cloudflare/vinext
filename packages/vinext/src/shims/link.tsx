@@ -55,8 +55,9 @@ import {
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
 } from "./internal/pages-data-target.js";
-import { interpolateDynamicRouteHref } from "./internal/interpolate-as.js";
+import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal/interpolate-as.js";
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
+import { RouterContext } from "./internal/router-context.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import {
   clearLinkForCurrentNavigation,
@@ -1125,7 +1126,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   },
   forwardedRef,
 ) {
+  const pagesRouter = useContext(RouterContext);
   const asHref = as === undefined ? undefined : resolveHref(as);
+  const hrefStr = resolveHref(href);
   // Extract locale from rest props
   const { locale, ...restWithoutLocale } = rest;
 
@@ -1141,6 +1144,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1").
+  // Pages Router object hrefs with dynamic segments implicitly derive the
+  // same pair: the bracket-pattern href is retained for the router while the
+  // interpolated URL is rendered and displayed. This is gated on the mounted
+  // Pages Router context because App Router intentionally rejects dynamic
+  // href patterns instead of interpolating them.
   // The rendered anchor / prefetch / locale / trailingSlash / basePath math
   // all run on the display value below; a concrete route-pattern href is
   // retained as `routeHrefRaw` so the Pages Router click branch can forward
@@ -1160,13 +1168,40 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Mirrors Next.js' Router.change(): `getRouteRegex` + `interpolateAs`
   // computes `resolvedAs` for the dynamic-route branch (packages/next/src/
   // shared/lib/router/router.ts around L987).
-  const unresolvedHref = asHref ?? resolveHref(href);
+  const hrefForImplicitInterpolation = isAbsoluteOrProtocolRelativeUrl(hrefStr)
+    ? hrefStr.startsWith("//")
+      ? null
+      : toSameOriginAppPath(hrefStr, __basePath)
+    : hrefStr;
+  const implicitDynamicRouteHref =
+    HAS_PAGES_ROUTER &&
+    pagesRouter !== null &&
+    asHref === undefined &&
+    hrefForImplicitInterpolation !== null
+      ? resolveDynamicRouteHref(hrefForImplicitInterpolation)
+      : null;
+  const dynamicRouteHref = implicitDynamicRouteHref
+    ? { ...implicitDynamicRouteHref, href: hrefStr }
+    : null;
+  const pagesAsHref = asHref ?? dynamicRouteHref?.as;
+  const unresolvedHref = pagesAsHref ?? hrefStr;
   const rawResolvedHref =
     typeof unresolvedHref === "string" && unresolvedHref.startsWith("#")
       ? resolvePagesQueryOnlyHref(unresolvedHref)
       : unresolvedHref;
-  const concreteRouteHref = HAS_PAGES_ROUTER ? resolveConcreteRouteHref(href, asHref) : null;
-  const routeHrefRaw = concreteRouteHref ?? (typeof href === "string" ? href : resolveHref(href));
+  const concreteRouteHref = HAS_PAGES_ROUTER
+    ? resolveConcreteRouteHref(
+        dynamicRouteHref ? (hrefForImplicitInterpolation ?? href) : href,
+        pagesAsHref,
+      )
+    : null;
+  const routeHrefRaw = dynamicRouteHref?.href ?? concreteRouteHref ?? hrefStr;
+  const prefetchRouteHrefRaw = concreteRouteHref ?? routeHrefRaw;
+  const hasPagesHrefAsPair =
+    HAS_PAGES_ROUTER &&
+    typeof pagesAsHref === "string" &&
+    typeof routeHrefRaw === "string" &&
+    pagesAsHref !== routeHrefRaw;
 
   // Mirror Next.js: emit a console.error when the href contains repeated
   // forward-slashes (e.g. "/foo//bar") or backslashes, and then normalize the
@@ -1188,16 +1223,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // it once after locale prefixing (for prefetch/navigation paths that bypass
   // basePath) and again after `withBasePath` for the rendered `href` attribute.
   const normalizedHref = normalizePathTrailingSlash(localizedHref, __trailingSlash);
-  const normalizedRouteHref =
-    HAS_PAGES_ROUTER &&
-    typeof asHref === "string" &&
-    typeof routeHrefRaw === "string" &&
-    asHref !== routeHrefRaw
-      ? normalizePathTrailingSlash(
-          applyLocaleToHref(isDangerous ? "/" : routeHrefRaw, locale),
-          __trailingSlash,
-        )
-      : normalizedHref;
+  const normalizedRouteHref = hasPagesHrefAsPair
+    ? normalizePathTrailingSlash(
+        applyLocaleToHref(isDangerous ? "/" : prefetchRouteHrefRaw, locale),
+        __trailingSlash,
+      )
+    : normalizedHref;
   // Full href with basePath for browser URLs and fetches, normalised again so
   // that combining a non-empty basePath with the bare root (`/`) still
   // produces a canonical href under `trailingSlash: false` (e.g. `/foo`
@@ -1406,13 +1437,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // `as` drives the address bar — matching upstream Next.js Link → Router
     // semantics. When no mask is present, leave `pagesAsForLink` undefined so
     // existing single-arg navigation (the dominant code path) is unaffected.
-    const pagesAsForLink =
-      HAS_PAGES_ROUTER &&
-      typeof asHref === "string" &&
-      typeof routeHrefRaw === "string" &&
-      asHref !== routeHrefRaw
-        ? pagesNavigateHref
-        : undefined;
+    const pagesAsForLink = hasPagesHrefAsPair ? pagesNavigateHref : undefined;
     const pagesHrefForLink = pagesAsForLink === undefined ? pagesNavigateHref : routeHrefRaw;
     // Resolve relative hrefs (#hash, ?query) for onNavigate and the navigation fallback.
     // Pages query-only links must use the rewrite-aware target resolved above,

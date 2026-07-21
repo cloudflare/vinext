@@ -78,7 +78,7 @@ describe("loadDevAppInitialProps", () => {
     expect(result).toEqual({
       kind: "render",
       pageProps: {},
-      renderProps: { appProp: "from-app", pageProps: undefined },
+      renderProps: { appProp: "from-app" },
     });
   });
 

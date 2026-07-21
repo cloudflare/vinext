@@ -8,7 +8,10 @@ export default async function handler(
   res: NextApiResponse<{ revalidated: boolean }>,
 ) {
   try {
-    await res.revalidate("/revalidate-reason");
+    const path = typeof req.query.path === "string" ? req.query.path : "/revalidate-reason";
+    await res.revalidate(path, {
+      unstable_onlyGenerated: req.query.onlyGenerated === "1",
+    });
     res.json({ revalidated: true });
     return;
   } catch (err) {

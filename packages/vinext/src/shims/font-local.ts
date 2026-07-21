@@ -15,6 +15,7 @@
  *   // myFont.style -> { fontFamily: "'__local_font_0', sans-serif" }
  *   // myFont.variable -> generated class name when requested
  */
+import { fnv1a64 } from "../utils/hash.js";
 import {
   escapeCSSString,
   formatFontClassRule,
@@ -44,8 +45,34 @@ function sanitizeInternalFontFamily(name: unknown): string | undefined {
   return undefined;
 }
 
-let classCounter = 0;
-const injectedFonts = new Set<string>();
+// Module-level state shared across all module instances via globalThis.
+// Vite's multi-environment dev mode can load this shim more than once
+// (e.g., once per environment, or via different resolved IDs), giving each
+// module copy its own freshly-initialized closure variables. The localFont
+// call site and the SSR getSSRFontStyles() reader can land on different
+// copies, so the reader sees an empty array even though the loader pushed.
+// Backing every piece of mutable state with a `Symbol.for` slot on
+// globalThis collapses the copies onto a single shared store.
+const _INJECTED_FONTS_KEY = Symbol.for("vinext.fontLocal.injectedFonts");
+const _INJECTED_CLASS_RULES_KEY = Symbol.for("vinext.fontLocal.injectedClassRules");
+const _INJECTED_VARIABLE_RULES_KEY = Symbol.for("vinext.fontLocal.injectedVariableRules");
+const _INJECTED_ROOT_VARIABLES_KEY = Symbol.for("vinext.fontLocal.injectedRootVariables");
+const _SSR_FONT_STYLES_KEY = Symbol.for("vinext.fontLocal.ssrFontStyles");
+const _SSR_FONT_PRELOADS_KEY = Symbol.for("vinext.fontLocal.ssrFontPreloads");
+const _SSR_FONT_PRELOAD_HREFS_KEY = Symbol.for("vinext.fontLocal.ssrFontPreloadHrefs");
+
+type _FontLocalGlobal = typeof globalThis & {
+  [_INJECTED_FONTS_KEY]?: Set<string>;
+  [_INJECTED_CLASS_RULES_KEY]?: Set<string>;
+  [_INJECTED_VARIABLE_RULES_KEY]?: Set<string>;
+  [_INJECTED_ROOT_VARIABLES_KEY]?: Set<string>;
+  [_SSR_FONT_STYLES_KEY]?: string[];
+  [_SSR_FONT_PRELOADS_KEY]?: Array<{ href: string; type: string }>;
+  [_SSR_FONT_PRELOAD_HREFS_KEY]?: Set<string>;
+};
+const _g = globalThis as _FontLocalGlobal;
+
+const injectedFonts = (_g[_INJECTED_FONTS_KEY] ??= new Set<string>());
 
 type LocalFontSrc = {
   path: string;
@@ -128,11 +155,11 @@ function generateFontFaceCSS(
 }
 
 // SSR: collect font styles for injection in <head>
-const ssrFontStyles: string[] = [];
+const ssrFontStyles = (_g[_SSR_FONT_STYLES_KEY] ??= []);
 
 // SSR: collect font file URLs for <link rel="preload"> injection
-const ssrFontPreloads: Array<{ href: string; type: string }> = [];
-const ssrFontPreloadHrefs = new Set<string>();
+const ssrFontPreloads = (_g[_SSR_FONT_PRELOADS_KEY] ??= []);
+const ssrFontPreloadHrefs = (_g[_SSR_FONT_PRELOAD_HREFS_KEY] ??= new Set<string>());
 
 /**
  * Get collected SSR font styles (used by the renderer).
@@ -169,7 +196,7 @@ function injectFontFaceCSS(css: string, id: string): void {
 }
 
 /** Track which className CSS rules have been injected. */
-const injectedClassRules = new Set<string>();
+const injectedClassRules = (_g[_INJECTED_CLASS_RULES_KEY] ??= new Set<string>());
 
 /**
  * Inject a CSS rule that maps a className to the exported font style.
@@ -199,10 +226,10 @@ function injectClassNameRule(className: string, fontStyle: FontStyle): void {
 }
 
 /** Track which variable class CSS rules have been injected. */
-const injectedVariableRules = new Set<string>();
+const injectedVariableRules = (_g[_INJECTED_VARIABLE_RULES_KEY] ??= new Set<string>());
 
 /** Track which :root CSS variable rules have been injected. */
-const injectedRootVariables = new Set<string>();
+const injectedRootVariables = (_g[_INJECTED_ROOT_VARIABLES_KEY] ??= new Set<string>());
 
 /**
  * Inject a CSS rule that sets a CSS variable on an element.
@@ -259,6 +286,31 @@ function normalizeSources(options: LocalFontOptions): LocalFontSrc[] {
 }
 
 /**
+ * Derive a stable class identity from the inputs that affect the generated
+ * font CSS. Next.js hashes the generated font CSS for the same reason: class
+ * names must match across the RSC, SSR, and browser module graphs regardless
+ * of which graph evaluates a font call first.
+ */
+function createLocalFontIdentity(
+  options: LocalFontOptions,
+  sources: LocalFontSrc[],
+  internalFamily: string | undefined,
+): string {
+  return fnv1a64(
+    JSON.stringify([
+      internalFamily ?? "",
+      sources.map((source) => [source.path, source.weight ?? "", source.style ?? ""]),
+      options.display ?? "swap",
+      options.weight ?? "",
+      options.style ?? "",
+      options.fallback ?? ["sans-serif"],
+      options.variable ?? "",
+      options.declarations?.map((declaration) => [declaration.prop, declaration.value]) ?? [],
+    ]),
+  );
+}
+
+/**
  * Collect font source URLs for preload link generation.
  * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
  */
@@ -281,10 +333,11 @@ function localFont<T extends CssVariable | undefined = undefined>(
   options: LocalFontOptions<T>,
 ): T extends undefined ? NextFont : NextFontWithVariable;
 function localFont(options: LocalFontOptions): FontResult {
-  const id = classCounter++;
   const sources = normalizeSources(options);
+  const internalFamily = sanitizeInternalFontFamily(options._vinext?.font?.family);
+  const id = createLocalFontIdentity(options, sources, internalFamily);
   const singleSource = sources.length === 1 ? sources[0] : undefined;
-  const family = sanitizeInternalFontFamily(options._vinext?.font?.family) ?? `__local_font_${id}`;
+  const family = internalFamily ?? `__local_font_${id}`;
   const className = `__font_local_${id}`;
   const fallback = options.fallback ?? ["sans-serif"];
   // Sanitize each fallback name to prevent CSS injection via crafted values

@@ -2,7 +2,7 @@ import {
   mergeViewport,
   resolveModuleViewport,
   type Metadata,
-  type Viewport,
+  type ResolvedViewport,
 } from "vinext/shims/metadata";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
@@ -180,11 +180,23 @@ export function resolveHttpAccessFallbackMetadata<TModule extends AppPageHeadMod
 
 export async function resolveHttpAccessFallbackViewport<TModule extends AppPageHeadModule>(
   options: HttpAccessFallbackMetadataPlanOptions<TModule>,
-): Promise<Viewport> {
-  const viewports = await Promise.all(
-    createHttpAccessFallbackPlan(options, "snapshot").map((source) =>
-      resolveModuleViewport(source.module, source.params),
-    ),
-  );
-  return mergeViewport(viewports.filter(isPresent));
+): Promise<ResolvedViewport> {
+  let accumulatedViewport = Promise.resolve(mergeViewport([]));
+
+  for (const source of createHttpAccessFallbackPlan(options, "snapshot")) {
+    const parentForSource = accumulatedViewport;
+    const viewportPromise = resolveModuleViewport(
+      source.module,
+      source.params,
+      undefined,
+      parentForSource,
+    );
+    void viewportPromise.catch(() => null);
+    accumulatedViewport = Promise.all([parentForSource, viewportPromise]).then(
+      ([parent, viewport]) => (viewport ? mergeViewport([parent, viewport]) : parent),
+    );
+    void accumulatedViewport.catch(() => null);
+  }
+
+  return accumulatedViewport;
 }

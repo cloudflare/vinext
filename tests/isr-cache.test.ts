@@ -43,6 +43,59 @@ import {
 
 // ─── isrCacheKey ────────────────────────────────────────────────────────
 
+// Revalidation secret
+describe("revalidation secret", () => {
+  const secretKey = Symbol.for("vinext.isrCache.devRevalidateSecret");
+  const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+  const originalBakedSecret = process.env.__VINEXT_REVALIDATE_SECRET;
+
+  beforeEach(() => {
+    delete process.env.__VINEXT_REVALIDATE_SECRET;
+    delete globals[secretKey];
+  });
+
+  afterEach(() => {
+    if (originalBakedSecret === undefined) {
+      delete process.env.__VINEXT_REVALIDATE_SECRET;
+    } else {
+      process.env.__VINEXT_REVALIDATE_SECRET = originalBakedSecret;
+    }
+    delete globals[secretKey];
+    vi.resetModules();
+  });
+
+  it("shares the development fallback across separately evaluated module copies", async () => {
+    vi.resetModules();
+    const firstModule = await import("../packages/vinext/src/server/isr-cache.js");
+    const secret = firstModule.getRevalidateSecret();
+
+    // Simulate Vite's separate RSC/SSR module graphs by discarding the module
+    // registry while leaving the process global intact.
+    vi.resetModules();
+    const secondModule = await import("../packages/vinext/src/server/isr-cache.js");
+    const differentSecret = `${secret.slice(0, -1)}${secret.endsWith("0") ? "1" : "0"}`;
+
+    expect(secret).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondModule).not.toBe(firstModule);
+    expect(secondModule.getRevalidateSecret()).toBe(secret);
+    expect(secondModule.isOnDemandRevalidateRequest(secret)).toBe(true);
+    expect(secondModule.isOnDemandRevalidateRequest(differentSecret)).toBe(false);
+  });
+
+  it("prefers the baked production secret over the development fallback slot", async () => {
+    globals[secretKey] = "development-fallback";
+    process.env.__VINEXT_REVALIDATE_SECRET = "baked-production-secret";
+    vi.resetModules();
+
+    const module = await import("../packages/vinext/src/server/isr-cache.js");
+
+    expect(module.getRevalidateSecret()).toBe("baked-production-secret");
+    expect(module.isOnDemandRevalidateRequest("baked-production-secret")).toBe(true);
+    expect(module.isOnDemandRevalidateRequest("development-fallback")).toBe(false);
+  });
+});
+
+// Cache keys
 describe("isrCacheKey", () => {
   it("fnv1a64 uses fixed-width unambiguous output", () => {
     const hash = fnv1a64("/" + "a".repeat(250));
@@ -336,7 +389,7 @@ describe("ISR expire ceiling", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
-  it("serves stale within expire and treats entries beyond expire as hard misses", async () => {
+  it("serves stale within expire and retains entries beyond expire for blocking regeneration", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(1_000);
 
@@ -348,7 +401,16 @@ describe("ISR expire ceiling", () => {
     expect(stale?.value.value?.kind).toBe("PAGES");
 
     vi.setSystemTime(4_500);
-    await expect(isrGet("expire-test")).resolves.toBeNull();
+    const expired = await isrGet("expire-test");
+    expect(expired).toMatchObject({ isStale: true, isExpired: true });
+    expect(expired?.value.value?.kind).toBe("PAGES");
+
+    // Hard expiry is a serving boundary, not deletion. The old value remains
+    // available as regeneration input until the fresh write replaces it.
+    await expect(isrGet("expire-test")).resolves.toMatchObject({
+      isStale: true,
+      isExpired: true,
+    });
   });
 
   it("preserves legacy revalidate context while writing cache-control metadata", async () => {
@@ -372,7 +434,19 @@ describe("ISR expire ceiling", () => {
     });
   });
 
-  it("treats cache handlers that report expired entries as hard misses", async () => {
+  it("stores revalidate false without creating a revalidation deadline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+
+    await isrSet("static-test", buildPagesCacheValue("<html>static</html>", {}), false);
+
+    vi.setSystemTime(1_000 + 10 * 31_536_000 * 1000);
+    const cached = await isrGet("static-test");
+    expect(cached?.isStale).toBe(false);
+    expect(cached?.value.cacheControl).toEqual({ revalidate: false });
+  });
+
+  it("retains expired entries surfaced by custom cache handlers", async () => {
     setCacheHandler({
       async get() {
         return {
@@ -385,7 +459,14 @@ describe("ISR expire ceiling", () => {
       async revalidateTag() {},
     });
 
-    await expect(isrGet("expired-handler-entry")).resolves.toBeNull();
+    await expect(isrGet("expired-handler-entry")).resolves.toMatchObject({
+      isStale: true,
+      isExpired: true,
+      value: {
+        cacheState: "expired",
+        value: { kind: "PAGES", html: "<html>expired</html>" },
+      },
+    });
   });
 });
 

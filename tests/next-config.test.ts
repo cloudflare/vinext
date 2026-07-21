@@ -2048,6 +2048,7 @@ describe("detectNextIntlConfig", () => {
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      allowedRevalidateHeaderKeys: [],
       optimizePackageImports: [],
       transpilePackages: [],
       turbopackTranspilePackages: ["geist"],

@@ -429,6 +429,12 @@ export function clearPrivateCache(): void {
 
 type RegisterCachedFunctionOptions = {
   /**
+   * Whether the original function declaration accepts a second argument.
+   * Function.length cannot represent default or rest parameters, so the
+   * transform records this separately for metadata parent resolution.
+   */
+  acceptsSecondArgument?: boolean;
+  /**
    * Internal transform metadata for file-level `"use cache"` default exports
    * in App Router `page.*` files. Page components receive framework-owned
    * `{ params, searchParams }` props. React may copy that props object before
@@ -665,11 +671,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (cachedFn as any)[USE_CACHE_FUNCTION_SYMBOL] = true;
 
+  if (options.acceptsSecondArgument !== undefined) {
+    Reflect.set(cachedFn, USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL, options.acceptsSecondArgument);
+  }
+
   return cachedFn;
 }
 
 /** @internal Symbol used to identify "use cache" wrapper functions. */
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
+/** @internal Symbol carrying transform-derived cached function argument metadata. */
+const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcceptsSecondArgument");
 
 function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   const error = new Error(
@@ -683,7 +695,9 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
   _setRequestScopedCacheLife({
-    revalidate: cacheControl.revalidate,
+    // `false` is an indefinite lifetime and therefore does not constrain an
+    // enclosing cache scope's finite revalidation window.
+    revalidate: cacheControl.revalidate === false ? undefined : cacheControl.revalidate,
     expire: cacheControl.expire,
   });
 }

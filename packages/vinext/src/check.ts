@@ -212,6 +212,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "server actions via 'use server' directive",
   },
+  "experimental.allowedRevalidateHeaderKeys": {
+    status: "supported",
+    detail: "forwards explicitly allowed request headers during Pages Router revalidation",
+  },
   "experimental.prefetchInlining": {
     status: "partial",
     detail:

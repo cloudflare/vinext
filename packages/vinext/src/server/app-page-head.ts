@@ -6,6 +6,7 @@ import {
   resolveModuleViewport,
   type Metadata,
   type MetadataMergeEntry,
+  type ResolvedViewport,
   type Viewport,
 } from "vinext/shims/metadata";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
@@ -155,12 +156,12 @@ export type ResolveAppPageHeadResult = {
   hasSearchParams: boolean;
   metadata: Metadata | null;
   pageSearchParams: AppPageSearchParams;
-  viewport: Viewport;
+  viewport: ResolvedViewport;
 };
 
 export type PreparedAppPageHead = Omit<ResolveAppPageHeadResult, "metadata" | "viewport"> & {
   metadata: Promise<Metadata | null>;
-  viewport: Promise<Viewport>;
+  viewport: Promise<ResolvedViewport>;
 };
 
 type AppPageSearchParamsCollection = {
@@ -173,10 +174,15 @@ type ResolvedParallelRouteMetadata = {
   metadataSources: AppPageHeadSource[];
 };
 
+type PreparedViewportBranch = {
+  resolvedViewport: Promise<ResolvedViewport>;
+  viewportResults: Promise<(Viewport | null)[]>;
+};
+
 export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHeadModule>(
   options: ResolveActiveParallelRouteHeadInputsOptions<TModule>,
 ): ActiveParallelRouteHeadInput<TModule>[] {
-  return Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
+  const inputs = Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
     const ownerTreePosition = options.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0;
     const ownerParams = resolveAppPageSegmentParams(
       options.routeSegments,
@@ -275,6 +281,7 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
       ownerTreePosition,
     };
   });
+  return inputs.sort((left, right) => right.ownerTreePosition - left.ownerTreePosition);
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {
@@ -430,20 +437,46 @@ async function resolveLayoutMetadata<TModule extends AppPageHeadModule>(
   return Promise.all(layoutMetadataPromises);
 }
 
-async function resolveLayoutViewport<TModule extends AppPageHeadModule>(
+function resolveLayoutViewport<TModule extends AppPageHeadModule>(
   layoutInputs: readonly AppPageHeadLayout<TModule>[],
   params: AppPageParams,
   routeSegments: readonly string[],
-): Promise<(Viewport | null)[]> {
-  return Promise.all(
-    layoutInputs.map((layoutInput) => {
-      const layoutParams = resolveAppPageSegmentParams(
-        routeSegments,
-        layoutInput.treePosition,
-        params,
-      );
-      return resolveModuleViewport(layoutInput.module, layoutParams);
-    }),
+): PreparedViewportBranch {
+  const viewportPromises: Promise<Viewport | null>[] = [];
+  let accumulatedViewport = Promise.resolve(mergeViewport([]));
+
+  for (const layoutInput of layoutInputs) {
+    const parentForLayout = accumulatedViewport;
+    const layoutParams = resolveAppPageSegmentParams(
+      routeSegments,
+      layoutInput.treePosition,
+      params,
+    );
+    const viewportPromise = resolveModuleViewport(
+      layoutInput.module,
+      layoutParams,
+      undefined,
+      parentForLayout,
+    );
+    viewportPromises.push(viewportPromise);
+    void viewportPromise.catch(() => null);
+
+    accumulatedViewport = mergeResolvedViewport(parentForLayout, viewportPromise);
+    void accumulatedViewport.catch(() => null);
+  }
+
+  return {
+    resolvedViewport: accumulatedViewport,
+    viewportResults: Promise.all(viewportPromises),
+  };
+}
+
+function mergeResolvedViewport(
+  parent: Promise<ResolvedViewport>,
+  viewport: Promise<Viewport | null>,
+): Promise<ResolvedViewport> {
+  return Promise.all([parent, viewport]).then(([resolvedParent, resolvedViewport]) =>
+    resolvedViewport ? mergeViewport([resolvedParent, resolvedViewport]) : resolvedParent,
   );
 }
 
@@ -518,41 +551,56 @@ async function resolveParallelRouteMetadata<TModule extends AppPageHeadModule>(
   return { metadataResults, metadataSources };
 }
 
-async function resolveParallelRouteViewport<TModule extends AppPageHeadModule>(
+function resolveParallelRouteViewport<TModule extends AppPageHeadModule>(
   parallelRoute: AppPageHeadParallelRoute<TModule>,
   fallbackParams: AppPageParams,
   fallbackRouteSegments: readonly string[],
   pageSearchParams: AppPageSearchParams,
+  parent: Promise<ResolvedViewport>,
   searchParamsObserver?: ThenableParamsObserver,
-): Promise<(Viewport | null)[]> {
+): PreparedViewportBranch {
   const params = parallelRoute.params ?? fallbackParams;
   const routeSegments = parallelRoute.routeSegments ?? fallbackRouteSegments;
   const layoutModules = getParallelRouteModules(parallelRoute);
   const layoutTreePositions = parallelRoute.layoutTreePositions ?? [];
   const layoutParams = parallelRoute.layoutParams ?? [];
-  const layoutViewportPromise = Promise.all(
-    layoutModules.map((layoutModule, index) =>
-      resolveModuleViewport(
-        layoutModule,
-        layoutParams[index] ??
-          resolveParallelLayoutParams(routeSegments, layoutTreePositions[index] ?? 0, params),
-      ),
-    ),
-  );
-  const pageViewportPromise = parallelRoute.pageModule
-    ? resolveModuleViewport(
-        parallelRoute.pageModule,
-        params,
-        pageSearchParams,
-        searchParamsObserver,
-      )
-    : Promise.resolve(null);
-  const [layoutViewports, pageViewport] = await Promise.all([
-    layoutViewportPromise,
-    pageViewportPromise,
-  ]);
+  const viewportPromises: Promise<Viewport | null>[] = [];
+  let accumulatedViewport = parent;
 
-  return parallelRoute.pageModule ? [...layoutViewports, pageViewport] : layoutViewports;
+  for (const [index, layoutModule] of layoutModules.entries()) {
+    const parentForLayout = accumulatedViewport;
+    const viewportPromise = resolveModuleViewport(
+      layoutModule,
+      layoutParams[index] ??
+        resolveParallelLayoutParams(routeSegments, layoutTreePositions[index] ?? 0, params),
+      undefined,
+      parentForLayout,
+    );
+    viewportPromises.push(viewportPromise);
+    void viewportPromise.catch(() => null);
+    accumulatedViewport = mergeResolvedViewport(parentForLayout, viewportPromise);
+    void accumulatedViewport.catch(() => null);
+  }
+
+  if (parallelRoute.pageModule) {
+    const parentForPage = accumulatedViewport;
+    const viewportPromise = resolveModuleViewport(
+      parallelRoute.pageModule,
+      params,
+      pageSearchParams,
+      parentForPage,
+      searchParamsObserver,
+    );
+    viewportPromises.push(viewportPromise);
+    void viewportPromise.catch(() => null);
+    accumulatedViewport = mergeResolvedViewport(parentForPage, viewportPromise);
+    void accumulatedViewport.catch(() => null);
+  }
+
+  return {
+    resolvedViewport: accumulatedViewport,
+    viewportResults: Promise.all(viewportPromises),
+  };
 }
 
 /**
@@ -641,7 +689,8 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     hasGenerateMetadata(options.pageModule);
   const { hasSearchParams, pageSearchParams } = collectAppPageSearchParams(options.searchParams);
   const layoutMetadataPromise = resolveLayoutMetadata(layoutInputs, options.params, routeSegments);
-  const layoutViewportPromise = resolveLayoutViewport(layoutInputs, options.params, routeSegments);
+  const layoutViewport = resolveLayoutViewport(layoutInputs, options.params, routeSegments);
+  const layoutViewportPromise = layoutViewport.viewportResults;
 
   const layoutMetadataResultsForParent = layoutMetadataPromise.then((metadataResults) =>
     metadataResults.filter(isPresent),
@@ -662,14 +711,6 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
         options.searchParamsObserver,
       )
     : Promise.resolve(null);
-  const pageViewportPromise = options.pageModule
-    ? resolveModuleViewport(
-        options.pageModule,
-        options.params,
-        pageSearchParams,
-        options.searchParamsObserver,
-      )
-    : Promise.resolve(null);
   const parallelRoutes = options.parallelRoutes ?? [];
   const parallelRouteMetadataPromise = Promise.all(
     parallelRoutes.map((parallelRoute) =>
@@ -683,17 +724,35 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
       ),
     ),
   );
-  const parallelRouteViewportPromise = Promise.all(
-    parallelRoutes.map((parallelRoute) =>
-      resolveParallelRouteViewport(
-        parallelRoute,
+  const parallelRouteViewportPromises: Promise<(Viewport | null)[]>[] = [];
+  let accumulatedViewport = layoutViewport.resolvedViewport;
+  const pageParentViewport = accumulatedViewport;
+  const pageViewportPromise = options.pageModule
+    ? resolveModuleViewport(
+        options.pageModule,
         options.params,
-        routeSegments,
         pageSearchParams,
+        pageParentViewport,
         options.searchParamsObserver,
-      ),
-    ),
-  );
+      )
+    : Promise.resolve(null);
+  if (options.pageModule) {
+    accumulatedViewport = mergeResolvedViewport(pageParentViewport, pageViewportPromise);
+    void accumulatedViewport.catch(() => null);
+  }
+  for (const parallelRoute of parallelRoutes) {
+    const parallelViewport = resolveParallelRouteViewport(
+      parallelRoute,
+      options.params,
+      routeSegments,
+      pageSearchParams,
+      accumulatedViewport,
+      options.searchParamsObserver,
+    );
+    parallelRouteViewportPromises.push(parallelViewport.viewportResults);
+    accumulatedViewport = parallelViewport.resolvedViewport;
+  }
+  const parallelRouteViewportPromise = Promise.all(parallelRouteViewportPromises);
   const hasDynamicMetadata =
     primaryHasDynamicMetadata || parallelRoutes.some(parallelRouteHasDynamicMetadata);
 

@@ -261,7 +261,10 @@ function renderFontHtml(
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    // Font files are content-hashed immutable assets. Keep the preload URL
+    // byte-identical to the @font-face source so the browser consumes it;
+    // deployment IDs are only needed to cache-bust mutable static assets.
+    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (includeStyles && fontData.styles && fontData.styles.length > 0) {
