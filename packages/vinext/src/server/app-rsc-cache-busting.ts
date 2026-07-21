@@ -327,6 +327,13 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   return `${url.pathname}${url.search}`;
 }
 
+export function createAuthoritativeRscRequestUrl(href: string, headers: Headers): string {
+  const url = new URL(toRscRequestPath(href), "http://vinext.local");
+  const hash = computeLegacyRscCacheBustingSearchParam(headers);
+  setRscCacheBustingSearchParam(url, hash);
+  return `${url.pathname}${url.search}`;
+}
+
 export function createServerActionRequestUrl(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);

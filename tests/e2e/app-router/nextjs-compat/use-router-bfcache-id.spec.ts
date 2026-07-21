@@ -103,9 +103,7 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
       yRequestGate.release = null;
 
       await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/y/1`);
-      expect(rscRequests.filter((pathname) => pathname === `${ROUTE}/y/1`).length).toBeGreaterThan(
-        0,
-      );
+      expect(rscRequests.filter((pathname) => pathname === `${ROUTE}/y/1`)).toHaveLength(1);
       await expect(visibleTestId(page, "server-group")).toHaveText("y");
       await expect(visibleTestId(page, "layout-pathname")).toHaveText(`${ROUTE}/y/1`);
       await expect(visibleTestId(page, "layout-param-group")).toHaveText("y");

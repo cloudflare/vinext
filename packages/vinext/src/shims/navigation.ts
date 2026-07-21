@@ -15,6 +15,7 @@ import type { Params } from "@vinext/types/next/upstream/dist/server/request/par
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
+  type NavigationRuntimeNavigateOptions,
   type NavigationRuntimeVisibleCommitMode,
 } from "../client/navigation-runtime.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
@@ -1941,6 +1942,7 @@ export async function navigateClientSide(
   scroll: boolean,
   programmaticTransition = false,
   visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+  options?: NavigationRuntimeNavigateOptions,
 ): Promise<void> {
   // Reset any link still showing a `useLinkStatus()` pending state that did not
   // initiate this navigation (e.g. a programmatic router.push or form submit).
@@ -2064,6 +2066,7 @@ export async function navigateClientSide(
         undefined,
         scrollIntent,
         visibleCommitMode,
+        options,
       );
     } else {
       if (mode === "replace") {

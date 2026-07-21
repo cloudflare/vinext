@@ -596,6 +596,7 @@ describe("Link App Router navigation scheduling", () => {
         id: expect.any(Number),
       }),
       "transition",
+      expect.objectContaining({ forceAuthoritativeFlightRequest: true }),
     );
     expect(transitionStates).toEqual([true]);
   });

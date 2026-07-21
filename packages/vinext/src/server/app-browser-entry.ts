@@ -35,6 +35,7 @@ import {
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
   invalidatePrefetchCache,
+  navigateClientSide,
   preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
   decodeRedirectError,
@@ -60,6 +61,7 @@ import {
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
   type NavigationRuntimeNavigate,
+  type NavigationRuntimeNavigateOptions,
   type NavigationRuntimeVisibleCommitMode,
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
@@ -161,6 +163,7 @@ import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browse
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  createAuthoritativeRscRequestUrl,
   getVinextRscCompatibilityId,
   stripRscCacheBustingSearchParam,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -1657,6 +1660,7 @@ function bootstrapHydration(
     traversalIntent?: HistoryTraversalIntent,
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+    options?: NavigationRuntimeNavigateOptions,
   ): Promise<void> {
     abortSupersededNavigation();
     const navigationAbortController = new AbortController();
@@ -1773,6 +1777,7 @@ function bootstrapHydration(
                 targetHref: url.href,
               })
             : null;
+        const forceAuthoritativeFlightRequest = options?.forceAuthoritativeFlightRequest === true;
         const shouldBypassNavigationCache =
           earlyIntentDecision?.kind === "flightNavigation" &&
           earlyIntentDecision.bypassNavigationCache;
@@ -1785,14 +1790,18 @@ function bootstrapHydration(
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
         });
-        const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
+        const createNavigationRscRequestUrl = (href: string) =>
+          forceAuthoritativeFlightRequest
+            ? createAuthoritativeRscRequestUrl(href, requestHeaders)
+            : createRscRequestUrl(href, requestHeaders);
+        const rscUrl = await createNavigationRscRequestUrl(url.pathname + url.search);
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
             : null;
         const additionalPrefetchRscUrls =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref
-            ? [await createRscRequestUrl(rewrittenNavigationHref, requestHeaders)]
+            ? [await createNavigationRscRequestUrl(rewrittenNavigationHref)]
             : [];
         const visitedResponseCandidate = shouldBypassNavigationCache
           ? {
@@ -1941,7 +1950,34 @@ function bootstrapHydration(
 
         let navResponse: Response | undefined;
         let navResponseExpiresAt: number | undefined;
-        let navResponseUrl: string | null = null;
+        let navResponseCacheUrl: string | null = null;
+        let navResponseClassificationUrl: string | null | undefined;
+        let navigationResponsePromise: Promise<Response> | null = null;
+        const fetchNavigationResponse = (): Promise<Response> => {
+          if (navigationResponsePromise !== null) return navigationResponsePromise;
+
+          // Produce the client reuse manifest only when a real request is
+          // required. `prefetch={false}` starts that request before resolving an
+          // optimistic shell so the shell cannot delay the authoritative Flight
+          // request that the navigation is required to issue.
+          if (navigationKind === "navigate") {
+            const clientReuseManifestHeader =
+              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
+            if (clientReuseManifestHeader !== null) {
+              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+            }
+          }
+          navigationResponsePromise = fetch(rscUrl, {
+            headers: requestHeaders,
+            credentials: "include",
+            signal: navigationAbortController.signal,
+          });
+          // The same promise is awaited below after the optimistic shell is
+          // staged. Attach a rejection observer now so a fast network failure
+          // cannot become temporarily unhandled while shell learning suspends.
+          void navigationResponsePromise.catch(() => {});
+          return navigationResponsePromise;
+        };
         let fallbackReuseDecision = reuseDecision;
         if (reuseDecision.kind === "consumePrefetch") {
           const prefetchedResponse = await consumePrefetchResponseForNavigation(
@@ -1957,12 +1993,23 @@ function bootstrapHydration(
           if (prefetchedResponse) {
             navResponse = restoreRscResponse(prefetchedResponse, false);
             navResponseExpiresAt = prefetchedResponse.expiresAt;
-            navResponseUrl = isAlternatePrefetchResponseUrl(
+            const isAlternatePrefetchResponse = isAlternatePrefetchResponseUrl(
               prefetchedResponse.url,
               additionalPrefetchRscUrls,
-            )
-              ? rscUrl
+            );
+            navResponseCacheUrl = isAlternatePrefetchResponse ? rscUrl : prefetchedResponse.url;
+            navResponseClassificationUrl = isAlternatePrefetchResponse
+              ? null
               : prefetchedResponse.url;
+            if (isAlternatePrefetchResponse) {
+              seedPrefetchResponseSnapshot(
+                rscUrl,
+                { ...prefetchedResponse, url: rscUrl },
+                requestInterceptionContext,
+                mountedSlotsHeader,
+                PREFETCH_CACHE_TTL,
+              );
+            }
           }
           if (!navResponse) {
             routeManifest = navigationKind === "navigate" ? getBrowserRouteManifest() : null;
@@ -1978,6 +2025,14 @@ function bootstrapHydration(
               visitedResponse: { status: "unavailable" },
             });
           }
+        }
+
+        if (
+          !navResponse &&
+          forceAuthoritativeFlightRequest &&
+          fallbackReuseDecision.kind === "attemptOptimisticRouteShell"
+        ) {
+          void fetchNavigationResponse();
         }
 
         // The optimistic shell is intentionally not gated by
@@ -2045,22 +2100,7 @@ function bootstrapHydration(
         }
 
         if (!navResponse) {
-          // Produce the client reuse manifest only now that prefetch/optimistic
-          // paths did not satisfy the navigation and a real request is required.
-          // Computed from the nav-start router state so it matches the snapshot
-          // the request would have carried if produced earlier.
-          if (navigationKind === "navigate") {
-            const clientReuseManifestHeader =
-              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
-            if (clientReuseManifestHeader !== null) {
-              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
-            }
-          }
-          navResponse = await fetch(rscUrl, {
-            headers: requestHeaders,
-            credentials: "include",
-            signal: navigationAbortController.signal,
-          });
+          navResponse = await fetchNavigationResponse();
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -2086,7 +2126,10 @@ function bootstrapHydration(
           redirectDepth: redirectCount,
           requestPreviousNextUrl,
           responseOk: navResponse.ok,
-          responseUrl: navResponseUrl ?? navResponse.url,
+          responseUrl:
+            navResponseClassificationUrl === undefined
+              ? navResponse.url
+              : navResponseClassificationUrl,
           source: "live",
           streamedRedirectTarget,
           streamedRedirectType,
@@ -2218,7 +2261,7 @@ function bootstrapHydration(
           const responseSnapshot = createCachedRscResponseSnapshot(
             navResponse,
             cacheBuffer,
-            navResponseUrl,
+            navResponseCacheUrl,
           );
           const { dynamicStaleTimeSeconds: _staticDynamicStaleTime, ...staticResponseSnapshot } =
             responseSnapshot;
@@ -2325,6 +2368,7 @@ function bootstrapHydration(
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
     navigate: navigateRsc,
+    navigateClientSide,
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).

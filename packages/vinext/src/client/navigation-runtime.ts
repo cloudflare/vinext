@@ -24,6 +24,24 @@ type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
 
 export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
 
+export type NavigationRuntimeNavigateOptions = {
+  /**
+   * Link navigations with `prefetch={false}` perform an authoritative Flight
+   * request in Next.js. This bypasses response reuse without disabling the
+   * optimistic route shell shown while that request is pending.
+   */
+  forceAuthoritativeFlightRequest?: boolean;
+};
+
+type NavigationRuntimeClientNavigate = (
+  href: string,
+  historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+  scroll: boolean,
+  programmaticTransition?: boolean,
+  visibleCommitMode?: NavigationRuntimeVisibleCommitMode,
+  options?: NavigationRuntimeNavigateOptions,
+) => Promise<void>;
+
 type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
   historyState: unknown;
@@ -40,6 +58,7 @@ export type NavigationRuntimeNavigate = (
   traversalIntent?: NavigationRuntimeTraversalIntent,
   scrollIntent?: AppRouterScrollIntent | null,
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode,
+  options?: NavigationRuntimeNavigateOptions,
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
@@ -53,6 +72,7 @@ export type NavigationRuntimeFunctions = {
     href: string,
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
+  navigateClientSide?: NavigationRuntimeClientNavigate;
   navigate?: NavigationRuntimeNavigate;
   /**
    * Called at the start of every App Router navigation so the <Link> shim can
@@ -114,6 +134,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "navigateClientSide")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))

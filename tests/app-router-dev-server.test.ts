@@ -155,6 +155,18 @@ describe("App Router integration", () => {
     expect(html).toContain("Hello, baseUrl!");
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  it("renders an ancestor loading boundary for an async segment layout on initial render", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/prefetch-false-loading/en/testing",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain('<div id="prefetch-false-loading">Loading...</div>');
+  });
+
   it("renders dynamic routes with params", async () => {
     const res = await fetch(`${baseUrl}/blog/hello-world`);
     expect(res.status).toBe(200);

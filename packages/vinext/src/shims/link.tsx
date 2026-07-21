@@ -1426,7 +1426,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
-    const hasAppNavigationRuntime = Boolean(getNavigationRuntime()?.functions.navigate);
+    const appNavigationRuntime = getNavigationRuntime()?.functions;
+    const hasAppNavigationRuntime = Boolean(appNavigationRuntime?.navigate);
     const pagesNavigateHref =
       HAS_PAGES_ROUTER && resolvedHref.startsWith("?")
         ? resolvePagesLinkNavigationHref(resolvedHref, locale)
@@ -1508,20 +1509,27 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (hasAppNavigationRuntime) {
-      const { navigateClientSide } = await import("./navigation.js");
       const setter = setPendingRef.current;
       // Register this link as the one driving the current navigation. This
       // resets any previously-pending link (e.g. a different link clicked
       // moments earlier) so only the last-clicked link shows a pending state.
       if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
+      const navigateClientSide =
+        appNavigationRuntime?.navigateClientSide ??
+        (await import("./navigation.js")).navigateClientSide;
       React.startTransition(() => {
-        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, true).finally(
-          () => {
-            if (mountedRef.current) setPending(false);
-            if (setter) clearLinkForCurrentNavigation(setter);
-          },
-        );
+        void navigateClientSide(
+          appNavigationRuntime?.navigateClientSide ? absoluteFullHref : navigateHref,
+          replace ? "replace" : "push",
+          scroll,
+          true,
+          "transition",
+          prefetchProp === false ? { forceAuthoritativeFlightRequest: true } : undefined,
+        ).finally(() => {
+          if (mountedRef.current) setPending(false);
+          if (setter) clearLinkForCurrentNavigation(setter);
+        });
       });
       return;
     } else if (HAS_PAGES_ROUTER) {
