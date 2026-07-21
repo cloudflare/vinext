@@ -601,8 +601,8 @@ describe("createAppRscHandler", () => {
     });
     const dispatchMatchedPage = vi.fn(async () => new Response("intercepted", { status: 200 }));
     const matchInterceptRoute = vi.fn((pathname: string, sourcePathname: string) => {
-      if (pathname !== "/photos/a%2Fb" || sourcePathname !== "/feed/a%252Fb") return null;
-      return { route: sourceRoute, params: { slug: "a%2Fb" } };
+      if (pathname !== "/photos/%5Fhidden" || sourcePathname !== "/feed/a%252Fb") return null;
+      return { route: sourceRoute, params: { slug: "%5Fhidden" } };
     });
     const handler = createHandler({
       configHeaders: [],
@@ -612,15 +612,15 @@ describe("createAppRscHandler", () => {
     });
 
     const headers = createRscRequestHeaders({ interceptionContext: "/feed/a%252Fb" });
-    const rscUrl = await createRscRequestUrl("/docs/photos/a%2Fb", headers);
+    const rscUrl = await createRscRequestUrl("/docs/photos/%5Fhidden", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
     expect(response.status).toBe(200);
-    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/a%2Fb", "/feed/a%252Fb");
+    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/%5Fhidden", "/feed/a%252Fb");
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
-        interceptionPathname: "/photos/a%2Fb",
-        params: { slug: "a%2Fb" },
+        interceptionPathname: "/photos/%5Fhidden",
+        params: { slug: "%5Fhidden" },
         route: sourceRoute,
       }),
     );
