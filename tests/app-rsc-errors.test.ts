@@ -5,6 +5,11 @@ import {
   getDigestForWellKnownError,
   sanitizeErrorForClient,
 } from "../packages/vinext/src/server/app-rsc-errors.js";
+import {
+  isResponseAbortedError,
+  ResponseAbortedError,
+  tagConsumerCancellation,
+} from "../packages/vinext/src/server/response-aborted.js";
 
 type DigestCarrier = Error & { digest: unknown };
 
@@ -53,6 +58,48 @@ describe("app RSC error primitives", () => {
 
     expect(sanitized).not.toBe(error);
     expect(expectDigestError(sanitized).digest).toBe("existing-digest");
+  });
+
+  it("does not report renders aborted by response consumer cancellation", () => {
+    const reportRequestError = vi.fn();
+    const onError = createRscOnErrorHandler({
+      errorContext: { routerKind: "App Router", routePath: "/aborted", routeType: "render" },
+      nodeEnv: "production",
+      reportRequestError,
+      requestInfo: { path: "/aborted", method: "GET", headers: {} },
+    });
+
+    const digest = onError(new ResponseAbortedError());
+
+    expect(reportRequestError).not.toHaveBeenCalled();
+    expect(typeof digest).toBe("string");
+  });
+
+  it("tags reason-less consumer cancellation before it reaches the render stream", async () => {
+    let cancelReason: unknown = "unset";
+    const inner = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    await tagConsumerCancellation(inner).cancel();
+
+    expect(isResponseAbortedError(cancelReason)).toBe(true);
+  });
+
+  it("forwards an explicit cancellation reason unchanged", async () => {
+    let cancelReason: unknown = "unset";
+    const inner = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    const explicit = new Error("runtime supplied reason");
+    await tagConsumerCancellation(inner).cancel(explicit);
+
+    expect(cancelReason).toBe(explicit);
   });
 
   it("reports the original server error when the client transport error is sanitized", () => {
