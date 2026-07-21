@@ -15,6 +15,13 @@ export function pumpThrough<I, O>(
   const writer = transform.writable.getWriter();
   const reader = stream.getReader();
 
+  // Cancelling the transform's readable errors its writable. Without this
+  // watcher the pump would only notice on the next chunk, keeping a stalled
+  // render's resources alive after the consumer went away.
+  void writer.closed.catch((reason: unknown) => {
+    void reader.cancel(reason).catch(() => {});
+  });
+
   void (async () => {
     try {
       for (;;) {

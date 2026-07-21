@@ -1,4 +1,5 @@
 const RESPONSE_ABORTED_NAME = "ResponseAborted";
+const RESPONSE_ABORTED_BRAND = Symbol.for("vinext.responseAborted");
 
 /**
  * Cancellation reason used when the response consumer goes away (client
@@ -16,14 +17,31 @@ const RESPONSE_ABORTED_NAME = "ResponseAborted";
  * exactly this class of error.
  */
 export class ResponseAbortedError extends Error {
-  constructor() {
-    super("The client closed the connection before the render completed.");
+  readonly [RESPONSE_ABORTED_BRAND] = true;
+
+  constructor(cause?: unknown) {
+    super(
+      "The client closed the connection before the render completed.",
+      ...(cause !== undefined ? [{ cause }] : []),
+    );
     this.name = RESPONSE_ABORTED_NAME;
   }
 }
 
 export function isResponseAbortedError(error: unknown): boolean {
-  return error instanceof Error && error.name === RESPONSE_ABORTED_NAME;
+  return (
+    error instanceof Error &&
+    (error as Partial<Record<typeof RESPONSE_ABORTED_BRAND, unknown>>)[RESPONSE_ABORTED_BRAND] ===
+      true
+  );
+}
+
+function isDomAbortError(reason: unknown): boolean {
+  return (
+    typeof DOMException !== "undefined" &&
+    reason instanceof DOMException &&
+    reason.name === "AbortError"
+  );
 }
 
 /**
@@ -56,7 +74,15 @@ export function tagConsumerCancellation(
       },
       cancel(reason) {
         cancelled = true;
-        return reader.cancel(reason ?? new ResponseAbortedError());
+        if (reason == null) {
+          return reader.cancel(new ResponseAbortedError());
+        }
+        // Runtimes that propagate a standard aborted signal cancel with a
+        // DOMException named AbortError; that is still a consumer abort.
+        if (isDomAbortError(reason)) {
+          return reader.cancel(new ResponseAbortedError(reason));
+        }
+        return reader.cancel(reason);
       },
     },
     { highWaterMark: 0 },
