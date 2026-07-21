@@ -519,11 +519,6 @@ async function streamPageToResponse(
     const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
     documentAssetProps = renderedDocument.props;
     let docHtml = markDocumentAuthoredAssetTags(renderedDocument.html, documentAuthoredAssetMarker);
-    const generatedFontHeadHTML = applyDocumentAssetProps(
-      fontHeadHTML,
-      { headNonce: renderedDocument.props.headNonce },
-      renderedDocument.props.headCrossOrigin ?? crossOrigin,
-    );
     const generatedScripts = applyDocumentAssetProps(scripts, renderedDocument.props, crossOrigin);
     const generatedAssetHeadHTML = applyDocumentAssetProps(
       assetHeadHTML,
@@ -533,10 +528,10 @@ async function streamPageToResponse(
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
     // Inject head tags
-    if (headHTML || generatedFontHeadHTML || generatedAssetHeadHTML) {
+    if (headHTML || fontHeadHTML || generatedAssetHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}\n  ${generatedAssetHeadHTML}\n</head>`,
+        `  ${fontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}\n  ${generatedAssetHeadHTML}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -549,12 +544,11 @@ async function streamPageToResponse(
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
     // canonical ordering. Don't duplicate them here.
-    const generatedFontHeadHTML = applyDocumentAssetProps(fontHeadHTML, {}, crossOrigin);
     const generatedAssetHeadHTML = applyDocumentAssetProps(assetHeadHTML, {}, crossOrigin);
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${generatedFontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}
+  ${fontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}
   ${generatedAssetHeadHTML}
 </head>
 <body>
@@ -789,6 +783,7 @@ export function createSSRHandler(
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
       defaultLocale: currentDefaultLocale,
+      crossOrigin,
     };
 
     const match = matchRoute(localeStrippedUrl, routes);
@@ -1584,7 +1579,7 @@ export function createSSRHandler(
           // Vite-resolved asset paths should never contain special chars).
           const safeHref = href.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
           const safeType = type.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-          fontHeadHTML += `<link rel="preload"${nonceAttr} href="${safeHref}" as="font" type="${safeType}" crossorigin />\n  `;
+          fontHeadHTML += `<link rel="preload"${nonceAttr} href="${safeHref}" as="font" type="${safeType}" crossorigin="anonymous" />\n  `;
         }
         if (allFontStyles.length > 0) {
           fontHeadHTML += `<style data-vinext-fonts${nonceAttr}>${allFontStyles.join("\n")}</style>\n  `;
@@ -1851,6 +1846,7 @@ async function renderErrorPage(
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
+    crossOrigin?: string;
   } = { basePath: "" },
 ): Promise<void> {
   attachPagesRequestCookies(req);
@@ -2095,9 +2091,11 @@ async function renderErrorPage(
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
               : undefined,
+          crossOrigin: context.crossOrigin,
         });
       } else {
         const bodyHtml = await renderToStringAsync(element);
+        const documentAuthoredAssetMarker = `data-vinext-document-authored-${randomUUID()}`;
         const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -2106,11 +2104,19 @@ async function renderErrorPage(
   ${assetHeadHTML}
 </head>
 <body>
-  <div id="__next">${bodyHtml}</div>
+  <div id="__next">${markDocumentAuthoredAssetTags(bodyHtml, documentAuthoredAssetMarker)}</div>
   ${errorScripts}
 </body>
 </html>`;
-        const transformedHtml = await server.transformIndexHtml(url, html);
+        const transformedHtml = stripDocumentAuthoredAssetMarkers(
+          applyDocumentAssetProps(
+            await server.transformIndexHtml(url, html),
+            {},
+            context.crossOrigin,
+            documentAuthoredAssetMarker,
+          ),
+          documentAuthoredAssetMarker,
+        );
         res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
         res.end(transformedHtml);
       }

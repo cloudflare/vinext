@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { build, createServer, type ViteDevServer } from "vite-plus";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -223,4 +223,76 @@ export default function Document() {
       fs.rmSync(noDocumentRoot, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { label: "a custom Document", customDocument: true },
+    { label: "the default Document", customDocument: false },
+  ])(
+    "applies configured crossOrigin to development error-page scripts with $label",
+    async ({ customDocument }) => {
+      const errorRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-error-assets-"));
+      let errorServer: ViteDevServer | undefined;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await fsp.symlink(
+          path.resolve(import.meta.dirname, "../node_modules"),
+          path.join(errorRoot, "node_modules"),
+          "junction",
+        );
+        await fsp.mkdir(path.join(errorRoot, "pages"));
+        await fsp.writeFile(
+          path.join(errorRoot, "package.json"),
+          JSON.stringify({ type: "module" }),
+        );
+        await fsp.writeFile(
+          path.join(errorRoot, "next.config.mjs"),
+          'export default { crossOrigin: "anonymous" };\n',
+        );
+        await fsp.writeFile(
+          path.join(errorRoot, "pages", "index.tsx"),
+          'export default function Page() { throw new Error("boom"); }\n',
+        );
+        await fsp.writeFile(
+          path.join(errorRoot, "pages", "_error.tsx"),
+          'export default function ErrorPage() { return <><main>error page</main><script id="user-script" src="/user.js" /></>; }\n',
+        );
+        if (customDocument) {
+          await fsp.writeFile(
+            path.join(errorRoot, "pages", "_document.tsx"),
+            `import { Html, Head, Main, NextScript } from "next/document";
+export default function Document() {
+  return <Html><Head /><body><Main /><NextScript /></body></Html>;
+}
+`,
+          );
+        }
+
+        errorServer = await createServer({
+          root: errorRoot,
+          configFile: false,
+          plugins: [vinext({ disableAppRouter: true })],
+          server: { host: "127.0.0.1", port: 0 },
+          logLevel: "silent",
+        });
+        await errorServer.listen();
+        const address = errorServer.httpServer!.address() as { port: number };
+        const response = await fetch(`http://127.0.0.1:${address.port}`);
+        expect(response.status).toBe(500);
+        const html = await response.text();
+        expect(html).toContain("error page");
+        const scripts = getStartTags(html, "script");
+        const userScript = scripts.find((tag) => tag.includes('id="user-script"'));
+        expect(userScript).not.toContain("crossorigin");
+        const generatedScripts = scripts.filter((tag) => tag !== userScript);
+        expect(generatedScripts.length).toBeGreaterThan(0);
+        for (const tag of generatedScripts) {
+          expect(tag).toContain('crossorigin="anonymous"');
+        }
+      } finally {
+        consoleError.mockRestore();
+        await errorServer?.close();
+        fs.rmSync(errorRoot, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -372,7 +372,7 @@ describe("pages page response", () => {
     );
     expect(html).toContain('<link rel="stylesheet" nonce="pages-test-nonce" href="/font.css" />');
     expect(html).toContain(
-      '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin />',
+      '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin="anonymous" />',
     );
     expect(html).toContain('<style data-vinext-fonts nonce="pages-test-nonce">');
     expect(html).toContain(
@@ -385,7 +385,7 @@ describe("pages page response", () => {
   it("keeps Head and NextScript crossOrigin ownership separate", async () => {
     const common = createCommonOptions();
     common.renderDocumentToString.mockResolvedValue(
-      '<!DOCTYPE html><html><head data-vinext-head-nonce="test-nonce" data-vinext-head-cross-origin="anonymous"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="test-nonce" data-vinext-script-cross-origin="use-credentials"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+      '<!DOCTYPE html><html><head data-vinext-head-nonce="test-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="test-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
     );
 
     const response = await renderPagesPageResponse({
@@ -401,15 +401,51 @@ describe("pages page response", () => {
     expect(html).not.toContain("data-vinext-script-nonce");
     for (const tag of getStartTags(html, "script")) {
       expect(tag).toContain('nonce="test-nonce"');
-      expect(tag).toContain('crossorigin="use-credentials"');
-    }
-    const preloads = getStartTags(html, "link").filter(
-      (tag) => tag.includes('rel="preload"') || tag.includes('rel="modulepreload"'),
-    );
-    for (const tag of preloads) {
-      expect(tag).toContain('nonce="test-nonce"');
       expect(tag).toContain('crossorigin="anonymous"');
     }
+    const scriptPreloads = getStartTags(html, "link").filter(
+      (tag) => tag.includes('rel="modulepreload"') || tag.includes('as="script"'),
+    );
+    for (const tag of scriptPreloads) {
+      expect(tag).toContain('nonce="test-nonce"');
+      expect(tag).toContain('crossorigin="use-credentials"');
+    }
+    const fontPreload = getStartTags(html, "link").find((tag) => tag.includes('as="font"'));
+    expect(fontPreload).toContain('crossorigin="anonymous"');
+    expect(fontPreload).not.toContain("nonce=");
+  });
+
+  it("does not apply configured crossOrigin to user next/head assets", async () => {
+    const common = createCommonOptions();
+    common.options.getSSRHeadHTML = vi.fn(
+      () =>
+        '<script id="user-script" src="/user.js" data-next-head=""></script>' +
+        '<link id="user-preload" rel="preload" as="script" href="/user.js" data-next-head="" />',
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: null,
+      assetTags:
+        '<link rel="modulepreload" href="/entry.js" />\n' +
+        '<script type="module" src="/entry.js"></script>',
+      crossOrigin: "anonymous",
+    });
+
+    const html = await response.text();
+    const userScript = getStartTags(html, "script").find((tag) => tag.includes('id="user-script"'));
+    const userPreload = getStartTags(html, "link").find((tag) => tag.includes('id="user-preload"'));
+    expect(userScript).not.toContain("crossorigin");
+    expect(userPreload).not.toContain("crossorigin");
+
+    const generatedScript = getStartTags(html, "script").find((tag) =>
+      tag.includes('src="/entry.js"'),
+    );
+    const generatedPreload = getStartTags(html, "link").find((tag) =>
+      tag.includes('href="/entry.js"'),
+    );
+    expect(generatedScript).toContain('crossorigin="anonymous"');
+    expect(generatedPreload).toContain('crossorigin="anonymous"');
   });
 
   it("renders page before collecting SSR head HTML to prevent style race conditions", async () => {

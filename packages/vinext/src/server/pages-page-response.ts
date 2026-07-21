@@ -252,7 +252,7 @@ function buildPagesFontHeadHtml(
   for (const preload of fontPreloads) {
     // Font files are content-hashed immutable assets. Keep the preload URL
     // byte-identical to the @font-face source so the browser consumes it.
-    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
+    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin="anonymous" />\n  `;
   }
 
   if (fontStyles.length > 0) {
@@ -344,11 +344,6 @@ async function buildPagesShellHtml(
       await options.renderDocumentToString(docElement),
     );
     let html = renderedDocument.html;
-    const generatedFontHeadHTML = applyDocumentAssetProps(
-      fontHeadHTML,
-      { headNonce: renderedDocument.props.headNonce },
-      renderedDocument.props.headCrossOrigin ?? options.crossOrigin,
-    );
     const generatedAssetTags = applyDocumentAssetProps(
       options.assetTags,
       renderedDocument.props,
@@ -360,10 +355,10 @@ async function buildPagesShellHtml(
       options.crossOrigin,
     );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || generatedAssetTags || generatedFontHeadHTML) {
+    if (options.ssrHeadHTML || generatedAssetTags || fontHeadHTML) {
       html = html.replace(
         "</head>",
-        `  ${generatedFontHeadHTML}${options.ssrHeadHTML}\n  ${generatedAssetTags}\n</head>`,
+        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${generatedAssetTags}\n</head>`,
       );
     }
     html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
@@ -376,16 +371,16 @@ async function buildPagesShellHtml(
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
   // defaultHead seeds them with data-next-head=""), matching Next.js's
   // canonical ordering. Don't duplicate them here.
-  return applyDocumentAssetProps(
+  const generatedAssetTags = applyDocumentAssetProps(options.assetTags, {}, options.crossOrigin);
+  const generatedNextDataScript = applyDocumentAssetProps(nextDataScript, {}, options.crossOrigin);
+  return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-      `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
-      `  ${options.assetTags}\n` +
-      "</head>\n<body>\n" +
-      `  <div id="__next">${bodyMarker}</div>\n` +
-      `  ${nextDataScript}\n` +
-      "</body>\n</html>",
-    {},
-    options.crossOrigin,
+    `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
+    `  ${generatedAssetTags}\n` +
+    "</head>\n<body>\n" +
+    `  <div id="__next">${bodyMarker}</div>\n` +
+    `  ${generatedNextDataScript}\n` +
+    "</body>\n</html>"
   );
 }
 
