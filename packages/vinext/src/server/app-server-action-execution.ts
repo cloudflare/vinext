@@ -41,6 +41,7 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
+import { tagConsumerCancellation } from "./response-aborted.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { getSetCookieName } from "./cookie-utils.js";
@@ -489,7 +490,10 @@ function createServerActionRscResponse(
     return new Response(body, init);
   }
 
-  return new Response(deferUntilStreamConsumed(body, clearRequestContext), init);
+  return new Response(
+    tagConsumerCancellation(deferUntilStreamConsumed(body, clearRequestContext)),
+    init,
+  );
 }
 
 function isRequestBodyTooLarge(error: unknown): boolean {

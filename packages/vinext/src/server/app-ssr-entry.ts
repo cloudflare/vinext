@@ -738,7 +738,10 @@ export async function handleSsr(
               options?.scriptNonce,
             ),
           ),
-          cleanup,
+          () => {
+            rscEmbed.abort?.();
+            cleanup();
+          },
         );
 
         return {
