@@ -27,38 +27,23 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
 //
-// Mirrors Next.js's packages/next/src/shared/lib/router/utils/html-bots.ts
-// and is-bot.ts. These bots cannot parse streamed HTML correctly (they may
-// read metadata only from the initial <head> flush), so we buffer the full
-// response and emit it in a single chunk, identical to the Node.js path.
+// These bots cannot parse streamed HTML correctly (they may read metadata
+// only from the initial <head> flush), so we buffer the full response and emit
+// it in a single chunk, identical to the Node.js path.
 // ---------------------------------------------------------------------------
-
-/**
- * Crawlers that cannot handle streamed HTML: they read metadata only from
- * the first network chunk, so streaming would give them an incomplete <head>.
- * Pattern sourced from Next.js html-bots.ts (updated to match the canary).
- */
-const HTML_LIMITED_BOT_UA_RE =
-  /[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight/i;
-
-/**
- * Googlebot (the main search crawler) executes JavaScript via a headless
- * browser, so it too cannot safely handle mid-stream HTML mutations.
- * Matches "Googlebot" but NOT suffixed variants like "Googlebot-Image".
- */
-const HEADLESS_BROWSER_BOT_UA_RE = /Googlebot(?!-)|Googlebot$/i;
 
 /**
  * Returns true when the User-Agent belongs to a bot or crawler that cannot
  * reliably consume a streamed HTML response.
  */
 export function isPagesStreamingBot(userAgent: string): boolean {
-  return HEADLESS_BROWSER_BOT_UA_RE.test(userAgent) || HTML_LIMITED_BOT_UA_RE.test(userAgent);
+  return isBotUserAgent(userAgent);
 }
 
 // ---------------------------------------------------------------------------
