@@ -89,13 +89,18 @@ describe("clientManualChunks", () => {
   });
 
   it("splits the react-dom server renderer into its own 'react-dom-server' chunk", () => {
-    // Server-only Fizz entrypoints + their cjs implementation must NOT ride in
-    // the always-loaded framework chunk — only routes that render to a string
-    // (e.g. embedded Sanity Studio) import them.
+    // Next.js supports these APIs in client components:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
+    // Their Fizz implementation must not ride in the always-loaded framework
+    // chunk when only some client routes import it.
+    expect(clientManualChunks("/node_modules/react-dom/server.js")).toBe("react-dom-server");
     expect(clientManualChunks("/node_modules/react-dom/server.browser.js")).toBe(
       "react-dom-server",
     );
     expect(clientManualChunks("/node_modules/react-dom/server.edge.js")).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/static.browser.js")).toBe(
+      "react-dom-server",
+    );
     expect(clientManualChunks("/node_modules/react-dom/static.edge.js")).toBe("react-dom-server");
     expect(
       clientManualChunks("/node_modules/react-dom/cjs/react-dom-server.browser.production.js"),
@@ -105,6 +110,9 @@ describe("clientManualChunks", () => {
         "/node_modules/react-dom/cjs/react-dom-server-legacy.browser.production.js",
       ),
     ).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/server.browser.js?commonjs-entry")).toBe(
+      "react-dom-server",
+    );
   });
 
   it("keeps react-dom client + shared internals + server stub in 'framework'", () => {

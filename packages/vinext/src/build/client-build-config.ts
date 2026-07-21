@@ -120,12 +120,13 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
       if (!pkg) return undefined;
       if (pkg === "react-dom") {
         // The server renderer (Fizz: renderToString / renderToReadableStream /
-        // renderToStaticMarkup, plus the prerender "static" APIs) is server-only.
+        // renderToStaticMarkup, plus the prerender "static" APIs) is only needed
+        // by client code that explicitly imports those APIs.
         // Keying the always-loaded "framework" chunk on the bare package name
         // ("react-dom") would otherwise drag react-dom/server.browser — and its
-        // sizeable cjs implementation — into every page, even though only client
-        // code that explicitly renders to a string (e.g. an embedded Sanity
-        // Studio) ever imports it. Split those entrypoints into their own chunk
+        // sizeable cjs implementation — into every page, even though most client
+        // routes do not render to a string (an embedded Sanity Studio is one
+        // example that does). Split those entrypoints into their own chunk
         // so the server renderer loads lazily, only on routes that use it,
         // instead of weighing down first paint on every page.
         // Windows ids carry backslashes, so slash-normalize before matching
