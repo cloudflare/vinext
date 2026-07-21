@@ -39,6 +39,8 @@ import {
 export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
+  /** Host runtime executing the current request. */
+  hostRuntime?: "node" | "worker";
   /**
    * Optional host-provided cache handle that some runtimes expose on the
    * execution context. Typed as `unknown` to keep this module runtime-agnostic;

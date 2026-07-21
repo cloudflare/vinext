@@ -1052,6 +1052,7 @@ type WorkerAppRouterEntry = {
 
 function createNodeExecutionContext(trustedRevalidateOrigin?: string): ExecutionContextLike {
   return {
+    hostRuntime: "node",
     waitUntil(promise: Promise<unknown>) {
       // Node doesn't provide a Workers lifecycle, but we still attach a
       // rejection handler so background waitUntil work doesn't surface as an

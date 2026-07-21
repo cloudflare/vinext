@@ -22,6 +22,7 @@ function deriveExecutionContext(
           },
         }
       : {}),
+    hostRuntime: "worker",
     ...(base?.cache === undefined ? {} : { cache: base.cache }),
     ...(base?.trustedRevalidateOrigin === undefined
       ? {}
