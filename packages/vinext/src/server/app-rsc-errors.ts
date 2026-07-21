@@ -161,6 +161,22 @@ export function createRscOnErrorHandler(
       );
     }
 
+    // Surface the error on the dev-server terminal. In Next.js the instrumentation
+    // wrapper (`onInstrumentationRequestError`) logs render errors in development
+    // regardless of user instrumentation; vinext's `reportRequestError` above is a
+    // no-op when no `onRequestError` hook is registered, so without this a server
+    // render error would be swallowed silently in the dev server. The `!hasDigest`
+    // guard dedupes: the same error object reaches this handler on both the RSC
+    // and the SSR/HTML render passes, and the first pass stamps it with a digest
+    // below — mirroring Next.js's `silenceLog` dedup so we log it exactly once.
+    if (nodeEnv !== "production" && error && !hasDigest(error)) {
+      const loggableError =
+        typeof error === "object" && ORIGINAL_SERVER_ERROR in error
+          ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
+          : error;
+      console.error("[vinext] Server render error:", loggableError);
+    }
+
     // A non-signal error that already carries a digest keeps it as-is (matching
     // Next.js's err.digest branch) rather than being re-hashed — but only after
     // it has been reported above.
