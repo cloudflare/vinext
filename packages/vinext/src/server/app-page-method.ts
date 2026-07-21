@@ -1,4 +1,4 @@
-import { isPossibleAppRouteActionRequest } from "./app-route-handler-policy.js";
+import { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { methodNotAllowedResponse } from "./http-error-responses.js";
 

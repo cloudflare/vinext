@@ -51,6 +51,23 @@ describe("app page probe helpers", () => {
     expect(calls).toEqual(["layout", "child"]);
   });
 
+  it("does not invoke client references returned below a layout result", async () => {
+    const ClientReference = Object.assign(
+      vi.fn(() => {
+        throw new Error("client reference must not execute on the server");
+      }),
+      { $$typeof: Symbol.for("react.client.reference") },
+    );
+
+    function Layout() {
+      return React.createElement("section", null, React.createElement(ClientReference));
+    }
+
+    await probeReactServerSubtree(React.createElement(Layout));
+
+    expect(ClientReference).not.toHaveBeenCalled();
+  });
+
   it("probes memo and forwardRef server components returned below a layout result", async () => {
     const calls: string[] = [];
 
@@ -518,6 +535,37 @@ describe("app page probe helpers", () => {
     expect(renderPageSpecialError).not.toHaveBeenCalled();
     expect(result.response).toBeNull();
   });
+
+  it("skips the page probe when disabled for document rendering", async () => {
+    const probePage = vi.fn(() => {
+      throw new Error("page probe should not execute");
+    });
+    const renderPageSpecialError = vi.fn();
+
+    const result = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      probePageBeforeRender: false,
+      layoutCount: 0,
+      probeLayoutAt() {
+        throw new Error("should not probe layouts");
+      },
+      probePage,
+      renderLayoutSpecialError() {
+        throw new Error("should not render a layout special error");
+      },
+      renderPageSpecialError,
+      resolveSpecialError() {
+        throw new Error("should not be reached when the page probe is skipped");
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(probePage).not.toHaveBeenCalled();
+    expect(renderPageSpecialError).not.toHaveBeenCalled();
+    expect(result.response).toBeNull();
+  });
 });
 
 // Regression coverage for https://github.com/cloudflare/vinext/issues/1235.
@@ -763,6 +811,95 @@ describe("buildAppPageProbes", () => {
 
     expect(probes).toHaveLength(2);
     expect(probed.sort()).toEqual(["modal", "page"]);
+  });
+
+  it("does not await slot pages protected by branch-local loading boundaries", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: {
+            loading: { default: () => "loading" },
+            page: { default: recordingPage("modal", probed) },
+          },
+          sidebar: {
+            loadings: [{ default: () => "loading" }],
+            page: { default: recordingPage("sidebar", probed) },
+          },
+          team: { page: { default: recordingPage("team", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["page", "team"]);
+  });
+
+  it("does not await intercepted pages protected by slot or intercept loading boundaries", async () => {
+    const probed: string[] = [];
+    const buildProbes = (interceptLoadings?: readonly { default?: unknown }[]) =>
+      buildAppPageProbes({
+        route: {
+          slots: {
+            modal: {
+              loading: interceptLoadings ? null : { default: () => "slot loading" },
+              page: { default: recordingPage("modal", probed) },
+            },
+          },
+        },
+        pageComponent: recordingPage("page", probed),
+        asyncRouteParams: makeThenableParams({}),
+        searchParams: null,
+        intercept: {
+          interceptLoadings,
+          page: { default: recordingPage("intercept", probed) },
+          slotKey: "modal",
+        },
+        isRscRequest: true,
+        matchedParams: {},
+        makeThenableParams: makeThenableParamsLoose,
+      });
+
+    await Promise.all(buildProbes([{ default: () => "intercept loading" }]));
+    await Promise.all(buildProbes());
+
+    expect(probed).toEqual(["page", "page"]);
+  });
+
+  it("does await intercepted pages when only a sibling normal branch has loading", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: {
+            loadings: [{ default: () => "gallery loading" }],
+            loadingTreePositions: [1],
+            page: { default: recordingPage("gallery", probed) },
+          },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      intercept: {
+        page: { default: recordingPage("intercept", probed) },
+        slotKey: "modal",
+      },
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["intercept", "page"]);
   });
 
   it("skips slots without a page default export", async () => {

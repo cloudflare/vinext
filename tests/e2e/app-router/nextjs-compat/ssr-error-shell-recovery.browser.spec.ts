@@ -20,24 +20,21 @@
  * tests/nextjs-compat/global-error.test.ts.
  */
 import fs from "node:fs/promises";
-import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "../../fixtures";
+import {
+  startChildProductionServer,
+  stopChildProductionServer,
+  type ChildProductionServer,
+} from "../../production-server";
 
 type ProductionApp = {
   baseUrl: string;
   fixtureRoot: string;
-  server: Server;
+  server: ChildProductionServer;
 };
-
-async function closeServer(server: Server): Promise<void> {
-  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-  server.closeIdleConnections();
-  server.closeAllConnections();
-  await closed;
-}
 
 async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   const sourceNodeModules = path.resolve(process.cwd(), "tests/fixtures/app-basic/node_modules");
@@ -46,7 +43,7 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   await fs.mkdir(targetNodeModules, { recursive: true });
 
   for (const entry of await fs.readdir(sourceNodeModules, { withFileTypes: true })) {
-    if (entry.name === ".vite-temp") continue;
+    if (entry.name === ".vite" || entry.name === ".vite-temp") continue;
 
     await fs.symlink(
       path.join(sourceNodeModules, entry.name),
@@ -234,6 +231,41 @@ export default function Client(): React.ReactNode {
 `,
   );
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/default-error-page-ui/default-error-page-ui.test.ts
+  // The built-in Reload button is an empty GET form. Browsers request the
+  // current path with a trailing `?`; the App Router must canonicalize that
+  // back to the query-less URL after the document reloads.
+  const reloadDir = path.join(appDir, "reload-error");
+  await fs.mkdir(reloadDir, { recursive: true });
+  await fs.writeFile(
+    path.join(reloadDir, "page.tsx"),
+    `import React from "react";
+import Client from "./Client";
+
+export default function ReloadErrorPage() {
+  return (
+    <>
+      <h1>Reload Error Page</h1>
+      <Client />
+    </>
+  );
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(reloadDir, "Client.tsx"),
+    `"use client";
+import React, { useState } from "react";
+
+export default function Client() {
+  const [shouldThrow, setShouldThrow] = useState(false);
+  if (shouldThrow) throw new Error("reload error");
+  return <button id="trigger-reload-error" onClick={() => setShouldThrow(true)}>Trigger</button>;
+}
+`,
+  );
+
   const vinextSource = path.resolve(process.cwd(), "packages/vinext/src/index.ts");
   await fs.writeFile(
     path.join(fixtureRoot, "vite.config.ts"),
@@ -264,20 +296,12 @@ async function buildPrerenderAndServeRecoveryFixture(): Promise<ProductionApp> {
   );
   await runPrerender({ root: fixtureRoot });
 
-  const { startProdServer } = await import(
-    pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href
-  );
-  const started = await startProdServer({
-    host: "127.0.0.1",
-    port: 0,
-    outDir: path.join(fixtureRoot, "dist"),
-    noCompression: true,
-  });
+  const started = await startChildProductionServer(fixtureRoot);
 
   return {
     baseUrl: `http://127.0.0.1:${started.port}`,
     fixtureRoot,
-    server: started.server,
+    server: started,
   };
 }
 
@@ -328,6 +352,14 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
       await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
 
+      await page.goto(`${app.baseUrl}/reload-error`, { waitUntil: "load" });
+      await page.locator("#trigger-reload-error").click();
+      await expect(page.getByRole("heading", { name: "This page couldn’t load" })).toBeVisible();
+      const urlBeforeReload = page.url();
+      await page.getByRole("button", { name: "Reload" }).click();
+      await expect(page.getByRole("heading", { name: "Reload Error Page" })).toBeVisible();
+      expect(page.url()).toBe(urlBeforeReload);
+
       // The boundary routes throw on purpose, and React logs caught boundary
       // errors to the console. Drop those expected entries but stay strict
       // about anything else; the fixture re-asserts emptiness at teardown.
@@ -335,6 +367,7 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
         (message) =>
           !message.includes("boundary throw") &&
           !message.includes("always no boundary throw") &&
+          !message.includes("reload error") &&
           !message.includes("genuine server digest error") &&
           !message.includes("Expected error to opt out of server rendering") &&
           // The recovery and global-error documents intentionally preserve
@@ -346,8 +379,11 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
       expect(unexpectedErrors).toEqual([]);
       consoleErrors.length = 0;
     } finally {
-      await closeServer(app.server);
-      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      try {
+        await stopChildProductionServer(app.server);
+      } finally {
+        await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      }
     }
   });
 });

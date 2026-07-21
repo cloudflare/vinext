@@ -61,6 +61,19 @@ test.describe("parallel-route-navigations", () => {
   });
 
   test("should render the right parameters on client navigations", async ({ page }) => {
+    let hadLocked = 0;
+    let unlock: (() => void) | undefined;
+    let lock: Promise<void> | undefined;
+
+    await page.route("**/*", async (route) => {
+      if (lock) {
+        hadLocked++;
+        await lock;
+      }
+
+      await route.continue();
+    });
+
     await page.goto(`${BASE}/parallel-route-navigations/vercel/sub/folder`);
     await waitForAppRouterHydration(page);
 
@@ -68,8 +81,18 @@ test.describe("parallel-route-navigations", () => {
       teamID: "vercel",
       catchAll: ["sub", "folder"],
     });
+    await page.waitForLoadState("networkidle");
+
+    lock = new Promise((resolve) => {
+      unlock = resolve;
+    });
 
     await page.locator('a[href="/parallel-route-navigations/vercel/sub/other-folder"]').click();
+
+    await expectStable(async () => {
+      expect(hadLocked).toBe(1);
+    });
+    unlock?.();
 
     await expectStable(async () => {
       await expectSlotParams(page, {

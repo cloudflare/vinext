@@ -20,7 +20,9 @@ import {
   normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
+  resolveServerActionOperationLane,
   shouldClearClientNavigationCachesForServerActionResult,
+  shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
 import {
@@ -54,12 +56,12 @@ import {
   formatViteOpenInEditorFile,
   installReactRefreshErrorRecovery,
   normalizeViteHmrError,
-} from "../packages/vinext/src/server/dev-error-overlay.js";
+} from "../packages/vinext/src/client/dev-error-overlay.js";
 import {
   dismissOverlay,
   reportToOverlay,
   subscribeOverlay,
-} from "../packages/vinext/src/server/dev-error-overlay-store.js";
+} from "../packages/vinext/src/client/dev-error-overlay-store.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../packages/vinext/src/utils/dev-error-recovery-event.js";
 import {
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
@@ -87,6 +89,7 @@ import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
+  isCompleteAppPayloadMetadata,
   isCacheRestorableAppPayloadMetadata,
   isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
@@ -100,11 +103,13 @@ import {
   type AppRouterState,
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
+import { createInitialBfcacheMaps } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import {
   HistoryStateSnapshotCache,
   RestorableClientStateController,
 } from "../packages/vinext/src/server/app-history-state.js";
 import {
+  blockDangerousStreamedRscRedirect,
   resolveRscRedirectLifecycleHop,
   resolveStreamedRscRedirectLifecycleHop,
 } from "../packages/vinext/src/server/app-browser-rsc-redirect.js";
@@ -478,19 +483,80 @@ function createControllerHarness(
 ) {
   const controller = createAppBrowserNavigationController(deps);
   const stateRef: { current: AppRouterState } = { current: initialState };
+  let resolveNextVisibleCommitDispatch: (() => void) | null = null;
   const setBrowserRouterState = vi.fn((value: AppRouterState | Promise<AppRouterState>) => {
     if (!(value instanceof Promise)) {
       stateRef.current = value;
+      const resolveDispatch = resolveNextVisibleCommitDispatch;
+      resolveNextVisibleCommitDispatch = null;
+      resolveDispatch?.();
     }
   });
   const detach = controller.attachBrowserRouterState(setBrowserRouterState, stateRef);
+  const waitForNextVisibleCommitDispatch = (): Promise<void> => {
+    if (resolveNextVisibleCommitDispatch !== null) {
+      throw new Error("Already waiting for the next visible commit dispatch");
+    }
+
+    return new Promise((resolve) => {
+      resolveNextVisibleCommitDispatch = resolve;
+    });
+  };
 
   return {
     controller,
     detach,
     setBrowserRouterState,
     stateRef,
+    waitForNextVisibleCommitDispatch,
   };
+}
+
+type TestBrowserNavigationController = ReturnType<typeof createAppBrowserNavigationController>;
+type TestBrowserNavigationPayloadOptions = Parameters<
+  TestBrowserNavigationController["renderNavigationPayload"]
+>[0];
+
+function renderCurrentStateNavigationPayload(
+  controller: TestBrowserNavigationController,
+  options: Omit<TestBrowserNavigationPayloadOptions, "navigationInitiationState">,
+) {
+  return controller.renderNavigationPayload({
+    ...options,
+    navigationInitiationState: controller.getBrowserRouterState(),
+  });
+}
+
+async function dispatchTestNavigationPayload(options: {
+  controller: ReturnType<typeof createAppBrowserNavigationController>;
+  navigationCommitKind: "authoritative" | "detached";
+  navigationInitiationState: AppRouterState;
+  navigationSnapshot: AppRouterState["navigationSnapshot"];
+  navId: number;
+  nextElements: Promise<AppElements>;
+  params: Record<string, string | string[]>;
+  targetHref: string;
+  waitForNextVisibleCommitDispatch: () => Promise<void>;
+}): Promise<void> {
+  const commitDispatched = options.waitForNextVisibleCommitDispatch();
+  void options.controller.renderNavigationPayload({
+    actionType: "navigate",
+    createNavigationCommitEffect: () => () => {},
+    historyUpdateMode: "push",
+    navigationCommitKind: options.navigationCommitKind,
+    navigationInitiationState: options.navigationInitiationState,
+    navigationSnapshot: options.navigationSnapshot,
+    navId: options.navId,
+    nextElements: options.nextElements,
+    operationLane: "navigation",
+    params: options.params,
+    payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+    pendingRouterState: null,
+    previousNextUrl: null,
+    targetHref: options.targetHref,
+  });
+
+  await commitDispatched;
 }
 
 type ApprovedTestCommitOptions = {
@@ -885,6 +951,9 @@ describe("app browser entry navigation scheduling", () => {
     expect(
       parseServerActionRevalidationHeader(new Headers({ [ACTION_REVALIDATED_HEADER]: "not-json" })),
     ).toBe("none");
+    expect(resolveServerActionOperationLane("none")).toBe("server-action");
+    expect(resolveServerActionOperationLane("dynamicOnly")).toBe("refresh");
+    expect(resolveServerActionOperationLane("staticAndDynamic")).toBe("refresh");
   });
 
   it("restores action HTTP fallback errors from response status", () => {
@@ -898,6 +967,29 @@ describe("app browser entry navigation scheduling", () => {
     } else {
       throw new Error("Expected fallback to have a digest property");
     }
+  });
+
+  it("lets thrown action HTTP fallbacks own their boundary robots metadata", () => {
+    expect(
+      shouldSyncServerActionHttpFallbackHead({
+        returnValue: { ok: false, data: new Error("sanitized") },
+      }),
+    ).toBe(false);
+    expect(shouldSyncServerActionHttpFallbackHead({ returnValue: { ok: true, data: null } })).toBe(
+      true,
+    );
+    expect(
+      shouldSyncServerActionHttpFallbackHead({
+        root: { __route: "/current" },
+        returnValue: { ok: false, data: new Error("sanitized") },
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves ordinary server action errors for 500 responses", () => {
+    const error = new Error("sanitized action failure");
+
+    expect(normalizeServerActionThrownValue(error, 500)).toBe(error);
   });
 
   it("uses text/plain action response bodies as boundary errors", async () => {
@@ -1229,7 +1321,7 @@ describe("app browser entry navigation scheduling", () => {
   it("does not expose a per-navigation transition override at the controller boundary", () => {
     type Controller = ReturnType<typeof createAppBrowserNavigationController>;
     function assertNoTransitionOverride(controller: Controller) {
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
         historyUpdateMode: "push",
@@ -1390,6 +1482,9 @@ describe("app browser entry state helpers", () => {
       "layout:/": React.createElement("div", null, "layout"),
     });
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
       elements: previousElements,
     });
 
@@ -1419,7 +1514,7 @@ describe("app browser entry state helpers", () => {
     });
   });
 
-  it("replaces elements on approved replace commits", async () => {
+  it("merges planner-approved elements on navigation replace commits", async () => {
     const nextElements = createResolvedElements("route:/next", "/", null, {
       "page:/next": React.createElement("main", null, "next"),
     });
@@ -1448,7 +1543,7 @@ describe("app browser entry state helpers", () => {
 
     const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
 
-    expect(nextState.elements).toBe(nextElements);
+    expect(nextState.elements).toEqual(nextElements);
     expect(nextState.interceptionContext).toBeNull();
     expect(nextState.previousNextUrl).toBeNull();
     expect(nextState.elements).toMatchObject({
@@ -1970,11 +2065,12 @@ describe("app browser entry state helpers", () => {
     ]);
   });
 
-  it("does not classify unproofed payload metadata as cache-restorable", () => {
+  it("classifies complete dynamic payload metadata as client-cacheable", () => {
     const elements = createResolvedElements("route:/dashboard/settings", "/", null, {
       "page:/dashboard/settings": React.createElement("main", null, "settings"),
     });
 
+    expect(isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(true);
     expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
   });
 
@@ -1992,7 +2088,7 @@ describe("app browser entry state helpers", () => {
       [layoutId],
     );
 
-    expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
+    expect(isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
   });
 
   it("traces unknown root-layout identity without preserving absent slots", async () => {
@@ -2359,7 +2455,15 @@ describe("app browser entry state helpers", () => {
       type: "replace",
     });
 
-    const approvedCommit = approveHmrVisibleCommit(pending);
+    const approval = approveHmrVisibleCommit({
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      targetHref: "https://example.com/hmr",
+    });
+    const approvedCommit = approval.approvedCommit;
+    expect(approvedCommit).not.toBeNull();
+    if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
     expect(approvedCommit.decision.trace.entries[0]).toEqual({
       code: NavigationTraceTransactionCodes.visibleCommit,
       fields: {
@@ -2390,12 +2494,382 @@ describe("app browser entry state helpers", () => {
       type: "replace",
     });
 
-    expect(() => approveHmrVisibleCommit(pending)).toThrow(
-      "[vinext] HMR visible commit approval requires an HMR pending operation",
-    );
+    expect(() =>
+      approveHmrVisibleCommit({
+        currentState,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+        targetHref: "https://example.com/dashboard",
+      }),
+    ).toThrow("[vinext] HMR visible commit approval requires an HMR pending operation");
   });
 
-  it("applies approved replace commits without preserving old elements", async () => {
+  it("refreshes planner-approved layout elements across HMR replacement", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/dev-overlay-layout-hmr-toggle", null);
+    const currentRootLayout = React.createElement("section", null, "layout hmr clean");
+    const nextRootLayout = React.createElement("section", null, "layout hmr throw");
+    const currentRouteShell = React.createElement("div", null, "current route shell");
+    const nextRouteShell = React.createElement("div", null, "next route shell");
+    const currentState = createState({
+      bfcacheIds: {
+        [rootLayoutId]: "0",
+      },
+      elements: createResolvedElements(
+        routeId,
+        "/",
+        null,
+        {
+          [rootLayoutId]: currentRootLayout,
+          [routeId]: currentRouteShell,
+          "page:/dev-overlay-layout-hmr-toggle": React.createElement("main", null, "page"),
+        },
+        [rootLayoutId],
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/dev-overlay-layout-hmr-toggle",
+        {},
+      ),
+      routeId,
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState,
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          routeId,
+          "/",
+          null,
+          {
+            [rootLayoutId]: nextRootLayout,
+            [routeId]: nextRouteShell,
+            "page:/dev-overlay-layout-hmr-toggle": React.createElement("main", null, "page"),
+          },
+          [rootLayoutId],
+        ),
+      ),
+      navigationSnapshot: currentState.navigationSnapshot,
+      operationLane: "hmr",
+      renderId: 15,
+      type: "replace",
+    });
+
+    const approval = approveHmrVisibleCommit({
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      targetHref: "https://example.com/dev-overlay-layout-hmr-toggle",
+    });
+    const approvedCommit = approval.approvedCommit;
+    expect(approvedCommit).not.toBeNull();
+    if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
+    expect(approval.decision.preserveElementIds).toEqual([rootLayoutId]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approvedCommit);
+    expect(nextState.elements[routeId]).toBe(currentRouteShell);
+    expect(nextState.elements[rootLayoutId]).toBe(nextRootLayout);
+  });
+
+  it("preserves planner-approved named slot state across HMR replacement", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const authSlotId = AppElementsWire.encodeSlotId("auth", "/");
+    const currentRootLayout = React.createElement("section", null, "current root layout");
+    const nextRootLayout = React.createElement("section", null, "next root layout");
+    const currentSlot = React.createElement("aside", null, "reset");
+    const currentBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "active" as const,
+      },
+    ];
+    const targetBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "default" as const,
+      },
+    ];
+    const currentState = createState({
+      bfcacheIds: {
+        [rootLayoutId]: "0",
+      },
+      elements: createResolvedElements(
+        "route:/parallel-selected-segment/foo",
+        "/",
+        null,
+        { [authSlotId]: currentSlot, [rootLayoutId]: currentRootLayout },
+        [rootLayoutId],
+        currentBindings,
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/parallel-selected-segment/foo",
+        {},
+      ),
+      routeId: "route:/parallel-selected-segment/foo",
+      slotBindings: currentBindings,
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState,
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/parallel-selected-segment/foo",
+          "/",
+          null,
+          {
+            [authSlotId]: React.createElement("aside", null, "default"),
+            [rootLayoutId]: nextRootLayout,
+          },
+          [rootLayoutId],
+          targetBindings,
+        ),
+      ),
+      navigationSnapshot: currentState.navigationSnapshot,
+      operationLane: "hmr",
+      renderId: 15,
+      type: "replace",
+    });
+
+    const approval = approveHmrVisibleCommit({
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      targetHref: "https://example.com/parallel-selected-segment/foo",
+    });
+    const approvedCommit = approval.approvedCommit;
+    expect(approvedCommit).not.toBeNull();
+    if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
+    expect(approvedCommit.decision.preservePreviousSlotIds).toEqual([authSlotId]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approvedCommit);
+    expect(nextState.elements[rootLayoutId]).toBe(currentRootLayout);
+    expect(nextState.elements[authSlotId]).toBe(currentSlot);
+    expect(nextState.slotBindings).toEqual(currentBindings);
+  });
+
+  it("does not let a pending HMR replacement overwrite a navigation commit", async () => {
+    const { controller, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveHmrPayload!: (elements: AppElements) => void;
+    const hmrPayload = new Promise<AppElements>((resolve) => {
+      resolveHmrPayload = resolve;
+    });
+
+    const hmrPromise = controller.hmrReplaceTree(
+      hmrPayload,
+      createClientNavigationRenderSnapshot("https://example.com/hmr", {}),
+    );
+    const navigationState = await applyApprovedTestCommit(stateRef.current, {
+      activeNavigationId: 17,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/navigation",
+        {},
+      ),
+      renderId: 17,
+      rootLayoutTreePath: "/",
+      routeId: "route:/navigation",
+      startedNavigationId: 17,
+      targetHref: "https://example.com/navigation",
+    });
+    stateRef.current = navigationState;
+
+    resolveHmrPayload(createResolvedElements("route:/hmr", "/"));
+    await hmrPromise;
+
+    expect(stateRef.current.routeId).toBe("route:/navigation");
+    expect(stateRef.current.visibleCommitVersion).toBe(1);
+    expect(setBrowserRouterState).not.toHaveBeenCalled();
+  });
+
+  it("does not let faster HMR reject a navigation that started while HMR was pending", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+    let resolveHmrPayload!: (elements: AppElements) => void;
+    let resolveNavigationPayload!: (elements: AppElements) => void;
+    const hmrPayload = new Promise<AppElements>((resolve) => {
+      resolveHmrPayload = resolve;
+    });
+    const navigationPayload = new Promise<AppElements>((resolve) => {
+      resolveNavigationPayload = resolve;
+    });
+
+    try {
+      const hmrPromise = controller.hmrReplaceTree(
+        hmrPayload,
+        createClientNavigationRenderSnapshot("https://example.com/initial", {}),
+      );
+      const navId = controller.beginNavigation();
+      void renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/navigation",
+          {},
+        ),
+        nextElements: navigationPayload,
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/navigation",
+        navId,
+      });
+
+      resolveHmrPayload(createResolvedElements("route:/hmr", "/"));
+      await hmrPromise;
+      expect(stateRef.current.routeId).toBe("route:/initial");
+
+      resolveNavigationPayload(createResolvedElements("route:/navigation", "/"));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/navigation");
+      expect(stateRef.current.activeOperation).toMatchObject({
+        lane: "navigation",
+        state: "committed",
+      });
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not let HMR that starts during a pending navigation supersede it", async () => {
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveNavigationPayload!: (elements: AppElements) => void;
+    const navigationPayload = new Promise<AppElements>((resolve) => {
+      resolveNavigationPayload = resolve;
+    });
+
+    try {
+      const navId = controller.beginNavigation();
+      void renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/navigation",
+          {},
+        ),
+        nextElements: navigationPayload,
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/navigation",
+        navId,
+      });
+
+      await controller.hmrReplaceTree(
+        Promise.resolve(createResolvedElements("route:/hmr", "/")),
+        createClientNavigationRenderSnapshot("https://example.com/initial", {}),
+      );
+
+      expect(stateRef.current.routeId).toBe("route:/initial");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+
+      resolveNavigationPayload(createResolvedElements("route:/navigation", "/"));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/navigation");
+      expect(stateRef.current.activeOperation).toMatchObject({
+        lane: "navigation",
+        state: "committed",
+      });
+    } finally {
+      detach();
+    }
+  });
+
+  it("hard-navigates when HMR changes the root layout boundary", async () => {
+    const performHardNavigation = vi.fn(() => true);
+    const currentState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/marketing", {}),
+      rootLayoutTreePath: "/(marketing)",
+      routeId: "route:/marketing",
+    });
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness(
+      currentState,
+      {
+        getRouteManifest: () =>
+          createTestRouteManifest([
+            {
+              id: "route:/marketing",
+              layoutIds: [AppElementsWire.encodeLayoutId("/(marketing)")],
+              pattern: "/marketing",
+              rootBoundaryId: "root-boundary:/(marketing)",
+            },
+            {
+              id: "route:/marketing-hmr",
+              layoutIds: [AppElementsWire.encodeLayoutId("/(shop)")],
+              pattern: "/marketing",
+              rootBoundaryId: "root-boundary:/(shop)",
+            },
+          ]),
+        performHardNavigation,
+      },
+    );
+
+    try {
+      await controller.hmrReplaceTree(
+        Promise.resolve(createResolvedElements("route:/marketing-hmr", "/(shop)")),
+        currentState.navigationSnapshot,
+      );
+
+      expect(performHardNavigation).toHaveBeenCalledWith("/marketing");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+      expect(stateRef.current).toBe(currentState);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not commit an older HMR payload after a newer HMR update starts", async () => {
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveFirstHmrPayload!: (elements: AppElements) => void;
+    let resolveSecondHmrPayload!: (elements: AppElements) => void;
+    const firstHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveFirstHmrPayload = resolve;
+    });
+    const secondHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveSecondHmrPayload = resolve;
+    });
+
+    try {
+      const firstHmrPromise = controller.hmrReplaceTree(
+        firstHmrPayload,
+        stateRef.current.navigationSnapshot,
+      );
+      const secondHmrPromise = controller.hmrReplaceTree(
+        secondHmrPayload,
+        stateRef.current.navigationSnapshot,
+      );
+
+      resolveFirstHmrPayload(createResolvedElements("route:/hmr-a", "/"));
+      await firstHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/initial");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+
+      resolveSecondHmrPayload(createResolvedElements("route:/hmr-b", "/"));
+      await secondHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/hmr-b");
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not preserve unapproved old elements on navigation replace commits", async () => {
     const currentState = createState({
       elements: createResolvedElements("route:/initial", "/", null, {
         "layout:/old": React.createElement("div", null, "old"),
@@ -2428,13 +2902,95 @@ describe("app browser entry state helpers", () => {
     }
 
     const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
-    expect(nextState.elements).toBe(nextElements);
+    expect(nextState.elements).toEqual(nextElements);
     expect(Object.hasOwn(nextState.elements, "layout:/old")).toBe(false);
     expect(nextState.activeOperation).toMatchObject({
       id: 12,
       lane: "navigation",
       state: "committed",
     });
+  });
+
+  it("replace navigation preserves planner-approved default-only slot content", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const authSlotId = AppElementsWire.encodeSlotId("auth", "/");
+    const currentSlot = React.createElement("aside", null, "reset");
+    const currentBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "active" as const,
+      },
+    ];
+    const targetBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "default" as const,
+      },
+    ];
+    const currentState = createState({
+      bfcacheIds: {
+        [rootLayoutId]: "0",
+      },
+      elements: createResolvedElements(
+        "route:/parallel-selected-segment/reset",
+        "/",
+        null,
+        { [authSlotId]: currentSlot },
+        [rootLayoutId],
+        currentBindings,
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/parallel-selected-segment/reset",
+        {},
+      ),
+      routeId: "route:/parallel-selected-segment/reset",
+      slotBindings: currentBindings,
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState,
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/parallel-selected-segment/foo",
+          "/",
+          null,
+          { "page:/parallel-selected-segment/foo": React.createElement("main", null, "foo") },
+          [rootLayoutId],
+          targetBindings,
+        ),
+      ),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/parallel-selected-segment/foo",
+        {},
+      ),
+      operationLane: "navigation",
+      renderId: 13,
+      type: "replace",
+    });
+
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 5,
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      startedNavigationId: 5,
+      targetHref: "https://example.com/parallel-selected-segment/foo",
+    });
+
+    expect(approval.decision.disposition).toBe("commit");
+    if (approval.decision.disposition !== "commit" || approval.approvedCommit === null) {
+      throw new Error("Expected visible commit approval");
+    }
+    expect(approval.decision.preservePreviousSlotIds).toEqual([authSlotId]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    expect(nextState.elements[authSlotId]).toBe(currentSlot);
+    expect(nextState.slotBindings).toEqual(currentBindings);
   });
 
   it("applies approved traverse commits with stale slot cleanup", async () => {
@@ -2530,7 +3086,10 @@ describe("app browser entry state helpers", () => {
   });
 
   it("preserves layoutFlags only for approved same-layout ancestors", async () => {
-    const state = createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } });
+    const state = createState({
+      bfcacheIds: { "layout:/": "0" },
+      layoutFlags: { "layout:/": "s", "layout:/old": "d" },
+    });
     const nextState = await applyApprovedTestCommit(state, {
       layoutFlags: { "layout:/blog": "d" },
       layoutIds: ["layout:/", "layout:/blog"],
@@ -2633,7 +3192,7 @@ describe("app browser navigation controller", () => {
         }),
       );
 
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -2686,7 +3245,7 @@ describe("app browser navigation controller", () => {
         resolvePayload = resolve;
       });
 
-      const result = controller.renderNavigationPayload({
+      const result = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -2761,7 +3320,7 @@ describe("app browser navigation controller", () => {
     );
 
     try {
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect,
@@ -2818,7 +3377,7 @@ describe("app browser navigation controller", () => {
     });
 
     try {
-      const result = await controller.renderNavigationPayload({
+      const result = await renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
         createNavigationCommitEffect,
         historyUpdateMode: "push",
@@ -2862,7 +3421,7 @@ describe("app browser navigation controller", () => {
     try {
       const navId = controller.beginNavigation();
       stageAppNavigationFailureTarget("/dashboard");
-      const renderPromise = controller.renderNavigationPayload({
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect,
@@ -2908,7 +3467,7 @@ describe("app browser navigation controller", () => {
       stageAppNavigationFailureTarget("/dashboard");
       const olderTarget = window.next?.__pendingUrl;
       const olderNavId = controller.beginNavigation();
-      const renderPromise = controller.renderNavigationPayload({
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -2955,7 +3514,7 @@ describe("app browser navigation controller", () => {
 
     try {
       const navId = controller.beginNavigation();
-      const renderPromise = controller.renderNavigationPayload({
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => commitEffect,
@@ -3006,7 +3565,7 @@ describe("app browser navigation controller", () => {
     try {
       stageAppNavigationFailureTarget("/older");
       const olderNavId = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -3031,7 +3590,7 @@ describe("app browser navigation controller", () => {
       let resolveNewer!: (elements: AppElements) => void;
       stageAppNavigationFailureTarget("/newer");
       const newerNavId = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -3484,6 +4043,423 @@ describe("app browser navigation controller", () => {
 });
 
 describe("app browser navigation lifecycle settlement", () => {
+  it("prepares authoritative layout reuse from the state before a detached commit", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const projectLayoutId = AppElementsWire.encodeLayoutId("/projects/[projectId]");
+    const navigationInitiationState = createState({
+      bfcacheIds: { [rootLayoutId]: "0" },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          [rootLayoutId]: rootLayout,
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        },
+        [rootLayoutId],
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+      routeId: "route:/dashboard",
+    });
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/dashboard",
+        layoutIds: [rootLayoutId],
+        pattern: "/dashboard",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/projects/[projectId]",
+        layoutIds: [rootLayoutId, projectLayoutId],
+        pattern: "/projects/[projectId]",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const { controller, detach, stateRef, waitForNextVisibleCommitDispatch } =
+      createControllerHarness(navigationInitiationState, {
+        getRouteManifest: () => routeManifest,
+      });
+    const targetHref = "https://example.com/projects/b";
+    const navigationSnapshot = createClientNavigationRenderSnapshot(targetHref, {
+      projectId: "b",
+    });
+
+    try {
+      const navId = controller.beginNavigation();
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "detached",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/projects/[projectId]",
+            "/",
+            null,
+            {
+              [APP_SKIPPED_LAYOUT_IDS_KEY]: [rootLayoutId],
+              [projectLayoutId]: React.createElement("section", null, "stale project a"),
+              "page:/projects/[projectId]": React.createElement("main", null, "project b"),
+            },
+            [rootLayoutId, projectLayoutId],
+          ),
+        ),
+        params: { projectId: "b" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      const detachedProjectLayoutId = stateRef.current.bfcacheIds[projectLayoutId];
+      expect(stateRef.current.elements[projectLayoutId]).toMatchObject({
+        props: { children: "stale project a" },
+      });
+
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "authoritative",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/projects/[projectId]",
+            "/",
+            null,
+            {
+              [APP_SKIPPED_LAYOUT_IDS_KEY]: [rootLayoutId],
+              [projectLayoutId]: React.createElement("section", null, "project b layout"),
+              "page:/projects/[projectId]": React.createElement("main", null, "project b"),
+            },
+            [rootLayoutId, projectLayoutId],
+          ),
+        ),
+        params: { projectId: "b" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      expect(stateRef.current.elements[projectLayoutId]).toMatchObject({
+        props: { children: "project b layout" },
+      });
+      expect(stateRef.current.bfcacheIds[projectLayoutId]).not.toBe(detachedProjectLayoutId);
+      expect(stateRef.current.elements[rootLayoutId]).toBe(rootLayout);
+      expect(stateRef.current.bfcacheIds[rootLayoutId]).toBe("0");
+    } finally {
+      detach();
+    }
+  });
+
+  it("preserves a dynamic layout identity across detached same-param sibling payloads", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const projectLayoutId = AppElementsWire.encodeLayoutId("/projects/[projectId]");
+    const projectLayout = React.createElement("section", null, "project a client state");
+    const navigationInitiationState = createState({
+      bfcacheIds: {
+        [rootLayoutId]: "0",
+        [projectLayoutId]: "_b_2_",
+      },
+      elements: createResolvedElements(
+        "route:/projects/[projectId]/overview",
+        "/",
+        null,
+        {
+          [rootLayoutId]: React.createElement("div", null, "root layout"),
+          [projectLayoutId]: projectLayout,
+          "page:/projects/[projectId]/overview": React.createElement("main", null, "overview"),
+        },
+        [rootLayoutId, projectLayoutId],
+      ),
+      layoutIds: [rootLayoutId, projectLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/projects/a/overview",
+        { projectId: "a" },
+      ),
+      routeId: "route:/projects/[projectId]/overview",
+    });
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/projects/[projectId]/overview",
+        layoutIds: [rootLayoutId, projectLayoutId],
+        pattern: "/projects/[projectId]/overview",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/projects/[projectId]/activity",
+        layoutIds: [rootLayoutId, projectLayoutId],
+        pattern: "/projects/[projectId]/activity",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const { controller, detach, stateRef, waitForNextVisibleCommitDispatch } =
+      createControllerHarness(navigationInitiationState, {
+        getRouteManifest: () => routeManifest,
+      });
+    const targetHref = "https://example.com/projects/a/activity";
+    const navigationSnapshot = createClientNavigationRenderSnapshot(targetHref, {
+      projectId: "a",
+    });
+    const createPayload = (content: string) =>
+      Promise.resolve(
+        createResolvedElements(
+          "route:/projects/[projectId]/activity",
+          "/",
+          null,
+          {
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: [rootLayoutId, projectLayoutId],
+            "page:/projects/[projectId]/activity": React.createElement("main", null, content),
+          },
+          [rootLayoutId, projectLayoutId],
+        ),
+      );
+
+    try {
+      const navId = controller.beginNavigation();
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "detached",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: createPayload("optimistic activity"),
+        params: { projectId: "a" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "authoritative",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: createPayload("authoritative activity"),
+        params: { projectId: "a" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      expect(stateRef.current.elements[projectLayoutId]).toBe(projectLayout);
+      expect(stateRef.current.bfcacheIds[projectLayoutId]).toBe("_b_2_");
+      expect(stateRef.current.elements["page:/projects/[projectId]/activity"]).toMatchObject({
+        props: { children: "authoritative activity" },
+      });
+    } finally {
+      detach();
+    }
+  });
+
+  it("replaces a detached slot when its dynamic layout owner was introduced optimistically", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const projectLayoutId = AppElementsWire.encodeLayoutId("/projects/[projectId]");
+    const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/projects/[projectId]");
+    const slotBindings: readonly AppElementsSlotBinding[] = [
+      { ownerLayoutId: projectLayoutId, slotId: sidebarSlotId, state: "default" },
+    ];
+    const navigationInitiationState = createState({
+      bfcacheIds: { [rootLayoutId]: "0" },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          [rootLayoutId]: rootLayout,
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        },
+        [rootLayoutId],
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+      routeId: "route:/dashboard",
+    });
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/dashboard",
+        layoutIds: [rootLayoutId],
+        pattern: "/dashboard",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/projects/[projectId]",
+        layoutIds: [rootLayoutId, projectLayoutId],
+        pattern: "/projects/[projectId]",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings,
+      },
+    ]);
+    const { controller, detach, stateRef, waitForNextVisibleCommitDispatch } =
+      createControllerHarness(navigationInitiationState, {
+        getRouteManifest: () => routeManifest,
+      });
+    const targetHref = "https://example.com/projects/b";
+    const navigationSnapshot = createClientNavigationRenderSnapshot(targetHref, {
+      projectId: "b",
+    });
+    const createPayload = (project: string) =>
+      Promise.resolve(
+        createResolvedElements(
+          "route:/projects/[projectId]",
+          "/",
+          null,
+          {
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: [rootLayoutId],
+            [projectLayoutId]: React.createElement("section", null, `${project} layout`),
+            [sidebarSlotId]: React.createElement("aside", null, `${project} sidebar`),
+            "page:/projects/[projectId]": React.createElement("main", null, "project b"),
+          },
+          [rootLayoutId, projectLayoutId],
+          slotBindings,
+        ),
+      );
+
+    try {
+      const navId = controller.beginNavigation();
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "detached",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: createPayload("stale project a"),
+        params: { projectId: "b" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      const detachedOwnerId = stateRef.current.bfcacheIds[projectLayoutId];
+      const detachedSlotId = stateRef.current.bfcacheIds[sidebarSlotId];
+      expect(stateRef.current.elements[sidebarSlotId]).toMatchObject({
+        props: { children: "stale project a sidebar" },
+      });
+
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "authoritative",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: createPayload("project b"),
+        params: { projectId: "b" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      expect(stateRef.current.elements[sidebarSlotId]).toMatchObject({
+        props: { children: "project b sidebar" },
+      });
+      expect(stateRef.current.bfcacheIds[projectLayoutId]).not.toBe(detachedOwnerId);
+      expect(stateRef.current.bfcacheIds[sidebarSlotId]).not.toBe(detachedSlotId);
+      expect(stateRef.current.elements[rootLayoutId]).toBe(rootLayout);
+      expect(stateRef.current.bfcacheIds[rootLayoutId]).toBe("0");
+    } finally {
+      detach();
+    }
+  });
+
+  it("lets an authoritative payload replace a detached commit from the same navigation", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+
+    try {
+      const navId = controller.beginNavigation();
+      void renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/items?filter=active",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/items", "/", null, {
+            "page:/items": React.createElement("main", null, "optimistic"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/items?filter=active",
+        navId,
+        navigationCommitKind: "detached",
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+        props: { children: "optimistic" },
+      });
+
+      void renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/items?filter=active",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/items", "/", null, {
+            "page:/items": React.createElement("main", null, "authoritative"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/items?filter=active",
+        navId,
+        navigationCommitKind: "authoritative",
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+        props: { children: "authoritative" },
+      });
+      expect(stateRef.current.activeOperation).toMatchObject({
+        navigationId: navId,
+        state: "committed",
+      });
+
+      const lateDetachedOutcome = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/items?filter=active",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/items", "/", null, {
+            "page:/items": React.createElement("main", null, "late detached"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/items?filter=active",
+        navId,
+        navigationCommitKind: "detached",
+      });
+
+      await expect(lateDetachedOutcome).resolves.toBe("no-commit");
+      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+        props: { children: "authoritative" },
+      });
+    } finally {
+      detach();
+    }
+  });
+
   it("most recent navigation commits when three are started and payloads resolve in reverse order", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
     let resolveA!: (elements: AppElements) => void;
@@ -3506,7 +4482,7 @@ describe("app browser navigation lifecycle settlement", () => {
     try {
       // Start three navigations. Only C is the current (winning) one.
       const navA = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => {
@@ -3525,7 +4501,7 @@ describe("app browser navigation lifecycle settlement", () => {
       });
 
       const navB = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => {
@@ -3544,7 +4520,7 @@ describe("app browser navigation lifecycle settlement", () => {
       });
 
       const navC = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => {
@@ -3619,7 +4595,7 @@ describe("app browser navigation lifecycle settlement", () => {
     try {
       // Start cross-root navigation A (deferred, /(marketing) → /(dashboard)).
       const navA = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -3636,7 +4612,7 @@ describe("app browser navigation lifecycle settlement", () => {
 
       // Start new navigation B (same root). B advances activeNavigationId past A.
       const navB = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -3690,7 +4666,7 @@ describe("app browser navigation lifecycle settlement", () => {
 
     try {
       const refreshNav = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -3744,7 +4720,7 @@ describe("app browser navigation lifecycle settlement", () => {
     try {
       const traversePendingState = controller.beginPendingBrowserRouterState();
       const traverseNav = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "traverse",
         createNavigationCommitEffect: () => () => {},
@@ -3921,7 +4897,7 @@ describe("app browser navigation lifecycle settlement", () => {
 
     try {
       const navId = controller.beginNavigation();
-      const renderPromise = controller.renderNavigationPayload({
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -3959,7 +4935,7 @@ describe("app browser root-layout hard navigation", () => {
 
     try {
       const navId = controller.beginNavigation();
-      const renderPromise = controller.renderNavigationPayload({
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect,
@@ -4003,7 +4979,7 @@ describe("app browser root-layout hard navigation", () => {
 
     try {
       const navId = controller.beginNavigation();
-      void controller.renderNavigationPayload({
+      void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -4047,7 +5023,7 @@ describe("app browser root-layout hard navigation", () => {
     try {
       const firstNavId = controller.beginNavigation();
       await expect(
-        controller.renderNavigationPayload({
+        renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
           createNavigationCommitEffect: () => () => {},
@@ -4076,7 +5052,7 @@ describe("app browser root-layout hard navigation", () => {
       window.location.href = "https://example.com/dashboard";
       const secondNavId = controller.beginNavigation();
       await expect(
-        controller.renderNavigationPayload({
+        renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
           createNavigationCommitEffect: () => () => {},
@@ -4127,7 +5103,7 @@ describe("app browser root-layout hard navigation", () => {
     try {
       const firstNavId = controller.beginNavigation();
       await expect(
-        controller.renderNavigationPayload({
+        renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
           createNavigationCommitEffect: () => () => {},
@@ -4155,7 +5131,7 @@ describe("app browser root-layout hard navigation", () => {
       window.location.href = "https://example.com/settings";
       const secondNavId = controller.beginNavigation();
       await expect(
-        controller.renderNavigationPayload({
+        renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
           createNavigationCommitEffect: () => () => {},
@@ -4333,6 +5309,10 @@ describe("app browser entry previousNextUrl helpers", () => {
     const staleLayout = React.createElement("div", null, "stale layout");
     const stalePage = React.createElement("main", null, "stale page");
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/dashboard": "_b_1_",
+      },
       elements: createResolvedElements(
         "route:/dashboard",
         "/",
@@ -4379,6 +5359,175 @@ describe("app browser entry previousNextUrl helpers", () => {
     ]);
   });
 
+  it("installs fresh same-layout output on refresh commits", async () => {
+    const previousLayout = React.createElement("div", null, "previous layout");
+    const nextLayout = React.createElement("div", null, "refreshed layout");
+    const state = createState({
+      bfcacheIds: { "layout:/": "0" },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        { "layout:/": previousLayout },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
+      routeId: "route:/dashboard",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "layout:/": nextLayout,
+        "page:/dashboard": React.createElement("main", null, "dashboard"),
+      },
+      layoutIds: ["layout:/"],
+      operationLane: "refresh",
+      rootLayoutTreePath: "/",
+      routeId: "route:/dashboard",
+    });
+
+    expect(nextState.elements["layout:/"]).toBe(nextLayout);
+  });
+
+  it("installs fresh matching layouts for revalidating same-URL server actions", async () => {
+    const previousLayout = React.createElement("div", null, "previous layout");
+    const nextLayout = React.createElement("div", null, "revalidated layout");
+    const initialState = createState({
+      bfcacheIds: { "layout:/": "0" },
+      elements: createResolvedElements(
+        "route:/settings",
+        "/",
+        null,
+        { "layout:/": previousLayout },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings");
+
+    try {
+      await controller.commitSameUrlNavigatePayload(
+        Promise.resolve(
+          createResolvedElements(
+            "route:/settings",
+            "/",
+            null,
+            {
+              "layout:/": nextLayout,
+              "page:/settings": React.createElement("main", null, "settings"),
+            },
+            ["layout:/"],
+          ),
+        ),
+        stateRef.current.navigationSnapshot,
+        undefined,
+        stateRef.current,
+        { revalidation: "staticAndDynamic" },
+      );
+
+      expect(stateRef.current.activeOperation).toMatchObject({ lane: "refresh" });
+      expect(stateRef.current.elements["layout:/"]).toBe(nextLayout);
+    } finally {
+      detach();
+    }
+  });
+
+  it("installs fresh dynamic layout output when its bound segment identity changes", async () => {
+    const previousLayout = React.createElement("div", null, "hello-world layout");
+    const nextLayout = React.createElement("div", null, "getting-started layout");
+    const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/blog/[slug]": "_b_2_",
+      },
+      elements: createResolvedElements(
+        "route:/blog/[slug]",
+        "/",
+        null,
+        {
+          "layout:/": React.createElement("div", null, "root layout"),
+          "layout:/blog/[slug]": previousLayout,
+        },
+        ["layout:/", "layout:/blog/[slug]"],
+      ),
+      layoutIds: ["layout:/", "layout:/blog/[slug]"],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/hello-world",
+        { slug: "hello-world" },
+      ),
+      routeId: "route:/blog/[slug]",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "layout:/blog/[slug]": nextLayout,
+        "page:/blog/[slug]": React.createElement("main", null, "getting-started"),
+      },
+      layoutIds: ["layout:/", "layout:/blog/[slug]"],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/getting-started",
+        { slug: "getting-started" },
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/blog/[slug]",
+      targetHref: "https://example.com/blog/getting-started",
+    });
+
+    expect(nextState.elements["layout:/blog/[slug]"]).toBe(nextLayout);
+    expect(nextState.bfcacheIds["layout:/blog/[slug]"]).not.toBe("_b_2_");
+  });
+
+  it("does not preserve a previous default slot when its dynamic owner identity changes", async () => {
+    const layoutId = "layout:/blog/[slug]";
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/blog/[slug]");
+    const previousSlot = React.createElement("aside", null, "hello-world sidebar");
+    const nextSlot = React.createElement("aside", null, "getting-started sidebar");
+    const state = createState({
+      bfcacheIds: { [layoutId]: "_b_3_" },
+      elements: createResolvedElements(
+        "route:/blog/[slug]",
+        "/",
+        null,
+        {
+          [layoutId]: React.createElement("div", null, "hello-world layout"),
+          [slotId]: previousSlot,
+        },
+        ["layout:/", layoutId],
+        [{ ownerLayoutId: layoutId, slotId, state: "default" }],
+      ),
+      layoutIds: ["layout:/", layoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/hello-world",
+        { slug: "hello-world" },
+      ),
+      routeId: "route:/blog/[slug]",
+      slotBindings: [{ ownerLayoutId: layoutId, slotId, state: "default" }],
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        [layoutId]: React.createElement("div", null, "getting-started layout"),
+        [slotId]: nextSlot,
+      },
+      layoutIds: ["layout:/", layoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/getting-started",
+        { slug: "getting-started" },
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/blog/[slug]",
+      slotBindings: [{ ownerLayoutId: layoutId, slotId, state: "default" }],
+      targetHref: "https://example.com/blog/getting-started",
+    });
+
+    expect(nextState.elements[slotId]).toBe(nextSlot);
+    expect(nextState.slotBindings).toEqual([{ ownerLayoutId: layoutId, slotId, state: "default" }]);
+  });
+
   it("does not preserve same-layout ancestors when root identity is unknown", async () => {
     const rootLayout = React.createElement("div", null, "root layout");
     const state = createState({
@@ -4405,6 +5554,9 @@ describe("app browser entry previousNextUrl helpers", () => {
     const rootLayout = React.createElement("div", null, "root layout");
     const staleLayout = React.createElement("div", null, "stale layout");
     const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
       elements: createResolvedElements(
         "route:/dashboard",
         "/",
@@ -4463,6 +5615,72 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.layoutFlags).toEqual({
       "layout:/": "s",
     });
+  });
+
+  it("does not preserve skipped layouts when target bfcache ids mismatch", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": rootLayout,
+        },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
+    });
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/settings",
+          "/",
+          null,
+          {
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
+            "page:/settings": React.createElement("main", null, "settings"),
+          },
+          ["layout:/"],
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/settings",
+    });
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+
+    const mismatchedCommit = {
+      ...approval.approvedCommit,
+      action: {
+        ...approval.approvedCommit.action,
+        bfcacheIds: {
+          ...approval.approvedCommit.action.bfcacheIds,
+          "layout:/": "_b_stale_",
+        },
+      },
+    };
+    const nextState = applyApprovedVisibleCommit(currentState, mismatchedCommit);
+
+    expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
+    expect(nextState.elements["page:/settings"]).toBeDefined();
+    expect(nextState.bfcacheIds["layout:/"]).toBe("_b_stale_");
   });
 
   it("does not preserve skipped layouts when current bfcache ids are stale", async () => {
@@ -4540,6 +5758,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/dashboard": "_b_4_",
+        [modalSlotId]: "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/dashboard",
         "/",
@@ -4645,6 +5868,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/feed": "_b_4_",
+        "slot:modal:/feed": "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/feed",
         "/",
@@ -4799,14 +6027,11 @@ describe("app browser entry previousNextUrl helpers", () => {
     }
     expect(approval.approvedCommit.action.bfcacheIds["layout:/feed"]).toBe("_b_4_");
 
-    // createPendingNavigationCommit pre-populates common layout ids today.
-    // Remove one to exercise reducer-level preservation for merged elements,
-    // and add a stale slot id to verify the merged element set bounds the map.
+    // Add a stale slot id to verify the merged element set bounds the map.
     const reducerBfcacheIdProbe = {
       ...approval.approvedCommit.action.bfcacheIds,
       [modalSlotId]: "_b_5_",
     };
-    delete reducerBfcacheIdProbe["layout:/feed"];
     const commitWithoutPreservedLayoutBfcacheId = {
       ...approval.approvedCommit,
       action: {
@@ -4814,9 +6039,7 @@ describe("app browser entry previousNextUrl helpers", () => {
         bfcacheIds: reducerBfcacheIdProbe,
       },
     };
-    expect(
-      Object.hasOwn(commitWithoutPreservedLayoutBfcacheId.action.bfcacheIds, "layout:/feed"),
-    ).toBe(false);
+    expect(commitWithoutPreservedLayoutBfcacheId.action.bfcacheIds["layout:/feed"]).toBe("_b_4_");
     expect(commitWithoutPreservedLayoutBfcacheId.action.bfcacheIds[modalSlotId]).toBe("_b_5_");
 
     const nextState = applyApprovedVisibleCommit(state, commitWithoutPreservedLayoutBfcacheId);
@@ -4835,6 +6058,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/feed": "_b_4_",
+        "slot:modal:/feed": "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/feed",
         "/",
@@ -4930,6 +6158,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/feed": "_b_4_",
+        "slot:modal:/feed": "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/feed",
         "/",
@@ -5071,6 +6304,50 @@ describe("app browser entry bfcacheId helpers", () => {
       [groupLayoutId]: "0",
       [pageX1Id]: "0",
     });
+  });
+
+  it("builds initial bfcache maps from shared App Elements metadata", () => {
+    const elements = createBfcacheElements(pageX1Id);
+    const metadata = AppElementsWire.readMetadata(elements);
+    const maps = createInitialBfcacheMaps({
+      elements,
+      metadata,
+      pathname: "/x/1",
+    });
+
+    expect(maps.bfcacheIds).toEqual(createInitialBfcacheIdMap(elements));
+    expect(maps.stateKeys).toEqual(
+      createBfcacheSegmentStateKeyMap({
+        elements,
+        pathname: "/x/1",
+      }),
+    );
+  });
+
+  it("writes only history-readable bfcache segment ids", () => {
+    const routeId = AppElementsWire.encodeRouteId("/x/1", null);
+    const elements = createResolvedElements(routeId, "/", null, {
+      [routeId]: React.createElement("main", null),
+      [rootLayoutId]: React.createElement("div", null),
+      [pageX1Id]: React.createElement("main", null),
+    });
+    const metadata = AppElementsWire.readMetadata(elements);
+    const maps = createInitialBfcacheMaps({
+      elements,
+      metadata,
+      pathname: "/x/1",
+    });
+    const state = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: maps.bfcacheIds,
+      bfcacheVersion: 1,
+      previousNextUrl: null,
+    });
+
+    expect(maps.bfcacheIds).toEqual({
+      [rootLayoutId]: "0",
+      [pageX1Id]: "0",
+    });
+    expect(readHistoryStateBfcacheIds(state)).toEqual(maps.bfcacheIds);
   });
 
   it("derives page segment state keys from pathname, not history bfcache ids", () => {
@@ -5978,6 +7255,30 @@ describe("createPopstateRestoreHandler", () => {
 });
 
 describe("app browser RSC redirect lifecycle", () => {
+  it("blocks dangerous streamed redirects before browser navigation", async () => {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(
+      blockDangerousStreamedRscRedirect(
+        response,
+        "javascript:window.location.assign('/nextjs-compat/javascript-urls/boom')",
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    expect(consoleError).toHaveBeenCalledWith(
+      "Next.js has blocked a javascript: URL as a security precaution.",
+    );
+  });
+
+  it("allows safe streamed redirects to reach the navigation planner", () => {
+    const response = new Response("rsc payload");
+
+    expect(blockDangerousStreamedRscRedirect(response, "/dashboard")).toBe(false);
+    expect(response.bodyUsed).toBe(false);
+  });
+
   it("keeps RSC redirect hops in the initiating lifecycle and preserves push history intent", () => {
     const decision = resolveRscRedirectLifecycleHop({
       currentHref: "https://example.com/start",
@@ -6088,6 +7389,60 @@ describe("app browser RSC redirect lifecycle", () => {
     });
   });
 
+  it("lets explicit push redirects upgrade an initiating replace navigation", () => {
+    const decision = navigationPlanner.classifyRscFetchResult({
+      clientCompatibilityId: null,
+      compatibilityIdHeader: null,
+      currentHref: "/old",
+      effectiveHistoryUpdateMode: "replace",
+      hasBody: true,
+      isRscContentType: true,
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      responseOk: true,
+      responseUrl: null,
+      source: "live",
+      streamedRedirectTarget: "/new",
+      streamedRedirectType: "push",
+    });
+
+    expect(decision).toMatchObject({
+      kind: "followRedirect",
+      redirect: {
+        href: "/new",
+        historyUpdateMode: "push",
+      },
+    });
+  });
+
+  it("preserves an initiating push across a replace-style server redirect", () => {
+    const decision = navigationPlanner.classifyRscFetchResult({
+      clientCompatibilityId: null,
+      compatibilityIdHeader: null,
+      currentHref: "/source",
+      effectiveHistoryUpdateMode: "push",
+      hasBody: true,
+      isRscContentType: true,
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      responseOk: true,
+      responseUrl: null,
+      source: "live",
+      streamedRedirectTarget: "/destination",
+      streamedRedirectType: "replace",
+    });
+
+    expect(decision).toMatchObject({
+      kind: "followRedirect",
+      redirect: {
+        href: "/destination",
+        historyUpdateMode: "push",
+      },
+    });
+  });
+
   it("treats streamed hash-only same-path changes as redirects", () => {
     const decision = resolveStreamedRscRedirectLifecycleHop({
       currentHref: "/same#old",
@@ -6154,6 +7509,50 @@ describe("app browser RSC redirect lifecycle", () => {
       kind: "terminal-hard-navigation",
       reason: "externalRedirect",
       redirectDepth: 0,
+    });
+  });
+
+  it("maps streamed redirect history mode onto external hard navigation mode", () => {
+    const replaceDecision = navigationPlanner.classifyRscFetchResult({
+      clientCompatibilityId: null,
+      compatibilityIdHeader: null,
+      currentHref: "/account",
+      effectiveHistoryUpdateMode: "push",
+      hasBody: true,
+      isRscContentType: true,
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      responseOk: true,
+      responseUrl: null,
+      source: "live",
+      streamedRedirectTarget: "https://idp.example/login",
+      streamedRedirectType: "replace",
+    });
+    const pushDecision = navigationPlanner.classifyRscFetchResult({
+      clientCompatibilityId: null,
+      compatibilityIdHeader: null,
+      currentHref: "/account",
+      effectiveHistoryUpdateMode: "replace",
+      hasBody: true,
+      isRscContentType: true,
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      responseOk: true,
+      responseUrl: null,
+      source: "live",
+      streamedRedirectTarget: "https://idp.example/login",
+      streamedRedirectType: "push",
+    });
+
+    expect(replaceDecision).toMatchObject({
+      hardNavigationMode: "assign",
+      kind: "hardNavigate",
+    });
+    expect(pushDecision).toMatchObject({
+      hardNavigationMode: "assign",
+      kind: "hardNavigate",
     });
   });
 
@@ -7097,6 +8496,7 @@ describe("mounted slot helpers", () => {
   it("collects only mounted slot ids", () => {
     const elements: AppElements = createResolvedElements("route:/dashboard", "/", null, {
       "layout:/": React.createElement("div", null, "layout"),
+      "slot:children:/dashboard": React.createElement("div", null, "children"),
       "slot:modal:/": React.createElement("div", null, "modal"),
       "slot:sidebar:/": React.createElement("div", null, "sidebar"),
       "slot:ghost:/": null,
@@ -7163,6 +8563,22 @@ describe("resolveServerActionRequestState", () => {
 
     expect(headers.get("X-Vinext-Interception-Context")).toBe(
       resolveInterceptionContextFromPreviousNextUrl(previousNextUrl, ""),
+    );
+  });
+
+  it("falls back to the active interception context for server action requests", () => {
+    const elements = createResolvedElements("route:/dynamic-interception-revalidate/en", "/");
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "revalidate-photo",
+      basePath: "",
+      elements,
+      interceptionContext: "/dynamic-interception-revalidate/en",
+      previousNextUrl: null,
+    });
+
+    expect(headers.get("X-Vinext-Interception-Context")).toBe(
+      "/dynamic-interception-revalidate/en",
     );
   });
 

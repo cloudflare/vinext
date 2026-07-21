@@ -274,10 +274,26 @@ function elementHasSuspenseFallback(value: unknown, depth = 0): boolean {
   return elementHasSuspenseFallback(Reflect.get(props, "children"), depth + 1);
 }
 
-function getPageElementIds(elements: AppElements): string[] {
-  return Object.keys(elements)
-    .filter((key) => AppElementsWire.parseElementKey(key)?.kind === "page")
-    .sort();
+function getPageElementIds(
+  elements: AppElements,
+  route: Pick<RouteManifestRoute, "pageId" | "slotIds">,
+): string[] {
+  const pageElementIds = new Set<string>();
+  if (route.pageId && Object.hasOwn(elements, route.pageId)) {
+    pageElementIds.add(route.pageId);
+  }
+  for (const slotId of route.slotIds) {
+    const parsed = AppElementsWire.parseElementKey(slotId);
+    if (parsed?.kind === "slot" && parsed.name === "children" && Object.hasOwn(elements, slotId)) {
+      pageElementIds.add(slotId);
+    }
+  }
+  for (const key of Object.keys(elements)) {
+    if (AppElementsWire.parseElementKey(key)?.kind === "page") {
+      pageElementIds.add(key);
+    }
+  }
+  return Array.from(pageElementIds).sort();
 }
 
 function OptimisticRouteSegment(): null {
@@ -321,7 +337,7 @@ export function createOptimisticRouteTemplate(options: {
   if (options.allowLoadingShell && (routeElement === undefined || routeElement === null))
     return null;
 
-  const pageElementIds = getPageElementIds(options.elements);
+  const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
 
   return {

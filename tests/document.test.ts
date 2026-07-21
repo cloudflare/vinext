@@ -148,14 +148,12 @@ describe("Document base class", () => {
     expect(html).toContain("__NEXT_SCRIPTS__");
   });
 
-  it("exposes a static getInitialProps that resolves to a DocumentInitialProps-shaped value", async () => {
-    // The runtime contract: subclasses commonly delegate via
-    // `await Document.getInitialProps(ctx)` and destructure `html` from the
-    // result. The stub returns an empty html shell — the test pins the shape
-    // so wiring up the full Pages Router renderPage flow later doesn't
-    // silently regress consumers that destructure `html`.
-    const result = await Document.getInitialProps({});
-    expect(typeof result.html).toBe("string");
+  it("delegates static getInitialProps to ctx.defaultGetInitialProps", async () => {
+    const defaultGetInitialProps = async () => ({ html: "<main>page</main>" });
+    const context = { defaultGetInitialProps } as never;
+    await expect(Document.getInitialProps(context)).resolves.toEqual({
+      html: "<main>page</main>",
+    });
   });
 });
 
@@ -177,15 +175,10 @@ describe("loadUserDocumentInitialProps", () => {
         return { ...base, docValue: await Promise.resolve("doc value") };
       }
     }
-    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
     expect(props).not.toBeNull();
     expect(props!.docValue).toBe("doc value");
-    // The base Document.getInitialProps contract is to return { html: "" } so
-    // `await Document.getInitialProps(ctx)` spreads `{ html: "" }` into the
-    // resulting props. This pins that contract — the dev-server / prod
-    // response builder render `<Document {...docProps} />` and consumers may
-    // read either field.
-    expect(typeof props!.html).toBe("string");
+    expect(props!.html).toBe("");
   });
 
   it("returns null when the user did not override the base getInitialProps", async () => {
@@ -197,7 +190,7 @@ describe("loadUserDocumentInitialProps", () => {
         return React.createElement("html");
       }
     }
-    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
     expect(props).toBeNull();
   });
 
@@ -213,8 +206,8 @@ describe("loadUserDocumentInitialProps", () => {
     // 500 to the caller. vinext matches that contract so user bugs in
     // `_document.tsx`'s getInitialProps are visible instead of silently
     // erasing docProps from every render.
-    await expect(loadUserDocumentInitialProps(BadDocument as React.ComponentType)).rejects.toThrow(
-      "boom",
-    );
+    await expect(
+      loadUserDocumentInitialProps(BadDocument as unknown as React.ComponentType),
+    ).rejects.toThrow("boom");
   });
 });

@@ -11,8 +11,11 @@ export default function DashboardLayout({
   team?: React.ReactNode;
   analytics?: React.ReactNode;
 }) {
+  const renderId = crypto.randomUUID();
+
   return (
     <div id="dashboard-layout">
+      <span data-testid="dashboard-layout-render-id">{renderId}</span>
       <nav>
         <span>Dashboard Nav</span>
         <Link href="/dashboard" data-testid="dash-home-link">

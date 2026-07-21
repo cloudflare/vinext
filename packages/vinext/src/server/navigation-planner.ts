@@ -32,24 +32,17 @@ import {
   type NavigationTraceFields,
   type NavigationTraceReasonCode,
 } from "./navigation-trace.js";
+import {
+  verifyOperationTokenForCacheReuse,
+  type OperationLane,
+  type OperationToken,
+  type OperationTokenRejectionReason,
+} from "./operation-token.js";
 
-export type OperationLane =
-  | "hmr"
-  | "navigation"
-  | "prefetch"
-  | "refresh"
-  | "server-action"
-  | "traverse";
-
-export type OperationToken = {
-  operationId: number;
-  lane: OperationLane;
-  baseVisibleCommitVersion: number;
-  graphVersion: string | null;
-  deploymentVersion: string | null;
-  targetSnapshotFingerprint: string;
-  cacheVariantFingerprint?: string;
-};
+// OperationToken and OperationLane are owned by ./operation-token.ts, the token
+// authority module. Re-exported here so the planner stays the single import
+// surface for navigation types.
+export type { OperationLane, OperationToken } from "./operation-token.js";
 
 export type RouteSnapshot = {
   interception: InterceptionSnapshot | null;
@@ -125,6 +118,7 @@ type CommitProposal = {
 type NoCommitReason = "prefetchOnly";
 type HardNavigationReason =
   | "cacheProofRejected"
+  | "cacheReuseTokenRejected"
   | "interceptionProofRejected"
   | "rootBoundaryChanged";
 export type RootBoundaryTransition =
@@ -162,6 +156,7 @@ export type NavigationDecision =
 export type FlightResult = {
   cacheEntryReuseProof?: CacheEntryReuseProof;
   href: string;
+  restoredHistorySnapshot?: boolean;
   targetSnapshot: RouteSnapshot;
 };
 
@@ -182,6 +177,7 @@ export type RscFetchResultFacts = {
   compatibilityIdHeader: string | null;
   responseUrl: string | null;
   streamedRedirectTarget: string | null;
+  streamedRedirectType?: "push" | "replace" | null;
 };
 
 type RscRedirectFollow = {
@@ -190,6 +186,13 @@ type RscRedirectFollow = {
   previousNextUrl: string | null;
   redirectDepth: number;
 };
+
+function mergeRscRedirectHistoryMode(
+  navigationMode: "push" | "replace",
+  redirectType: "push" | "replace" | null | undefined,
+): "push" | "replace" {
+  return navigationMode === "push" || redirectType === "push" ? "push" : "replace";
+}
 
 type RscFetchResultHardNavReason =
   | "invalidRscPayload"
@@ -210,6 +213,7 @@ export type RscFetchResultDecision =
       kind: "hardNavigate";
       discardBody: boolean;
       url: string;
+      hardNavigationMode?: "assign" | "replace";
       reason: RscFetchResultHardNavReason;
       trace: NavigationTrace;
     };
@@ -399,11 +403,15 @@ function createRscFetchResultHardNavigationDecision(options: {
   reason: RscFetchResultHardNavReason;
   reasonCode: NavigationTraceReasonCode;
   redirectSignal?: RscRedirectSignal;
+  hardNavigationMode?: "assign" | "replace";
   url: string;
 }): RscFetchResultDecision {
   return {
     discardBody: options.discardBody,
     kind: "hardNavigate",
+    ...(options.hardNavigationMode !== undefined
+      ? { hardNavigationMode: options.hardNavigationMode }
+      : {}),
     reason: options.reason,
     trace: createNavigationTrace(
       options.reasonCode,
@@ -531,9 +539,13 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
   }
 
   if (facts.streamedRedirectTarget !== null) {
+    const streamedHistoryMode = mergeRscRedirectHistoryMode(
+      facts.effectiveHistoryUpdateMode,
+      facts.streamedRedirectType,
+    );
     const redirectDecision = resolveStreamedRscRedirectLifecycleHop({
       currentHref: facts.currentHref,
-      historyUpdateMode: facts.effectiveHistoryUpdateMode,
+      historyUpdateMode: streamedHistoryMode,
       origin: facts.origin,
       redirectDepth: facts.redirectDepth,
       requestPreviousNextUrl: facts.requestPreviousNextUrl,
@@ -547,6 +559,7 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
         reason: terminalReason.hardNavigationReason,
         reasonCode: terminalReason.traceReasonCode,
         redirectSignal: "streamed-header",
+        hardNavigationMode: streamedHistoryMode === "push" ? "assign" : "replace",
         url: redirectDecision.href,
       });
     }
@@ -556,7 +569,7 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
         facts,
         redirect: {
           href: redirectDecision.href,
-          historyUpdateMode: facts.effectiveHistoryUpdateMode,
+          historyUpdateMode: streamedHistoryMode,
           previousNextUrl: redirectDecision.previousNextUrl,
           redirectDepth: redirectDecision.redirectDepth,
         },
@@ -783,6 +796,12 @@ function stripInterceptionContextFromRouteId(routeId: string): string {
   return separatorIndex === -1 ? routeId : routeId.slice(0, separatorIndex);
 }
 
+function matchedUrlFromConcreteRouteId(routeId: string): string | null {
+  const normalizedRouteId = stripInterceptionContextFromRouteId(routeId);
+  if (!normalizedRouteId.startsWith("route:/")) return null;
+  return normalizedRouteId.slice("route:".length);
+}
+
 function getMatchedUrlPathname(matchedUrl: string): string {
   try {
     return new URL(matchedUrl, "https://vinext.local").pathname;
@@ -828,6 +847,16 @@ function findRouteManifestRouteByIdOrMatchedUrl(options: {
   const route = options.routeManifest.segmentGraph.routes.get(routeId);
   if (route && routeManifestRouteMatchesUrl(route, options.matchedUrl)) {
     return route;
+  }
+
+  const concreteRouteMatchedUrl =
+    route === undefined ? matchedUrlFromConcreteRouteId(options.routeId) : null;
+  if (concreteRouteMatchedUrl !== null) {
+    const concreteRoute = findRouteManifestRouteByMatchedUrl(
+      options.routeManifest,
+      concreteRouteMatchedUrl,
+    );
+    if (concreteRoute !== null) return concreteRoute;
   }
 
   return findRouteManifestRouteByMatchedUrl(options.routeManifest, options.matchedUrl);
@@ -1159,8 +1188,9 @@ function getVisibleInterceptionSourceIdentity(
       routeId: snapshot.interception.sourceRouteId,
     };
   }
+  const concreteMatchedUrl = matchedUrlFromConcreteRouteId(snapshot.routeId);
   return {
-    matchedUrl: snapshot.matchedUrl,
+    matchedUrl: concreteMatchedUrl ?? snapshot.matchedUrl,
     routeId: snapshot.routeId,
   };
 }
@@ -1245,6 +1275,27 @@ function createCacheProofRejectedDecision(options: {
   };
 }
 
+// A proven cache entry rejected by the OperationToken authority (its graph
+// version or variant no longer matches the installed one). Distinct from
+// cacheProofRejected — the cache proof itself authorized reuse; the token did
+// not — so it carries its own reason code and the verdict reason for telemetry.
+function createCacheReuseTokenRejectedDecision(options: {
+  event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
+  reason: OperationTokenRejectionReason;
+  traceFields: NavigationTraceFields;
+}): NavigationDecision {
+  return {
+    kind: "hardNavigate",
+    reason: "cacheReuseTokenRejected",
+    token: options.event.token,
+    trace: createNavigationTrace(NavigationTraceReasonCodes.cacheReuseTokenRejected, {
+      ...options.traceFields,
+      cacheReuseTokenReason: options.reason,
+    }),
+    url: options.event.result.href,
+  };
+}
+
 function createAcceptedCacheProofTraceFields(
   traceFields: NavigationTraceFields,
   decision: AcceptedCacheEntryReuseDecision | null,
@@ -1269,6 +1320,7 @@ function createCacheEntryProposalFields(
 function validateInterceptedPreservation(options: {
   currentSnapshot: RouteSnapshot;
   currentTopology: RouteTopologySnapshot;
+  restoredHistorySnapshot: boolean;
   routeManifest: RouteManifest | null;
   targetSnapshot: RouteSnapshot;
   targetTopology: RouteTopologySnapshot;
@@ -1290,8 +1342,9 @@ function validateInterceptedPreservation(options: {
 
   const sourceIdentity = getVisibleInterceptionSourceIdentity(options.currentSnapshot);
   if (
-    proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
-    proof.sourceRouteId !== sourceIdentity.routeId
+    !options.restoredHistorySnapshot &&
+    (proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
+      proof.sourceRouteId !== sourceIdentity.routeId)
   ) {
     return {
       kind: "rejected",
@@ -1404,6 +1457,29 @@ function planFlightResponseArrived(options: {
     });
   }
   const acceptedCacheEntryDecision = cacheEntryProofEvaluation.decision;
+
+  // Commits and cache reuse share the OperationToken authority. A proven cache
+  // entry may only be reused if its token still matches the installed route graph
+  // and cache variant. Behavior-preserving today — the token's graphVersion is
+  // minted from the same route manifest the planner verifies against — and a real
+  // guard once cross-document or segment reuse (PR 6/7) can carry a token whose
+  // graph version or variant has diverged from the installed one. The installed
+  // cache variant is not yet known to the planner (segment cache, PR 7), so that
+  // dimension stays dormant rather than comparing the token to itself.
+  if (acceptedCacheEntryDecision !== null) {
+    const reuseVerdict = verifyOperationTokenForCacheReuse(options.event.token, {
+      graphVersion: options.routeManifest?.graphVersion ?? null,
+      installedCacheVariantFingerprint: null,
+    });
+    if (!reuseVerdict.authorized) {
+      return createCacheReuseTokenRejectedDecision({
+        event: options.event,
+        reason: reuseVerdict.reason,
+        traceFields,
+      });
+    }
+  }
+
   const commitTraceFields = createAcceptedCacheProofTraceFields(
     traceFields,
     acceptedCacheEntryDecision,
@@ -1426,6 +1502,7 @@ function planFlightResponseArrived(options: {
     const validation = validateInterceptedPreservation({
       currentSnapshot: options.state.visibleSnapshot,
       currentTopology: currentTopology.topology,
+      restoredHistorySnapshot: options.event.result.restoredHistorySnapshot === true,
       routeManifest: options.routeManifest,
       targetSnapshot,
       targetTopology: targetTopology.topology,

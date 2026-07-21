@@ -1,6 +1,11 @@
-import { getAndClearActionRevalidationKind, type ActionRevalidationKind } from "vinext/shims/cache";
+import {
+  _drainPendingRevalidations,
+  getAndClearActionRevalidationKind,
+  type ActionRevalidationKind,
+} from "vinext/shims/cache-request-state";
 import {
   headersContextFromRequest,
+  isDraftModeRequest,
   setHeadersContext,
   type HeadersAccessPhase,
 } from "vinext/shims/headers";
@@ -11,7 +16,13 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
-import { isExternalUrl } from "../config/config-matchers.js";
+import {
+  createRootParamsUsageController,
+  pickRootParams,
+  runWithRootParamsScope,
+  runWithRootParamsUsage,
+} from "vinext/shims/root-params";
+import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
@@ -33,10 +44,7 @@ import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import {
-  APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
-  type AppRscRenderMode,
-} from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   getNextErrorDigest,
   parseNextHttpErrorDigest,
@@ -50,6 +58,7 @@ import {
   isServerActionNotFoundError,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
+import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -90,6 +99,7 @@ type AppServerActionRedirect = {
 type AppServerActionRoute = {
   page?: unknown;
   pattern: string;
+  rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments?: readonly string[];
   params?: readonly string[] | null;
@@ -148,6 +158,7 @@ type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
 
 type AppServerActionIntercept<TPage = unknown> = {
   matchedParams: AppPageParams;
+  sourceMatchedParams?: AppPageParams;
   page: TPage;
   slotId?: string | null;
   slotKey: string;
@@ -164,6 +175,8 @@ type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TI
   route: TRoute;
   searchParams: URLSearchParams;
   renderMode: AppRscRenderMode;
+  observeMetadataSearchParamsAccess?: boolean;
+  observePageSearchParamsAccess?: boolean;
 };
 
 type AppServerActionRscModel<TElement> = {
@@ -231,6 +244,10 @@ export type HandleServerActionRscRequestOptions<
   cleanPathname: string;
   clearRequestContext: () => void;
   contentType: string;
+  /** Route selected at the request boundary before action execution. */
+  currentRouteMatch: AppServerActionMatch<TRoute> | null;
+  /** Request-aware pathname identity used for current-route interception lookup. */
+  currentRoutePathname: string;
   createNotFoundElement: (routeId: string) => TElement;
   createPayloadRouteId: (pathname: string, interceptionContext: string | null) => string;
   createRscOnErrorHandler: (
@@ -243,6 +260,7 @@ export type HandleServerActionRscRequestOptions<
     body: string | FormData,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
+  draftModeSecret: string;
   /**
    * Hydrate a route's lazy page/route-handler modules before reading
    * `route.page` / `route.routeHandler` on action redirect targets and
@@ -285,6 +303,50 @@ export type HandleServerActionRscRequestOptions<
   }) => void;
   toInterceptOpts: (intercept: AppServerActionIntercept<TPage>) => TInterceptOpts;
 };
+
+function prepareActionPageRerenderContext(options: {
+  draftModeCookie: string | null | undefined;
+  draftModeSecret: string;
+  dynamicConfig: string | null | undefined;
+  request: Request;
+  routePattern: string;
+  searchParams: URLSearchParams;
+}): URLSearchParams {
+  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    const rerenderRequest = createActionRerenderRequest({
+      draftModeCookie: options.draftModeCookie,
+      request: options.request,
+    });
+    setHeadersContext(
+      createStaticGenerationHeadersContext({
+        draftModeEnabled: isDraftModeRequest(rerenderRequest, options.draftModeSecret),
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: options.dynamicConfig,
+        routeKind: "page",
+        routePattern: options.routePattern,
+      }),
+    );
+  }
+  return options.dynamicConfig === "force-static" ? new URLSearchParams() : options.searchParams;
+}
+
+function createActionRerenderRequest(options: {
+  draftModeCookie: string | null | undefined;
+  request: Request;
+}): Request {
+  if (!options.draftModeCookie) return options.request;
+
+  const headers = new Headers(options.request.headers);
+  const cookieHeader = applySetCookieMutationsToRequestCookieHeader(headers.get("cookie"), [
+    options.draftModeCookie,
+  ]);
+  if (cookieHeader === null) {
+    headers.delete("cookie");
+  } else {
+    headers.set("cookie", cookieHeader);
+  }
+  return new Request(options.request.url, { headers });
+}
 
 /**
  * Matches Next.js' server action argument cap to prevent stack overflow in
@@ -524,7 +586,7 @@ export async function readActionFormDataWithLimit(
 
     totalSize += result.value.byteLength;
     if (totalSize > maxBytes) {
-      await reader.cancel();
+      void reader.cancel();
       throw new Error("Request body too large");
     }
     chunks.push(result.value);
@@ -821,11 +883,18 @@ export async function handleProgressiveServerActionRequest(
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionError: unknown = undefined;
     let actionFailed = false;
+    let actionThrew = false;
     let actionResult: unknown;
+    const rootParamsUsage = createRootParamsUsageController();
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
-      actionResult = await action();
+      actionResult = await runWithRootParamsUsage(
+        { kind: "server-action" },
+        action,
+        rootParamsUsage,
+      );
     } catch (error) {
+      actionThrew = true;
       actionRedirect = getActionRedirect(error);
       if (!actionRedirect) {
         actionError = error;
@@ -847,16 +916,29 @@ export async function handleProgressiveServerActionRequest(
       }
     } finally {
       options.setHeadersAccessPhase(previousHeadersPhase);
+      if (actionThrew) rootParamsUsage.transitionToRender();
     }
 
+    // Next.js applies cache invalidations before the action's follow-up render
+    // so updateTag() provides read-your-own-writes semantics even though its
+    // public return type is void.
+    await _drainPendingRevalidations();
+
     if (!actionRedirect) {
+      if (!actionThrew) rootParamsUsage.transitionToRender();
       // Capture cookies/headers set during action execution so the caller can
       // apply them to the rendered page response. Mirrors Next.js'
       // `res.setHeader('set-cookie', ...)` path in app-render.tsx, which
       // flushes `requestStore.mutableCookies` onto the response before SSR
       // streaming begins. Without this, no-JS server-action form POSTs lose
       // cookies/headers — see issue #1483.
-      const actionPendingCookies = options.getAndClearPendingCookies();
+      //
+      // Dedupe by name (last value wins) before returning, matching the
+      // redirect branch below and the RSC paths. Next.js' mutable cookies are
+      // a name-keyed `ResponseCookies` map, so two `cookies().set("x", ...)`
+      // calls collapse to a single Set-Cookie; without this, the no-JS
+      // non-redirect path would emit one Set-Cookie per call — see issue #1976.
+      const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
       const actionDraftCookie = options.getDraftModeCookieHeader();
       const revalidationKind = resolveActionRevalidationKind(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
@@ -1039,6 +1121,9 @@ export async function handleServerActionRscRequest<
 
   const contentLength = parseInt(options.request.headers.get("content-length") || "0", 10);
   if (contentLength > options.maxActionBodySize) {
+    if (options.request.body) {
+      void options.request.body.cancel().catch(() => {});
+    }
     return renderFetchActionBodyExceededResponse(options);
   }
 
@@ -1116,14 +1201,21 @@ export async function handleServerActionRscRequest<
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionStatus = 200;
+    let actionThrew = false;
     const actionWasForwarded = Boolean(options.request.headers.get(ACTION_FORWARDED_HEADER));
+    const rootParamsUsage = createRootParamsUsageController();
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
       try {
         validateServerActionArgs(args);
-        const data = await action.apply(null, args);
+        const data = await runWithRootParamsUsage(
+          { kind: "server-action" },
+          () => action.apply(null, args),
+          rootParamsUsage,
+        );
         returnValue = { ok: true, data };
       } catch (error) {
+        actionThrew = true;
         actionRedirect = getActionRedirect(error);
         if (actionRedirect) {
           returnValue = { ok: true, data: undefined };
@@ -1133,6 +1225,7 @@ export async function handleServerActionRscRequest<
             actionStatus = httpFallbackStatus;
             returnValue = { ok: false, data: error };
           } else {
+            actionStatus = 500;
             console.error("[vinext] Server action error:", error);
             returnValue = { ok: false, data: options.sanitizeErrorForClient(error) };
           }
@@ -1140,7 +1233,12 @@ export async function handleServerActionRscRequest<
       }
     } finally {
       options.setHeadersAccessPhase(previousHeadersPhase);
+      if (actionThrew && !actionWasForwarded) rootParamsUsage.transitionToRender();
     }
+
+    // Keep the synchronous next/cache API surface while ensuring the Flight
+    // rerender cannot observe data that its action just invalidated.
+    await _drainPendingRevalidations();
 
     if (actionRedirect) {
       const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
@@ -1197,7 +1295,7 @@ export async function handleServerActionRscRequest<
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
-      const currentMatch = options.matchRoute(options.cleanPathname);
+      const currentMatch = options.currentRouteMatch;
       // Hydrate the current route before resolving its runtime below.
       if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
 
@@ -1209,7 +1307,20 @@ export async function handleServerActionRscRequest<
         request: options.request,
         url: redirectTarget,
       });
-      setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      setHeadersContext(
+        headersContextFromRequest(redirectRenderRequest, {
+          draftModeSecret: options.draftModeSecret,
+        }),
+      );
+      const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
+      const redirectSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: redirectDynamicConfig,
+        request: redirectRenderRequest,
+        routePattern: targetMatch.route.pattern,
+        searchParams: redirectTarget.searchParams,
+      });
       const redirectNavigationParams = resolveAppPageNavigationParams(
         targetMatch.route,
         targetMatch.params,
@@ -1218,33 +1329,39 @@ export async function handleServerActionRscRequest<
       );
       options.setNavigationContext({
         pathname: targetPathname,
-        searchParams: redirectTarget.searchParams,
+        searchParams: redirectSearchParams,
         params: redirectNavigationParams,
       });
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(targetMatch.route) ?? null);
-      setCurrentForceDynamicFetchDefault(
-        options.resolveRouteDynamicConfig?.(targetMatch.route) === "force-dynamic",
-      );
+      setCurrentForceDynamicFetchDefault(redirectDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(buildServerActionPageTags(targetMatch.route, targetPathname));
-      const element = options.buildPageElement({
-        cleanPathname: targetPathname,
-        interceptOpts: undefined,
-        isRscRequest: true,
-        mountedSlotsHeader: null,
-        params: targetMatch.params,
-        request: redirectRenderRequest,
-        route: targetMatch.route,
-        searchParams: redirectTarget.searchParams,
-        renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
-      });
-      const onRenderError = options.createRscOnErrorHandler(
-        redirectRenderRequest,
-        targetPathname,
-        targetMatch.route.pattern,
-      );
-      const rscStream = await options.renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
+      const rscStream = await runWithRootParamsScope(
+        pickRootParams(targetMatch.params, targetMatch.route.rootParamNames),
+        () =>
+          runWithRootParamsUsage({ kind: "route" }, async () => {
+            const element = options.buildPageElement({
+              cleanPathname: targetPathname,
+              interceptOpts: undefined,
+              isRscRequest: true,
+              mountedSlotsHeader: null,
+              params: targetMatch.params,
+              request: redirectRenderRequest,
+              route: targetMatch.route,
+              searchParams: redirectSearchParams,
+              renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+              observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
+              observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
+            });
+            const onRenderError = options.createRscOnErrorHandler(
+              redirectRenderRequest,
+              targetPathname,
+              targetMatch.route.pattern,
+            );
+            return options.renderToReadableStream(
+              { root: element, returnValue },
+              { temporaryReferences, onError: onRenderError },
+            );
+          }),
       );
       const redirectResponseStatus = shouldUseForwardedActionRedirectStatus({
         actionWasForwarded,
@@ -1270,15 +1387,14 @@ export async function handleServerActionRscRequest<
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
     );
 
-    // When an action returned a non-200 HTTP fallback status (e.g. 404 from
-    // notFound()), skip the early page render so the error boundary displays
-    // the fallback payload embedded in returnValue. Forwarded actions always
-    // skip rerendering regardless of status (the forwarded worker doesn't own
-    // the page's layout tree). Otherwise only skip when the action status is
-    // 200 and no revalidation side-effects occurred.
+    // HTTP access fallbacks always rerender so the page's fallback boundary and
+    // metadata are included. Generic errors only rerender after revalidation.
+    // Forwarded generic actions never render because this worker does not own
+    // the page, but HTTP fallbacks always rerender in Next.js.
+    const isHttpFallback = actionStatus === 401 || actionStatus === 403 || actionStatus === 404;
     const shouldSkipPageRendering =
-      actionWasForwarded ||
-      (actionStatus === 200 && actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);
+      !isHttpFallback &&
+      (actionWasForwarded || actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);
     if (shouldSkipPageRendering) {
       const onRenderError = options.createRscOnErrorHandler(
         options.request,
@@ -1313,19 +1429,22 @@ export async function handleServerActionRscRequest<
       );
     }
 
-    const match = options.matchRoute(options.cleanPathname);
+    if (!actionThrew) rootParamsUsage.transitionToRender();
+
+    const match = options.currentRouteMatch;
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
+    const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
       const actionRerenderTarget = await resolveAppPageActionRerenderTarget({
-        cleanPathname: options.cleanPathname,
+        cleanPathname: options.currentRoutePathname,
         currentParams: actionParams,
         currentRoute: actionRoute,
         findIntercept: options.findIntercept,
         getRouteParamNames: options.getRouteParamNames,
         getSourceRoute: options.getSourceRoute,
-        isRscRequest: options.isRscRequest,
+        isRscRequest: actionRerenderIsRscRequest,
         toInterceptOpts: options.toInterceptOpts,
       });
 
@@ -1341,33 +1460,51 @@ export async function handleServerActionRscRequest<
         options.cleanPathname,
         actionRerenderTarget.interceptOpts as Parameters<typeof resolveAppPageNavigationParams>[3],
       );
-      options.setNavigationContext({
-        pathname: options.cleanPathname,
-        searchParams: options.searchParams,
-        params: resolvedActionNavigationParams,
-      });
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);
+      const actionRerenderDynamicConfig = options.resolveRouteDynamicConfig?.(
+        actionRerenderTarget.route,
+      );
+      const actionRerenderSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: actionRerenderDynamicConfig,
+        request: options.request,
+        routePattern: actionRerenderTarget.route.pattern,
+        searchParams: options.searchParams,
+      });
+      options.setNavigationContext({
+        pathname: options.cleanPathname,
+        searchParams: actionRerenderSearchParams,
+        params: resolvedActionNavigationParams,
+      });
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
       );
-      setCurrentForceDynamicFetchDefault(
-        options.resolveRouteDynamicConfig?.(actionRerenderTarget.route) === "force-dynamic",
-      );
+      setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(
         buildServerActionPageTags(actionRerenderTarget.route, options.cleanPathname),
       );
-      element = options.buildPageElement({
-        cleanPathname: options.cleanPathname,
-        interceptOpts: actionRerenderTarget.interceptOpts,
-        isRscRequest: options.isRscRequest,
-        mountedSlotsHeader: options.mountedSlotsHeader,
-        params: actionRerenderTarget.params,
-        request: options.request,
-        route: actionRerenderTarget.route,
-        searchParams: options.searchParams,
-        renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
-      });
+      const buildActionRerenderElement = () =>
+        options.buildPageElement({
+          cleanPathname: options.cleanPathname,
+          interceptOpts: actionRerenderTarget.interceptOpts,
+          isRscRequest: actionRerenderIsRscRequest,
+          mountedSlotsHeader: options.mountedSlotsHeader,
+          params: actionRerenderTarget.params,
+          request: options.request,
+          route: actionRerenderTarget.route,
+          searchParams: actionRerenderSearchParams,
+          renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+          observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
+          observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
+        });
+      element =
+        actionWasForwarded && isHttpFallback
+          ? await runWithRootParamsUsage({ kind: "route" }, async () =>
+              buildActionRerenderElement(),
+            )
+          : buildActionRerenderElement();
       errorPattern = actionRerenderTarget.route.pattern;
     } else {
       const actionRouteId = options.createPayloadRouteId(options.cleanPathname, null);
@@ -1379,10 +1516,14 @@ export async function handleServerActionRscRequest<
       options.cleanPathname,
       errorPattern,
     );
-    const rscStream = await options.renderToReadableStream(
-      { root: element, returnValue },
-      { temporaryReferences, onError: onRenderError },
-    );
+    const renderActionRerender = () =>
+      options.renderToReadableStream(
+        { root: element, returnValue },
+        { temporaryReferences, onError: onRenderError },
+      );
+    const rscStream = await (actionWasForwarded && isHttpFallback
+      ? runWithRootParamsUsage({ kind: "route" }, renderActionRerender)
+      : renderActionRerender());
 
     const actionHeaders = new Headers({
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,

@@ -17,6 +17,32 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Ported from Next.js: test/e2e/app-dir/app/middleware.js
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/middleware.js
+  // The source also exists in pages/, so the client must honor the middleware
+  // rewrite to the App Router destination instead of committing a Pages SPA navigation.
+  if (pathname === "/exists-but-not-routed") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+
+  // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/app/middleware-node.js
+  if (pathname === "/_next/static/middleware-rewrite.js") {
+    return new Response("rewritten missing asset", {
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
+  if (pathname === "/%61dmin") {
+    return NextResponse.rewrite(new URL("/admin", request.url));
+  }
+
+  if (pathname.startsWith("/encoded-parity/middleware/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
+    return NextResponse.rewrite(target);
+  }
+
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
   // via ssrLoadModule (SSR env) and then the RSC entry runs it again inline
@@ -140,6 +166,10 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
+  if (pathname === "/admin") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
+
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (pathname === "/middleware-throw") {
     throw new Error("middleware crash");
@@ -257,7 +287,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Scoped exclusively to /interception-mw/* to avoid interfering with other tests.
   // Mirrors Next.js: test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
-  if (pathname.startsWith("/interception-mw/")) {
+  if (pathname === "/interception-mw" || pathname.startsWith("/interception-mw/")) {
     const withoutPrefix = pathname.slice("/interception-mw".length); // → /foo/p/1
     const locale = "en";
     const hasLocale = withoutPrefix.startsWith(`/${locale}/`) || withoutPrefix === `/${locale}`;
@@ -345,6 +375,7 @@ export const config = {
   runtime: "nodejs",
   matcher: [
     "/about",
+    "/exists-but-not-routed",
     "/middleware-redirect",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",
@@ -353,6 +384,9 @@ export const config = {
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
+    "/admin",
+    "/%61dmin",
+    "/encoded-parity/middleware/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",
@@ -376,6 +410,7 @@ export const config = {
     "/",
     "/mw-gated-before",
     "/mw-gated-fallback",
+    "/_next/static/middleware-rewrite.js",
     {
       source: "/mw-object-gated",
       has: [{ type: "header", key: "x-mw-allow", value: "1" }],

@@ -13,7 +13,11 @@ import {
 } from "../server/app-elements.js";
 import type { ArtifactCompatibilityEnvelope } from "../server/artifact-compatibility.js";
 import type { CacheEntryReuseProof } from "../server/cache-proof.js";
-import { getBfcacheIdMapContext, getBfcacheSegmentIdContext, notFound } from "./navigation.js";
+import {
+  getBfcacheIdMapContext,
+  getBfcacheSegmentIdContext,
+  notFound,
+} from "./navigation-server.js";
 
 const EMPTY_ELEMENTS: AppElements = Object.freeze({});
 const warnedMissingEntryIds = new Set<string>();
@@ -371,7 +375,6 @@ export function mergeElements(
   const merged: Record<string, AppElementValue> = { ...next };
 
   for (const id of preserveElementIds) {
-    if (Object.hasOwn(merged, id)) continue;
     if (Object.hasOwn(prev, id)) {
       const value = prev[id];
       if (value !== undefined) merged[id] = value;

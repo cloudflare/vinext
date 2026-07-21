@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   detectNextIntlConfig,
   lightningCssFeatureNamesToMask,
@@ -16,9 +17,15 @@ import {
   PHASE_PRODUCTION_BUILD,
   PHASE_DEVELOPMENT_SERVER,
 } from "../packages/vinext/src/shims/constants.js";
+import { toSlash } from "pathslash";
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-config-test-"));
+}
+
+/** Expected canonical (forward-slash) path for resolved-config assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 describe("invalid config files", () => {
@@ -44,6 +51,72 @@ describe("invalid config files", () => {
     );
 
     await expect(loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD)).rejects.toThrow();
+  });
+});
+
+describe("deprecated config warnings", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not warn when no config file exists", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig(null);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("matches Next.js warnings for explicitly configured deprecated options", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      skipMiddlewareUrlNormalize: true,
+      experimental: {
+        middlewarePrefetch: "strict",
+        instrumentationHook: true,
+        middlewareClientMaxBodySize: "5mb",
+        externalMiddlewareRewritesResolve: true,
+      },
+    });
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "`experimental.middlewarePrefetch` is deprecated. Please use `experimental.proxyPrefetch` instead in next.config.js.",
+      "`experimental.middlewareClientMaxBodySize` is deprecated. Please use `experimental.proxyClientMaxBodySize` instead in next.config.js.",
+      "`experimental.externalMiddlewareRewritesResolve` is deprecated. Please use `experimental.externalProxyRewritesResolve` instead in next.config.js.",
+      "`skipMiddlewareUrlNormalize` is deprecated. Please use `skipProxyUrlNormalize` instead in next.config.js.",
+      "`experimental.instrumentationHook` is no longer needed, because `instrumentation.js` is available by default. You can remove it from next.config.js.",
+    ]);
+  });
+
+  it("warns once across repeated config resolution", async () => {
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.mjs"), "export default {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await resolveNextConfig(
+        {
+          skipMiddlewareUrlNormalize: false,
+          experimental: { instrumentationHook: false },
+        },
+        root,
+      );
+      await resolveNextConfig(
+        {
+          skipMiddlewareUrlNormalize: false,
+          experimental: { instrumentationHook: false },
+        },
+        root,
+      );
+
+      expect(warn.mock.calls.map(([message]) => message)).toEqual([
+        "`skipMiddlewareUrlNormalize` is deprecated. Please use `skipProxyUrlNormalize` instead in next.config.mjs.",
+        "`experimental.instrumentationHook` is no longer needed, because `instrumentation.js` is available by default. You can remove it from next.config.mjs.",
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -834,6 +907,32 @@ describe("loadNextConfig with tsconfig path aliases", () => {
   });
 });
 
+describe("resolveNextConfig image patterns", () => {
+  it("normalizes URL remote patterns for runtime serialization", async () => {
+    const config = await resolveNextConfig(
+      {
+        images: {
+          remotePatterns: [new URL("https://image-optimization-test.vercel.app/**")],
+        },
+      },
+      "/tmp/project",
+    );
+
+    expect(config.images?.remotePatterns).toEqual([
+      {
+        protocol: "https",
+        hostname: "image-optimization-test.vercel.app",
+        port: "",
+        pathname: "/**",
+        search: "",
+      },
+    ]);
+    expect(JSON.parse(JSON.stringify(config.images?.remotePatterns))).toEqual(
+      config.images?.remotePatterns,
+    );
+  });
+});
+
 describe("resolveNextConfig alias extraction", () => {
   it("prefers turbopack resolveExtensions and falls back to webpack extensions", async () => {
     const fallback = await resolveNextConfig({
@@ -1004,7 +1103,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
     expect(config.basePath).toBe("/wrapped");
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "config", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
   });
 
   it("captures turbopack aliases from wrapped config plugins", async () => {
@@ -1025,7 +1124,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const rawConfig = await loadNextConfig(tmpDir);
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbo", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "turbo/request.ts"));
   });
 
   it("captures top-level turbopack aliases", async () => {
@@ -1044,7 +1143,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const rawConfig = await loadNextConfig(tmpDir);
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbopack", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "turbopack/request.ts"));
   });
 
   // Regression test for #1507. Turbopack `resolveAlias` (and webpack
@@ -1096,10 +1195,12 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const rawConfig = await loadNextConfig(tmpDir);
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["current"]).toBe(path.resolve(tmpDir, "."));
-    expect(config.aliases["parent"]).toBe(path.resolve(tmpDir, ".."));
-    expect(config.aliases["explicit"]).toBe(path.join(tmpDir, "turbo", "request.ts"));
-    expect(config.aliases["up"]).toBe(path.resolve(tmpDir, "..", "shared", "request.ts"));
+    expect(config.aliases["current"]).toBe(canonical(path.resolve(tmpDir, ".")));
+    expect(config.aliases["parent"]).toBe(canonical(path.resolve(tmpDir, "..")));
+    expect(config.aliases["explicit"]).toBe(canonical(tmpDir, "turbo/request.ts"));
+    expect(config.aliases["up"]).toBe(
+      canonical(path.resolve(tmpDir, "..", "shared", "request.ts")),
+    );
   });
 
   it("leaves absolute-path turbopack aliases verbatim", async () => {
@@ -1157,7 +1258,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
 
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbopack", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "turbopack/request.ts"));
     expect(consoleWarn).toHaveBeenCalledWith(
       '[vinext] next.config option "webpack" is not yet supported and will be ignored',
     );
@@ -1252,7 +1353,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
     expect(invocations).toEqual([false, true]);
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "config", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
   });
 });
@@ -1368,6 +1469,60 @@ describe("resolveNextConfig serverExternalPackages", () => {
       },
     });
     expect(resolved.serverExternalPackages).toEqual(["payload"]);
+  });
+
+  it("preserves transpilePackages for default external precedence", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["typescript", "shiki"],
+    });
+
+    expect(resolved.transpilePackages).toEqual(["typescript", "shiki"]);
+  });
+});
+
+describe("resolveNextConfig transpilePackages", () => {
+  it("keeps Next.js defaults separate from configured transpile packages", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.transpilePackages).toEqual([]);
+    expect(resolved.turbopackTranspilePackages).toEqual(["geist"]);
+  });
+
+  it("includes configured packages before Turbopack defaults", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["custom-package", "@scope/pkg"],
+    });
+    expect(resolved.transpilePackages).toEqual(["custom-package", "@scope/pkg"]);
+    expect(resolved.turbopackTranspilePackages).toEqual(["custom-package", "@scope/pkg", "geist"]);
+  });
+
+  it("preserves Next.js duplicate package semantics", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["geist", "custom-package", "custom-package"],
+    });
+    expect(resolved.transpilePackages).toEqual(["geist", "custom-package", "custom-package"]);
+    expect(resolved.turbopackTranspilePackages).toEqual([
+      "geist",
+      "custom-package",
+      "custom-package",
+      "geist",
+    ]);
+  });
+
+  it("does not treat optimized packages as Turbopack-transpiled packages", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["custom-package"],
+      experimental: {
+        optimizePackageImports: ["optimized-package", "geist", "custom-package"],
+      },
+    });
+
+    expect(resolved.optimizePackageImports).toEqual([
+      "optimized-package",
+      "geist",
+      "custom-package",
+    ]);
+    expect(resolved.transpilePackages).toEqual(["custom-package"]);
+    expect(resolved.turbopackTranspilePackages).toEqual(["custom-package", "geist"]);
   });
 });
 
@@ -1486,12 +1641,34 @@ describe("resolveNextConfig prefetchInlining", () => {
     const enabledByBoolean = await resolveNextConfig({
       experimental: { prefetchInlining: true },
     });
-    expect(enabledByBoolean.prefetchInlining).toBe(true);
+    expect(enabledByBoolean.prefetchInlining).toEqual({
+      maxBundleSize: 10240,
+      maxSize: 2048,
+    });
 
     const enabledByThresholds = await resolveNextConfig({
       experimental: { prefetchInlining: { maxSize: Infinity, maxBundleSize: Infinity } },
     });
-    expect(enabledByThresholds.prefetchInlining).toBe(true);
+    expect(enabledByThresholds.prefetchInlining).toEqual({
+      maxBundleSize: Number.MAX_SAFE_INTEGER,
+      maxSize: Number.MAX_SAFE_INTEGER,
+    });
+
+    const enabledByPartialThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: 512 } },
+    });
+    expect(enabledByPartialThresholds.prefetchInlining).toEqual({
+      maxBundleSize: 10240,
+      maxSize: 512,
+    });
+
+    const negativeThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: -1, maxBundleSize: -1 } },
+    });
+    expect(negativeThresholds.prefetchInlining).toEqual({
+      maxBundleSize: -1,
+      maxSize: -1,
+    });
   });
 });
 
@@ -1520,6 +1697,20 @@ describe("resolveNextConfig appNavFailHandling", () => {
       experimental: { appNavFailHandling: true },
     });
     expect(resolved.appNavFailHandling).toBe(true);
+  });
+});
+
+describe("resolveNextConfig globalNotFound", () => {
+  it("defaults experimental.globalNotFound to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.globalNotFound).toBe(false);
+  });
+
+  it("reads experimental.globalNotFound from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { globalNotFound: true },
+    });
+    expect(resolved.globalNotFound).toBe(true);
   });
 });
 
@@ -1863,6 +2054,7 @@ describe("detectNextIntlConfig", () => {
       assetPrefix: "",
       basePath: "",
       trailingSlash: false,
+      typescript: {},
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
       resolveExtensions: null,
@@ -1880,8 +2072,12 @@ describe("detectNextIntlConfig", () => {
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      allowedRevalidateHeaderKeys: [],
       optimizePackageImports: [],
+      transpilePackages: [],
+      turbopackTranspilePackages: ["geist"],
       inlineCss: false,
+      globalNotFound: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
@@ -1899,6 +2095,7 @@ describe("detectNextIntlConfig", () => {
       removeConsole: false,
       disableOptimizedLoading: false,
       crossOrigin: undefined,
+      reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
@@ -1937,7 +2134,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.ts"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.ts"));
   });
 
   it("auto-detects src/i18n/request.ts", () => {
@@ -1945,9 +2142,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(
-      path.join(tmpDir, "src", "i18n", "request.ts"),
-    );
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "src/i18n/request.ts"));
   });
 
   it("prefers i18n/request.ts over src/i18n/request.ts", () => {
@@ -1960,7 +2155,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.ts"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.ts"));
   });
 
   it("detects .js extension variant", () => {
@@ -1968,7 +2163,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.js"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.js"));
   });
 
   it("detects .tsx extension variant", () => {
@@ -1976,7 +2171,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.tsx"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.tsx"));
   });
 
   // Note: "does nothing when next-intl is not installed" cannot be tested
@@ -2044,7 +2239,7 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");
 
     const config = await resolveNextConfig(null, tmpDir);
-    expect(config.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.ts"));
+    expect(config.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.ts"));
   });
 
   it("explicit webpack alias takes precedence over auto-detection", async () => {
@@ -2076,7 +2271,7 @@ describe("resolveNextConfig next-intl auto-detection", () => {
 
     const config = await resolveNextConfig(rawConfig, tmpDir);
     // Should use the explicit webpack alias, not auto-detected
-    expect(config.aliases["next-intl/config"]).toBe(path.join(tmpDir, "custom", "intl.ts"));
+    expect(config.aliases["next-intl/config"]).toBe(canonical(tmpDir, "custom/intl.ts"));
   });
 });
 
@@ -2448,10 +2643,15 @@ describe("resolveNextConfig rootParams deprecation warning", () => {
 
 describe("resolveNextConfig cacheHandler", () => {
   it("resolves file:// URLs to filesystem paths", async () => {
+    // Build the URL with pathToFileURL so it is valid on Windows too, where a
+    // file:// URL must carry a drive letter (a drive-less file:///… throws in
+    // fileURLToPath). In production the URL comes from import.meta.resolve, so
+    // it is always platform-valid.
+    const handlerPath = path.resolve("/absolute/path/to/handler.js");
     const resolved = await resolveNextConfig({
-      cacheHandler: "file:///absolute/path/to/handler.js",
+      cacheHandler: pathToFileURL(handlerPath).href,
     });
-    expect(resolved.cacheHandler).toBe("/absolute/path/to/handler.js");
+    expect(resolved.cacheHandler).toBe(canonical(handlerPath));
   });
 
   it("passes through absolute paths unchanged", async () => {

@@ -31,7 +31,7 @@ type AppBrowserHistoryControllerDeps = {
   /** Wraps `pushHistoryStateWithoutNotify(state, "", href)`. */
   pushHistoryState: (state: unknown, href: string) => void;
   /** Wraps `replaceHistoryStateWithoutNotify(state, "", href)`. */
-  replaceHistoryState: (state: unknown, href: string) => void;
+  replaceHistoryState: (state: unknown, href?: string) => void;
   readVisibleNavigationMetadata: () => VisibleNavigationMetadata | null;
 };
 
@@ -61,6 +61,11 @@ type CommitNavigationHistoryOptions = {
   targetHistoryIndex?: number | null;
   stageClientParams: () => void;
 };
+
+export function createCanonicalBrowserHistoryHref(href: string): string {
+  const url = new URL(href);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
 
 function stripVinextScrollState(state: unknown): unknown {
   if (!state || typeof state !== "object") {
@@ -96,7 +101,7 @@ export class AppBrowserHistoryController {
   readonly #readHistoryState: () => unknown;
   readonly #readCurrentHref: () => string;
   readonly #pushHistoryState: (state: unknown, href: string) => void;
-  readonly #replaceHistoryState: (state: unknown, href: string) => void;
+  readonly #replaceHistoryState: (state: unknown, href?: string) => void;
   readonly #readVisibleNavigationMetadata: () => VisibleNavigationMetadata | null;
 
   // Highest app-owned traversal index we know about (`#next`) versus the index
@@ -313,7 +318,11 @@ export class AppBrowserHistoryController {
     // rather than the patched window.history.replaceState, because this is a
     // URL-unchanged metadata sync (refresh or traversal commit) that must not
     // run the patched-path side effects.
-    this.#replaceHistoryState(nextHistoryState, this.#readCurrentHref());
+    // Do not pass the current URL for a state-only update. Chromium keeps
+    // userinfo in document.URL while stripping it from location.href; passing
+    // that credential-free absolute URL would make replaceState reject the
+    // otherwise valid metadata write with SecurityError (#2614).
+    this.#replaceHistoryState(nextHistoryState);
     if (
       this.#isHistoryStateNavigationMetadataInSync(
         this.#readHistoryState(),
@@ -323,7 +332,7 @@ export class AppBrowserHistoryController {
     ) {
       return;
     }
-    this.#replaceHistoryState(nextHistoryState, this.#readCurrentHref());
+    this.#replaceHistoryState(nextHistoryState);
   }
 
   #isHistoryStateNavigationMetadataInSync(
@@ -346,7 +355,7 @@ export class AppBrowserHistoryController {
         previousNextUrl: null,
         traversalIndex: this.#currentHistoryTraversalIndex,
       }),
-      this.#readCurrentHref(),
+      createCanonicalBrowserHistoryHref(this.#readCurrentHref()),
     );
   }
 
@@ -362,7 +371,6 @@ export class AppBrowserHistoryController {
         previousNextUrl: options.previousNextUrl,
         traversalIndex: this.#currentHistoryTraversalIndex,
       }),
-      this.#readCurrentHref(),
     );
   }
 

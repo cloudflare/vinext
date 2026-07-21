@@ -2,17 +2,16 @@
 //
 // CI uploads one `--reporter=blob` file per integration shard
 // (.vitest-reports/blob-<i>-<n>.json, artifact `blob-report-<i>`). These blobs
-// are Vitest's serializable internal format, meant to be re-merged. We parse
-// them with Vite+'s bundled blob parser to recover each test file's wall-clock
-// duration, then aggregate those durations across runs into timing samples.
+// are Vitest's serializable internal format, meant to be re-merged. We decode
+// them to recover each test file's wall-clock duration, then aggregate those
+// durations across runs into timing samples.
 //
-// This module is the single source of truth for the (fragile) parser probe and
-// the pure aggregation math, so the refresh tool and any local analysis script
-// share one implementation instead of duplicating the probe.
+// This module is the single source of truth for the blob decoder and the pure
+// aggregation math, so the refresh tool and any local analysis script share one
+// implementation.
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 // ── statistics (pure) ───────────────────────────────────────────────────
 
@@ -101,7 +100,6 @@ export async function findBlobFiles(root) {
 // Read + parse every blob under `dir` and aggregate into file → samples.
 // Throws with a clear message if a file is not a recognizable blob.
 export async function aggregateBlobDir(dir) {
-  const parseBlob = await loadVitestBlobParser();
   const blobFiles = await findBlobFiles(dir);
   if (blobFiles.length === 0) {
     throw new Error(`No Vitest blob JSON files found under ${dir}`);
@@ -110,7 +108,7 @@ export async function aggregateBlobDir(dir) {
   const perBlob = [];
   const warnings = [];
   for (const file of blobFiles) {
-    const [version, testFiles] = parseBlob(await readFile(file, "utf8"));
+    const [version, testFiles] = parseVitestBlob(await readFile(file, "utf8"));
     if (!version || !Array.isArray(testFiles)) {
       throw new Error(`${file} does not look like a Vitest blob report`);
     }
@@ -122,39 +120,40 @@ export async function aggregateBlobDir(dir) {
   return { samples: mergeSamples(perBlob), blobCount: blobFiles.length, warnings };
 }
 
-// Locate Vite+'s bundled Vitest blob parser. This reaches into the published
-// package's minified chunks, so it is deliberately defensive: when Vite+
-// changes its bundle shape this throws a clear, actionable error rather than
-// silently returning empty timings.
-export async function loadVitestBlobParser() {
-  const pnpmDir = path.resolve("node_modules/.pnpm");
-  const entries = await readdir(pnpmDir).catch(() => []);
-  const packageDirName = entries.find((entry) => entry.startsWith("@voidzero-dev+vite-plus-test@"));
-  if (!packageDirName) {
-    throw new Error(
-      "Could not find @voidzero-dev/vite-plus-test under node_modules/.pnpm. Run `vp install` first.",
-    );
+// Vitest writes `--reporter=blob` files with `flatted`, a JSON dialect that
+// stores every value once in a flat array and encodes shared or circular
+// references as string indices into that array, so a plain `JSON.parse` leaves
+// those references unresolved. Older Vite+ releases bundled a parser this module
+// reached into by name; Vite+ 0.2.1 consumes upstream Vitest directly and no
+// longer ships that bundle (and `flatted` is vendored inside Vitest rather than
+// published as its own installable package), so we resolve the flat array here.
+//
+// The top-level array holds the literal values; any string that appears as an
+// object field or array element is an index back into that array. Each entry is
+// rebuilt lazily and memoized before recursing, so shared and circular
+// references collapse back onto a single object.
+export function parseVitestBlob(content) {
+  const pool = JSON.parse(content);
+  const resolved = new Map();
+
+  function resolveValue(value) {
+    return typeof value === "string" ? resolveIndex(Number(value)) : value;
   }
 
-  const chunksDir = path.join(
-    pnpmDir,
-    packageDirName,
-    "node_modules/@voidzero-dev/vite-plus-test/dist/chunks",
-  );
-  const chunks = await readdir(chunksDir);
-  const indexChunks = chunks.filter((entry) => /^index\..*\.js$/.test(entry));
-  if (indexChunks.length === 0) {
-    throw new Error(`Could not find Vite+ test index chunk under ${chunksDir}`);
-  }
-
-  for (const indexChunk of indexChunks) {
-    const mod = await import(pathToFileURL(path.join(chunksDir, indexChunk)).href);
-    if (typeof mod.p === "function" && typeof mod.q === "function" && typeof mod.r === "function") {
-      return mod.p;
+  function resolveIndex(index) {
+    if (resolved.has(index)) return resolved.get(index);
+    const raw = pool[index];
+    if (raw === null || typeof raw !== "object") {
+      resolved.set(index, raw);
+      return raw;
     }
+    // Object.keys() over an array yields its indices in order, so one loop
+    // rebuilds arrays and objects alike.
+    const out = Array.isArray(raw) ? [] : {};
+    resolved.set(index, out);
+    for (const key of Object.keys(raw)) out[key] = resolveValue(raw[key]);
+    return out;
   }
-  throw new Error(
-    "Could not load the Vitest blob parser from @voidzero-dev/vite-plus-test. " +
-      "Its bundle shape likely changed; update loadVitestBlobParser() in scripts/lib/vitest-blob-timings.mjs.",
-  );
+
+  return resolveIndex(0);
 }

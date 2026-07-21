@@ -16,7 +16,7 @@ import {
   _registerStateAccessors,
   type NavigationContext,
   GLOBAL_ACCESSORS_KEY,
-} from "./navigation.js";
+} from "./navigation-server.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,

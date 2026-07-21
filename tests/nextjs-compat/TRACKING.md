@@ -876,14 +876,14 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 **Local**: `tests/e2e/app-router/middleware.spec.ts` (new file)
 **Fixtures**: `tests/fixtures/app-basic/middleware.ts` (modified)
 
-| #   | OpenNext Test                                     | Vinext Status | Notes                                                            |
-| --- | ------------------------------------------------- | ------------- | ---------------------------------------------------------------- |
-| 1   | Middleware redirect lands on target page          | PASS          | `/middleware-redirect` → `/about`                                |
-| 2   | Middleware redirect sets a cookie                 | PASS          | `middleware-redirect=success` cookie verified                    |
-| 3   | Direct load of redirect URL returns 3xx           | PASS          | Status 301/302/307/308 with Location header                      |
-| 4   | Middleware rewrite serves content at original URL | PASS          | `/middleware-rewrite` shows `/` content                          |
-| 5   | Middleware rewrite with custom status code        | FIXME         | vinext drops status from `NextResponse.rewrite(url, { status })` |
-| 6   | Middleware block returns 403                      | PASS          | Custom response body "Blocked by middleware"                     |
+| #   | OpenNext Test                                     | Vinext Status | Notes                                                                 |
+| --- | ------------------------------------------------- | ------------- | --------------------------------------------------------------------- |
+| 1   | Middleware redirect lands on target page          | PASS          | `/middleware-redirect` → `/about`                                     |
+| 2   | Middleware redirect sets a cookie                 | PASS          | `middleware-redirect=success` cookie verified                         |
+| 3   | Direct load of redirect URL returns 3xx           | PASS          | Status 301/302/307/308 with Location header                           |
+| 4   | Middleware rewrite serves content at original URL | PASS          | `/middleware-rewrite` shows `/` content                               |
+| 5   | Middleware rewrite with custom status code        | PASS          | `NextResponse.rewrite(url, { status: 403 })` preserves the 403 status |
+| 6   | Middleware block returns 403                      | PASS          | Custom response body "Blocked by middleware"                          |
 
 ### ON-12: Config Redirects and Rewrites
 
@@ -891,16 +891,16 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 **Local**: `tests/e2e/app-router/config-redirect.spec.ts` (new file)
 **Fixtures**: `tests/fixtures/app-basic/next.config.ts` (new file)
 
-| #   | OpenNext Test                                           | Vinext Status | Notes                                                 |
-| --- | ------------------------------------------------------- | ------------- | ----------------------------------------------------- |
-| 1   | Simple redirect from config source to destination       | PASS          | `/config-redirect-source` → `/about`                  |
-| 2   | Permanent redirect returns 308                          | PASS          |                                                       |
-| 3   | Non-permanent redirect returns 307                      | PASS          | `/config-redirect-query` → `/about?from=config`       |
-| 4   | Parameterized redirect preserves slug                   | PASS          | `/old-blog/:slug` → `/blog/:slug`                     |
-| 5   | Redirect with has/missing cookie conditions             | FIXME         | vinext `matchRedirect()` does not support has/missing |
-| 6   | Config rewrite serves content at original URL           | PASS          | `/config-rewrite` → `/`                               |
-| 7   | Custom headers from next.config headers() on pages      | PASS          | `x-page-header` and `x-e2e-header` present            |
-| 8   | Custom headers from next.config headers() on API routes | PASS          | `x-custom-header` present                             |
+| #   | OpenNext Test                                           | Vinext Status | Notes                                                                    |
+| --- | ------------------------------------------------------- | ------------- | ------------------------------------------------------------------------ |
+| 1   | Simple redirect from config source to destination       | PASS          | `/config-redirect-source` → `/about`                                     |
+| 2   | Permanent redirect returns 308                          | PASS          |                                                                          |
+| 3   | Non-permanent redirect returns 307                      | PASS          | `/config-redirect-query` → `/about?from=config`                          |
+| 4   | Parameterized redirect preserves slug                   | PASS          | `/old-blog/:slug` → `/blog/:slug`                                        |
+| 5   | Redirect with has/missing cookie conditions             | PASS          | Cookie-gated redirects match and skip correctly based on request cookies |
+| 6   | Config rewrite serves content at original URL           | PASS          | `/config-rewrite` → `/`                                                  |
+| 7   | Custom headers from next.config headers() on pages      | PASS          | `x-page-header` and `x-e2e-header` present                               |
+| 8   | Custom headers from next.config headers() on API routes | PASS          | `x-custom-header` present                                                |
 
 ### ON-13: Trailing Slash
 
@@ -921,59 +921,60 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 **Local**: `tests/e2e/app-router/routing-misc.spec.ts` (new file)
 **Fixtures**: `app/api/catch-all/[...slugs]/route.ts`, `app/api/host/route.ts`, `app/search-query/page.tsx`
 
-| #   | OpenNext Test                                               | Vinext Status | Notes                                                                        |
-| --- | ----------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------- |
-| 1   | Catch-all API route captures multiple segments with hyphens | PASS          | `/api/catch-all/open-next/is/really/cool`                                    |
-| 2   | Catch-all API route works with single segment               | PASS          | `/api/catch-all/single`                                                      |
-| 3   | Route handler request.url has correct host                  | PASS          | Returns `http://localhost:4174/api/host`                                     |
-| 4   | searchParams available via props in server component        | PASS          | Single-value params work                                                     |
-| 5   | Multi-value searchParams returned as arrays                 | FIXME         | vinext uses `URLSearchParams.forEach()` which overwrites duplicate keys      |
-| 6   | Middleware forwards search params as request header         | FIXME         | vinext does not unpack `x-middleware-request-*` headers into request context |
+| #   | OpenNext Test                                               | Vinext Status | Notes                                                                    |
+| --- | ----------------------------------------------------------- | ------------- | ------------------------------------------------------------------------ |
+| 1   | Catch-all API route captures multiple segments with hyphens | PASS          | `/api/catch-all/open-next/is/really/cool`                                |
+| 2   | Catch-all API route works with single segment               | PASS          | `/api/catch-all/single`                                                  |
+| 3   | Route handler request.url has correct host                  | PASS          | Returns `http://localhost:4174/api/host`                                 |
+| 4   | searchParams available via props in server component        | PASS          | Single-value params work                                                 |
+| 5   | Multi-value searchParams returned as arrays                 | PASS          | Duplicate keys surface as arrays in `searchParams` props                 |
+| 6   | Middleware forwards search params as request header         | PASS          | Middleware-injected request headers reach `headers()` in the target page |
 
 ### ON-15: Config Headers and poweredByHeader
 
 **Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
 **Local**: `tests/e2e/app-router/config-redirect.spec.ts` (Config Custom Headers section)
 
-| #   | OpenNext Test                                           | Vinext Status  | Notes                                                |
-| --- | ------------------------------------------------------- | -------------- | ---------------------------------------------------- |
-| 1   | Custom header on page routes from next.config headers() | PASS           | `x-page-header: about-page` verified                 |
-| 2   | Custom header on API routes from next.config headers()  | PASS           | `x-custom-header: vinext-app` verified               |
-| 3   | Catch-all header pattern `/(.*)` applies to all routes  | PASS           | `x-e2e-header: vinext-e2e` on both page and API      |
-| 4   | `poweredByHeader: false` suppresses X-Powered-By        | PASS (passive) | vinext never sends X-Powered-By regardless of config |
-| 5   | Config headers NOT applied to redirect responses        | PASS           | Bug fix: skip headers on 3xx responses               |
-| 6   | Middleware headers with has/missing conditions          | FIXME          | Needs has/missing support in `matchHeaders()`        |
+| #   | OpenNext Test                                           | Vinext Status  | Notes                                                    |
+| --- | ------------------------------------------------------- | -------------- | -------------------------------------------------------- |
+| 1   | Custom header on page routes from next.config headers() | PASS           | `x-page-header: about-page` verified                     |
+| 2   | Custom header on API routes from next.config headers()  | PASS           | `x-custom-header: vinext-app` verified                   |
+| 3   | Catch-all header pattern `/(.*)` applies to all routes  | PASS           | `x-e2e-header: vinext-e2e` on both page and API          |
+| 4   | `poweredByHeader: false` suppresses X-Powered-By        | PASS (passive) | vinext never sends X-Powered-By regardless of config     |
+| 5   | Config headers NOT applied to redirect responses        | PASS           | Bug fix: skip headers on 3xx responses                   |
+| 6   | Config headers with has/missing conditions              | PASS           | Header, cookie, and query conditions all match correctly |
 
 ### Updated Summary (OpenNext Compat)
 
-| Chunk                              | Tests  | Pass   | Fixme  | Pending | Skip  | Source                                               |
-| ---------------------------------- | ------ | ------ | ------ | ------- | ----- | ---------------------------------------------------- |
-| ON-1. ISR Cache Headers            | 8      | 8      | 0      | 0       | 0     | `isr.test.ts`                                        |
-| ON-2. revalidateTag/Path           | 4      | 3      | 1      | 0       | 0     | `revalidateTag.test.ts`                              |
-| ON-3. Route Handler Methods        | 14     | 11     | 3      | 0       | 0     | `methods.test.ts`                                    |
-| ON-4. SSR + loading.tsx            | 3      | 2      | 1      | 0       | 0     | `ssr.test.ts`                                        |
-| ON-5. Streaming/SSE                | 3      | 3      | 0      | 0       | 0     | `sse.test.ts`, `streaming.test.ts`                   |
-| ON-6. Middleware Headers           | 7      | 7      | 0      | 0       | 0     | `middleware.cookies.test.ts`, `headers.test.ts`      |
-| ON-7. next/after                   | 3      | 3      | 0      | 0       | 0     | `after.test.ts`                                      |
-| ON-8. Headers Precedence           | 3      | 3      | 0      | 0       | 0     | `headers.test.ts`                                    |
-| ON-9. Parallel/Intercepting        | 5      | 4      | 0      | 0       | 1     | `parallel.test.ts`, `modals.test.ts`                 |
-| ON-10. Server Actions              | 5      | 5      | 0      | 0       | 0     | `serverActions.test.ts`                              |
-| ON-11. Middleware Redirect/Rewrite | 6      | 5      | 1      | 0       | 0     | `middleware.redirect.test.ts`                        |
-| ON-12. Config Redirects/Rewrites   | 8      | 7      | 1      | 0       | 0     | `config.redirect.test.ts`                            |
-| ON-13. Trailing Slash              | 3      | 3      | 0      | 0       | 0     | `trailing.test.ts`                                   |
-| ON-14. Catch-all/Host/Query        | 6      | 4      | 2      | 0       | 0     | `catch-all.test.ts`, `host.test.ts`, `query.test.ts` |
-| ON-15. Config Headers              | 6      | 5      | 1      | 0       | 0     | `headers.test.ts`                                    |
-| **Total**                          | **84** | **73** | **10** | **0**   | **1** |                                                      |
+| Chunk                              | Tests  | Pass   | Fixme | Pending | Skip  | Source                                               |
+| ---------------------------------- | ------ | ------ | ----- | ------- | ----- | ---------------------------------------------------- |
+| ON-1. ISR Cache Headers            | 8      | 8      | 0     | 0       | 0     | `isr.test.ts`                                        |
+| ON-2. revalidateTag/Path           | 4      | 3      | 1     | 0       | 0     | `revalidateTag.test.ts`                              |
+| ON-3. Route Handler Methods        | 14     | 11     | 3     | 0       | 0     | `methods.test.ts`                                    |
+| ON-4. SSR + loading.tsx            | 3      | 2      | 1     | 0       | 0     | `ssr.test.ts`                                        |
+| ON-5. Streaming/SSE                | 3      | 3      | 0     | 0       | 0     | `sse.test.ts`, `streaming.test.ts`                   |
+| ON-6. Middleware Headers           | 7      | 7      | 0     | 0       | 0     | `middleware.cookies.test.ts`, `headers.test.ts`      |
+| ON-7. next/after                   | 3      | 3      | 0     | 0       | 0     | `after.test.ts`                                      |
+| ON-8. Headers Precedence           | 3      | 3      | 0     | 0       | 0     | `headers.test.ts`                                    |
+| ON-9. Parallel/Intercepting        | 5      | 4      | 0     | 0       | 1     | `parallel.test.ts`, `modals.test.ts`                 |
+| ON-10. Server Actions              | 5      | 5      | 0     | 0       | 0     | `serverActions.test.ts`                              |
+| ON-11. Middleware Redirect/Rewrite | 6      | 6      | 0     | 0       | 0     | `middleware.redirect.test.ts`                        |
+| ON-12. Config Redirects/Rewrites   | 8      | 8      | 0     | 0       | 0     | `config.redirect.test.ts`                            |
+| ON-13. Trailing Slash              | 3      | 3      | 0     | 0       | 0     | `trailing.test.ts`                                   |
+| ON-14. Catch-all/Host/Query        | 6      | 6      | 0     | 0       | 0     | `catch-all.test.ts`, `host.test.ts`, `query.test.ts` |
+| ON-15. Config Headers              | 6      | 6      | 0     | 0       | 0     | `headers.test.ts`                                    |
+| **Total**                          | **84** | **78** | **5** | **0**   | **1** |                                                      |
 
-### New Feature Gaps Found (ON-11 through ON-15)
+### Resolved Since Initial Tracking (ON-11 through ON-15)
 
-| Feature                                        | Test         | Issue                                                                             |
-| ---------------------------------------------- | ------------ | --------------------------------------------------------------------------------- |
-| `NextResponse.rewrite()` status propagation    | ON-11 #5     | Status code from `NextResponse.rewrite(url, { status: 403 })` is silently dropped |
-| `has`/`missing` conditions on config redirects | ON-12 #5     | `matchRedirect()` in `config-matchers.ts` only checks source pattern              |
-| ~~Double-slash open redirect protection~~      | ~~ON-13 #3~~ | **FIXED** — `//` guard added to all entry points (PR #151)                        |
-| Multi-value searchParams as arrays             | ON-14 #5     | `URLSearchParams.forEach()` overwrites duplicate keys; need `getAll()`            |
-| Middleware request header forwarding           | ON-14 #6     | `x-middleware-request-*` headers not unpacked into `headers()` context            |
+| Feature                                            | Test         | Issue                                                                            |
+| -------------------------------------------------- | ------------ | -------------------------------------------------------------------------------- |
+| ~~`NextResponse.rewrite()` status propagation~~    | ~~ON-11 #5~~ | **FIXED** — middleware rewrite status is preserved                               |
+| ~~`has`/`missing` conditions on config redirects~~ | ~~ON-12 #5~~ | **FIXED** — `matchRedirect()` evaluates request conditions correctly             |
+| ~~Double-slash open redirect protection~~          | ~~ON-13 #3~~ | **FIXED** — `//` guard added to all entry points (PR #151)                       |
+| ~~Multi-value searchParams as arrays~~             | ~~ON-14 #5~~ | **FIXED** — duplicate query keys surface as arrays                               |
+| ~~Middleware request header forwarding~~           | ~~ON-14 #6~~ | **FIXED** — middleware request header overrides reach downstream request context |
+| ~~Config headers `has`/`missing` matching~~        | ~~ON-15 #6~~ | **FIXED** — `matchHeaders()` honors header/cookie/query conditions               |
 
 ### Bug Fixed
 

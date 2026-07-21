@@ -3,6 +3,22 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("Error Boundaries", () => {
+  test("global-error preserves server and SSR client error semantics after hydration", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/global-error-rsc`);
+    await expect(page.locator('[data-testid="global-error-message"]')).toContainText(
+      "server page error",
+    );
+    await expect(page.locator('[data-testid="global-error-digest"]')).not.toBeEmpty();
+
+    await page.goto(`${BASE}/nextjs-compat/global-error-ssr`);
+    await expect(page.locator('[data-testid="global-error-message"]')).toHaveText(
+      "client page error",
+    );
+    await expect(page.locator('[data-testid="global-error-digest"]')).toHaveCount(0);
+  });
+
   test("error.tsx catches client component error on button click", async ({ page }) => {
     await page.goto(`${BASE}/error-test`);
 

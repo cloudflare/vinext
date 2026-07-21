@@ -4,6 +4,13 @@ import type { NextRequest } from "next/server";
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
 
+  if (
+    url.pathname === "/revalidate-middleware-sentinel" &&
+    request.headers.has("x-prerender-revalidate")
+  ) {
+    return new Response("middleware must not observe on-demand revalidation", { status: 418 });
+  }
+
   // Add a custom header to all matched requests
   const response = NextResponse.next();
   response.headers.set("x-custom-middleware", "active");
@@ -28,6 +35,30 @@ export function middleware(request: NextRequest) {
   // Rewrite /rewritten to /ssr
   if (url.pathname === "/rewritten") {
     return NextResponse.rewrite(new URL("/ssr", request.url));
+  }
+
+  // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/app/middleware-node.js
+  if (url.pathname === "/middleware-general-ssr") {
+    url.pathname = "/ssr";
+    return NextResponse.rewrite(url);
+  }
+
+  if (url.pathname === "/middleware-general-error-throw" && request.__isData) {
+    throw new Error("middleware data request failure");
+  }
+
+  if (
+    url.pathname === "/ssr" &&
+    url.searchParams.has("dangerous-middleware-redirect") &&
+    request.__isData
+  ) {
+    return new Response(null, {
+      status: 307,
+      headers: {
+        Location: "javascript:void(window.__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__=true)",
+      },
+    });
   }
 
   // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
@@ -176,6 +207,10 @@ export function middleware(request: NextRequest) {
     });
     res.cookies.set("blocked", "1", { path: "/" });
     return res;
+  }
+
+  if (url.pathname === "/middleware-protected-data") {
+    return new Response("Access Denied", { status: 403 });
   }
 
   // Return a binary response (PNG 1x1 pixel) to test binary body preservation

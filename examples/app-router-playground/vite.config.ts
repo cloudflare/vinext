@@ -1,6 +1,7 @@
 import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import mdx from "@mdx-js/rollup";
 import { remarkCodeHike, recmaCodeHike, type CodeHikeConfig } from "codehike/mdx";
 import path from "node:path";
@@ -73,7 +74,7 @@ export default defineConfig({
 
     // vinext plugin (provides all next/* shims, routing, SSR, RSC).
     // @vitejs/plugin-rsc is auto-registered when app/ is detected.
-    vinext(),
+    vinext({ images: { optimizer: imagesOptimizer() } }),
 
     // Cloudflare Workers plugin — builds for workerd runtime.
     // The worker entry runs in the RSC environment, with SSR as a child.

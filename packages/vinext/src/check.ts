@@ -5,11 +5,10 @@
  * showing what will work, what needs changes, and an overall score.
  */
 
-import { detectPackageManager } from "./utils/project.js";
-import { normalizePathSeparators } from "./utils/path.js";
+import { detectPackageManager, findDir } from "./utils/project.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 
 // ── Support status definitions ─────────────────────────────────────────────
 
@@ -184,7 +183,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   headers: { status: "supported" },
   i18n: { status: "supported", detail: "path-prefix routing; domain routing for Pages Router" },
   env: { status: "supported" },
-  images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
+  images: {
+    status: "partial",
+    detail:
+      "remotePatterns validated; on-the-fly optimization via images.optimizer (Cloudflare Images), passthrough otherwise",
+  },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
     status: "supported",
@@ -199,11 +202,19 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "sourcemap-resolved stack traces during prerender",
   },
+  cacheComponents: {
+    status: "partial",
+    detail: "experimental support; behavior is incomplete",
+  },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
   "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
   "experimental.serverActions": {
     status: "supported",
     detail: "server actions via 'use server' directive",
+  },
+  "experimental.allowedRevalidateHeaderKeys": {
+    status: "supported",
+    detail: "forwards explicitly allowed request headers during Pages Router revalidation",
   },
   "experimental.prefetchInlining": {
     status: "partial",
@@ -241,6 +252,42 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "partial",
     detail: "config recognized; vinext does not implement navigation result caching",
   },
+  "experimental.middlewarePrefetch": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.proxyPrefetch": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.middlewareClientMaxBodySize": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.proxyClientMaxBodySize": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.externalMiddlewareRewritesResolve": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.externalProxyRewritesResolve": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.instrumentationHook": {
+    status: "unsupported",
+    detail: "not recognized; instrumentation files are enabled automatically",
+  },
+  skipMiddlewareUrlNormalize: {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  skipProxyUrlNormalize: {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
   "i18n.domains": {
     status: "partial",
     detail: "supported for Pages Router; App Router unchanged",
@@ -248,7 +295,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   reactStrictMode: {
     status: "partial",
     detail:
-      "config option recognized but not yet enforced; root is not wrapped in <React.StrictMode>",
+      "enforced for the Pages Router (client root wrapped in <React.StrictMode> when true); App Router is not yet wrapped (Next.js defaults App Router strict mode on)",
   },
   poweredByHeader: {
     status: "supported",
@@ -318,10 +365,7 @@ function findSourceFiles(
 
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
-    // Forward slashes so downstream substring checks (e.g. `f.includes("/api/")`)
-    // and reported paths are consistent across platforms — path.join yields
-    // backslashes on Windows, which would break those checks.
-    const fullPath = normalizePathSeparators(path.join(dir, entry.name));
+    const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (
         entry.name === "node_modules" ||
@@ -336,6 +380,20 @@ function findSourceFiles(
     }
   }
   return results;
+}
+
+/**
+ * Find files that can contribute to the application compatibility surface.
+ * Test modules and test-runner configuration are executed by their own runners
+ * rather than bundled into the vinext application, so reporting their imports
+ * or CJS globals as migration blockers produces false positives.
+ */
+function findRuntimeSourceFiles(root: string): string[] {
+  return findSourceFiles(root).filter((file) => {
+    const basename = path.basename(file);
+    const isTestRunnerConfig = /^(?:jest|playwright|vitest)\.config\.[cm]?[jt]sx?$/.test(basename);
+    return !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(basename) && !isTestRunnerConfig;
+  });
 }
 
 function isIdentStart(c: string): boolean {
@@ -570,7 +628,7 @@ export function hasFreeCjsGlobal(content: string): boolean {
  * Scan source files for `import ... from 'next/...'` statements.
  */
 export function scanImports(root: string): CheckItem[] {
-  const files = findSourceFiles(root);
+  const files = findRuntimeSourceFiles(root);
   const importUsage = new Map<string, string[]>();
 
   const importRegex = /(?:import\s+(?:[\w{},\s*]+\s+from\s+)?|require\s*\()['"]([^'"]+)['"]\)?/g;
@@ -596,7 +654,7 @@ export function scanImports(root: string): CheckItem[] {
         // Normalize: next/font/google -> next/font/google
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
-        const relFile = normalizePathSeparators(path.relative(root, file));
+        const relFile = path.relative(root, file);
         const usedInFiles = importUsage.get(normalized) ?? [];
         if (!usedInFiles.includes(relFile)) {
           usedInFiles.push(relFile);
@@ -868,8 +926,11 @@ export function analyzeConfig(root: string): CheckItem[] {
     "output",
     "transpilePackages",
     "webpack",
+    "cacheComponents",
     "reactStrictMode",
     "poweredByHeader",
+    "skipMiddlewareUrlNormalize",
+    "skipProxyUrlNormalize",
   ];
 
   for (const opt of configOptions) {
@@ -932,19 +993,9 @@ export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
 
   // Check for pages/ and app/ at root level, then fall back to src/
-  const pagesDir = fs.existsSync(path.join(root, "pages"))
-    ? path.join(root, "pages")
-    : fs.existsSync(path.join(root, "src", "pages"))
-      ? path.join(root, "src", "pages")
-      : null;
-  const appDirPath = fs.existsSync(path.join(root, "app"))
-    ? path.join(root, "app")
-    : fs.existsSync(path.join(root, "src", "app"))
-      ? path.join(root, "src", "app")
-      : null;
+  const pagesDir = findDir(root, "pages", "src/pages");
+  const appDirPath = findDir(root, "app", "src/app");
 
-  const hasPages = pagesDir !== null;
-  const hasApp = appDirPath !== null;
   const hasProxy =
     fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
   const hasMiddleware =
@@ -952,7 +1003,7 @@ export function checkConventions(root: string): CheckItem[] {
     fs.existsSync(path.join(root, "middleware.js"));
 
   if (pagesDir !== null) {
-    const isSrc = pagesDir.includes(path.join("src", "pages"));
+    const isSrc = pagesDir.includes("src/pages");
     items.push({
       name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
@@ -983,7 +1034,7 @@ export function checkConventions(root: string): CheckItem[] {
   }
 
   if (appDirPath !== null) {
-    const isSrc = appDirPath.includes(path.join("src", "app"));
+    const isSrc = appDirPath.includes("src/app");
     items.push({
       name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
@@ -1017,7 +1068,7 @@ export function checkConventions(root: string): CheckItem[] {
     items.push({ name: "middleware.ts (deprecated in Next.js 16)", status: "supported" });
   }
 
-  if (!hasPages && !hasApp) {
+  if (pagesDir === null && appDirPath === null) {
     items.push({
       name: "No pages/ or app/ directory found",
       status: "unsupported",
@@ -1045,13 +1096,13 @@ export function checkConventions(root: string): CheckItem[] {
   // For __dirname/__filename we use hasFreeCjsGlobal(), a single-pass scanner that
   // skips string literals, template literals, and comments before testing for the
   // identifier, so tokens inside those contexts are never matched.
-  const allSourceFiles = findSourceFiles(root);
+  const allSourceFiles = findRuntimeSourceFiles(root);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
-    const rel = normalizePathSeparators(path.relative(root, file));
+    const rel = path.relative(root, file);
 
     if (viewTransitionRegex.test(content)) {
       viewTransitionFiles.push(rel);

@@ -1,6 +1,7 @@
 export type AppRouterScrollIntent = Readonly<{
   commitId: number | null;
   hash: string | null;
+  headElements: ReadonlySet<Element> | null;
   id: number;
   // Set by the committed `AppRouterScrollTarget` when this navigation's first
   // route DOM node was a React-hoisted resource in `<head>` (e.g. a
@@ -45,6 +46,7 @@ export function beginAppRouterScrollIntent(hash: string | null): AppRouterScroll
   const intent = {
     commitId: null,
     hash,
+    headElements: typeof document === "undefined" ? null : new Set(document.head?.children ?? []),
     id: store.nextId,
     targetHoistedInHead: false,
   };

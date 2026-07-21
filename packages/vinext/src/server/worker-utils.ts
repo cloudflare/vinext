@@ -5,6 +5,7 @@
  * Router worker entry through "vinext/server/worker-utils".
  */
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -33,6 +34,15 @@ function cancelResponseBody(response: Response): void {
   void body.cancel().catch(() => {
     /* ignore cancellation failures on discarded bodies */
   });
+}
+
+export function finalizeMissingStaticAssetResponse(
+  response: Response,
+  missingBuildAsset: boolean,
+): Response {
+  if (!missingBuildAsset || response.status !== 404) return response;
+  cancelResponseBody(response);
+  return notFoundStaticAssetResponse();
 }
 
 function buildHeaderRecord(

@@ -1,5 +1,5 @@
 import { type ViteDevServer } from "vite";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
 
 describe("App Router middleware with NextRequest", () => {
@@ -41,6 +41,14 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("x-mw-ran")).toBe("true");
     expect(res.headers.get("x-mw-has-session")).toBe("true");
+  });
+
+  it("runs an exact API middleware matcher for a trailing-slash request", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
   });
 
   it("object-form matcher requires has and missing conditions", async () => {

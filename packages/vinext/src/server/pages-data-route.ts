@@ -19,6 +19,8 @@
  */
 
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
@@ -41,6 +43,27 @@ type NextDataMatch = {
  */
 export function isNextDataPathname(pathname: string): boolean {
   return pathname.startsWith(NEXT_DATA_PREFIX) && pathname.endsWith(NEXT_DATA_SUFFIX);
+}
+
+/**
+ * WHATWG URL parsing removes TAB, LF, and CR characters. Reject paths where
+ * that normalization would manufacture the internal Pages data namespace.
+ */
+export function urlParserCreatesPagesDataPath(pathname: string): boolean {
+  const parsedPathname = pathname.replaceAll("\t", "").replaceAll("\n", "").replaceAll("\r", "");
+  return (
+    pathname !== parsedPathname &&
+    !isNextDataPathname(pathname) &&
+    isNextDataPathname(parsedPathname)
+  );
+}
+
+/**
+ * Keep URL-parser-ignored characters encoded until route matching decodes the
+ * captured parameter. Passing them literally to `new URL()` would remove them.
+ */
+export function encodeUrlParserIgnoredCharacters(pathname: string): string {
+  return pathname.replaceAll("\t", "%09").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
 }
 
 /**
@@ -85,6 +108,11 @@ export function parseNextDataPathname(pathname: string, buildId: string): NextDa
   if (rest.startsWith("index/")) return { pagePathname: `/${rest.slice("index/".length)}` };
 
   return { pagePathname: `/${rest}` };
+}
+
+export function normalizeNextDataPagePathname(pagePathname: string, trailingSlash = false): string {
+  if (!trailingSlash || pagePathname === "/" || pagePathname.endsWith("/")) return pagePathname;
+  return `${pagePathname}/`;
 }
 
 /**
@@ -149,6 +177,17 @@ export function buildNextDataNotFoundResponse(): Response {
   return new Response("{}", { status: 404, headers });
 }
 
+export function buildMiddlewarePrefetchSkipResponse(matchedPathname: string): Response {
+  return new Response("{}", {
+    headers: {
+      "Content-Type": "application/json",
+      "x-matched-path": matchedPathname,
+      [MIDDLEWARE_SKIP_HEADER]: "1",
+      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // normalizePagesDataRequest
 // ---------------------------------------------------------------------------
@@ -197,9 +236,13 @@ type NormalizePagesDataRequestResult =
 export function normalizePagesDataRequest(
   request: Request,
   buildId: string | null,
+  basePath = "",
+  trailingSlash = false,
 ): NormalizePagesDataRequestResult {
   const reqUrl = new URL(request.url);
-  if (!isNextDataPathname(reqUrl.pathname)) {
+  const hadBasePath = !!basePath && hasBasePath(reqUrl.pathname, basePath);
+  const dataPathname = basePath ? stripBasePath(reqUrl.pathname, basePath) : reqUrl.pathname;
+  if (!isNextDataPathname(dataPathname)) {
     return {
       isDataReq: false,
       request,
@@ -208,7 +251,7 @@ export function normalizePagesDataRequest(
       notFoundResponse: null,
     };
   }
-  const dataMatch = buildId ? parseNextDataPathname(reqUrl.pathname, buildId) : null;
+  const dataMatch = buildId ? parseNextDataPathname(dataPathname, buildId) : null;
   if (!dataMatch) {
     return {
       isDataReq: false,
@@ -218,12 +261,15 @@ export function normalizePagesDataRequest(
       notFoundResponse: buildNextDataNotFoundResponse(),
     };
   }
+  const pagePathname = normalizeNextDataPagePathname(dataMatch.pagePathname, trailingSlash);
   const normalizedUrl = new URL(reqUrl);
-  normalizedUrl.pathname = dataMatch.pagePathname;
+  normalizedUrl.pathname = hadBasePath
+    ? addBasePathToPathname(pagePathname, basePath)
+    : pagePathname;
   return {
     isDataReq: true,
     request: new Request(normalizedUrl, request),
-    normalizedPathname: dataMatch.pagePathname,
+    normalizedPathname: pagePathname,
     search: reqUrl.search,
     notFoundResponse: null,
   };

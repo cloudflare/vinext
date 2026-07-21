@@ -2,9 +2,14 @@ import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import type { RootParams } from "vinext/shims/root-params";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
+
+export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
 export type AppPageFontData = {
   links: string[];
@@ -140,11 +145,15 @@ export type AppPageSsrHandler = {
        *  default `__next_error__` error-document shell (with the original
        *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
+      dynamicStaleTimeSeconds?: number;
+      getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
     },
   ) => Promise<ReadableStream<Uint8Array> | AppSsrRenderResult>;
 };
 
 type RenderAppPageHtmlStreamOptions = {
+  dynamicStaleTimeSeconds?: number;
+  getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   fontData: AppPageFontData;
   formState?: ReactFormState | null;
   navigationContext: NavigationContext | null;
@@ -174,6 +183,8 @@ type RenderAppPageHtmlStreamOptions = {
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
+  /** Override the default shell-error recovery decision passed to handleSsr. */
+  fallbackToErrorDocumentOnShellError?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
   /** True when the app supplies a custom global-error.tsx. Disables the
@@ -246,7 +257,10 @@ export async function renderAppPageHtmlStream(
     // Only when the caller affirmatively knows there is no custom
     // global-error.tsx; undefined (unknown) keeps reject semantics.
     fallbackToErrorDocumentOnShellError:
-      options.waitForAllReady !== true && options.hasCustomGlobalError === false,
+      options.fallbackToErrorDocumentOnShellError ??
+      (options.waitForAllReady !== true && options.hasCustomGlobalError === false),
+    dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
+    getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
   };
 
   const rawResult = await options.ssrHandler.handleSsr(
@@ -257,61 +271,6 @@ export async function renderAppPageHtmlStream(
   );
 
   return normalizeAppSsrRenderResult(rawResult, options.capturedRscDataRef?.value ?? null);
-}
-
-/**
- * Wraps a stream so that `onFlush` is called when the last byte has been read
- * by the downstream consumer (i.e. when the HTTP layer finishes draining the
- * response body). This is the correct place to clear per-request context,
- * because the RSC/SSR pipeline is lazy — components execute while the stream
- * is being consumed, not when the stream handle is first obtained.
- */
-export function deferUntilStreamConsumed(
-  stream: ReadableStream<Uint8Array>,
-  onFlush: () => void,
-): ReadableStream<Uint8Array> {
-  let called = false;
-  const once = () => {
-    if (!called) {
-      called = true;
-      onFlush();
-    }
-  };
-
-  const cleanup = new TransformStream<Uint8Array, Uint8Array>({
-    flush() {
-      once();
-    },
-  });
-
-  const piped = stream.pipeThrough(cleanup);
-
-  // Wrap with a ReadableStream so we can intercept cancel() — the TransformStream
-  // Transformer interface does not expose a cancel hook in the Web Streams spec.
-  const reader = piped.getReader();
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      return reader.read().then(
-        ({ done, value }) => {
-          if (done) {
-            controller.close();
-          } else {
-            controller.enqueue(value);
-          }
-        },
-        (error) => {
-          once();
-          controller.error(error);
-        },
-      );
-    },
-    cancel(reason) {
-      // Stream cancelled before fully consumed (e.g. client disconnected).
-      // Still clear per-request context to avoid leaks.
-      once();
-      return reader.cancel(reason);
-    },
-  });
 }
 
 export async function renderAppPageHtmlResponse(
@@ -403,12 +362,14 @@ export function createAppPageRscErrorTracker(
       return capturedSpecialError;
     },
     onRenderError(error, requestInfo, errorContext) {
-      if (error && typeof error === "object" && "digest" in error) {
-        // Errors with a digest are signal throws (NEXT_REDIRECT,
-        // NEXT_NOT_FOUND, NEXT_HTTP_ERROR_FALLBACK). They're not real
-        // failures — keep the first one so the lifecycle can swap a
-        // 307/404 in place of a streamed "Switched to client rendering"
-        // body for routes with a route-level Suspense boundary.
+      if (isNavigationSignalError(error)) {
+        // Navigation signal throws (NEXT_REDIRECT, NEXT_NOT_FOUND,
+        // NEXT_HTTP_ERROR_FALLBACK) are not real failures — keep the first one
+        // so the lifecycle can swap a 307/404 in place of a streamed "Switched
+        // to client rendering" body for routes with a route-level Suspense
+        // boundary. A bare `digest` field is NOT enough: a genuine error that
+        // happens to carry a (e.g. hashed) digest is a real failure and must
+        // reach the error boundary, not masquerade as a special response.
         if (capturedSpecialError === null) {
           capturedSpecialError = error;
         }

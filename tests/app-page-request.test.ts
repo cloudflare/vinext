@@ -61,6 +61,45 @@ describe("app page request helpers", () => {
     expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
+  it("allows canonical encoded App Page params from generateStaticParams", async () => {
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      async generateStaticParams() {
+        return [{ id: "sticks & stones", path: ["a/b", "%61"] }];
+      },
+      isDynamicRoute: true,
+      params: {
+        id: "sticks%20%26%20stones",
+        path: ["a%2Fb", "%2561"],
+      },
+    });
+
+    expect(response).toBeNull();
+  });
+
+  it("does not treat an encoded delimiter as an alias for a literal static value", async () => {
+    const generateStaticParams = async () => [{ id: "a%2Fb" }];
+
+    const encodedLiteral = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams,
+      isDynamicRoute: true,
+      params: { id: "a%252Fb" },
+    });
+    expect(encodedLiteral).toBeNull();
+
+    const delimiterAlias = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams,
+      isDynamicRoute: true,
+      params: { id: "a%2Fb" },
+    });
+    expect(delimiterAlias?.status).toBe(404);
+  });
+
   it("requires every segment generateStaticParams source to allow the params", async () => {
     const clearRequestContext = vi.fn();
     const layoutGenerateStaticParams = async () => [{ category: "docs" }];
@@ -107,6 +146,308 @@ describe("app page request helpers", () => {
     expect(clearRequestContext).not.toHaveBeenCalled();
     expect(categoryGenerateStaticParams).toHaveBeenCalledWith({ params: {} });
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
+  });
+
+  it("ignores route groups when finding a layout generateStaticParams boundary", async () => {
+    const generateStaticParams = vi.fn(() => [{ region: "SE" }]);
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        layouts: [null, { generateStaticParams }],
+        layoutTreePositions: [0, 2],
+        routeSegments: ["[region]", "(default)", "static-prefetch"],
+      }),
+      isDynamicRoute: true,
+      params: { region: "SE" },
+    });
+
+    expect(response).toBeNull();
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
+  it("chains parent layout params through a route-group layout", async () => {
+    const regionGenerateStaticParams = vi.fn(() => [{ region: "EU" }]);
+    const languageGenerateStaticParams = vi.fn(
+      ({ params }: { params: Record<string, string | string[]> }) =>
+        params.region === "EU" ? [{ lang: "En" }] : [],
+    );
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [
+        null,
+        { generateStaticParams: regionGenerateStaticParams },
+        { generateStaticParams: languageGenerateStaticParams },
+      ],
+      layoutTreePositions: [0, 1, 2],
+      routeSegments: ["[region]", "(group)", "[lang]"],
+    });
+
+    await expect(
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { region: "EU", lang: "En" },
+      }),
+    ).resolves.toBeNull();
+    expect(regionGenerateStaticParams).toHaveBeenCalledWith({ params: {} });
+    expect(languageGenerateStaticParams).toHaveBeenCalledWith({ params: { region: "EU" } });
+
+    await expect(
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { region: "EU", lang: "en" },
+      }),
+    ).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("validates chained and parallel branch params independently", async () => {
+    const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const slugGenerateStaticParams = vi.fn(() => [{ slug: "static-123" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: slugGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "gsp", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "gsp", "stories", ":slug"],
+      routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+    });
+    const validate = (locale: string, slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale, slug },
+      });
+
+    await expect(validate("en", "static-123")).resolves.toBeNull();
+    await expect(validate("fr", "static-123")).resolves.toMatchObject({ status: 404 });
+    await expect(validate("en", "dynamic-123")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("keeps primary params when a parallel generator omits that key", async () => {
+    const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const slugGenerateStaticParams = vi.fn(() => [{ slug: "main" }]);
+    const parallelGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: parallelGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("main")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+    expect(parallelGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+  });
+
+  it("preserves ownership for each parallel generator result", async () => {
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: () => [{ slug: "main" }] },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: () => [{}, { slug: "parallel" }] }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("main")).resolves.toBeNull();
+    await expect(validate("parallel")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("preserves primary params when a parallel generator returns no results", async () => {
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: () => [{ slug: "main" }] },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: () => [] }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "empty-ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "empty-ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "empty-ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("main")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("chains multiple generators within one parallel branch", async () => {
+    const firstGenerateStaticParams = vi.fn(() => [{ slug: "a" }]);
+    const secondGenerateStaticParams = vi.fn(() => [{ slug: "b" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: () => [{ slug: "main" }] },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: firstGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          page: { generateStaticParams: secondGenerateStaticParams },
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "sequential-ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "sequential-ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "sequential-ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("b")).resolves.toBeNull();
+    await expect(validate("a")).resolves.toMatchObject({ status: 404 });
+    await expect(validate("main")).resolves.toMatchObject({ status: 404 });
+    expect(firstGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+    expect(secondGenerateStaticParams).toHaveBeenCalledWith({
+      params: { locale: "en", slug: "a" },
+    });
+  });
+
+  it("enforces generateStaticParams from a parallel page", async () => {
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelBranches: [
+          {
+            page: { generateStaticParams: () => [{ slug: "static-123" }] },
+            paramNames: ["locale", "slug"],
+            patternParts: [":locale", "gsp", "stories", ":slug"],
+            routeSegments: ["stories", "[slug]"],
+          },
+        ],
+        routePatternParts: [":locale", "gsp", "stories", ":slug"],
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }),
+      isDynamicRoute: true,
+      params: { locale: "en", slug: "dynamic-123" },
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("remaps parallel page params before validating generateStaticParams", async () => {
+    const generateStaticParams = vi.fn(() => [{ name: "post" }]);
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelBranches: [
+          {
+            page: { generateStaticParams },
+            paramNames: ["name"],
+            patternParts: [":name"],
+            routeSegments: ["[name]"],
+          },
+        ],
+        routePatternParts: [":id"],
+        routeSegments: ["[id]"],
+      }),
+      isDynamicRoute: true,
+      params: { id: "post" },
+    });
+
+    expect(response).toBeNull();
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
+  it("collects generateStaticParams from active parallel layouts", async () => {
+    const rootLayoutGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const nestedLayoutGenerateStaticParams = vi.fn(() => [{ slug: "static-123" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      parallelBranches: [
+        {
+          layout: { generateStaticParams: rootLayoutGenerateStaticParams },
+          configLayouts: [null, { generateStaticParams: nestedLayoutGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "gsp", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "gsp", "stories", ":slug"],
+      routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("static-123")).resolves.toBeNull();
+    await expect(validate("dynamic-123")).resolves.toMatchObject({ status: 404 });
+    expect(rootLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+    expect(nestedLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
   });
 
   // Ported from Next.js: packages/next/src/build/static-paths/app.test.ts
@@ -189,7 +530,7 @@ describe("app page request helpers", () => {
     const buildPageElementMock = vi.fn(async () => ({ type: "intercept-element" }));
     const renderInterceptResponse = vi.fn(async () => new Response("intercepted"));
     const currentRoute = { params: ["id"], pattern: "/photos/[id]" };
-    const sourceRoute = { params: [], pattern: "/feed" };
+    const sourceRoute = { params: ["locale", "tab"], pattern: "/[locale]/feed/[tab]" };
 
     const result = await resolveAppPageIntercept({
       buildPageElement: buildPageElementMock,
@@ -197,7 +538,8 @@ describe("app page request helpers", () => {
       currentRoute,
       findIntercept() {
         return {
-          matchedParams: { id: "123" },
+          matchedParams: { locale: "en", id: "123" },
+          sourceMatchedParams: { locale: "en", tab: "recent" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 0,
@@ -228,16 +570,21 @@ describe("app page request helpers", () => {
     expect(result.interceptOpts).toBeUndefined();
     expect(result.response).toBeInstanceOf(Response);
     expect(setNavigationContext).toHaveBeenCalledWith({
-      params: { id: "123", catchAll: ["photos", "123"] },
+      params: {
+        locale: "en",
+        tab: "recent",
+        id: "123",
+        catchAll: ["photos", "123"],
+      },
       pathname: "/photos/123",
       searchParams: new URLSearchParams("from=feed"),
     });
     expect(buildPageElementMock).toHaveBeenCalledWith(
       sourceRoute,
-      {},
+      { locale: "en", tab: "recent" },
       {
         interceptPage: { default: "modal-page" },
-        interceptParams: { id: "123" },
+        interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
       },
       new URLSearchParams("from=feed"),
@@ -461,6 +808,47 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result?.interceptOpts).toEqual(toInterceptOpts(intercept));
   });
 
+  it("deduplicates concurrent intercept page and layout loads", async () => {
+    const interceptPage = { default: "modal-page" };
+    const interceptLayout = { default: "modal-layout" };
+    const __pageLoader = vi.fn(async () => interceptPage);
+    const __loadInterceptLayout = vi.fn(async () => interceptLayout);
+    const sharedLoadState = {
+      page: null as unknown,
+      pageLoading: null as Promise<unknown> | null,
+      interceptLayoutsLoading: null as Promise<readonly unknown[]> | null,
+    };
+    const intercept = {
+      interceptLayouts: [null],
+      __loadInterceptLayouts: [__loadInterceptLayout],
+      matchedParams: { id: "123" },
+      page: null,
+      __pageLoader,
+      __loadState: sharedLoadState,
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 0,
+    };
+    const options = {
+      cleanPathname: "/photos/123",
+      currentRoute,
+      findIntercept: () => ({ ...intercept, page: sharedLoadState.page }),
+      getRouteParamNames: (route: { params: string[] }) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    };
+
+    await Promise.all([
+      resolveAppPageInterceptMatch(options),
+      resolveAppPageInterceptMatch(options),
+    ]);
+
+    expect(__pageLoader).toHaveBeenCalledTimes(1);
+    expect(__loadInterceptLayout).toHaveBeenCalledTimes(1);
+    expect(sharedLoadState.page).toBe(interceptPage);
+    expect(intercept.interceptLayouts).toEqual([interceptLayout]);
+  });
+
   it("slices source params down to the source route's declared params", async () => {
     const categorySourceRoute = { params: ["category"], pattern: "/feed/[category]" };
     const matchedParams = { category: "nature", id: "123" };
@@ -470,6 +858,7 @@ describe("resolveAppPageInterceptMatch", () => {
       currentRoute,
       findIntercept: () => ({
         matchedParams,
+        sourceMatchedParams: { category: "nature", tab: "recent" },
         page: { default: "modal-page" },
         slotKey: "modal@app/feed/[category]/@modal",
         sourceRouteIndex: 0,
@@ -603,18 +992,23 @@ describe("resolveAppPageActionRerenderTarget", () => {
   });
 
   it("rerenders the intercepted source route when an intercept match applies", async () => {
+    const descendantSourceRoute = {
+      params: ["locale", "tab"],
+      pattern: "/[locale]/feed/[tab]",
+    };
     const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
       findIntercept: () => ({
-        matchedParams: { id: "123" },
+        matchedParams: { locale: "en", id: "123" },
+        sourceMatchedParams: { locale: "en", tab: "recent" },
         page: { default: "modal-page" },
         slotKey: "modal@app/feed/@modal",
         sourceRouteIndex: 0,
       }),
       getRouteParamNames: (route) => route.params,
-      getSourceRoute: () => sourceRoute,
+      getSourceRoute: () => descendantSourceRoute,
       isRscRequest: true,
       toInterceptOpts,
     });
@@ -622,12 +1016,12 @@ describe("resolveAppPageActionRerenderTarget", () => {
     expect(result).toEqual({
       interceptOpts: {
         interceptPage: { default: "modal-page" },
-        interceptParams: { id: "123" },
+        interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
       },
-      navigationParams: { id: "123" },
-      params: {},
-      route: sourceRoute,
+      navigationParams: { locale: "en", tab: "recent", id: "123" },
+      params: { locale: "en", tab: "recent" },
+      route: descendantSourceRoute,
     });
   });
 });

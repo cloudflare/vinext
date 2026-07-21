@@ -8,6 +8,7 @@ import {
   readActionFormDataWithLimit,
   type HandleProgressiveServerActionRequestOptions,
 } from "../packages/vinext/src/server/app-server-action-execution.js";
+import { getRootParam, runWithRootParamsScope } from "../packages/vinext/src/shims/root-params.js";
 import {
   createServerActionNotFoundResponse,
   throwOnServerActionNotFound,
@@ -21,13 +22,28 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  cacheTag,
   getAndClearActionRevalidationKind,
   refresh,
   revalidatePath,
   revalidateTag,
+  unstable_cache,
+  updateTag,
 } from "../packages/vinext/src/shims/cache.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import {
+  getDataCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   cookies,
+  getHeadersContext,
+  headersContextFromRequest,
+  isDraftModeEnabled,
   setHeadersAccessPhase,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
@@ -38,6 +54,7 @@ type TestRoute = {
   page?: unknown;
   params: readonly string[];
   pattern: string;
+  rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments?: readonly string[];
   runtime?: "edge" | "experimental-edge" | "nodejs" | null;
@@ -216,13 +233,20 @@ function createRscOptions(
 > {
   const route: TestRoute = { id: "dashboard", page: {}, params: [], pattern: "/dashboard" };
 
+  const cleanPathname = overrides.cleanPathname ?? "/dashboard";
+  const matchRoute =
+    overrides.matchRoute ??
+    (() => ({
+      params: {},
+      route,
+    }));
+
   return {
     actionId: "action-id",
     allowedOrigins: [],
     buildPageElement({ route: matchedRoute, params, interceptOpts }) {
       return `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`;
     },
-    cleanPathname: "/dashboard",
     clearRequestContext() {},
     contentType: "text/plain;charset=UTF-8",
     createNotFoundElement(routeId) {
@@ -240,6 +264,7 @@ function createRscOptions(
     decodeReply() {
       return Promise.resolve([]);
     },
+    draftModeSecret: "draft-secret",
     findIntercept() {
       return null;
     },
@@ -258,9 +283,6 @@ function createRscOptions(
     isRscRequest: true,
     loadServerAction() {
       return Promise.resolve(() => "action-result");
-    },
-    matchRoute() {
-      return { params: {}, route };
     },
     maxActionBodySize: 1024,
     maxActionBodySizeLabel: "1kb",
@@ -288,10 +310,75 @@ function createRscOptions(
       return { slot: intercept.slotKey };
     },
     ...overrides,
+    cleanPathname,
+    currentRouteMatch:
+      overrides.currentRouteMatch !== undefined
+        ? overrides.currentRouteMatch
+        : matchRoute(cleanPathname),
+    currentRoutePathname: overrides.currentRoutePathname ?? cleanPathname,
+    matchRoute,
   };
 }
 
 describe("app server action execution helpers", () => {
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("rejects next/root-params inside progressive server actions", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => getRootParam("lang");
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "form-state", actionFailed: true });
+    expect(result && "actionError" in result ? result.actionError : null).toMatchObject({
+      name: "Error",
+      message:
+        "`import('next/root-params').lang()` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.",
+    });
+    errorSpy.mockRestore();
+  });
+
+  it("allows deferred root params reads after failed progressive actions", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleProgressiveServerActionRequest(
+        createOptions({
+          async decodeAction() {
+            return () => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw new Error("action failed");
+            };
+          },
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+    errorSpy.mockRestore();
+  });
+
   it("reads streamed action text bodies and enforces the byte limit", async () => {
     const validRequest = new Request("https://example.com/action", {
       method: "POST",
@@ -305,6 +392,14 @@ describe("app server action execution helpers", () => {
     await expect(readActionBodyWithLimit(oversizedRequest, 5)).rejects.toThrow(
       "Request body too large",
     );
+  });
+
+  it("rejects cloned streamed action text without waiting for the sibling branch", async () => {
+    const request = createStreamBodyRequest("hello!");
+    const sibling = request.clone();
+
+    await expect(readActionBodyWithLimit(request, 5)).rejects.toThrow("Request body too large");
+    await expect(sibling.text()).resolves.toBe("hello!");
   });
 
   it("reads multipart action form data and enforces the streamed byte limit", async () => {
@@ -325,6 +420,18 @@ describe("app server action execution helpers", () => {
     await expect(readActionFormDataWithLimit(oversizedRequest, 16)).rejects.toThrow(
       "Request body too large",
     );
+  });
+
+  it("rejects cloned multipart bodies without waiting for the sibling branch", async () => {
+    const request = createStreamBodyRequest("x".repeat(64), {
+      "content-type": "multipart/form-data; boundary=vinext",
+    });
+    const sibling = request.clone();
+
+    await expect(readActionFormDataWithLimit(request, 16)).rejects.toThrow(
+      "Request body too large",
+    );
+    await expect(sibling.text()).resolves.toBe("x".repeat(64));
   });
 
   it("identifies progressive multipart server action submissions", () => {
@@ -548,7 +655,7 @@ describe("app server action execution helpers", () => {
     formData.set("0", '"$Q1:x"');
     const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
     const previousPhase = setHeadersAccessPhase("action");
-    await revalidatePath("/stale");
+    await Promise.resolve(revalidatePath("/stale"));
     setHeadersAccessPhase(previousPhase);
 
     const response = requireProgressiveActionResponse(
@@ -680,6 +787,41 @@ describe("app server action execution helpers", () => {
       "session=new; Path=/; HttpOnly",
       "lang=en; Path=/",
     ]);
+  });
+
+  // Regression for issue #1976 — the no-JS (progressive) NON-redirect form-state
+  // path must dedupe same-name Set-Cookie entries (last value wins), matching the
+  // redirect path above and the RSC paths. Before the fix it returned the raw
+  // pending-cookie array, so two `cookies().set("foo", ...)` calls emitted two
+  // Set-Cookie headers for "foo" — diverging from Next.js' name-keyed
+  // ResponseCookies (last-wins) behaviour.
+  it("deduplicates pending Set-Cookie headers by name on non-redirect form-state actions (#1976)", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => undefined;
+        },
+        getAndClearPendingCookies() {
+          // Two sets for "foo" (last wins) plus a distinct "bar".
+          return ["foo=1; Path=/", "foo=2; Path=/; HttpOnly", "bar=3; Path=/"];
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "form-state",
+      formState: null,
+      pendingCookies: ["foo=2; Path=/; HttpOnly", "bar=3; Path=/"],
+      draftCookie: null,
+      // Non-zero revalidation kind because cookies were mutated.
+      revalidationKind: 1,
+    });
   });
 
   // Regression for issue #1483 — no-JS form POST actions that set cookies but
@@ -1096,7 +1238,190 @@ describe("app server action execution helpers", () => {
     expect(navigationContexts).toEqual([{ params: {}, pathname: "/dashboard" }]);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("rejects next/root-params inside fetch server actions", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const buildPageElement = vi.fn(() => "should-not-render");
+    let renderedModel: TestActionModel | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        decodeReply() {
+          return Promise.resolve([]);
+        },
+        loadServerAction() {
+          return Promise.resolve(() => getRootParam("lang"));
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("action-error-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(buildPageElement).not.toHaveBeenCalled();
+    expect(renderedModel).toEqual({
+      returnValue: expect.objectContaining({ ok: false }),
+    });
+    errorSpy.mockRestore();
+  });
+
+  it("rerenders the page for failed fetch actions that revalidate", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const buildPageElement = vi.fn(() => "rerendered-page");
+    let renderedModel: TestActionModel | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        getAndClearPendingCookies() {
+          return ["action=1; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw new Error("action failed");
+          });
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("action-error-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    expect(renderedModel).toEqual({
+      root: "rerendered-page",
+      returnValue: expect.objectContaining({ ok: false }),
+    });
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
+    errorSpy.mockRestore();
+  });
+
+  it("allows deferred root params reads after failed fetch actions", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw new Error("action failed");
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+    errorSpy.mockRestore();
+  });
+
+  it("allows deferred root params reads after external action redirects", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              redirect("https://other.example/target");
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("allows root params during the rerender after a successful fetch action", async () => {
+    let pageParam!: Promise<string | string[] | undefined>;
+    let metadataParam!: Promise<string | string[] | undefined>;
+    const buildPageElement = vi.fn(() => {
+      pageParam = getRootParam("lang");
+      metadataParam = getRootParam("lang");
+      return "rerendered-page";
+    });
+    const renderToReadableStream = vi.fn(
+      (model: TestActionModel) => new Response(JSON.stringify(model)).body,
+    );
+
+    const response = await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement,
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await Promise.resolve(revalidatePath("/dashboard"));
+              return "updated";
+            });
+          },
+          renderToReadableStream,
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    await expect(pageParam).resolves.toBe("en");
+    await expect(metadataParam).resolves.toBe("en");
+    expect(JSON.parse(await response!.text())).toEqual({
+      root: "rerendered-page",
+      returnValue: { ok: true, data: "updated" },
+    });
+  });
+
+  it("allows deferred post-action render work to read root params", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              await Promise.resolve(revalidatePath("/dashboard"));
+              return "updated";
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+  });
+
   it("skips page rerendering for fetch actions that do not revalidate", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
     const buildPageElement = vi.fn(() => "dashboard:{}:none");
     const setNavigationContext = vi.fn();
     const renderToReadableStream = vi.fn(
@@ -1107,6 +1432,12 @@ describe("app server action execution helpers", () => {
       const response = await handleServerActionRscRequest(
         createRscOptions({
           buildPageElement,
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              return "action-result";
+            });
+          },
           middlewareHeaders: new Headers([[VINEXT_RSC_COMPATIBILITY_ID_HEADER, "spoofed-compat"]]),
           renderToReadableStream,
           setNavigationContext,
@@ -1123,6 +1454,9 @@ describe("app server action execution helpers", () => {
       const model = JSON.parse(await response!.text()) as Partial<TestActionModel>;
       expect(model.returnValue).toEqual({ ok: true, data: "action-result" });
       expect(model).not.toHaveProperty("root");
+
+      releaseDeferred();
+      await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
     });
   });
 
@@ -1134,7 +1468,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "revalidated";
           });
         },
@@ -1176,14 +1510,179 @@ describe("app server action execution helpers", () => {
     });
   });
 
+  it.each(["rerender", "redirect"] as const)(
+    "passes empty request APIs to force-static action %s targets",
+    async (kind) => {
+      const buildInputs: Array<{ query: string; header: string | null }> = [];
+      const targetRoute: TestRoute = {
+        id: kind === "redirect" ? "redirect-target" : "dashboard",
+        page: {},
+        params: [],
+        pattern: kind === "redirect" ? "/redirect-target" : "/dashboard",
+      };
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({ searchParams }) {
+            buildInputs.push({
+              query: searchParams.toString(),
+              header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            });
+            return "force-static-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(
+              kind === "redirect"
+                ? () => redirect("/redirect-target?user=alice")
+                : async () => {
+                    await Promise.resolve(revalidatePath("/dashboard"));
+                    return "revalidated";
+                  },
+            );
+          },
+          matchRoute(pathname) {
+            if (kind === "redirect" && pathname === "/redirect-target") {
+              return { params: {}, route: targetRoute };
+            }
+            return {
+              params: {},
+              route:
+                kind === "rerender"
+                  ? targetRoute
+                  : { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+            };
+          },
+          request: createFetchActionRequest({ "x-request-value": "present" }),
+          resolveRouteDynamicConfig(route) {
+            return route === targetRoute ? "force-static" : undefined;
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(kind === "redirect" ? 303 : 200);
+      expect(buildInputs).toEqual([{ query: "", header: null }]);
+    },
+  );
+
+  it.each(["rerender", "redirect"] as const)(
+    "observes searchParams access for dynamic-error action %s targets",
+    async (kind) => {
+      const buildInputs: Array<{
+        metadata: boolean | undefined;
+        page: boolean | undefined;
+        query: string;
+      }> = [];
+      const targetRoute: TestRoute = {
+        id: kind === "redirect" ? "redirect-target" : "dashboard",
+        page: {},
+        params: [],
+        pattern: kind === "redirect" ? "/redirect-target" : "/dashboard",
+      };
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({
+            observeMetadataSearchParamsAccess,
+            observePageSearchParamsAccess,
+            searchParams,
+          }) {
+            buildInputs.push({
+              metadata: observeMetadataSearchParamsAccess,
+              page: observePageSearchParamsAccess,
+              query: searchParams.toString(),
+            });
+            return "dynamic-error-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(
+              kind === "redirect"
+                ? () => redirect("/redirect-target?user=alice")
+                : async () => {
+                    await Promise.resolve(revalidatePath("/dashboard"));
+                    return "revalidated";
+                  },
+            );
+          },
+          matchRoute(pathname) {
+            if (kind === "redirect" && pathname === "/redirect-target") {
+              return { params: {}, route: targetRoute };
+            }
+            return {
+              params: {},
+              route:
+                kind === "rerender"
+                  ? targetRoute
+                  : { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+            };
+          },
+          resolveRouteDynamicConfig(route) {
+            return route === targetRoute ? "error" : undefined;
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(kind === "redirect" ? 303 : 200);
+      expect(buildInputs).toEqual([{ metadata: true, page: true, query: "user=alice" }]);
+    },
+  );
+
+  it("uses empty action request APIs for force-static targets in draft mode", async () => {
+    const buildInputs: Array<{ query: string; header: string | null }> = [];
+    const route: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+    const request = createFetchActionRequest({
+      cookie: "__prerender_bypass=draft-secret",
+      "x-request-value": "present",
+    });
+    setHeadersContext(headersContextFromRequest(request));
+    try {
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({ searchParams }) {
+            buildInputs.push({
+              query: searchParams.toString(),
+              header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            });
+            return "draft-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await Promise.resolve(revalidatePath("/dashboard"));
+              return "revalidated";
+            });
+          },
+          matchRoute() {
+            return { params: {}, route };
+          },
+          request,
+          resolveRouteDynamicConfig() {
+            return "force-static";
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(200);
+      expect(buildInputs).toEqual([{ query: "", header: null }]);
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
   it("renders internal action redirects with a clean GET request and action cookies", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
     const renderRequests: Request[] = [];
+    let redirectRenderDraftMode = false;
     const response = await handleServerActionRscRequest(
       createRscOptions({
         buildPageElement({ request }) {
           renderRequests.push(request);
+          redirectRenderDraftMode = isDraftModeEnabled();
           return "redirect-target:{}:none";
         },
         getAndClearPendingCookies() {
@@ -1206,7 +1705,7 @@ describe("app server action execution helpers", () => {
         },
         request: createFetchActionRequest({
           accept: "text/x-component",
-          cookie: "session=1; deleted=stale",
+          cookie: "session=1; deleted=stale; __prerender_bypass=draft-secret",
           "next-action": "action-id",
           rsc: "1",
         }),
@@ -1225,7 +1724,54 @@ describe("app server action execution helpers", () => {
     expect(renderRequest.headers.get("rsc")).toBeNull();
     expect(renderRequest.headers.get("content-type")).toBeNull();
     expect(renderRequest.headers.get("origin")).toBeNull();
-    expect(renderRequest.headers.get("cookie")).toBe("session=1; theme=dark");
+    expect(renderRequest.headers.get("cookie")).toBe(
+      "session=1; __prerender_bypass=draft-secret; theme=dark",
+    );
+    expect(redirectRenderDraftMode).toBe(true);
+  });
+
+  it("renders internal action redirects with the target route's root params", async () => {
+    let renderedRootParam: string | string[] | undefined;
+
+    await runWithRootParamsScope({ lang: "source" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          async renderToReadableStream(model) {
+            renderedRootParam = await getRootParam("lang");
+            return new Response(JSON.stringify(model)).body;
+          },
+          loadServerAction() {
+            return Promise.resolve(() => redirect("/fr/target"));
+          },
+          matchRoute(pathname) {
+            if (pathname === "/fr/target") {
+              return {
+                params: { lang: "fr" },
+                route: {
+                  id: "redirect-target",
+                  page: {},
+                  params: ["lang"],
+                  pattern: "/[lang]/target",
+                  rootParamNames: ["lang"],
+                },
+              };
+            }
+            return {
+              params: { lang: "source" },
+              route: {
+                id: "dashboard",
+                page: {},
+                params: ["lang"],
+                pattern: "/[lang]/dashboard",
+                rootParamNames: ["lang"],
+              },
+            };
+          },
+        }),
+      ),
+    );
+
+    expect(renderedRootParam).toBe("fr");
   });
 
   it("keeps redirected action render context alive until the Flight body is consumed", async () => {
@@ -1377,7 +1923,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", "hours");
+            await Promise.resolve(revalidateTag("dashboard", "hours"));
             return "revalidated";
           });
         },
@@ -1393,7 +1939,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", { expire: 0 });
+            await Promise.resolve(revalidateTag("dashboard", { expire: 0 }));
             return "revalidated";
           });
         },
@@ -1402,6 +1948,96 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
+  });
+
+  // Covers the read-your-own-writes ordering asserted by Next.js:
+  // test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  it("finishes updateTag invalidation before rendering the action response", async () => {
+    const previousHandler = getDataCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+    let invalidationFinished = false;
+    let markSameActionReadFinished!: () => void;
+    const sameActionReadFinished = new Promise<void>((resolve) => {
+      markSameActionReadFinished = resolve;
+    });
+    let sameActionValue: unknown;
+    let sameActionUseCacheValue: unknown;
+    const renderToReadableStream = vi.fn((model: TestActionModel) => {
+      expect(invalidationFinished).toBe(true);
+      return new Response(JSON.stringify(model)).body;
+    });
+    const cachedRead = unstable_cache(async () => "fresh", ["update-tag-read-your-own-writes"], {
+      tags: ["dashboard"],
+    });
+    const useCacheRead = registerCachedFunction(async () => {
+      cacheTag("dashboard");
+      return "fresh-use-cache";
+    }, "test:update-tag-read-your-own-writes");
+
+    setDataCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ v: "stale" }),
+              url: "unstable_cache:test",
+            },
+            tags: ["dashboard"],
+            revalidate: false,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+        invalidationFinished = true;
+      },
+    });
+
+    try {
+      const responsePromise = runWithRequestContext(createRequestContext(), () =>
+        handleServerActionRscRequest(
+          createRscOptions({
+            loadServerAction() {
+              return Promise.resolve(async () => {
+                expect(updateTag("dashboard")).toBeUndefined();
+                sameActionValue = await cachedRead();
+                sameActionUseCacheValue = await useCacheRead();
+                markSameActionReadFinished();
+                return "revalidated";
+              });
+            },
+            renderToReadableStream,
+          }),
+        ),
+      );
+
+      await invalidationStarted;
+      await sameActionReadFinished;
+      expect(sameActionValue).toBe("fresh");
+      expect(sameActionUseCacheValue).toBe("fresh-use-cache");
+      expect(renderToReadableStream).not.toHaveBeenCalled();
+      releaseInvalidation();
+
+      const response = await responsePromise;
+      expect(response?.status).toBe(200);
+      expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseInvalidation();
+      setDataCacheHandler(previousHandler);
+    }
   });
 
   it("emits dynamic-only x-action-revalidated when a fetch action refreshes", async () => {
@@ -1446,7 +2082,7 @@ describe("app server action execution helpers", () => {
         }),
       );
 
-      expect(response?.status).toBe(200);
+      expect(response?.status).toBe(500);
       expect(await response?.text()).toBe("too-many-args-flight");
       expect(action).not.toHaveBeenCalled();
       expect(renderedModel).toEqual({
@@ -1523,7 +2159,7 @@ describe("app server action execution helpers", () => {
   it("clears pending cookies and revalidation state for rejected fetch payloads", async () => {
     const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
     const previousPhase = setHeadersAccessPhase("action");
-    await revalidatePath("/stale");
+    await Promise.resolve(revalidatePath("/stale"));
     setHeadersAccessPhase(previousPhase);
 
     const response = await handleServerActionRscRequest(
@@ -1727,7 +2363,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard");
+            await Promise.resolve(revalidateTag("dashboard"));
             throw { digest: "NEXT_REDIRECT;;%2Ftarget;307" };
           });
         },
@@ -1742,12 +2378,23 @@ describe("app server action execution helpers", () => {
   // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
   it("processes forwarded action POSTs but suppresses same-page rerenders", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
     const renderToReadableStream = vi.fn(
       (model: TestActionModel) => new Response(JSON.stringify(model)).body,
     );
 
     const response = await handleServerActionRscRequest(
       createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => {
+            deferredRead = deferred.then(() => getRootParam("lang"));
+            return "action-result";
+          });
+        },
         request: createFetchActionRequest({ "x-action-forwarded": "1" }),
         renderToReadableStream,
       }),
@@ -1758,6 +2405,47 @@ describe("app server action execution helpers", () => {
       returnValue: { ok: true, data: "action-result" },
     });
     expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    releaseDeferred();
+    await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
+  });
+
+  it("rerenders forwarded action HTTP fallbacks", async () => {
+    let renderedModel: TestActionModel | null = null;
+    let renderedRootParam: string | string[] | undefined;
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const fallbackError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+
+    const response = await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw fallbackError;
+            });
+          },
+          request: createFetchActionRequest({ "x-action-forwarded": "1" }),
+          async renderToReadableStream(model) {
+            renderedModel = model;
+            renderedRootParam = await getRootParam("lang");
+            return new Response("fallback-flight").body;
+          },
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(renderedRootParam).toBe("en");
+    expect(renderedModel).toEqual({
+      root: "dashboard:{}:none",
+      returnValue: { ok: false, data: fallbackError },
+    });
+    releaseDeferred();
+    await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
   });
 
   it("preserves forwarded action cookie and revalidation side effects without a rerender", async () => {
@@ -1771,7 +2459,7 @@ describe("app server action execution helpers", () => {
         },
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "forwarded-result";
           });
         },
@@ -2182,7 +2870,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "revalidated";
           });
         },

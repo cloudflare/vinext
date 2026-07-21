@@ -23,6 +23,18 @@ describe("createAppRscOnErrorHandler", () => {
     expect(reportRequestError).not.toHaveBeenCalled();
   });
 
+  it("reports a digest-bearing non-signal error instead of treating it as a signal", () => {
+    const reportRequestError = vi.fn();
+    const onError = createAppRscOnErrorHandler(reportRequestError, makeReq(), "/feed", "/feed");
+
+    const error = Object.assign(new Error("boom"), { digest: "customdigest123" });
+
+    // The digest is preserved for the client, but the error is still reported.
+    expect(onError(error)).toBe("customdigest123");
+    expect(reportRequestError).toHaveBeenCalledOnce();
+    expect(reportRequestError.mock.calls[0]?.[0]).toBe(error);
+  });
+
   it("reports non-digest errors via reportRequestError with a derived requestInfo from the Web Request", () => {
     const reportRequestError = vi.fn();
     const req = makeReq("https://example.com/feed", "POST", {

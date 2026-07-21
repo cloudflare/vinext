@@ -10,6 +10,7 @@ export default function HomePage() {
       <nav>
         <ul>
           <li><a href="/about">About</a></li>
+          <li><a href="/action-revalidate">Action revalidation</a></li>
           <li><a href="/api/hello">API Route</a></li>
         </ul>
       </nav>

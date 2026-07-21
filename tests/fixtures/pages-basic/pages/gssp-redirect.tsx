@@ -7,18 +7,20 @@
 // "should not trigger an error when a data request is cancelled due to another
 // navigation".
 
+import type { GetServerSideProps } from "next";
+
 export default function GsspRedirectPage() {
   return <h1 data-testid="redirect-page">Redirect Page</h1>;
 }
 
-export async function getServerSideProps() {
+export const getServerSideProps: GetServerSideProps = async ({ query }) => {
   // Small delay so the navigation is observably in-flight, matching the
   // "slow nav cancelled by a redirect" shape of the upstream test.
   await new Promise((resolve) => setTimeout(resolve, 200));
   return {
     redirect: {
-      destination: "/gssp-redirect-target",
+      destination: typeof query.next === "string" ? query.next : "/gssp-redirect-target",
       permanent: false,
     },
   };
-}
+};

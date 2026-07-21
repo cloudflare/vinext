@@ -17,6 +17,10 @@ import {
   PlugsIcon,
   SparkleIcon,
 } from "@phosphor-icons/react/dist/ssr";
+import typescript from "shiki/langs/typescript.mjs";
+import githubDarkDefault from "shiki/themes/github-dark-default.mjs";
+import { createHighlighterCore } from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 // ISR: 5-minute revalidate. The home page is fully static so the cached
 // output is effectively reused indefinitely between deploys; the revalidate
@@ -26,18 +30,18 @@ export const revalidate = 300;
 
 const STATS = [
   {
-    value: "Up to 4×",
+    value: "Up to 2×",
     label: "faster production builds",
     detail: "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
   },
   {
-    value: "~50%",
+    value: "~33%",
     label: "smaller client bundles",
     detail:
-      "168.9 KB → 72.9 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
+      "185 KB → 125 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
   },
   {
-    value: "94%",
+    value: "92%",
     label: "of the Next.js 16 API surface",
     detail:
       "App Router, Pages Router, RSC, server actions, ISR, middleware, route handlers. Coverage and gaps tracked openly.",
@@ -61,7 +65,7 @@ const PILLARS = [
     icon: PlugsIcon,
     title: "Deploy anywhere",
     description:
-      "Cloudflare Workers is the first deployment target, with one-command deploys via vinext deploy. Vercel, Netlify, AWS, Deno Deploy, and more, work through Nitro, and standalone Node bundles are emitted on demand.",
+      "Cloudflare Workers is the first deployment target, with one-command deploys via npx @vinext/cloudflare deploy. Vercel, Netlify, AWS, Deno Deploy, and more, work through Nitro, and standalone Node bundles are emitted on demand.",
   },
 ] as const;
 
@@ -83,7 +87,7 @@ const PLATFORM_FEATURES: readonly PlatformFeature[] = [
     icon: DatabaseIcon,
     title: "ISR out of the box",
     description:
-      "Stale-while-revalidate with background regeneration, matching the Next.js 16 CacheHandler interface. A KV-backed handler ships by default; R2 or your own backend can drop in.",
+      "Stale-while-revalidate with background regeneration, matching the Next.js 16 CacheHandler interface. Cloudflare Workers Cache serves route-level ISR at the edge, while Workers KV backs the data cache.",
   },
   {
     icon: SparkleIcon,
@@ -115,7 +119,86 @@ const EXAMPLES = [
   },
 ] as const;
 
+const VITE_CONFIG_EXAMPLES = [
+  {
+    title: "Start with vinext",
+    description: "The smallest config for running a Next.js app through Vite.",
+    code: `import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext()],
+});`,
+  },
+  {
+    title: "Deploy to Cloudflare Workers",
+    description:
+      "Add the Cloudflare Vite plugin, Workers Cache for route-level ISR, Workers KV for data caching, and Cloudflare Images optimization.",
+    code: `import { cloudflare } from "@cloudflare/vite-plugin";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [
+    vinext({
+      cache: {
+        cdn: cdnAdapter(),
+        data: kvDataAdapter(),
+      },
+      images: {
+        optimizer: imagesOptimizer(),
+      },
+    }),
+    cloudflare({
+      viteEnvironment: {
+        name: "rsc",
+        childEnvironments: ["ssr"],
+      },
+    }),
+  ],
+});`,
+  },
+  {
+    title: "Or deploy with Nitro",
+    description: "Use Nitro when you want adapters for Node, Vercel, Netlify, AWS, and more.",
+    code: `import { nitro } from "nitro/vite";
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext(), nitro()],
+});`,
+  },
+] as const;
+
 const CARD = "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline";
+
+let highlighterPromise: ReturnType<typeof createHighlighterCore> | undefined;
+
+function getHighlighter() {
+  return (highlighterPromise ??= createHighlighterCore({
+    langs: [typescript],
+    themes: [githubDarkDefault],
+    engine: createJavaScriptRegexEngine(),
+  }));
+}
+
+async function CodeExample({ code }: { code: string }) {
+  const highlightedCode = (await getHighlighter()).codeToHtml(code, {
+    lang: "typescript",
+    theme: "github-dark-default",
+  });
+
+  return (
+    <div
+      className="vinext-code-block overflow-hidden rounded-b-lg"
+      dangerouslySetInnerHTML={{ __html: highlightedCode }}
+    />
+  );
+}
 
 export default function Home() {
   return (
@@ -309,6 +392,54 @@ export default function Home() {
               Migration guide
             </LinkButton>
           </div>
+        </div>
+      </section>
+
+      <section className="mx-auto w-full max-w-5xl px-6 pb-24">
+        <div className="mb-10 max-w-2xl">
+          <Badge variant="outline" className="mb-4">
+            vite.config.ts
+          </Badge>
+          <Text variant="heading2" as="h2">
+            Configure vinext in Vite
+          </Text>
+          <p className="mt-3 text-kumo-subtle">
+            Start with the vinext plugin, then add the adapter for your deployment target. Your
+            routes, components, and Next.js configuration stay exactly where they are.
+          </p>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl bg-kumo-base ring-1 ring-kumo-hairline">
+          {VITE_CONFIG_EXAMPLES.map(({ title, description, code }, index) => (
+            <article
+              key={title}
+              className="grid min-w-0 border-b border-kumo-hairline last:border-b-0 md:grid-cols-[minmax(0,0.72fr)_minmax(0,1.28fr)]"
+            >
+              <div className="flex gap-4 p-6 md:p-8">
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-kumo-elevated font-mono text-xs font-medium text-kumo-subtle ring-1 ring-kumo-hairline">
+                  {String(index + 1).padStart(2, "0")}
+                </div>
+                <div className="min-w-0 pt-0.5">
+                  <Text variant="heading3" as="h3">
+                    {title}
+                  </Text>
+                  <p className="mt-2 text-sm leading-relaxed text-kumo-subtle">{description}</p>
+                </div>
+              </div>
+
+              <div className="min-w-0 border-t border-kumo-hairline bg-[#0d1117] md:border-l md:border-t-0">
+                <div className="flex items-center gap-3 border-b border-white/10 px-5 py-3">
+                  <div className="flex gap-1.5" aria-hidden="true">
+                    <span className="size-2.5 rounded-full bg-[#ff5f57]" />
+                    <span className="size-2.5 rounded-full bg-[#febc2e]" />
+                    <span className="size-2.5 rounded-full bg-[#28c840]" />
+                  </div>
+                  <span className="font-mono text-xs text-[#8b949e]">vite.config.ts</span>
+                </div>
+                <CodeExample code={code} />
+              </div>
+            </article>
+          ))}
         </div>
       </section>
     </>

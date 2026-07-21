@@ -1,10 +1,15 @@
-import { buildRouteTrie, trieMatch } from "../routing/route-trie.js";
+import { buildRouteTrie, trieMatchRaw } from "../routing/route-trie.js";
 import {
   matchRoutePattern,
+  matchRoutePatternRaw,
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import {
+  decodeMatchedParams,
+  splitPathnameForRouteMatch,
+  splitPathSegments,
+} from "../routing/utils.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -38,8 +43,18 @@ type AppRscInterceptForMatching = {
   sourceMatchPattern?: string;
   sourcePageSegments?: readonly string[];
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
+  interceptLoadings?: readonly unknown[];
+  interceptLoadingTreePositions?: readonly number[];
+  interceptNotFoundBranchSegments?: readonly string[];
+  __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
+  __loadInterceptLoadings?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
+  notFound?: unknown;
+  __loadNotFound?: (() => Promise<unknown>) | null;
+  notFoundTreePosition?: number | null;
   params: readonly string[];
 };
 
@@ -54,24 +69,45 @@ type AppRscSiblingInterceptForMatching = {
   sourcePageSegments?: readonly string[];
   slotId: string | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
+  interceptLoadings?: readonly unknown[];
+  interceptLoadingTreePositions?: readonly number[];
+  interceptNotFoundBranchSegments?: readonly string[];
+  __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
+  __loadInterceptLoadings?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   // Sibling intercept pages are lazy-loaded (manifest emits `page: null` plus a
   // `__pageLoader`) so the intercepting page's CSS chunk stays isolated in
   // production, matching slot intercepts (see #1738). The loader is awaited on
   // demand by resolveAppPageInterceptState / probePage.
   __pageLoader?: (() => Promise<unknown>) | null;
+  notFound?: unknown;
+  __loadNotFound?: (() => Promise<unknown>) | null;
+  notFoundTreePosition?: number | null;
   params: readonly string[];
 };
 
 type AppRscRouteForMatching = {
+  __loadRouteHandler?: unknown;
   pattern: string;
   patternParts: string[];
+  routeHandler?: unknown;
   slots?: Record<string, AppRscSlotForMatching>;
   siblingIntercepts?: AppRscSiblingInterceptForMatching[];
 };
 
 type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
   matchedParams: AppRscRouteParams;
+  sourceMatchedParams: AppRscRouteParams;
+};
+
+type AppRscInterceptLoadState = {
+  page: unknown;
+  pageLoading: Promise<unknown> | null;
+  notFound: unknown;
+  notFoundLoading: Promise<unknown> | null;
+  interceptLayoutsLoading: Promise<readonly unknown[]> | null;
 };
 
 type AppRscInterceptLookupEntry = {
@@ -83,8 +119,19 @@ type AppRscInterceptLookupEntry = {
   sourceMatchPatternParts: string[] | null;
   sourcePageSegments: readonly string[] | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
+  interceptLoadings?: readonly unknown[];
+  interceptLoadingTreePositions?: readonly number[];
+  interceptNotFoundBranchSegments?: readonly string[];
+  __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
+  __loadInterceptLoadings?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
+  notFound: unknown;
+  __loadNotFound?: (() => Promise<unknown>) | null;
+  notFoundTreePosition?: number | null;
+  __loadState: AppRscInterceptLoadState;
   params: readonly string[];
   slotId: string | null;
 };
@@ -93,24 +140,119 @@ function createRouteParams(): AppRscRouteParams {
   return Object.create(null);
 }
 
-function appRscPathnameParts(pathname: string): string[] {
+function appRscPathnameParts(pathname: string, isNormalized = false): string[] {
   const pathOnly = pathname.split("?")[0];
-  const normalized = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
-  return splitPathnameForRouteMatch(normalized);
+  const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
+  return isNormalized
+    ? splitPathSegments(normalizedPathname)
+    : splitPathnameForRouteMatch(normalizedPathname);
+}
+
+function appRscInterceptionSourcePathnameParts(pathname: string): string[] {
+  const pathOnly = pathname.split("?")[0];
+  const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
+  return splitPathSegments(normalizedPathname).map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  });
+}
+
+function canonicalizeAppPageParam(value: string): string {
+  try {
+    return encodeURIComponent(decodeURIComponent(value));
+  } catch {
+    return value;
+  }
+}
+
+function canonicalizeAppPageParams(params: AppRscRouteParams): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    params[key] = Array.isArray(value)
+      ? value.map(canonicalizeAppPageParam)
+      : canonicalizeAppPageParam(value);
+  }
+}
+
+function isAppRouteHandlerRoute(route: AppRscRouteForMatching): boolean {
+  // Generated manifests retain the lazy loader before the first request and
+  // hydrate routeHandler afterwards. Classification must not change when that
+  // module load completes.
+  return route.routeHandler != null || typeof route.__loadRouteHandler === "function";
+}
+
+function normalizeMatchedParamsForRoute(result: {
+  route: AppRscRouteForMatching;
+  params: AppRscRouteParams;
+}): void {
+  if (isAppRouteHandlerRoute(result.route)) {
+    decodeMatchedParams(result.params);
+  } else {
+    canonicalizeAppPageParams(result.params);
+  }
+}
+
+function extractRawParamsForMatchedRoute(
+  patternParts: readonly string[],
+  pathnameParts: readonly string[],
+): AppRscRouteParams {
+  // Route selection uses the normalized pathname so encoded static segments
+  // cannot alias filesystem routes. Param values come from the encoded URL
+  // parts, matching Next.js client/route-params.ts before the route-kind-
+  // specific canonicalize/decode step below.
+  const params = createRouteParams();
+  let pathnameIndex = 0;
+
+  for (const part of patternParts) {
+    if (!part.startsWith(":")) {
+      pathnameIndex += 1;
+      continue;
+    }
+
+    const isCatchAll = part.endsWith("+") || part.endsWith("*");
+    const paramName = part.slice(1, isCatchAll ? -1 : undefined);
+    if (isCatchAll) {
+      const remaining = pathnameParts.slice(pathnameIndex);
+      if (remaining.length > 0) params[paramName] = [...remaining];
+      break;
+    }
+
+    const value = pathnameParts[pathnameIndex];
+    if (value !== undefined) params[paramName] = value;
+    pathnameIndex += 1;
+  }
+
+  return params;
 }
 
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
+  matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   findIntercept(pathname: string, sourcePathname?: string | null): AppRscInterceptMatch | null;
 } {
   const routeTrie = buildRouteTrie(routes);
   const interceptLookup = createInterceptLookup(routes);
+  const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
 
   return {
     matchRoute(url) {
-      return trieMatch(routeTrie, appRscPathnameParts(url));
+      const rawParts = appRscPathnameParts(url, true);
+      const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));
+      if (!result) return null;
+      result.params = extractRawParamsForMatchedRoute(result.route.patternParts, rawParts);
+      normalizeMatchedParamsForRoute(result);
+      return result;
+    },
+    matchRequestRoute(url) {
+      const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, true));
+      if (!result) return null;
+      normalizeMatchedParamsForRoute(result);
+      return result;
     },
     findIntercept(pathname, sourcePathname = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the
@@ -120,8 +262,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
       if (sourcePathname === null) return null;
 
-      const urlParts = appRscPathnameParts(pathname);
-      const sourceParts = appRscPathnameParts(sourcePathname);
+      const urlParts = appRscPathnameParts(pathname, true);
+      const sourceParts = appRscInterceptionSourcePathnameParts(sourcePathname);
+      const matchedSourceRoute = trieMatchRaw(routeTrie, sourceParts);
 
       for (const entry of interceptLookup) {
         // Primary gate: when the intercept declares a `sourceMatchPattern`
@@ -131,13 +274,21 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         // authoritative gate when the manifest carries the pattern.
         if (!matchInterceptSource(sourceParts, entry)) continue;
 
-        const params = matchAppRscRoutePattern(urlParts, entry.targetPatternParts);
+        const params = matchRoutePatternRaw(urlParts, entry.targetPatternParts);
         if (params === null) continue;
+        canonicalizeAppPageParams(params);
 
-        const sourceRoute = routes[entry.sourceRouteIndex];
-        const matchedSourceParams = sourceRoute
-          ? matchAppRscRoutePattern(sourceParts, sourceRoute.patternParts)
-          : null;
+        const concreteSourceRouteIndex =
+          matchedSourceRoute && entry.sourceMatchPatternParts !== null
+            ? (routeIndexes.get(matchedSourceRoute.route) ?? entry.sourceRouteIndex)
+            : entry.sourceRouteIndex;
+        const sourceRoute = routes[concreteSourceRouteIndex];
+        const matchedSourceParams =
+          matchedSourceRoute && entry.sourceMatchPatternParts !== null
+            ? matchedSourceRoute.params
+            : sourceRoute
+              ? matchRoutePatternRaw(sourceParts, sourceRoute.patternParts)
+              : null;
 
         // Secondary gate (from #1249): when the entry has no
         // `sourceMatchPatternParts` declared (older manifest shapes), reject
@@ -151,8 +302,17 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         if (matchedSourceParams === null && entry.sourceMatchPatternParts === null) {
           continue;
         }
-        const sourceParams = matchedSourceParams ?? createRouteParams();
-        return { ...entry, matchedParams: mergeMatchedParams(sourceParams, params) };
+        const sourceParams =
+          matchedSourceParams && entry.sourceMatchPatternParts !== null
+            ? pickPatternParams(matchedSourceParams, entry.sourceMatchPatternParts)
+            : (matchedSourceParams ?? createRouteParams());
+        return {
+          ...entry,
+          page: entry.__loadState.page,
+          sourceRouteIndex: concreteSourceRouteIndex,
+          matchedParams: mergeMatchedParams(sourceParams, params),
+          sourceMatchedParams: matchedSourceParams ?? createRouteParams(),
+        };
       }
       return null;
     },
@@ -175,6 +335,33 @@ function matchInterceptSource(sourceParts: string[], entry: AppRscInterceptLooku
   // Root pattern (`/`) matches any source.
   if (patternParts.length === 0) return true;
   return matchRoutePatternPrefix(sourceParts, patternParts);
+}
+
+function interceptSegmentPrecedence(segment: string): number {
+  if (!segment.startsWith(":")) return 0;
+  if (segment.endsWith("*")) return 3;
+  if (segment.endsWith("+")) return 2;
+  return 1;
+}
+
+function compareInterceptTargetPatterns(
+  a: AppRscInterceptLookupEntry,
+  b: AppRscInterceptLookupEntry,
+): number {
+  const sharedLength = Math.min(a.targetPatternParts.length, b.targetPatternParts.length);
+  for (let index = 0; index < sharedLength; index++) {
+    const aSegment = a.targetPatternParts[index];
+    const bSegment = b.targetPatternParts[index];
+    const precedence = interceptSegmentPrecedence(aSegment) - interceptSegmentPrecedence(bSegment);
+    if (precedence !== 0) return precedence;
+
+    if (aSegment !== bSegment) {
+      return aSegment.localeCompare(bSegment);
+    }
+  }
+
+  const lengthDifference = a.targetPatternParts.length - b.targetPatternParts.length;
+  return lengthDifference !== 0 ? lengthDifference : a.targetPattern.localeCompare(b.targetPattern);
 }
 
 function createInterceptLookup<Route extends AppRscRouteForMatching>(
@@ -218,8 +405,25 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             sourceMatchPatternParts,
             sourcePageSegments: intercept.sourcePageSegments ?? null,
             interceptLayouts: intercept.interceptLayouts,
+            interceptLayoutSegments: intercept.interceptLayoutSegments,
+            interceptBranchSegments: intercept.interceptBranchSegments,
+            interceptLoadings: intercept.interceptLoadings,
+            interceptLoadingTreePositions: intercept.interceptLoadingTreePositions,
+            interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
+            __loadInterceptLayouts: intercept.__loadInterceptLayouts,
+            __loadInterceptLoadings: intercept.__loadInterceptLoadings,
             page: intercept.page,
             __pageLoader: intercept.__pageLoader,
+            notFound: intercept.notFound,
+            __loadNotFound: intercept.__loadNotFound,
+            notFoundTreePosition: intercept.notFoundTreePosition,
+            __loadState: {
+              page: intercept.page,
+              pageLoading: null,
+              notFound: intercept.notFound,
+              notFoundLoading: null,
+              interceptLayoutsLoading: null,
+            },
             params: intercept.params,
           });
         }
@@ -241,14 +445,33 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourceMatchPatternParts,
           sourcePageSegments: intercept.sourcePageSegments ?? null,
           interceptLayouts: intercept.interceptLayouts,
+          interceptLayoutSegments: intercept.interceptLayoutSegments,
+          interceptBranchSegments: intercept.interceptBranchSegments,
+          interceptLoadings: intercept.interceptLoadings,
+          interceptLoadingTreePositions: intercept.interceptLoadingTreePositions,
+          interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
+          __loadInterceptLayouts: intercept.__loadInterceptLayouts,
+          __loadInterceptLoadings: intercept.__loadInterceptLoadings,
           page: intercept.page,
           __pageLoader: intercept.__pageLoader,
+          notFound: intercept.notFound,
+          __loadNotFound: intercept.__loadNotFound,
+          notFoundTreePosition: intercept.notFoundTreePosition,
+          __loadState: {
+            page: intercept.page,
+            pageLoading: null,
+            notFound: intercept.notFound,
+            notFoundLoading: null,
+            interceptLayoutsLoading: null,
+          },
           params: intercept.params,
         });
       }
     }
   }
-  return interceptLookup;
+  // Array.prototype.sort is stable, so entries with identical target patterns
+  // retain declaration order across slots and sources.
+  return interceptLookup.sort(compareInterceptTargetPatterns);
 }
 
 export function matchAppRscRoutePattern(
@@ -263,4 +486,21 @@ function mergeMatchedParams(
   targetParams: AppRscRouteParams,
 ): AppRscRouteParams {
   return Object.assign(createRouteParams(), sourceParams, targetParams);
+}
+
+function pickPatternParams(
+  params: AppRscRouteParams,
+  patternParts: readonly string[],
+): AppRscRouteParams {
+  const picked = createRouteParams();
+  for (const patternPart of patternParts) {
+    if (!patternPart.startsWith(":")) continue;
+    const paramName =
+      patternPart.endsWith("+") || patternPart.endsWith("*")
+        ? patternPart.slice(1, -1)
+        : patternPart.slice(1);
+    const value = params[paramName];
+    if (value !== undefined) picked[paramName] = value;
+  }
+  return picked;
 }

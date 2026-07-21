@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 
 /**
  * Build metadata that must never be served by the Cloudflare ASSETS binding.

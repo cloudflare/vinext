@@ -35,7 +35,7 @@ export async function readStreamAsText(stream: ReadableStream<Uint8Array>): Prom
 
 /**
  * Drain a UTF-8 byte stream up to `maxBytes` of *raw* input, returning the
- * decoded text. If the raw size limit is exceeded, the reader is cancelled
+ * decoded text. If the raw size limit is exceeded, cancellation is signalled
  * and `onLimitExceeded` is invoked; it MUST throw — its return type is
  * `never` to enforce that. Each caller passes its own error type.
  *
@@ -61,7 +61,7 @@ export async function readStreamAsTextWithLimit(
 
       totalSize += result.value.byteLength;
       if (totalSize > maxBytes) {
-        await reader.cancel();
+        void reader.cancel();
         onLimitExceeded();
       }
 

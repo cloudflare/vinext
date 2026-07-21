@@ -6,7 +6,7 @@ disabled by default and unknown blog slugs use a normal full render.
 
 ```bash
 vp run vinext#build
-node ../../../packages/vinext/dist/cli.js build --prerender-all
+node ../../../packages/vinext/dist/cli.js build
 node ../../../packages/vinext/dist/cli.js start --port 4187
 ```
 

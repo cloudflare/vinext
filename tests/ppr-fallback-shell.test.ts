@@ -14,6 +14,16 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > 200) {
+      throw new Error(message);
+    }
+    await delay(1);
+  }
+}
+
 describe("ppr fallback shell cache task tracking", () => {
   it("waits for public cache work before marking warmup cache-ready", async () => {
     const state = createPprFallbackShellState({
@@ -206,11 +216,18 @@ describe("ppr fallback shell render lifecycle", () => {
     runWithPprFallbackShellState(state, () => {
       void createPprFallbackShellSuspensePromise("params");
     });
-    await delay(5);
+
+    await waitForCondition(
+      () => state.pendingCacheReadyCleanup === null,
+      "Timed out waiting for final shell cache-ready scheduling to settle",
+    );
     expect(state.reactAbortController.signal.aborted).toBe(false);
 
     beginPprFallbackShellFinalRender(state);
-    await delay(5);
+    await waitForCondition(
+      () => state.reactAbortController.signal.aborted,
+      "Timed out waiting for final shell abort after React prerender started",
+    );
     expect(state.reactAbortController.signal.aborted).toBe(true);
     expect(state.abortController.signal.aborted).toBe(true);
   });

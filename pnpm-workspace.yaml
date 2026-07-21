@@ -10,6 +10,7 @@ packages:
   - packages/*
   - examples/*
   - tests/fixtures/*
+  - "!tests/fixtures/global-not-found-not-present"
   - tests/fixtures/ecosystem/*
   - benchmarks/vinext
 
@@ -26,6 +27,7 @@ catalog:
   "@radix-ui/react-dialog": ^1.1.14
   "@radix-ui/react-dropdown-menu": ^2.1.15
   "@radix-ui/react-slot": ^1.2.3
+  "@sentry/nextjs": 10.62.0
   "@tailwindcss/forms": 0.5.10
   "@tailwindcss/postcss": 4.1.4
   "@tailwindcss/typography": 0.5.16
@@ -36,7 +38,6 @@ catalog:
   "@types/node": ^25.9.2
   "@types/react": ^19.2.16
   "@types/react-dom": ^19.2.3
-  "@typescript/native-preview": ^7.0.0-dev.20260213.1
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
   "@vitejs/plugin-react": ^6.0.1
@@ -44,7 +45,7 @@ catalog:
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1
   "@vitejs/plugin-rsc": ^0.5.27
-  "@vitest/coverage-istanbul": 4.1.6
+  "@vitest/coverage-istanbul": 4.1.9
   better-auth: ^1.5.6
   better-sqlite3: ^12.0.0
   class-variance-authority: ^0.7.1
@@ -62,6 +63,7 @@ catalog:
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
   "@mswjs/interceptors": ^0.41.3
+  am-i-vibing: ^0.5.0
   msw: ^2.14.6
   ms: 3.0.0-canary.1
   next: 16.2.7
@@ -70,6 +72,7 @@ catalog:
   next-view-transitions: ^0.3.5
   nitro: npm:nitro-nightly@latest
   nuqs: ^2.8.8
+  pathslash: ^0.1.0
   playwright: ^1.60.0
   postcss: 8.5.10
   react: ^19.2.7
@@ -77,17 +80,17 @@ catalog:
   react-server-dom-webpack: ^19.2.7
   sass: 1.100.0
   server-only: ^0.0.1
+  shiki: 4.0.2
   swr: ^2.0.0
   tailwind-merge: ^3.3.0
   tailwindcss: 4.1.4
-  typescript: ^5.7.0
+  typescript: ^7.0.0
   use-count-up: 3.0.1
   validator: ^13.15.26
-  vite: npm:@voidzero-dev/vite-plus-core@0.1.24
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.2
   vite-plugin-commonjs: ^0.10.4
-  vite-plus: 0.1.24
-  vite-tsconfig-paths: ^6.1.1
-  vitest: npm:@voidzero-dev/vite-plus-test@0.1.24
+  vite-plus: 0.2.2
+  vitest: 4.1.9
   web-vitals: ^4.2.4
   wrangler: ^4.80.0
   zod: 3.24.3
@@ -132,3 +135,6 @@ allowBuilds:
   # MSW's postinstall only copies a service worker into ./public for browser
   # mocking. We exclusively use msw/node, so the postinstall is unnecessary.
   msw: false
+  # @sentry/nextjs pulls in @sentry/cli for source-map upload tooling. The
+  # tests only exercise the runtime SDK, so the CLI postinstall is unnecessary.
+  "@sentry/cli": false

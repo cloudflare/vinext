@@ -40,7 +40,10 @@ const carrierSetter: TextMapSetter = {
  *
  * The implementation mirrors Next.js's `NextTracerImpl.getTracePropagationData`:
  * we call `propagation.inject(activeContext, entries, setter)` and let the
- * setter push entries into our carrier array.
+ * setter push entries into our carrier array. When the registered API has a
+ * tracer provider but no active span, vinext creates and ends a short-lived
+ * span so request-time metadata has the same parent data Next.js exposes;
+ * optional OpenTelemetry failures always degrade to no metadata.
  */
 type OpenTelemetryApi = {
   context: { active(): unknown };
@@ -49,7 +52,75 @@ type OpenTelemetryApi = {
   };
 };
 
+type OpenTelemetryContext = {
+  getValue(key: symbol): unknown;
+  setValue(key: symbol, value: unknown): OpenTelemetryContext;
+};
+
+type OpenTelemetryGlobal = {
+  context?: {
+    active(): OpenTelemetryContext;
+    with<T>(context: OpenTelemetryContext, fn: () => T): T;
+  };
+  propagation?: {
+    inject(
+      context: OpenTelemetryContext,
+      carrier: ClientTraceDataEntry[],
+      setter: TextMapSetter,
+    ): void;
+  };
+  trace?: {
+    getTracer(name: string): {
+      startSpan(
+        name: string,
+        options: undefined,
+        context: OpenTelemetryContext,
+      ): {
+        end(): void;
+      };
+    };
+  };
+};
+
+const OPEN_TELEMETRY_API_SYMBOL = Symbol.for("opentelemetry.js.api.1");
+const OPEN_TELEMETRY_SPAN_SYMBOL = Symbol.for("OpenTelemetry Context Key SPAN");
+
+function getRegisteredOpenTelemetryTraceData(): ClientTraceDataEntry[] | null {
+  let metadataSpan: { end(): void } | null = null;
+  try {
+    const registry = (globalThis as Record<symbol, unknown>)[OPEN_TELEMETRY_API_SYMBOL] as
+      | OpenTelemetryGlobal
+      | undefined;
+    if (!registry?.context || !registry.propagation) return null;
+    const contextApi = registry.context;
+    const propagation = registry.propagation;
+
+    const activeContext = contextApi.active();
+    const hasActiveSpan = activeContext.getValue(OPEN_TELEMETRY_SPAN_SYMBOL) !== undefined;
+    metadataSpan = hasActiveSpan
+      ? null
+      : (registry.trace
+          ?.getTracer("vinext")
+          .startSpan("vinext.clientTraceMetadata", undefined, activeContext) ?? null);
+    const context = metadataSpan
+      ? activeContext.setValue(OPEN_TELEMETRY_SPAN_SYMBOL, metadataSpan)
+      : activeContext;
+    const entries: ClientTraceDataEntry[] = [];
+    contextApi.with(context, () => {
+      propagation.inject(context, entries, carrierSetter);
+    });
+    return entries;
+  } catch {
+    return [];
+  } finally {
+    metadataSpan?.end();
+  }
+}
+
 function getOpenTelemetryTraceData(): ClientTraceDataEntry[] {
+  const registeredEntries = getRegisteredOpenTelemetryTraceData();
+  if (registeredEntries) return registeredEntries;
+
   let api: OpenTelemetryApi | undefined;
   try {
     // Use require() at runtime so `@opentelemetry/api` is an optional peer.
@@ -117,6 +188,7 @@ export function renderClientTraceMetadataTags(
  */
 export function getClientTraceMetadataHTML(allowList: readonly string[] | undefined): string {
   if (!allowList || allowList.length === 0) return "";
+  if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") return "";
   const entries = getOpenTelemetryTraceData();
   const filtered = filterClientTraceMetadata(entries, allowList);
   return renderClientTraceMetadataTags(filtered);

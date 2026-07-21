@@ -2,9 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   importServerEntryModule,
+  rememberCurrentServerEntryImportMtime,
   resolveServerEntryImportUrl,
 } from "../packages/vinext/src/server/prod-server.js";
 
@@ -15,8 +16,8 @@ import {
  *
  * 1. The first import of a built entry must use the bare (query-less)
  *    canonical file:// URL, so emitted chunks that import the entry back by
- *    bare specifier (Rollup-based Vite 7 builds) or via realpath-derived
- *    URLs resolve to the SAME module instance. The previous unconditional
+ *    bare specifier or via realpath-derived URLs resolve to the SAME module
+ *    instance. The previous unconditional
  *    `?t=<mtime>` query created a second instance of the whole server bundle
  *    and module-level singletons diverged.
  *
@@ -109,6 +110,30 @@ describe("server entry import URL resolution", () => {
     // replaced by the original bare-URL cache entry.
     const thirdImportUrl = resolveServerEntryImportUrl(entryPath);
     expect(thirdImportUrl).toBe(secondBuildUrl);
+  });
+
+  it("can keep the bare URL after a same-process global-only entry injection", () => {
+    const dir = makeTmpDir();
+    const entryPath = path.join(dir, "entry.mjs");
+
+    fs.writeFileSync(entryPath, `export const state = { marker: "build-1" };\n`);
+    const firstBuildUrl = resolveServerEntryImportUrl(entryPath);
+    expect(firstBuildUrl).not.toContain("?");
+
+    fs.writeFileSync(
+      entryPath,
+      [
+        'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/blog/:slug",["/blog/post-a"]]];',
+        `export const state = { marker: "build-1" };`,
+        "",
+      ].join("\n"),
+    );
+    const bumped = new Date(Date.now() + 10_000);
+    fs.utimesSync(entryPath, bumped, bumped);
+
+    expect(resolveServerEntryImportUrl(entryPath)).toContain("?t=");
+    rememberCurrentServerEntryImportMtime(entryPath);
+    expect(resolveServerEntryImportUrl(entryPath)).toBe(firstBuildUrl);
   });
 
   it("shares the module instance with chunks that import the entry by bare specifier", async () => {

@@ -39,4 +39,13 @@ const LOOPBACK_URL_PATTERN =
   /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|0(?:\.0){3}|\[?::1\]?)(?::\d+)?(?:\/|$)/;
 const loopbackPassthrough = http.all(LOOPBACK_URL_PATTERN, () => passthrough());
 
-export const handlers: RequestHandler[] = [loopbackPassthrough];
+// @vercel/og's Node runtime loads embedded Yoga WASM through fetch. Depending
+// on the bundler transform, the inline binary is exposed either as a data URL
+// or as the equivalent malformed `nullapplication/...` URL. Neither form is a
+// network request, so pass it through without weakening strict handling for
+// unmocked external HTTP requests. Otherwise MSW logs the full multi-megabyte
+// WASM URL, which can exhaust CI output limits even though rendering succeeds.
+const INLINE_BINARY_URL_PATTERN = /^(?:data:|null)application\/octet-stream;base64,/;
+const inlineBinaryPassthrough = http.all(INLINE_BINARY_URL_PATTERN, () => passthrough());
+
+export const handlers: RequestHandler[] = [loopbackPassthrough, inlineBinaryPassthrough];

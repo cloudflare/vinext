@@ -44,10 +44,11 @@
  */
 
 import type { Plugin } from "vite";
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
+import { OgAssetOwnership } from "./og-asset-ownership.js";
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
   // build. Dev mode skips the cache so asset edits are picked up without
   // restarting the Vite server.
   const cache = new Map<string, string>(); // absPath -> base64
+  const ownership = new OgAssetOwnership();
   let isBuild = false;
 
   return {
@@ -74,112 +76,126 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
 
     configResolved(config) {
       isBuild = config.command === "build";
+      ownership.configure(config.root, config.resolve.alias);
     },
 
     buildStart() {
       if (isBuild) {
         cache.clear();
       }
+      ownership.reset();
     },
 
-    async transform(code, id) {
-      // Quick bail-out: only process modules that use new URL(..., import.meta.url)
-      if (!code.includes("import.meta.url")) {
-        return null;
-      }
+    async resolveId(source, importer, options) {
+      if (!ownership.shouldTrackImport(source)) return null;
 
-      const useCache = isBuild;
-      const moduleDir = path.dirname(id);
-      let newCode = code;
-      let didReplace = false;
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      if (resolved === null || resolved.external) return null;
+      await ownership.recordResolvedImport(source, resolved.id);
+      return null;
+    },
 
-      // Read a file from disk and return its base64 encoding, using the build
-      // cache when enabled. Returns null on any read error so callers can skip
-      // the match (e.g. file not present on disk for the active environment).
-      const readAsBase64 = async (absPath: string): Promise<string | null> => {
-        const cached = useCache ? cache.get(absPath) : undefined;
-        if (cached !== undefined) return cached;
-        try {
-          const buf = await fs.promises.readFile(absPath);
-          const b64 = buf.toString("base64");
-          if (useCache) cache.set(absPath, b64);
-          return b64;
-        } catch {
-          return null;
+    transform: {
+      filter: { code: "import.meta.url" },
+      async handler(code, id) {
+        const useCache = isBuild;
+        const boundary = await ownership.resolveModuleBoundary(id);
+        if (boundary === null) return null;
+        const { assetRoot, moduleDir } = boundary;
+        const s = new MagicString(code);
+        let didReplace = false;
+
+        // Read a file from disk and return its base64 encoding, using the build
+        // cache when enabled. Returns null on any read error so callers can skip
+        // the match (e.g. file not present on disk for the active environment).
+        const readAsBase64 = async (absPath: string): Promise<string | null> => {
+          const realPath = await ownership.resolveContainedAsset(assetRoot, absPath);
+          if (realPath === null) return null;
+
+          const cached = useCache ? cache.get(realPath) : undefined;
+          if (cached !== undefined) return cached;
+          try {
+            const buf = await fs.promises.readFile(realPath);
+            const b64 = buf.toString("base64");
+            if (useCache) cache.set(realPath, b64);
+            return b64;
+          } catch {
+            return null;
+          }
+        };
+
+        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
+        // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
+        // The regex is deliberately tolerant of how formatters (Prettier
+        // `trailingComma: "all"`, oxfmt) rewrite the `.then(...)` callback when the call
+        // is wrapped across multiple lines, since formatted source that fails to match is
+        // left as a runtime fetch (which throws "Invalid URL" on Workers, where
+        // import.meta.url is "worker"):
+        //   - `,?` before each close paren tolerates a trailing comma, e.g.
+        //       .then((res) =>
+        //         res.arrayBuffer(),
+        //       )
+        //   - `;?` before the block-body `}` tolerates a terminating semicolon, e.g.
+        //       .then((res) => {
+        //         return res.arrayBuffer();
+        //       })
+        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
+        if (code.includes("fetch(")) {
+          const fetchPattern =
+            /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*;?\s*\}?\s*,?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*,?\s*\))/g;
+
+          for (const match of code.matchAll(fetchPattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
+
+            const fileBase64 = await readAsBase64(absPath);
+            if (fileBase64 === null) continue; // may be a runtime-only asset
+
+            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
+            const inlined = [
+              `(function(){`,
+              `var b=${JSON.stringify(fileBase64)};`,
+              `var r=atob(b);`,
+              `var a=new Uint8Array(r.length);`,
+              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
+              `return Promise.resolve(a.buffer);`,
+              `})()`,
+            ].join("");
+
+            s.overwrite(match.index, match.index + fullMatch.length, inlined);
+            didReplace = true;
+          }
         }
-      };
 
-      // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
-      // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
-      // The regex is deliberately tolerant of how formatters (Prettier
-      // `trailingComma: "all"`, oxfmt) rewrite the `.then(...)` callback when the call
-      // is wrapped across multiple lines, since formatted source that fails to match is
-      // left as a runtime fetch (which throws "Invalid URL" on Workers, where
-      // import.meta.url is "worker"):
-      //   - `,?` before each close paren tolerates a trailing comma, e.g.
-      //       .then((res) =>
-      //         res.arrayBuffer(),
-      //       )
-      //   - `;?` before the block-body `}` tolerates a terminating semicolon, e.g.
-      //       .then((res) => {
-      //         return res.arrayBuffer();
-      //       })
-      // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
-      if (code.includes("fetch(")) {
-        const fetchPattern =
-          /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*;?\s*\}?\s*,?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*,?\s*\))/g;
+        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
+        // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
+        // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
+        // both font data passed to satori and WASM bytes passed to initWasm).
+        if (code.includes("readFileSync(")) {
+          const readFilePattern =
+            /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
 
-        for (const match of code.matchAll(fetchPattern)) {
-          const fullMatch = match[0];
-          const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-          const absPath = path.resolve(moduleDir, relPath);
+          for (const match of code.matchAll(readFilePattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
 
-          const fileBase64 = await readAsBase64(absPath);
-          if (fileBase64 === null) continue; // may be a runtime-only asset
+            const fileBase64 = await readAsBase64(absPath);
+            if (fileBase64 === null) continue;
 
-          // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
-          const inlined = [
-            `(function(){`,
-            `var b=${JSON.stringify(fileBase64)};`,
-            `var r=atob(b);`,
-            `var a=new Uint8Array(r.length);`,
-            `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
-            `return Promise.resolve(a.buffer);`,
-            `})()`,
-          ].join("");
+            // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
+            // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
+            const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
 
-          newCode = newCode.replaceAll(fullMatch, inlined);
-          didReplace = true;
+            s.overwrite(match.index, match.index + fullMatch.length, inlined);
+            didReplace = true;
+          }
         }
-      }
 
-      // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
-      // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
-      // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
-      // both font data passed to satori and WASM bytes passed to initWasm).
-      if (code.includes("readFileSync(")) {
-        const readFilePattern =
-          /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
-
-        for (const match of newCode.matchAll(readFilePattern)) {
-          const fullMatch = match[0];
-          const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-          const absPath = path.resolve(moduleDir, relPath);
-
-          const fileBase64 = await readAsBase64(absPath);
-          if (fileBase64 === null) continue;
-
-          // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
-          // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
-          const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
-
-          newCode = newCode.replaceAll(fullMatch, inlined);
-          didReplace = true;
-        }
-      }
-
-      if (!didReplace) return null;
-      return { code: newCode, map: null };
+        if (!didReplace) return null;
+        return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
+      },
     },
   } satisfies Plugin;
 }
@@ -205,11 +221,12 @@ function findEmittedWasmAsset(
   baseName: string,
 ): string | null {
   const stem = baseName.replace(/\.wasm$/, "");
-  // Matches `resvg.wasm` or `resvg-<hash>.wasm` as the basename.
-  const re = new RegExp(`^${stem}(?:-[\\w-]+)?\\.wasm$`);
+  // Matches `resvg.wasm`, Vite's default `resvg-<hash>.wasm`, or the
+  // Next-shaped `media/resvg.<hash8>.wasm` basename used by RSC builds.
+  const re = new RegExp(`^${stem}(?:[-.][\\w-]+)?\\.wasm$`);
   for (const output of Object.values(bundle)) {
     if (output.type !== "asset") continue;
-    if (re.test(path.posix.basename(output.fileName))) return output.fileName;
+    if (re.test(path.basename(output.fileName))) return output.fileName;
   }
   return null;
 }
@@ -311,8 +328,8 @@ export function createOgAssetsPlugin(): Plugin {
 
           for (const chunk of chunks) {
             const re = fallbackUrlRegex(base);
-            const chunkDir = path.posix.dirname(chunk.fileName);
-            const rel = path.posix.relative(chunkDir, emitted);
+            const chunkDir = path.dirname(chunk.fileName);
+            const rel = path.relative(chunkDir, emitted);
             const ref = rel.startsWith(".") ? rel : `./${rel}`;
 
             // Use MagicString so the chunk's sourcemap stays in sync with the

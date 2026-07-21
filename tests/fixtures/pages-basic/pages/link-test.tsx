@@ -31,6 +31,22 @@ export default function LinkTestPage() {
           As Prop Link
         </Link>
 
+        {/* as prop with dynamic gSSP route — click navigates to a real page */}
+        <Link href="/posts/[id]" as="/posts/42" data-testid="link-as-dynamic">
+          As Prop Dynamic Link
+        </Link>
+
+        {/* object href with query-backed dynamic segments */}
+        <Link
+          href={{
+            pathname: "/link-dynamic/[a]/[b]/c",
+            query: { a: "a", b: "b", q: "q" },
+          }}
+          data-testid="link-object-dynamic"
+        >
+          Object Dynamic Link
+        </Link>
+
         {/* onClick with preventDefault */}
         <Link
           href="/about"

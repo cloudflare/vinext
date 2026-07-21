@@ -30,13 +30,17 @@
 
 import {
   getDataCacheHandler,
-  cacheLifeProfiles,
-  _setRequestScopedCacheLife,
-  _registerCacheContextAccessor,
   type CachedFetchValue,
   type CacheControlMetadata,
+  type CacheHandlerValue,
+} from "./cache-handler.js";
+import {
+  cacheLifeProfiles,
+  _hasPendingRevalidatedTag,
+  _setRequestScopedCacheLife,
+  _registerCacheContextAccessor,
   type CacheLifeConfig,
-} from "./cache.js";
+} from "./cache-request-state.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -47,12 +51,13 @@ import {
 } from "./unified-request-context.js";
 import { markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
+import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
+
+export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
 // ---------------------------------------------------------------------------
 // Constants for nested-dynamic cache life detection
 // ---------------------------------------------------------------------------
-
-const APP_PAGE_PROPS_CACHE_KEY_MARKER = Symbol.for("vinext.appPagePropsCacheKeyMarker");
 
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
@@ -202,7 +207,21 @@ function getUseCacheKeySeed(): string | undefined {
   return getUseCacheDeploymentIdDefine() || getUseCacheBuildIdDefine();
 }
 
-function buildUseCacheKey(id: string, keySeed: string | undefined, argsKey?: string): string {
+/**
+ * Build the shared-cache key for a "use cache" function from its build-scoped
+ * identity and serialized arguments.
+ *
+ * This is a logical handler key, not a storage key. Backend-specific adapters
+ * are responsible for mapping it to their physical key constraints after
+ * applying any storage prefixes.
+ *
+ * Exported for testing.
+ */
+export function buildUseCacheKey(
+  id: string,
+  keySeed: string | undefined,
+  argsKey?: string,
+): string {
   const scopedId = keySeed ? `build:${encodeURIComponent(keySeed)}:${id}` : id;
   return argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
 }
@@ -404,21 +423,17 @@ export function clearPrivateCache(): void {
   }
 }
 
-export function markAppPagePropsForUseCache<T extends object>(props: T): T {
-  Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
-    configurable: false,
-    enumerable: false,
-    value: true,
-    writable: false,
-  });
-  return props;
-}
-
 // ---------------------------------------------------------------------------
 // Core runtime: registerCachedFunction
 // ---------------------------------------------------------------------------
 
 type RegisterCachedFunctionOptions = {
+  /**
+   * Whether the original function declaration accepts a second argument.
+   * Function.length cannot represent default or rest parameters, so the
+   * transform records this separately for metadata parent resolution.
+   */
+  acceptsSecondArgument?: boolean;
   /**
    * Internal transform metadata for file-level `"use cache"` default exports
    * in App Router `page.*` files. Page components receive framework-owned
@@ -536,8 +551,25 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // The soft tags are path-derived implicit tags set by the enclosing route
       // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
       const softTags = getCurrentFetchSoftTags();
-      const existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
-      if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
+      // A handler failure (e.g. a transient KV error, or a key the store
+      // rejects) must not surface as a render error: fall through to fresh
+      // execution so control-flow signals like notFound()/redirect() thrown by
+      // `fn` still propagate with their digest intact instead of being masked
+      // by the handler's own exception.
+      let existing: CacheHandlerValue | null = null;
+      if (!_hasPendingRevalidatedTag(softTags)) {
+        try {
+          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+        } catch (error) {
+          console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
+        }
+      }
+      if (
+        existing?.value &&
+        existing.value.kind === "FETCH" &&
+        existing.cacheState !== "stale" &&
+        !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
+      ) {
         try {
           // Surface the cached entry's tags to the surrounding request so the
           // enclosing page / route-handler ISR entry carries them even on a data
@@ -639,11 +671,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (cachedFn as any)[USE_CACHE_FUNCTION_SYMBOL] = true;
 
+  if (options.acceptsSecondArgument !== undefined) {
+    Reflect.set(cachedFn, USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL, options.acceptsSecondArgument);
+  }
+
   return cachedFn;
 }
 
 /** @internal Symbol used to identify "use cache" wrapper functions. */
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
+/** @internal Symbol carrying transform-derived cached function argument metadata. */
+const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcceptsSecondArgument");
 
 function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   const error = new Error(
@@ -657,7 +695,9 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
   _setRequestScopedCacheLife({
-    revalidate: cacheControl.revalidate,
+    // `false` is an indefinite lifetime and therefore does not constrain an
+    // enclosing cache scope's finite revalidation window.
+    revalidate: cacheControl.revalidate === false ? undefined : cacheControl.revalidate,
     expire: cacheControl.expire,
   });
 }
@@ -1010,10 +1050,6 @@ function unwrapThenableObjects(
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;
-}
-
-function isMarkedAppPagePropsObject(value: object): boolean {
-  return Reflect.get(value, APP_PAGE_PROPS_CACHE_KEY_MARKER) === true;
 }
 
 function unwrapThenableObjectArray(

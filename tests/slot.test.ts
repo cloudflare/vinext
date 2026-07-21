@@ -277,6 +277,23 @@ describe("slot primitives", () => {
     expect(merged["slot:modal:/"]).not.toBeNull();
   });
 
+  it("mergeElements keeps the previous approved layout when the next payload rerenders it", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+    const previousLayout = React.createElement("div", null, "previous layout");
+    const nextLayout = React.createElement("div", null, "next layout");
+
+    const merged = mergeElements(
+      { "layout:/dashboard": previousLayout },
+      {
+        "layout:/dashboard": nextLayout,
+        "page:/dashboard/settings": React.createElement("div", null, "settings"),
+      },
+      { preserveElementIds: ["layout:/dashboard"] },
+    );
+
+    expect(merged["layout:/dashboard"]).toBe(previousLayout);
+  });
+
   it("mergeElements drops absent non-slot elements without approved persistence", async () => {
     const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
 

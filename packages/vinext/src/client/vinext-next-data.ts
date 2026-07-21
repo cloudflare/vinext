@@ -13,6 +13,7 @@ export type VinextLinkPrefetchRoute = {
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
 };
 
 /**
@@ -30,6 +31,7 @@ export type VinextPagesLinkPrefetchRoute = {
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
 };
 
 export type VinextNextData = {
@@ -43,6 +45,8 @@ export type VinextNextData = {
     hasMiddleware?: boolean;
     /** True when build-time rewrites can affect the initial Pages Router ready state. */
     hasRewrites?: boolean;
+    /** Server-resolved Pages route URL used to hydrate fallback shells behind rewrites. */
+    routeUrl?: string;
   };
 } & NEXT_DATA;
 
@@ -55,6 +59,12 @@ type VinextLocaleGlobalTarget = {
 };
 
 export function extractVinextNextDataJson(html: string): string | null {
+  const canonical =
+    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>([\s\S]*?)<\/script>/.exec(
+      html,
+    );
+  if (canonical) return canonical[1];
+
   const assignment = /<script(?:\s[^>]*)?>\s*window\.__NEXT_DATA__\s*=\s*/.exec(html);
   if (!assignment || assignment.index === undefined) return null;
 

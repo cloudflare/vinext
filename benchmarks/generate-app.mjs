@@ -18,7 +18,10 @@ function mulberry32(seed) {
 }
 const random = mulberry32(42);
 
-const APP = join(dirname(new URL(import.meta.url).pathname), "app");
+const repositoryRoot =
+  process.env.VINEXT_PERF_TARGET_ROOT ?? dirname(dirname(new URL(import.meta.url).pathname));
+const benchmarkRoot = join(repositoryRoot, "benchmarks");
+const APP = join(benchmarkRoot, "app");
 
 // Clean and recreate
 rmSync(APP, { recursive: true, force: true });
@@ -574,7 +577,7 @@ console.log(
 );
 
 // Copy to each benchmark project (symlinks don't work with Turbopack)
-const BASE = dirname(new URL(import.meta.url).pathname);
+const BASE = benchmarkRoot;
 for (const project of ["nextjs", "vinext"]) {
   const dest = join(BASE, project, "app");
   rmSync(dest, { recursive: true, force: true });

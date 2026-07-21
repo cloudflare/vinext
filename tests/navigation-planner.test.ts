@@ -288,6 +288,7 @@ function createOperationToken(overrides: Partial<OperationToken> = {}): Operatio
     deploymentVersion: null,
     graphVersion: null,
     lane: "navigation",
+    navigationId: 1,
     operationId: 7,
     targetSnapshotFingerprint: "route:/dashboard|root:/",
     ...overrides,
@@ -427,12 +428,15 @@ function planFlightResponseFromSnapshots(options: {
   cacheEntryReuseProof?: CacheEntryReuseProof;
   currentSnapshot: RouteSnapshot;
   lane?: OperationToken["lane"];
+  restoredHistorySnapshot?: boolean;
   routeManifest?: RouteManifest | null;
   targetSnapshot: RouteSnapshot;
+  tokenGraphVersion?: string | null;
   traceFields?: NavigationPlannerState["traceFields"];
 }): NavigationDecision {
   const token = createOperationToken({
     lane: options.lane ?? "navigation",
+    ...(options.tokenGraphVersion !== undefined ? { graphVersion: options.tokenGraphVersion } : {}),
     targetSnapshotFingerprint: `${options.targetSnapshot.routeId}|root:${
       options.targetSnapshot.rootBoundaryId ?? "unknown"
     }`,
@@ -446,6 +450,7 @@ function planFlightResponseFromSnapshots(options: {
           ? { cacheEntryReuseProof: options.cacheEntryReuseProof }
           : {}),
         href: options.targetSnapshot.displayUrl,
+        ...(options.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
         targetSnapshot: options.targetSnapshot,
       },
       token,
@@ -612,6 +617,76 @@ describe("navigationPlanner root-boundary decisions", () => {
         startedVisibleCommitVersion: 2,
       },
     });
+  });
+
+  it("hard navigates a proven cache entry whose token graph version no longer matches the route graph", () => {
+    // Commits and cache reuse share the OperationToken authority: a proven cache
+    // entry may only be reused under the graph version it was produced for. A
+    // token minted under a stale graph version must not reuse a cache entry
+    // against a newer route graph — it hard navigates and refetches.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/profile",
+      matchedUrl: "/dashboard/profile",
+      routeId: "route:/dashboard/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/settings",
+      matchedUrl: "/dashboard/settings",
+      routeId: "route:/dashboard/settings",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      cacheEntryReuseProof: createAcceptedStaticLayoutCacheEntryReuseProof(),
+      currentSnapshot,
+      targetSnapshot,
+      // The test manifest declares graphVersion "graph:test".
+      tokenGraphVersion: "graph:stale",
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected a stale-graph cache reuse to hard navigate");
+    }
+    expect(decision.reason).toBe("cacheReuseTokenRejected");
+    expect(decision.url).toBe("https://example.com/dashboard/settings");
+    expect(decision.trace.entries[0]).toEqual({
+      code: NavigationTraceReasonCodes.cacheReuseTokenRejected,
+      fields: {
+        cacheReuseTokenReason: "graphVersionMismatch",
+        currentRootLayoutTreePath: "/",
+        currentVisibleCommitVersion: 2,
+        nextRootLayoutTreePath: "/",
+        startedVisibleCommitVersion: 2,
+      },
+    });
+  });
+
+  it("commits a proven cache entry when its token graph version still matches the route graph", () => {
+    // The cache-reuse token gate must not disturb the normal proven-reuse path:
+    // a token minted under the installed graph version commits as before.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/profile",
+      matchedUrl: "/dashboard/profile",
+      routeId: "route:/dashboard/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/settings",
+      matchedUrl: "/dashboard/settings",
+      routeId: "route:/dashboard/settings",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      cacheEntryReuseProof: createAcceptedStaticLayoutCacheEntryReuseProof(),
+      currentSnapshot,
+      targetSnapshot,
+      tokenGraphVersion: "graph:test",
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
   });
 
   it("hard-navigates cross-root flight responses", () => {
@@ -1106,6 +1181,64 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.reason).toBe("currentRootBoundary");
     expect(decision.proposal.preserveAbsentSlots).toBe(false);
     expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/dashboard"]);
+  });
+
+  it("uses concrete route ids when middleware rewrites hide dynamic source params", () => {
+    const slotId = "slot:modal:/interception-mw/:locale";
+    const routeManifest = createTestRouteManifest([
+      {
+        layoutIds: ["layout:/", "layout:/interception-mw/:locale"],
+        pattern: "/interception-mw/:locale",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [createSlotBinding(slotId, "layout:/interception-mw/:locale", "active")],
+        interceptions: [
+          {
+            sourcePattern: "/interception-mw/:locale",
+            targetPattern: "/interception-mw/:locale/:username/p/:id",
+            slotId,
+            ownerLayoutId: "layout:/interception-mw/:locale",
+          },
+        ],
+      },
+      {
+        layoutIds: ["layout:/", "layout:/interception-mw/:locale"],
+        pattern: "/interception-mw/:locale/:username/p/:id",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "root-boundary:/",
+        ["layout:/", "layout:/interception-mw/:locale"],
+        [{ ownerLayoutId: "layout:/interception-mw/:locale", slotId }],
+        [createSlotBinding(slotId, "layout:/interception-mw/:locale", "active")],
+      ),
+      displayUrl: "https://example.com/interception-mw",
+      matchedUrl: "/interception-mw",
+      routeId: "route:/interception-mw/en",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...currentSnapshot,
+      displayUrl: "https://example.com/interception-mw/foo/p/1",
+      interception: {
+        sourceMatchedUrl: "/interception-mw/en",
+        sourceRouteId: "route:/interception-mw/en",
+        slotId,
+        targetMatchedUrl: "/interception-mw/en/foo/p/1",
+        targetRouteId: "route:/interception-mw/en/foo/p/1",
+      },
+      interceptionContext: "/interception-mw/en",
+      matchedUrl: "/interception-mw/en/foo/p/1",
+      routeId: "route:/interception-mw/en",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      routeManifest,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
   });
 
   it("does not let stale manifest route IDs override the matched URL", () => {
@@ -1741,6 +1874,7 @@ describe("navigationPlanner root-boundary decisions", () => {
     const decision = planFlightResponseFromSnapshots({
       currentSnapshot,
       lane: "traverse",
+      restoredHistorySnapshot: true,
       targetSnapshot,
     });
 
@@ -1750,6 +1884,83 @@ describe("navigationPlanner root-boundary decisions", () => {
     }
     expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
     expect(decision.proposal.preservePreviousSlotIds).toEqual(["slot:activity:/feed"]);
+  });
+
+  it("allows traverse to restore an intercepted world from a catch-all sibling", () => {
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/profile",
+      matchedUrl: "/profile",
+      routeId: "route:/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      lane: "traverse",
+      restoredHistorySnapshot: true,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
+  });
+
+  it("rejects a fresh traverse response from an unrelated interception source", () => {
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+      displayUrl: "https://example.com/profile",
+      matchedUrl: "/profile",
+      routeId: "route:/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      lane: "traverse",
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+    );
   });
 
   it("does not preserve layouts across root-boundary uncertainty", () => {

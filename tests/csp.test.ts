@@ -25,20 +25,39 @@ describe("CSP nonce helpers", () => {
     ).toBe("script");
   });
 
-  it("does not match script-src-* directives when resolving the script nonce", () => {
+  it("extracts the nonce from script-src-elem when no plain script-src is present", () => {
+    expect(getScriptNonceFromHeader("script-src-elem 'nonce-abc'; default-src 'self'")).toBe("abc");
+  });
+
+  it("extracts the nonce from script-src-attr when no plain script-src is present", () => {
+    expect(getScriptNonceFromHeader("script-src-attr 'nonce-attr'; default-src 'self'")).toBe(
+      "attr",
+    );
+  });
+
+  it("matches the first script-src* directive (Next.js startsWith parity)", () => {
     expect(
       getScriptNonceFromHeader(
         "script-src-elem 'nonce-element'; script-src-attr 'nonce-attr'; script-src 'nonce-script'",
       ),
-    ).toBe("script");
+    ).toBe("element");
   });
 
-  it("does not match default-src-* directives when falling back to default-src", () => {
+  it("matches the first default-src* directive when falling back (Next.js startsWith parity)", () => {
     expect(
       getScriptNonceFromHeader(
         "default-src-elem 'nonce-element'; default-src-attr 'nonce-attr'; default-src 'nonce-default'",
       ),
-    ).toBe("default");
+    ).toBe("element");
+  });
+
+  it("only reads the first script-src* directive and does not scan later script-src directives", () => {
+    // Next.js selects a single directive via find(startsWith('script-src')) and
+    // extracts the nonce only from that directive, so a nonce on a later plain
+    // script-src is not used.
+    expect(
+      getScriptNonceFromHeader("script-src-elem 'self'; script-src 'nonce-x'"),
+    ).toBeUndefined();
   });
 
   it("parses the first matching nonce across extra whitespace and additional nonces", () => {

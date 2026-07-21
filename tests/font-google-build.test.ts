@@ -28,12 +28,15 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
       http.get("https://fonts.googleapis.com/*", ({ request }) => {
         const url = request.url;
         if (url.includes("Geist") && !url.includes("Mono")) {
-          return HttpResponse.text("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
-            headers: { "content-type": "text/css" },
-          });
+          return HttpResponse.text(
+            "/* latin */\n@font-face { font-family: 'Geist'; src: url(/geist.woff2); }",
+            {
+              headers: { "content-type": "text/css" },
+            },
+          );
         }
         return HttpResponse.text(
-          "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
+          "/* latin */\n@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
           { headers: { "content-type": "text/css" } },
         );
       }),

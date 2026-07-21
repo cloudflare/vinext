@@ -154,6 +154,8 @@ describe("isPagesStreamingBot", () => {
   it("detects other known HTML-limited bots", () => {
     expect(isPagesStreamingBot("Bingbot/2.0")).toBe(true);
     expect(isPagesStreamingBot("facebookexternalhit/1.1")).toBe(true);
+    expect(isPagesStreamingBot("meta-externalagent/1.1")).toBe(true);
+    expect(isPagesStreamingBot("meta-externalfetcher/1.1")).toBe(true);
     expect(isPagesStreamingBot("Twitterbot/1.0")).toBe(true);
     expect(isPagesStreamingBot("Slackbot-LinkExpanding 1.0")).toBe(true);
   });
@@ -187,7 +189,7 @@ describe("pages page response", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(response.headers.get("content-type")).toBe("text/html");
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("x-test")).toBe("1");
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
@@ -201,8 +203,16 @@ describe("pages page response", () => {
     expect(html).toContain("<div>live-body</div>");
     expect(html).toContain('<meta name="test-head" content="1" />');
     expect(html).toContain('<link rel="stylesheet" href="/font.css" />');
-    expect(html).toContain("window.__NEXT_DATA__");
-    expect(html).toContain("__VINEXT_LOCALE__");
+    expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).not.toBeNull();
+    expect(JSON.parse(nextDataMatch![1]!)).toMatchObject({
+      locale: "en",
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    });
 
     expect(common.clearSsrContext).toHaveBeenCalledTimes(1);
     expect(common.renderDocumentToString).toHaveBeenCalledTimes(1);
@@ -257,11 +267,35 @@ describe("pages page response", () => {
       expect.objectContaining({
         kind: "PAGES",
         html: expect.stringContaining("<div>live-body</div>"),
-        pageData: { title: "hello" },
+        pageData: { pageProps: { title: "hello" } },
       }),
       60,
       undefined,
       300,
+    );
+  });
+
+  it("persists indefinite Pages results while formatting a static response policy", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: null,
+      getSSRHeadHTML: undefined,
+      isrRevalidateSeconds: false,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
+    await response.text();
+    await settleMicrotasks();
+
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({ kind: "PAGES" }),
+      false,
+      undefined,
+      undefined,
     );
   });
 
@@ -333,7 +367,9 @@ describe("pages page response", () => {
     });
 
     const html = await response.text();
-    expect(html).toContain('<script nonce="pages-test-nonce">window.__NEXT_DATA__ = ');
+    expect(html).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-test-nonce">',
+    );
     expect(html).toContain('<link rel="stylesheet" nonce="pages-test-nonce" href="/font.css" />');
     expect(html).toContain(
       '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin />',
@@ -505,6 +541,29 @@ describe("pages page response", () => {
     expect(response.headers.get("cache-control")).toBeNull();
   });
 
+  it("sets browser revalidation Cache-Control for static Pages responses in Next deploy mode", async () => {
+    const oldValue = process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
+    process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
+    try {
+      const common = createCommonOptions();
+
+      const response = await renderPagesPageResponse({
+        ...common.options,
+        gsspRes: null,
+        isStaticPropsRoute: true,
+        isrRevalidateSeconds: null,
+      });
+
+      expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    } finally {
+      if (oldValue === undefined) {
+        delete process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
+      } else {
+        process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = oldValue;
+      }
+    }
+  });
+
   it("disables pages ISR caching when a script nonce is present", async () => {
     const common = createCommonOptions();
 
@@ -607,6 +666,47 @@ describe("pages page response", () => {
     expect(enhancePageElement).toHaveBeenCalledTimes(1);
   });
 
+  it("passes req/res into _document.getInitialProps and applies res headers/status", async () => {
+    const common = createCommonOptions();
+    const documentHeaders: Record<string, string | number | boolean | string[]> = {};
+    const documentRes = {
+      headersSent: false,
+      statusCode: 200,
+      getHeaders: () => documentHeaders,
+      setHeader(name: string, value: string | number | boolean | string[]) {
+        documentHeaders[name] = value;
+      },
+    };
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      req?: { cookies?: Record<string, string> };
+      res?: typeof documentRes;
+      renderPage: () => Promise<{ html: string }>;
+    }) => {
+      ctx.res?.setHeader("x-document-cookie", ctx.req?.cookies?.theme ?? "missing");
+      if (ctx.res) ctx.res.statusCode = 202;
+      const result = await ctx.renderPage();
+      return { html: result.html };
+    };
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      documentReqRes: {
+        req: { cookies: { theme: "dark" } },
+        res: documentRes,
+      },
+      enhancePageElement: () => React.createElement("p", null, "page"),
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-document-cookie")).toBe("dark");
+    expect(await response.text()).toContain("live-body");
+  });
+
   // Edge case: `getInitialProps` returns `styles` (the styled-components /
   // emotion pattern collects style tags and returns them). They must be
   // rendered to a string and merged into the document head.
@@ -662,11 +762,45 @@ describe("pages page response", () => {
     expect(html).toContain("<p>page</p>");
   });
 
-  // Edge case: a user `getInitialProps` that throws must not crash the render —
-  // the pipeline logs and falls back to the normal streaming page render.
-  it("falls back to streaming render when _document.getInitialProps throws", async () => {
+  it("uses custom document html and styles without calling renderPage", async () => {
     const common = createCommonOptions();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => ({
+      html: '<article id="manual-document-html">MANUAL</article>',
+      styles: React.createElement(
+        "style",
+        { "data-manual-document-style": true },
+        ".manual{color:blue}",
+      ),
+    });
+
+    const enhancePageElement = vi.fn(() => React.createElement("p", null, "page"));
+    const reactDomServer = await import("react-dom/server.edge");
+    const renderToReadableStream = vi.fn(async (element: React.ReactNode) =>
+      reactDomServer.renderToReadableStream(element as React.ReactElement),
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+      renderToReadableStream,
+    });
+    const html = await response.text();
+
+    expect(html).toContain('id="manual-document-html">MANUAL');
+    expect(html).toContain("data-manual-document-style");
+    expect(html).toContain(".manual{color:blue}");
+    expect(html).not.toContain("live-body");
+    expect(enhancePageElement).not.toHaveBeenCalled();
+    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates _document.getInitialProps errors without rendering the page", async () => {
+    const common = createCommonOptions();
 
     function MyDocument() {
       return null;
@@ -677,53 +811,73 @@ describe("pages page response", () => {
 
     const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
 
-    const response = await renderPagesPageResponse({
-      ...common.options,
-      DocumentComponent: MyDocument as unknown as React.ComponentType,
-      enhancePageElement,
-    });
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+      }),
+    ).rejects.toThrow("boom");
 
-    const html = await response.text();
-    // Fell back to the default streaming render (the common mock body), not
-    // the enhanced renderPage output.
-    expect(html).toContain("live-body");
-    expect(html).not.toContain("enhanced");
-    // enhancePageElement is only reached inside renderPage, which never ran.
     expect(enhancePageElement).not.toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith(
-      "[vinext] _document.getInitialProps() threw:",
-      expect.any(Error),
-    );
-    errorSpy.mockRestore();
   });
 
-  // Edge case: a user `getInitialProps` that never calls `renderPage` (it only
-  // returns head/styles) must fall back to the normal streaming render so the
-  // body content is still produced.
-  it("falls back to streaming render when getInitialProps never calls renderPage", async () => {
+  it.each([undefined, null, 42, {}])(
+    "rejects invalid _document html %j without rendering the page",
+    async (html) => {
+      const common = createCommonOptions();
+
+      function MyDocument() {
+        return null;
+      }
+      (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => ({
+        html,
+      });
+
+      const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
+      const renderToReadableStream = vi.fn(common.options.renderToReadableStream);
+
+      await expect(
+        renderPagesPageResponse({
+          ...common.options,
+          DocumentComponent: MyDocument as unknown as React.ComponentType,
+          enhancePageElement,
+          renderToReadableStream,
+        }),
+      ).rejects.toThrow('should resolve to an object with a "html" prop');
+
+      expect(enhancePageElement).not.toHaveBeenCalled();
+      expect(renderToReadableStream).not.toHaveBeenCalled();
+    },
+  );
+
+  it("propagates _document style serialization errors", async () => {
     const common = createCommonOptions();
 
     function MyDocument() {
       return null;
     }
-    // Returns props without ever invoking ctx.renderPage.
-    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => ({
-      custom: "value",
-    });
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: () => Promise<{ html: string }>;
+    }) => ({ ...(await ctx.renderPage()), styles: React.createElement("style") });
 
     const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
-
-    const response = await renderPagesPageResponse({
-      ...common.options,
-      DocumentComponent: MyDocument as unknown as React.ComponentType,
-      enhancePageElement,
+    const renderToReadableStream = vi.fn(async () => {
+      if (renderToReadableStream.mock.calls.length === 1) return createStream(["enhanced"]);
+      throw new Error("style serialization failed");
     });
 
-    const html = await response.text();
-    // Body came from the streaming fallback, not renderPage.
-    expect(html).toContain("live-body");
-    expect(html).not.toContain("enhanced");
-    expect(enhancePageElement).not.toHaveBeenCalled();
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("style serialization failed");
+
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).toHaveBeenCalledTimes(2);
   });
 
   // ---------------------------------------------------------------------------
@@ -756,7 +910,7 @@ describe("pages page response", () => {
 
     const html = await response.text();
     expect(html).toContain("live-body");
-    expect(html).toContain("window.__NEXT_DATA__");
+    expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
   });
 
   it("buffers the response for Google-PageRenderer and attaches an ETag", async () => {
@@ -1318,12 +1472,8 @@ describe("pages page response", () => {
     }
   });
 
-  // Edge case: `renderPage` is called but the underlying stream render throws.
-  // The error propagates out of `getInitialProps`, is caught by the shared
-  // helper, and the pipeline falls back to the normal streaming render.
-  it("falls back to streaming render when renderPage's stream render throws", async () => {
+  it("propagates renderPage errors without a fallback render", async () => {
     const common = createCommonOptions();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     function MyDocument() {
       return null;
@@ -1339,30 +1489,90 @@ describe("pages page response", () => {
 
     const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
 
-    let renderCall = 0;
-    const response = await renderPagesPageResponse({
-      ...common.options,
-      DocumentComponent: MyDocument as unknown as React.ComponentType,
-      enhancePageElement,
-      renderToReadableStream: vi.fn(async () => {
-        renderCall += 1;
-        // First call is renderPage's render (throw); a later fallback call must
-        // succeed so the page still renders.
-        if (renderCall === 1) throw new Error("stream render failed");
-        return createStream(["<div>live-body</div>"]);
-      }),
+    const renderToReadableStream = vi.fn(async () => {
+      throw new Error("stream render failed");
     });
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("stream render failed");
 
-    const html = await response.text();
-    // renderPage was reached (enhancePageElement ran) but the throw bubbled up
-    // and the pipeline fell back to the normal streaming render.
     expect(enhancePageElement).toHaveBeenCalledTimes(1);
-    expect(html).toContain("live-body");
-    expect(html).not.toContain("enhanced");
-    expect(errorSpy).toHaveBeenCalledWith(
-      "[vinext] _document.getInitialProps() threw:",
-      expect.any(Error),
+    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a throwing enhancer without rendering the page", async () => {
+    const common = createCommonOptions();
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: (enhancer: (Comp: React.ComponentType) => React.ComponentType) => Promise<{
+        html: string;
+      }>;
+    }) =>
+      ctx.renderPage(() => {
+        throw new Error("enhancer failed");
+      });
+
+    const enhancePageElement = vi.fn(
+      (opts: {
+        enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => unknown;
+        enhanceComponent?: (Comp: React.ComponentType<unknown>) => unknown;
+      }) => {
+        opts.enhanceComponent?.(() => null);
+        return React.createElement("p", null, "unreachable");
+      },
     );
-    errorSpy.mockRestore();
+    const renderToReadableStream = vi.fn(async () => createStream(["unreachable"]));
+
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("enhancer failed");
+
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).not.toHaveBeenCalled();
+  });
+
+  it("propagates a throwing page after one renderer invocation", async () => {
+    const common = createCommonOptions();
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: () => Promise<{ html: string }>;
+    }) => ctx.renderPage();
+
+    function ThrowingPage(): React.ReactNode {
+      throw new Error("page failed");
+    }
+    const enhancePageElement = vi.fn(() => React.createElement(ThrowingPage));
+    const reactDomServer = await import("react-dom/server.edge");
+    const renderToReadableStream = vi.fn(async (element: React.ReactNode) =>
+      reactDomServer.renderToReadableStream(element as React.ReactElement),
+    );
+
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("page failed");
+
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
   });
 });

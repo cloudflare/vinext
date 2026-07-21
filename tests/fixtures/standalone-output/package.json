@@ -5,6 +5,7 @@
   "dependencies": {
     "react": "catalog:",
     "react-dom": "catalog:",
+    "shiki": "catalog:",
     "vinext": "workspace:*"
   },
   "devDependencies": {

@@ -98,9 +98,11 @@ type HandlePagesApiRouteOptions = {
   url: string;
   nextConfig?: {
     basePath?: string;
+    allowedRevalidateHeaderKeys?: readonly string[];
     i18n?: NextI18nConfig | null;
     trailingSlash?: boolean;
   };
+  trustedRevalidateOrigin?: string;
 };
 
 function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesRequestQuery {
@@ -189,9 +191,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       : undefined;
 
     const { req, res, responsePromise } = createPagesReqRes({
+      allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
       query,
       request: options.request,
+      trustedRevalidateOrigin: options.trustedRevalidateOrigin,
       url: options.url,
     });
 

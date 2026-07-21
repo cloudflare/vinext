@@ -50,24 +50,17 @@ export default defineConfig({
 
 ## App Router — Cloudflare Workers
 
-Full manual config with explicit RSC plugin registration and Cloudflare multi-environment setup:
+Cloudflare multi-environment setup. RSC plugin registration stays automatic — do **not** add an explicit
+`rsc()` call, or the build fails with `[vinext] Duplicate @vitejs/plugin-rsc detected`.
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import rsc from "@vitejs/plugin-rsc";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
   plugins: [
     vinext(),
-    rsc({
-      entries: {
-        rsc: "virtual:vinext-rsc-entry",
-        ssr: "virtual:vinext-app-ssr-entry",
-        client: "virtual:vinext-app-browser-entry",
-      },
-    }),
     cloudflare({
       viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
     }),
@@ -75,7 +68,10 @@ export default defineConfig({
 });
 ```
 
-In most cases `vinext deploy` generates this automatically. Only use manual config when customizing the worker entry or adding bindings.
+`@vitejs/plugin-rsc` is an optional peer dependency: it must be installed in the project, but vinext
+registers it for you. Only register it yourself after passing `rsc: false` to `vinext()`.
+
+In most cases `npx @vinext/cloudflare deploy` generates this automatically. Only use manual config when customizing the worker entry or adding bindings.
 
 ## wrangler.jsonc — Cloudflare Workers
 
@@ -179,7 +175,7 @@ NITRO_PRESET=node npx vite build
 
 Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET` is often unnecessary.
 
-**For Cloudflare Workers,** Nitro works but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended for the best experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
+**For Cloudflare Workers,** Nitro works but the native integration (`npx @vinext/cloudflare deploy` / `vp exec vinext-cloudflare deploy` / `@cloudflare/vite-plugin`) is recommended for the best experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
 
 ## VinextOptions
 
@@ -188,7 +184,7 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 | `appDir` | `string`  | project root | Custom base directory for `app/` and `pages/`     |
 | `rsc`    | `boolean` | `true`       | Auto-register `@vitejs/plugin-rsc` for App Router |
 
-## vinext deploy flags
+## @vinext/cloudflare deploy flags
 
 | Flag                 | Description                              |
 | -------------------- | ---------------------------------------- |

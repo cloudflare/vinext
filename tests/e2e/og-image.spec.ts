@@ -157,3 +157,29 @@ test.describe("OG Image Generation with ../-relative custom font (@next/og)", ()
     expect(readUint32BE(buffer, 20)).toBe(630);
   });
 });
+
+/**
+ * Vinext-specific coverage for fonts loaded by an external linked package.
+ * The package module itself evaluates `new URL("./noto-sans.ttf", import.meta.url)`,
+ * so this exercises resolveId provenance and package-scoped asset containment
+ * through Cloudflare Vite dev and the built Workers bundle. The shared
+ * app-router fixture is skipped because many integration tests copy its app/
+ * tree without copying fixture-specific Vite aliases.
+ */
+test.describe("OG Image Generation with a linked-package font", () => {
+  test("GET /api/og-linked-font returns a 1200×630 PNG", async ({ request }, testInfo) => {
+    test.skip(testInfo.project.name === "app-router", "linked package fixture is Cloudflare-only");
+
+    const response = await request.get("/api/og-linked-font");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("image/png");
+
+    const buffer = Buffer.from(await response.body());
+    expect(buffer[0]).toBe(0x89);
+    expect(buffer[1]).toBe(0x50);
+    expect(buffer[2]).toBe(0x4e);
+    expect(buffer[3]).toBe(0x47);
+    expect(readUint32BE(buffer, 16)).toBe(1200);
+    expect(readUint32BE(buffer, 20)).toBe(630);
+  });
+});

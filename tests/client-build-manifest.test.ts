@@ -336,6 +336,66 @@ describe("computeClientRuntimeMetadata", () => {
     });
   });
 
+  it("computes App Router bootstrap module preinitialization from the browser entry imports", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/app-entry.js",
+          isEntry: true,
+          imports: ["shared.js", "runtime.js"],
+        },
+        "shared.js": {
+          file: "_next/static/shared.js",
+          imports: ["runtime.js", "styles.css"],
+        },
+        "runtime.js": {
+          file: "_next/static/runtime.js",
+        },
+        "styles.css": {
+          file: "_next/static/styles.css",
+        },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({ appBrowserEntry: "_next/static/app-entry.js" }),
+    );
+
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/docs/",
+        assetPrefix: "https://cdn.example.com/assets",
+      }).appBootstrapPreinitModules,
+    ).toEqual([
+      "https://cdn.example.com/assets/_next/static/shared.js",
+      "https://cdn.example.com/assets/_next/static/runtime.js",
+    ]);
+
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/",
+        assetPrefix: "",
+      }).appBootstrapPreinitModules,
+    ).toEqual(["/_next/static/shared.js", "/_next/static/runtime.js"]);
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/docs/",
+        assetPrefix: "",
+      }).appBootstrapPreinitModules,
+    ).toEqual(["/docs/_next/static/shared.js", "/docs/_next/static/runtime.js"]);
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/docs/",
+        assetPrefix: "/cdn",
+      }).appBootstrapPreinitModules,
+    ).toEqual(["/cdn/_next/static/shared.js", "/cdn/_next/static/runtime.js"]);
+  });
+
   it("applies base path to all paths", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),

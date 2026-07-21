@@ -12,8 +12,10 @@ export function createInstrumentationClientTransformPlugin(
       const instrumentationClientPath = getInstrumentationClientPath();
       if (!instrumentationClientPath) return null;
 
+      // findInstrumentationClientFile already returns a POSIX path, so only the
+      // incoming id needs normalizing before the comparison.
       const normalizedId = normalizePath(id.split("?", 1)[0]);
-      if (normalizedId !== normalizePath(instrumentationClientPath)) return null;
+      if (normalizedId !== instrumentationClientPath) return null;
       if (code.includes("__vinextInstrumentationClientStart")) return null;
 
       const ast = parseAst(code);

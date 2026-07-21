@@ -29,6 +29,7 @@ import {
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
+import { createTransformCache } from "./transform-cache.js";
 
 const TRANSFORMABLE_EXTENSIONS = new Set([
   ".js",
@@ -50,43 +51,52 @@ type ParsedCall = {
 };
 
 export function createRequireContextPlugin(): Plugin {
+  const cached = createTransformCache<undefined, TransformResult>();
+
   return {
     name: "vinext:require-context",
     // Run before TypeScript/JSX stripping so we still see the
     // `(require as any).context(...)` form (a TSAsExpression callee object).
     enforce: "pre",
-    transform(code, id) {
-      if (!mayContainRequireContext(code)) return null;
-      const lang = langForId(id);
-      if (!lang) return null;
-
-      let ast: unknown;
-      try {
-        ast = parseAst(code, { lang });
-      } catch {
-        return null;
-      }
-
-      const calls = collectRequireContextCalls(ast);
-      if (calls.length === 0) return null;
-
-      const output = new MagicString(code);
-      for (const call of calls) {
-        output.overwrite(call.range.start, call.range.end, buildReplacement(call));
-      }
-
-      return {
-        code: output.toString(),
-        map: output.generateMap({ hires: "boundary" }),
-      };
+    transform: {
+      filter: {
+        id: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/i,
+        code: /\brequire\b[\s\S]*\.context/,
+      },
+      handler(code, id) {
+        return cached(id, code, undefined, () => transformRequireContext(code, id));
+      },
     },
   };
 }
 
-function mayContainRequireContext(code: string): boolean {
-  // Cheap substring gate: both the `require` token and a `.context` member
-  // access must be present for any genuine call.
-  return code.includes("require") && code.includes(".context");
+type TransformResult = {
+  code: string;
+  map: ReturnType<MagicString["generateMap"]>;
+} | null;
+
+function transformRequireContext(code: string, id: string): TransformResult {
+  const lang = langForId(id)!;
+
+  let ast: unknown;
+  try {
+    ast = parseAst(code, { lang });
+  } catch {
+    return null;
+  }
+
+  const calls = collectRequireContextCalls(ast);
+  if (calls.length === 0) return null;
+
+  const output = new MagicString(code);
+  for (const call of calls) {
+    output.overwrite(call.range.start, call.range.end, buildReplacement(call));
+  }
+
+  return {
+    code: output.toString(),
+    map: output.generateMap({ hires: "boundary" }),
+  };
 }
 
 function langForId(id: string): "js" | "jsx" | "ts" | "tsx" | null {

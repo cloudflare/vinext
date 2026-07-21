@@ -66,6 +66,28 @@ async function buildFixture(): Promise<{ tmpDir: string }> {
     path.join(tmpDir, "pages", "pages-ssr.tsx"),
     `export default function PagesSsr() { return <div>pages-ssr</div>; }\n`,
   );
+  await writeFile(
+    path.join(tmpDir, "lib", "api-server-only.ts"),
+    `import "server-only";
+import * as React from "react";
+
+export function getReactExports() {
+  return Object.keys(Object(React));
+}
+`,
+  );
+  await writeFile(
+    path.join(tmpDir, "pages", "api", "server-only-edge.ts"),
+    `import "server-only";
+import { getReactExports } from "../../lib/api-server-only";
+
+export default async function handler() {
+  return Response.json({ React: getReactExports() });
+}
+
+export const runtime = "edge";
+`,
+  );
 
   // A helper that the middleware imports. Mirrors the Next.js fixture's
   // `lib/mixed-lib`-style transitive case: `server-only` must remain a

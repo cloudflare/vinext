@@ -12,6 +12,7 @@ import {
   getTypeofWindowReplacement,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
+import { supportsNativeTypeofWindowFolding } from "../packages/vinext/src/utils/vite-version.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -24,6 +25,102 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
+  it("configures the installed Vite typeof window folding strategy", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-define-"));
+    temporaryDirectories.push(root);
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      environments: {
+        server: { consumer: "server" },
+      },
+      plugins: [vinext({ react: false, rsc: false })],
+    });
+
+    const vitePackage = (await import("vite/package.json", { with: { type: "json" } })).default;
+    const viteVersion = vitePackage.bundledVersions?.vite ?? (await import("vite")).version;
+    const usesNativeFolding = supportsNativeTypeofWindowFolding(
+      viteVersion,
+      vitePackage.bundledVersions?.rolldown,
+    );
+
+    expect(builder.environments.client?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"object"' : undefined,
+    );
+    expect(builder.environments.server?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"undefined"' : undefined,
+    );
+  });
+
+  it("uses native folding only from the stable Vite 8.1.4 release", () => {
+    expect(supportsNativeTypeofWindowFolding("8.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.4+build.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("9.0.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0", "1.1.3")).toBe(false);
+  });
+
+  it("skips custom scan folding for modules in the Vite cache directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-cache-"));
+    temporaryDirectories.push(root);
+    const cacheDir = path.join(root, ".vite-cache[custom]");
+    const builder = await createBuilder({
+      root,
+      cacheDir,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ react: false, rsc: false })],
+    });
+    const plugin = builder.config.plugins.find(
+      (candidate) => candidate.name === "vinext:typeof-window-scan",
+    );
+    if (!plugin?.transform || typeof plugin.transform === "function") {
+      throw new Error("vinext:typeof-window-scan transform hook not found");
+    }
+
+    const transform = plugin.transform.handler;
+    const context = {
+      environment: {
+        config: {
+          build: { write: false },
+          cacheDir,
+          consumer: "server",
+        },
+      },
+    };
+    const source = `if (typeof window !== "undefined") import("browser-only")`;
+    const appPageId = path.join(root, "app/page.js");
+
+    expect(
+      await transform.call(context as never, source, path.join(cacheDir, "deps_ssr/react.js")),
+    ).toBeNull();
+    const cachedServerResult = await transform.call(context as never, source, appPageId);
+    expect(cachedServerResult).not.toBeNull();
+    expect(await transform.call(context as never, source, appPageId)).toBe(cachedServerResult);
+
+    const clientContext = {
+      environment: {
+        config: {
+          ...context.environment.config,
+          consumer: "client",
+        },
+      },
+    };
+    const clientResult = await transform.call(clientContext as never, source, appPageId);
+    expect(clientResult).not.toBe(cachedServerResult);
+    expect(await transform.call(clientContext as never, source, appPageId)).toBe(clientResult);
+    expect(clientResult).toMatchObject({ code: expect.stringContaining("browser-only") });
+    expect(
+      await transform.call(context as never, `${source}\nconsole.log("changed")`, appPageId),
+    ).not.toBe(cachedServerResult);
+  });
+
   it("only folds references to the global window binding", () => {
     const source = `
 if (typeof window !== "undefined") globalBrowserOnly()
@@ -82,6 +179,51 @@ switch (value) {
     expect(result?.code).not.toContain("browser-only");
     expect(result?.code).toContain("value = (null)");
     expect(result?.code).toContain("var window");
+  });
+
+  it("preserves window bindings declared in loop headers", () => {
+    const result = replaceTypeofWindow(
+      `for (const window of windows) console.log(typeof window)
+for (let window; condition; ) console.log(typeof window)`,
+      "undefined",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("keeps switch-case bindings out of the discriminant scope", () => {
+    const result = replaceTypeofWindow(
+      `switch (typeof window) {
+  case typeof window:
+    let window
+    console.log(typeof window)
+}`,
+      "undefined",
+    );
+
+    expect(result?.code).toContain('switch ("undefined")');
+    expect(result?.code.match(/typeof window/g)).toHaveLength(2);
+  });
+
+  it("contains var window bindings in TypeScript namespaces and static blocks", () => {
+    const result = replaceTypeofWindow(
+      `namespace Loader {
+  if (condition) var window
+  console.log(typeof window)
+}
+class BrowserLoader {
+  static {
+    if (condition) var window
+    console.log(typeof window)
+  }
+}
+console.log(typeof window)`,
+      "undefined",
+      "/app/page.ts",
+    );
+
+    expect(result?.code.match(/typeof window/g)).toHaveLength(2);
+    expect(result?.code).toContain('console.log("undefined")');
   });
 
   it("preserves selected conditional expression precedence", () => {
@@ -161,7 +303,12 @@ export default function Page() { return <h1>Page loaded</h1> }`,
     });
     const ssrJavaScript = await Promise.all(
       ssrFiles
-        .filter((file) => typeof file === "string" && /\.[cm]?js$/.test(file))
+        .filter(
+          (file) =>
+            typeof file === "string" &&
+            /\.[cm]?js$/.test(file) &&
+            path.basename(file) !== "vinext-client-assets.js",
+        )
         .map((file) => fs.readFile(path.join(root, "dist", "server", "ssr", file), "utf8")),
     );
     expect(ssrJavaScript.join("\n")).not.toContain("my-differentiated-files");

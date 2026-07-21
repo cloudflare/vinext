@@ -37,7 +37,7 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
 /**

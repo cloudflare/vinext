@@ -52,12 +52,15 @@ function runLint(files: readonly string[]): { status: number | null; output: str
 }
 
 afterEach(() => {
+  // Windows treats a directory symlink as a directory, so rmSync needs
+  // `recursive` to unlink it; on a symlink it removes only the link, not the
+  // target (fixtureDir is removed separately below).
   if (fixtureLinkDir) {
-    fs.rmSync(fixtureLinkDir, { force: true });
+    fs.rmSync(fixtureLinkDir, { recursive: true, force: true });
     fixtureLinkDir = undefined;
   }
   if (testFixtureLinkDir) {
-    fs.rmSync(testFixtureLinkDir, { force: true });
+    fs.rmSync(testFixtureLinkDir, { recursive: true, force: true });
     testFixtureLinkDir = undefined;
   }
   if (!fixtureDir) return;

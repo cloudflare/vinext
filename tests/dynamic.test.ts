@@ -87,7 +87,12 @@ describe("next/dynamic ssr: false", () => {
     expect(html).not.toContain("Hello from dynamic");
   });
 
-  it("does not force loading UI when ssr: false has not passed the delay", () => {
+  it("renders the loading UI on the server with pastDelay:true so it matches the client first render (issue 1967)", () => {
+    // App Router always renders the loading fallback with pastDelay=true on BOTH
+    // server and client. A loading component that branches on pastDelay (the
+    // documented `if (!pastDelay) return null` pattern) must therefore render the
+    // same thing on the server as it does on the client's first/pre-mount render —
+    // otherwise hydration mismatches (issue 1967).
     const LoadingAfterDelay = ({ pastDelay }: { pastDelay?: boolean }) =>
       pastDelay ? React.createElement("div", null, "Delayed loading") : null;
     const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), {
@@ -95,8 +100,16 @@ describe("next/dynamic ssr: false", () => {
       loading: LoadingAfterDelay,
     });
 
-    const html = ReactDOMServer.renderToString(React.createElement(DynamicNoSSR));
-    expect(html).toBe("");
+    const serverHtml = ReactDOMServer.renderToStaticMarkup(React.createElement(DynamicNoSSR));
+    // Canonical client first-render output: the loading component rendered with
+    // pastDelay:true, which is exactly what ClientSSRFalse emits pre-mount via
+    // createDynamicLoadingProps().
+    const clientFirstRenderHtml = ReactDOMServer.renderToStaticMarkup(
+      React.createElement(LoadingAfterDelay, { pastDelay: true }),
+    );
+
+    expect(serverHtml).toContain("Delayed loading");
+    expect(serverHtml).toBe(clientFirstRenderHtml);
   });
 
   it("renders nothing on server when ssr: false and no loading", () => {
@@ -115,7 +128,7 @@ describe("next/dynamic ssr: false", () => {
 // ─── Loading component ──────────────────────────────────────────────────
 
 describe("next/dynamic loading component", () => {
-  it("passes the Next.js noSSR loading props to loading component on SSR", () => {
+  it("passes the App Router loading props (pastDelay:true) to loading component on SSR", () => {
     let receivedProps: any = null;
     function TrackingLoader(props: any) {
       receivedProps = props;
@@ -129,9 +142,11 @@ describe("next/dynamic loading component", () => {
 
     ReactDOMServer.renderToString(React.createElement(DynamicWithTracking));
 
+    // pastDelay is true on the server to match the client's first render and the
+    // Next.js App Router contract (issue 1967).
     expect(receivedProps).toEqual({
       isLoading: true,
-      pastDelay: false,
+      pastDelay: true,
       error: null,
       timedOut: false,
       retry: expect.any(Function),

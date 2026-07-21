@@ -23,7 +23,7 @@
  *     `runnerImport`'s inline environment (which has its own root).
  */
 import fs from "node:fs";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { createRequire } from "node:module";
 import { parseStaticObjectLiteral } from "../plugins/fonts.js";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
@@ -49,6 +49,22 @@ function resolveTsconfigPathCandidate(candidate: string): string | null {
   return null;
 }
 
+/**
+ * Normalize a tsconfig `extends` field into a list of specifier strings.
+ *
+ * TypeScript 5.0+ allows `extends` to be either a string or an array of
+ * strings. Matches Next.js's handling in
+ * packages/next/src/build/next-config-ts/transpile-config.ts, where parents
+ * are iterated in order and later entries override earlier ones.
+ */
+function normalizeExtends(extendsField: unknown): string[] {
+  if (typeof extendsField === "string") return [extendsField];
+  if (Array.isArray(extendsField)) {
+    return extendsField.filter((value): value is string => typeof value === "string");
+  }
+  return [];
+}
+
 function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
   const fromDir = path.dirname(configPath);
   if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
@@ -60,7 +76,7 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
 
   for (const item of candidates) {
     try {
-      return requireFromConfig.resolve(item);
+      return toSlash(requireFromConfig.resolve(item));
     } catch {}
   }
 
@@ -122,7 +138,9 @@ function loadResolutionFromTsconfigFile(
   if (!parsed) return emptyResolution();
 
   let resolution = emptyResolution();
-  const extendsList = typeof parsed.extends === "string" ? [parsed.extends] : [];
+  // TypeScript 5.0+ allows `extends` to be an array of specifiers (later
+  // entries override earlier ones). Normalize both forms to a string list.
+  const extendsList = normalizeExtends(parsed.extends);
 
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
@@ -175,7 +193,17 @@ export function loadTsconfigResolutionForRoot(projectRoot: string): TsconfigPath
   for (const name of TSCONFIG_FILES) {
     const candidate = path.join(projectRoot, name);
     if (!fs.existsSync(candidate)) continue;
-    return loadResolutionFromTsconfigFile(candidate, new Set());
+    const resolution = loadResolutionFromTsconfigFile(candidate, new Set());
+    return {
+      // TypeScript matches `paths` by longest prefix regardless of declaration
+      // order, while Vite's alias plugin picks the first matching entry. Order
+      // overlapping patterns (e.g. `@/*` + `@/public/*`) longest-first so the
+      // specific pattern is not shadowed by the general one.
+      aliases: Object.fromEntries(
+        Object.entries(resolution.aliases).sort((a, b) => b[0].length - a[0].length),
+      ),
+      baseUrl: resolution.baseUrl,
+    };
   }
   return emptyResolution();
 }

@@ -1,8 +1,10 @@
 import { describe, expect, it, afterEach } from "vite-plus/test";
 import {
   applyCdnResponseHeaders,
+  BROWSER_REVALIDATE_CACHE_CONTROL,
   buildCachedRevalidateCacheControl,
   buildRevalidateCacheControl,
+  shouldUseNextDeployCacheControl,
 } from "../packages/vinext/src/server/cache-control.js";
 import {
   setCdnCacheAdapter,
@@ -55,14 +57,31 @@ describe("cache-control helpers", () => {
 
 describe("applyCdnResponseHeaders", () => {
   const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
+  const originalNextDeployCacheControl = process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
   afterEach(() => {
     delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+    if (originalNextDeployCacheControl === undefined) {
+      delete process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
+    } else {
+      process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = originalNextDeployCacheControl;
+    }
   });
 
   it("default adapter sets a single Cache-Control identical to the input", () => {
     const headers = new Headers();
     applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60, stale-while-revalidate" });
     expect(headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate");
+    expect(headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it("uses browser revalidation Cache-Control for shared cache policies in Next deploy mode", () => {
+    process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
+    const headers = new Headers();
+
+    applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60, stale-while-revalidate" });
+
+    expect(shouldUseNextDeployCacheControl()).toBe(true);
+    expect(headers.get("Cache-Control")).toBe(BROWSER_REVALIDATE_CACHE_CONTROL);
     expect(headers.get("CDN-Cache-Control")).toBeNull();
   });
 

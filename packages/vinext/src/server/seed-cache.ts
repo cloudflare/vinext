@@ -30,8 +30,8 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
-import type { CachedAppPageValue } from "vinext/shims/cache";
+import path from "pathslash";
+import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
 import { buildAppPageCacheTags } from "./app-page-cache.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
@@ -130,6 +130,7 @@ export async function seedMemoryCacheFromPrerender(
         htmlKey,
         artifactPathname,
         trailingSlash,
+        route.headers,
         revalidateSeconds,
         expireSeconds,
         tags,
@@ -169,6 +170,7 @@ async function seedHtml(
   key: string,
   pathname: string,
   trailingSlash: boolean,
+  headers: Record<string, string> | undefined,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
   tags: string[] | undefined,
@@ -181,7 +183,7 @@ async function seedHtml(
     kind: "APP_PAGE",
     html: fs.readFileSync(fullPath, "utf-8"),
     rscData: undefined,
-    headers: undefined,
+    headers,
     postponed: undefined,
     status: undefined,
   };

@@ -4,6 +4,7 @@ type NavigationTraceSchemaVersion = 0;
 
 export const NavigationTraceReasonCodes = {
   cacheProofRejected: "NC_CACHE_REJECT",
+  cacheReuseTokenRejected: "NC_CACHE_TOKEN_REJECT",
   commitCurrent: "NC_COMMIT",
   crossDocumentFlight: "NC_CROSS_DOC_FLIGHT",
   fetchFresh: "NC_FETCH_FRESH",
@@ -36,6 +37,7 @@ export const NavigationTraceReasonCodes = {
   visitedResponseReuse: "NC_VISITED_REUSE",
 } satisfies Readonly<{
   cacheProofRejected: "NC_CACHE_REJECT";
+  cacheReuseTokenRejected: "NC_CACHE_TOKEN_REJECT";
   commitCurrent: "NC_COMMIT";
   crossDocumentFlight: "NC_CROSS_DOC_FLIGHT";
   fetchFresh: "NC_FETCH_FRESH";
@@ -92,6 +94,7 @@ type NavigationTraceFieldName =
   | "cacheProofMode"
   | "cacheProofReuseClass"
   | "cacheProofScope"
+  | "cacheReuseTokenReason"
   | "currentRootLayoutTreePath"
   | "currentVisibleCommitVersion"
   | "nextRootLayoutTreePath"

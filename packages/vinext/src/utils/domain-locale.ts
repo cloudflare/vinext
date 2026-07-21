@@ -1,6 +1,9 @@
-import type { NextI18nConfig } from "../config/next-config.js";
-
-export type DomainLocale = NonNullable<NextI18nConfig["domains"]>[number];
+export type DomainLocale = {
+  domain: string;
+  defaultLocale: string;
+  locales?: readonly string[];
+  http?: true;
+};
 
 export function normalizeDomainHostname(hostname: string | null | undefined): string | undefined {
   if (!hostname) return undefined;

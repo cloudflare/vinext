@@ -61,11 +61,13 @@ namespace binding — both are configured there.
    Create the namespace with `npx wrangler kv namespace create VINEXT_KV_CACHE`
    and drop the returned id in.
 
-3. **The Worker entry** just delegates to the vinext App Router handler:
+3. **The Worker entry** uses vinext's router-selected handler directly from
+   `wrangler.jsonc`:
 
-   ```ts
-   import handler from "vinext/server/app-router-entry";
-   export default { fetch: handler.fetch };
+   ```jsonc
+   {
+     "main": "vinext/server/fetch-handler"
+   }
    ```
 
    The handler registers the configured adapters on the first request —
