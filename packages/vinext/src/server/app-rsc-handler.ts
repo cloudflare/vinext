@@ -102,6 +102,16 @@ const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const HAS_CONFIG_REDIRECTS = process.env.__VINEXT_HAS_CONFIG_REDIRECTS !== "false";
 const HAS_CONFIG_REWRITES = process.env.__VINEXT_HAS_CONFIG_REWRITES !== "false";
+
+// Memoized lazy loaders. The dynamic imports keep these chunks out of the
+// startup graph when the matching config is absent, but the module identity
+// never changes at runtime, so re-running import() per request only pays
+// resolution overhead (amplified to a synchronous hooks-thread round-trip
+// when ESM loader hooks are registered, e.g. by OTel/Sentry).
+let configMatchersPromise: Promise<typeof import("../config/config-matchers.js")> | undefined;
+const loadConfigMatchers = () => (configMatchersPromise ??= import("../config/config-matchers.js"));
+let configHeadersPromise: Promise<typeof import("./config-headers.js")> | undefined;
+const loadConfigHeaders = () => (configHeadersPromise ??= import("./config-headers.js"));
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
@@ -398,7 +408,7 @@ async function applyRewrite(
   if (!HAS_CONFIG_REWRITES || !options.rewrites.length) return null;
 
   const sourcePathname = options.paramsPathname ?? cleanPathname;
-  const configMatchers = await import("../config/config-matchers.js");
+  const configMatchers = await loadConfigMatchers();
   const rewritten = configMatchers.matchRewrite(
     sourcePathname,
     options.rewrites,
@@ -448,7 +458,7 @@ async function applyConfigHeadersToMiddlewareRedirect(
   if (response.status < 300 || response.status >= 400) return response;
   if (!HAS_CONFIG_HEADERS || !options.configHeaders.length) return response;
 
-  const { applyConfigHeadersToResponse } = await import("./config-headers.js");
+  const { applyConfigHeadersToResponse } = await loadConfigHeaders();
   const headers = new Headers();
   applyConfigHeadersToResponse(headers, {
     configHeaders: options.configHeaders,
@@ -600,7 +610,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const redirectPathname = matchPathname(requestCleanPathname);
   const configMatchers =
     HAS_CONFIG_REDIRECTS && options.configRedirects.length
-      ? await import("../config/config-matchers.js")
+      ? await loadConfigMatchers()
       : null;
   const redirect = configMatchers
     ? configMatchers.matchRedirect(
@@ -816,7 +826,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (filesystemRouteEligible && options.handleMetadataRouteRequest) {
     const metadataRouteResponse = await options.handleMetadataRouteRequest(cleanPathname);
     if (metadataRouteResponse && HAS_CONFIG_HEADERS && options.configHeaders.length) {
-      const { applyConfigHeadersToResponse } = await import("./config-headers.js");
+      const { applyConfigHeadersToResponse } = await loadConfigHeaders();
       applyConfigHeadersToResponse(metadataRouteResponse.headers, {
         basePathState,
         configHeaders: options.configHeaders,

@@ -28,6 +28,8 @@ type FinalizeAppRscResponseOptions = {
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 
+let configHeadersPromise: Promise<typeof import("./config-headers.js")> | undefined;
+
 /**
  * Apply App Router response finalization that must happen outside individual
  * route dispatchers.
@@ -94,7 +96,9 @@ export async function finalizeAppRscResponse(
     ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, { hostname: url.hostname })
     : pathname;
 
-  const { applyConfigHeadersToResponse } = await import("./config-headers.js");
+  const { applyConfigHeadersToResponse } = await (configHeadersPromise ??= import(
+    "./config-headers.js"
+  ));
   applyConfigHeadersToResponse(response.headers, {
     configHeaders: options.configHeaders,
     pathname: matchPathname,
