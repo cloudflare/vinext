@@ -602,12 +602,10 @@ export function createAppBrowserNavigationController(
     // with a programmatic transition would have its synchronous commit
     // silently dropped in favor of the deferred resolve above.
     //
-    // This is intentionally distinct from dispatchSynchronousVisibleCommit
-    // below: that path's callers (HMR, history traversal) already run inside a
-    // synchronous event-handler/effect context where React flushes the plain
-    // setter itself, whereas the gesture commit fires after an `await` inside a
-    // held async transition and must be forced out with flushSync. Don't
-    // consolidate the two.
+    // Keep this branch explicit because the pending-router-state path above
+    // resolves a deferred transition instead of dispatching a visible setter.
+    // Both direct synchronous commit paths use flushSync so commits reached
+    // after an await cannot be deferred past subsequent navigation work.
     if (visibleCommitMode === "synchronous") {
       flushSync(() => {
         const committedState = captureCandidateState(
@@ -628,7 +626,9 @@ export function createAppBrowserNavigationController(
 
   function dispatchSynchronousVisibleCommit(commit: ApprovedVisibleCommit): void {
     const setter = getBrowserRouterStateSetter();
-    setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
+    flushSync(() => {
+      setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
+    });
   }
 
   function createRestoredHistorySnapshotCommit(options: {

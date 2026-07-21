@@ -2365,6 +2365,9 @@ function bootstrapHydration(
       restorePopstateScrollPosition(event.state);
       return;
     }
+    // Prefer a cached history snapshot before starting a fresh RSC traverse.
+    // The new navigation id makes this synchronous restore the active lifecycle,
+    // so older in-flight traversals fail their authority check before commit.
     const snapshotNavigationId = browserNavigationController.beginNavigation();
     if (
       restoreHistoryStateSnapshot(event.state, snapshotNavigationId, () => {
