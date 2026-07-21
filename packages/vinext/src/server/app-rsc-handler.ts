@@ -95,6 +95,7 @@ import {
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
+import { memoizeModuleLoader } from "../utils/memoize-module-loader.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -108,10 +109,8 @@ const HAS_CONFIG_REWRITES = process.env.__VINEXT_HAS_CONFIG_REWRITES !== "false"
 // never changes at runtime, so re-running import() per request only pays
 // resolution overhead (amplified to a synchronous hooks-thread round-trip
 // when ESM loader hooks are registered, e.g. by OTel/Sentry).
-let configMatchersPromise: Promise<typeof import("../config/config-matchers.js")> | undefined;
-const loadConfigMatchers = () => (configMatchersPromise ??= import("../config/config-matchers.js"));
-let configHeadersPromise: Promise<typeof import("./config-headers.js")> | undefined;
-const loadConfigHeaders = () => (configHeadersPromise ??= import("./config-headers.js"));
+const loadConfigMatchers = memoizeModuleLoader(() => import("../config/config-matchers.js"));
+const loadConfigHeaders = memoizeModuleLoader(() => import("./config-headers.js"));
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
@@ -609,9 +608,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // original percent-encoding for Location substitution.
   const redirectPathname = matchPathname(requestCleanPathname);
   const configMatchers =
-    HAS_CONFIG_REDIRECTS && options.configRedirects.length
-      ? await loadConfigMatchers()
-      : null;
+    HAS_CONFIG_REDIRECTS && options.configRedirects.length ? await loadConfigMatchers() : null;
   const redirect = configMatchers
     ? configMatchers.matchRedirect(
         redirectPathname,

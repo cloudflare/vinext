@@ -58,6 +58,7 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 // @ts-expect-error — resolved by the vinext build plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { memoizeModuleLoader } from "../utils/memoize-module-loader.js";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
 
 setPagesClientAssets(pagesClientAssets as PagesClientAssets);
@@ -111,18 +112,6 @@ function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPr
   );
 }
 
-let staticPrerenderPromise: Promise<StaticPrerender> | undefined;
-
-function loadStaticPrerender(): Promise<StaticPrerender> {
-  if (!staticPrerenderPromise) {
-    staticPrerenderPromise = loadStaticPrerenderImpl();
-    staticPrerenderPromise.catch(() => {
-      staticPrerenderPromise = undefined;
-    });
-  }
-  return staticPrerenderPromise;
-}
-
 async function loadStaticPrerenderImpl(): Promise<StaticPrerender> {
   // Prefer the stable ESM entry in all environments. Future React dev builds
   // may export prerender() here, so this is the first path we attempt.
@@ -168,6 +157,8 @@ async function loadStaticPrerenderImpl(): Promise<StaticPrerender> {
 
   throw new Error("[vinext] react-dom/static.edge did not expose prerender().");
 }
+
+const loadStaticPrerender = memoizeModuleLoader(loadStaticPrerenderImpl);
 
 function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -770,7 +761,9 @@ type RscEntryModule = {
   default(request: Request): Promise<Response | string | null | undefined>;
 };
 
-let rscModulePromise: Promise<RscEntryModule> | undefined;
+const loadRscModuleInProduction = memoizeModuleLoader(() =>
+  import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index"),
+);
 
 function loadRscModule(): Promise<RscEntryModule> {
   // In dev, the Vite module runner must re-import so HMR invalidations of the
@@ -780,7 +773,7 @@ function loadRscModule(): Promise<RscEntryModule> {
   if (process.env.NODE_ENV !== "production") {
     return import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index");
   }
-  return (rscModulePromise ??= import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index"));
+  return loadRscModuleInProduction();
 }
 
 export default {

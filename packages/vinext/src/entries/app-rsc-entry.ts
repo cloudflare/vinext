@@ -112,6 +112,10 @@ const appHookWarningSuppressionPath = resolveEntryPath(
 );
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", import.meta.url);
+const memoizeModuleLoaderPath = resolveEntryPath(
+  "../utils/memoize-module-loader.js",
+  import.meta.url,
+);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -323,6 +327,7 @@ import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
+import { memoizeModuleLoader as __memoizeModuleLoader } from ${JSON.stringify(memoizeModuleLoaderPath)};
 ${
   hasPagesDir
     ? `import {
@@ -330,31 +335,29 @@ ${
 } from ${JSON.stringify(appRouteHandlerResponsePath)};`
     : ""
 }
-const __memoizeLoad = (load) => {
-  let promise;
-  return () => (promise ??= load());
-};
-let __ssrModulePromise;
+const __loadSsrModuleInProduction = __memoizeModuleLoader(() =>
+  import.meta.viteRsc.loadModule("ssr", "index"),
+);
 function __loadSsrModule() {
   if (process.env.NODE_ENV !== "production") {
     return import.meta.viteRsc.loadModule("ssr", "index");
   }
-  return (__ssrModulePromise ??= import.meta.viteRsc.loadModule("ssr", "index"));
+  return __loadSsrModuleInProduction();
 }
-const __loadAppRouteHandlerDispatch = __memoizeLoad(() => import(${JSON.stringify(appRouteHandlerDispatchPath)}));
+const __loadAppRouteHandlerDispatch = __memoizeModuleLoader(() => import(${JSON.stringify(appRouteHandlerDispatchPath)}));
 ${
   hasServerActions
-    ? `const __loadAppServerActionExecution = __memoizeLoad(() => import(${JSON.stringify(appServerActionExecutionPath)}));`
+    ? `const __loadAppServerActionExecution = __memoizeModuleLoader(() => import(${JSON.stringify(appServerActionExecutionPath)}));`
     : ""
 }
 ${
   (metadataRoutes?.length ?? 0) > 0
-    ? `const __loadMetadataRouteResponse = __memoizeLoad(() => import(${JSON.stringify(metadataRouteResponsePath)}));`
+    ? `const __loadMetadataRouteResponse = __memoizeModuleLoader(() => import(${JSON.stringify(metadataRouteResponsePath)}));`
     : ""
 }
 ${
   (metadataRoutes?.length ?? 0) > 0
-    ? `const __loadFileBasedMetadata = __memoizeLoad(() => import(${JSON.stringify(fileBasedMetadataPath)}));
+    ? `const __loadFileBasedMetadata = __memoizeModuleLoader(() => import(${JSON.stringify(fileBasedMetadataPath)}));
 async function __applyFileBasedMetadata(...args) {
   const { applyFileBasedMetadata } = await __loadFileBasedMetadata();
   return applyFileBasedMetadata(...args);
