@@ -1,3 +1,4 @@
+import { pumpThrough } from "./stream-pump.js";
 const REACT_FLIGHT_STYLESHEET_PRELOAD_HINT = /^([0-9a-f]*:HL\[.*?),"stylesheet"(\]|,)/;
 const STYLESHEET_TO_STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
 
@@ -112,8 +113,7 @@ export function normalizeReactFlightPreloadHints(
   let rawBytesRemaining = 0;
   let passThrough = false;
 
-  return stream.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
+  return pumpThrough(stream, new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         if (passThrough) {
           controller.enqueue(chunk);

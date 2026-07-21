@@ -13,18 +13,18 @@ export function deferUntilStreamConsumed(
     }
   };
 
-  const cleanup = new TransformStream<Uint8Array, Uint8Array>({
-    flush() {
-      once();
-    },
-  });
-
-  const reader = stream.pipeThrough(cleanup).getReader();
+  // A manual passthrough instead of pipeThrough(new TransformStream(...)):
+  // the transform's only job was firing `onFlush` on clean drain, which the
+  // `done` branch below covers. It also avoids the internal pipeTo promise,
+  // which rejects unhandled when the consumer cancels the stream with a
+  // reason.
+  const reader = stream.getReader();
   return new ReadableStream<Uint8Array>({
     pull(controller) {
       return reader.read().then(
         ({ done, value }) => {
           if (done) {
+            once();
             controller.close();
           } else {
             controller.enqueue(value);
