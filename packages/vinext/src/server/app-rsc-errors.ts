@@ -178,9 +178,8 @@ export function createRscOnErrorHandler(
     // regardless of user instrumentation; vinext's `reportRequestError` above is a
     // no-op when no `onRequestError` hook is registered, so without this a server
     // render error would be swallowed silently in the dev server. The `!hasDigest`
-    // guard dedupes: the same error object reaches this handler on both the RSC
-    // and the SSR/HTML render passes, and the first pass stamps it with a digest
-    // below — mirroring Next.js's `silenceLog` dedup so we log it exactly once.
+    // guard intentionally suppresses every digest-bearing error, including repeat
+    // RSC callbacks after this handler stamps the error with a digest below.
     if (nodeEnv !== "production" && error && !hasDigest(error)) {
       const loggableError =
         typeof error === "object" && ORIGINAL_SERVER_ERROR in error
