@@ -1,8 +1,22 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
 test.describe("server-only and client-only package shims", () => {
+  test("client next/constants import evaluates and hydrates without process", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${BASE}/client-constants-test`);
+    await waitForAppRouterHydration(page);
+    const probe = page.getByTestId("client-constants");
+    await expect(probe).toHaveText("phase-production-build:0");
+    await probe.click();
+    await expect(probe).toHaveText("phase-production-build:1");
+    expect(pageErrors).toEqual([]);
+  });
+
   test("server component with `import server-only` renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/server-only-test`);
 
