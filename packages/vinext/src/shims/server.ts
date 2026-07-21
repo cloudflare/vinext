@@ -26,7 +26,6 @@ import {
 } from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { memoizeModuleLoader } from "../utils/memoize-module-loader.js";
 
 /** @deprecated Import ImageResponse from `next/og` instead. */
 export function ImageResponse(): never {
@@ -1259,7 +1258,12 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
  * (not a static/cached response). Opts the page out of ISR caching
  * and sets Cache-Control: no-store on the response.
  */
-const loadHeadersShim = memoizeModuleLoader(() => import("./headers.js"));
+let loadHeadersShimPromise: Promise<typeof import("./headers.js")> | undefined;
+const loadHeadersShim = () =>
+  (loadHeadersShimPromise ??= import("./headers.js").catch((error) => {
+    loadHeadersShimPromise = undefined;
+    throw error;
+  }));
 
 export async function connection(): Promise<void> {
   const {

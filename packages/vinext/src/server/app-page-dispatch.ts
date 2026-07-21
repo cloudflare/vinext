@@ -90,14 +90,18 @@ import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
-import { memoizeModuleLoader } from "../utils/memoize-module-loader.js";
 import {
   createAppLayoutParamAccessTracker,
   isAppLayoutObservationUnsafeForStaticReuse,
   type AppLayoutParamAccessTracker,
 } from "./app-layout-param-observation.js";
 
-const loadAppPageCache = memoizeModuleLoader(() => import("./app-page-cache.js"));
+let loadAppPageCachePromise: Promise<typeof import("./app-page-cache.js")> | undefined;
+const loadAppPageCache = () =>
+  (loadAppPageCachePromise ??= import("./app-page-cache.js").catch((error) => {
+    loadAppPageCachePromise = undefined;
+    throw error;
+  }));
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
