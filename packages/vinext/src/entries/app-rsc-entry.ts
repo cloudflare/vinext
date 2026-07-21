@@ -1223,8 +1223,8 @@ export default createAppRscHandler({
     if (!route) return null;
     const params = Object.create(null);
     for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.matchedParams, name)) {
-        params[name] = intercept.matchedParams[name];
+      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
+        params[name] = intercept.sourceMatchedParams[name];
       }
     }
     return { route, params };

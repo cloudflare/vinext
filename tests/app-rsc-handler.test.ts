@@ -36,6 +36,7 @@ type TestRoute = {
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
+  params?: readonly string[];
   page?: { default?: unknown } | null;
   pattern: string;
   rootParamNames?: readonly string[];
@@ -551,12 +552,13 @@ describe("createAppRscHandler", () => {
     expect(defaultOnly.status).toBe(400);
   });
 
-  it("dispatches an RSC interception target without a direct route", async () => {
+  it("dispatches an RSC interception target with all dynamic descendant source params", async () => {
     const sourceRoute = createPageRoute({
       isDynamic: true,
-      pattern: "/:locale/example",
+      params: ["locale", "tab"],
+      pattern: "/:locale/example/:tab",
       rootParamNames: ["locale"],
-      routeSegments: ["[locale]", "example"],
+      routeSegments: ["[locale]", "example", "[tab]"],
     });
     const dispatchMatchedPage = vi.fn(async () => new Response("intercepted", { status: 200 }));
     const renderPagesFallback = vi.fn(async () => new Response("pages", { status: 200 }));
@@ -564,14 +566,16 @@ describe("createAppRscHandler", () => {
       configHeaders: [],
       dispatchMatchedPage,
       matchInterceptRoute(pathname, sourcePathname) {
-        if (pathname !== "/en/intercepted" || sourcePathname !== "/en/example") return null;
-        return { route: sourceRoute, params: { locale: "en" } };
+        if (pathname !== "/en/intercepted" || sourcePathname !== "/en/example/recent") {
+          return null;
+        }
+        return { route: sourceRoute, params: { locale: "en", tab: "recent" } };
       },
       matchRoute: () => null,
       renderPagesFallback,
     });
 
-    const headers = createRscRequestHeaders({ interceptionContext: "/en/example" });
+    const headers = createRscRequestHeaders({ interceptionContext: "/en/example/recent" });
     const rscUrl = await createRscRequestUrl("/docs/en/intercepted", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
@@ -581,9 +585,59 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanPathname: "/en/intercepted",
-        interceptionContext: "/en/example",
-        params: { locale: "en" },
+        interceptionContext: "/en/example/recent",
+        params: { locale: "en", tab: "recent" },
         route: sourceRoute,
+      }),
+    );
+  });
+
+  it("promotes an interception-only target before server-action dispatch", async () => {
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      params: ["locale", "tab"],
+      pattern: "/:locale/example/:tab",
+      rootParamNames: ["locale"],
+      routeSegments: ["[locale]", "example", "[tab]"],
+    });
+    const promotedMatch = {
+      route: sourceRoute,
+      params: { locale: "en", tab: "recent" },
+    };
+    const handleServerActionRequest = vi.fn(
+      async () => new Response("intercepted-action", { status: 200 }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute(pathname, sourcePathname) {
+        if (pathname !== "/en/intercepted" || sourcePathname !== "/en/example/recent") {
+          return null;
+        }
+        return promotedMatch;
+      },
+      matchRoute: () => null,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/en/example/recent" });
+    headers.set("next-action", "interception-action");
+    const rscUrl = await createRscRequestUrl("/docs/en/intercepted", headers);
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, {
+        headers,
+        method: "POST",
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("intercepted-action");
+    expect(handleServerActionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: "interception-action",
+        cleanPathname: "/en/intercepted",
+        interceptionContext: "/en/example/recent",
+        routeMatch: promotedMatch,
       }),
     );
   });

@@ -874,7 +874,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // where the second `setRootParams` call replaces this value before rendering.
   // Out-of-basePath Server Actions resolve those late rewrites above so this
   // match already uses their claimed destination.
-  const preActionMatch = filesystemRouteEligible ? matchCleanPathname() : null;
+  // Interception-only RSC targets promote their source route at this same
+  // boundary so Server Action rerenders receive the same route and params as
+  // the subsequent page dispatch. Document requests remain direct-route-only.
+  const directPreActionMatch = filesystemRouteEligible ? matchCleanPathname() : null;
+  const interceptionPreActionMatch =
+    filesystemRouteEligible &&
+    directPreActionMatch === null &&
+    isRscRequest &&
+    interceptionContextHeader !== null
+      ? (options.matchInterceptRoute?.(cleanPathname, interceptionContextHeader) ?? null)
+      : null;
+  const preActionMatch = directPreActionMatch ?? interceptionPreActionMatch;
+  const isInterceptionMatch = interceptionPreActionMatch !== null;
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
@@ -960,11 +972,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   let match = preActionMatch;
-  let isInterceptionMatch = false;
-  if (!match && isRscRequest && interceptionContextHeader !== null) {
-    match = options.matchInterceptRoute?.(cleanPathname, interceptionContextHeader) ?? null;
-    isInterceptionMatch = match !== null;
-  }
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {

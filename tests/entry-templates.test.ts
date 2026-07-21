@@ -967,6 +967,7 @@ describe("App Router entry templates", () => {
     expect(code).toContain("matchInterceptRoute(pathname, sourcePathname)");
     expect(code).toContain("const intercept = findIntercept(pathname, sourcePathname)");
     expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
+    expect(code).toContain("intercept.sourceMatchedParams");
     expect(code).toContain("return { route, params }");
   });
 
