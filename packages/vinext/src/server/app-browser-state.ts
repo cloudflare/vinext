@@ -634,6 +634,13 @@ function mergeSkippedLayoutSlotPreservation(options: {
 }
 
 export async function createPendingNavigationCommit(options: {
+  // Baseline for bfcacheId diffing, skip-preservation, and
+  // startedVisibleCommitVersion — not necessarily the live router state.
+  // Navigation callers must pass the state captured when the navigation
+  // began, not a live read, or a later hop's preparation can reuse identities
+  // from a state a detached commit already replaced. HMR is the one caller
+  // that legitimately wants the live state, since it has no prior navigation
+  // start to anchor to.
   currentState: AppRouterState;
   navigationCommitKind?: "authoritative" | "detached";
   navigationId?: number;
