@@ -669,6 +669,51 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
+  // Ported from Next.js: test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+  test("back and forward restore usePathname after pushState", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+      { timeout: 10_000 },
+    );
+
+    await page.goBack();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test", {
+      timeout: 10_000,
+    });
+
+    await page.goForward();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+      { timeout: 10_000 },
+    );
+  });
+
+  test("back restores the shallow route tree after a full navigation", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await waitForAppRouterHydration(page);
+
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await page.locator('[data-testid="about-link"]').click();
+    await expect(page).toHaveURL(`${BASE}/about`);
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/shallow-test/sub`);
+    await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+  });
+
   test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 

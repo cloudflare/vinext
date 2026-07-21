@@ -82,6 +82,7 @@ function createHistoryStore(initialState: unknown = null, initialHref = "https:/
 function createController(options?: {
   initialState?: unknown;
   initialHref?: string;
+  replaceHistoryState?: (state: unknown, href?: string) => void;
   visibleMetadata?: VisibleNavigationMetadata | null;
 }) {
   const store = createHistoryStore(options?.initialState ?? null, options?.initialHref);
@@ -92,7 +93,7 @@ function createController(options?: {
     readHistoryState: store.readHistoryState,
     readCurrentHref: store.readCurrentHref,
     pushHistoryState: store.pushHistoryState,
-    replaceHistoryState: store.replaceHistoryState,
+    replaceHistoryState: options?.replaceHistoryState ?? store.replaceHistoryState,
     readVisibleNavigationMetadata: () => visibleMetadata,
   });
   return {
@@ -185,6 +186,70 @@ describe("AppBrowserHistoryController traversal index allocation", () => {
     // the highest known app entry (4).
     expect(controller.allocateNavigationHistoryTraversalIndex("replace")).toBeNull();
     expect(controller.allocateNavigationHistoryTraversalIndex("push")).toBe(5);
+  });
+});
+
+describe("AppBrowserHistoryController shallow history snapshots", () => {
+  it("assigns pushed shallow entries a unique restorable traversal index", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 2,
+      }),
+      initialHref: "https://example.com/shallow",
+    });
+    const state = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/shallow/alias",
+        {},
+      ),
+    });
+
+    controller.commitExternalHistorySnapshot({
+      historyState: { __vinext_externalHistory: true },
+      historyUpdateMode: "push",
+      state,
+    });
+
+    expect(readHistoryStateTraversalIndex(store.state)).toBe(3);
+    expect(controller.currentHistoryTraversalIndex).toBe(3);
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: store.state,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(state);
+  });
+
+  it("keeps credential-bearing shallow entry URLs out of state-only snapshot writes", () => {
+    const initialHref = "https://user@example.com/shallow?tab=recent";
+    const replaceHistoryState = vi.fn((_state: unknown, href?: string) => {
+      if (href !== undefined) throw new Error("state-only write attempted to replace the URL");
+    });
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 2,
+      }),
+      initialHref,
+      replaceHistoryState,
+    });
+    controller.commitExternalHistorySnapshot({
+      historyState: { __vinext_externalHistory: true },
+      historyUpdateMode: "push",
+      state: createRouterState(),
+    });
+
+    expect(replaceHistoryState).toHaveBeenCalledOnce();
+    expect(replaceHistoryState.mock.calls[0]).toHaveLength(1);
+    expect(store.href).toBe(initialHref);
   });
 });
 

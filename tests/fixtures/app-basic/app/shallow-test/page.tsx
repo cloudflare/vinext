@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname, useSearchParams } from "next/navigation";
+import Link from "next/link";
 
 /**
  * Test page for shallow routing via history.pushState/replaceState.
@@ -18,6 +19,9 @@ export default function ShallowTestPage() {
       <h1>Shallow Routing Test</h1>
       <p data-testid="pathname">pathname: {pathname}</p>
       <p data-testid="search">search: {searchParams.toString()}</p>
+      <Link href="/about" data-testid="about-link">
+        About
+      </Link>
 
       <button
         data-testid="push-filter"

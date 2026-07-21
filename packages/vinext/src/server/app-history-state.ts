@@ -6,6 +6,7 @@ const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
 const VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY = "__vinext_bfcacheIds";
 const VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY = "__vinext_bfcacheVersion";
+const VINEXT_EXTERNAL_HISTORY_STATE_KEY = "__vinext_externalHistory";
 
 type HistoryStateRecord = {
   [key: string]: unknown;
@@ -203,6 +204,7 @@ export function createHistoryStateWithNavigationMetadata(
   },
 ): HistoryStateRecord | null {
   const nextState = cloneHistoryState(state);
+  delete nextState[VINEXT_EXTERNAL_HISTORY_STATE_KEY];
   const bfcacheIdsWereCleared =
     metadata.bfcacheIds !== undefined &&
     (metadata.bfcacheIds === null || Object.keys(metadata.bfcacheIds).length === 0);
@@ -247,6 +249,7 @@ export function createExternalHistoryStatePreservingMetadata(
   callerState: unknown,
   currentHistoryState: unknown,
 ): unknown {
+  const callerTraversalIndex = readHistoryStateTraversalIndex(callerState);
   const previousNextUrl = readHistoryStatePreviousNextUrl(currentHistoryState);
   const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
   const bfcacheIds = readHistoryStateBfcacheIds(currentHistoryState);
@@ -256,12 +259,23 @@ export function createExternalHistoryStatePreservingMetadata(
     return callerState;
   }
 
-  return createHistoryStateWithNavigationMetadata(callerState, {
+  const nextState = createHistoryStateWithNavigationMetadata(callerState, {
     bfcacheIds,
     bfcacheVersion: bfcacheIds === null ? undefined : bfcacheVersion,
     previousNextUrl,
     traversalIndex,
   });
+  if (callerTraversalIndex !== null && callerTraversalIndex !== traversalIndex) return nextState;
+
+  return { ...nextState, [VINEXT_EXTERNAL_HISTORY_STATE_KEY]: true };
+}
+
+export function isExternalHistoryState(state: unknown): boolean {
+  return readHistoryStateRecord(state)?.[VINEXT_EXTERNAL_HISTORY_STATE_KEY] === true;
+}
+
+export function markExternalHistoryState(state: unknown): HistoryStateRecord {
+  return { ...cloneHistoryState(state), [VINEXT_EXTERNAL_HISTORY_STATE_KEY]: true };
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
