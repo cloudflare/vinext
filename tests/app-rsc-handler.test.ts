@@ -592,6 +592,40 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("uses the request pathname consistently for encoded interception targets", async () => {
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/feed/:slug",
+      routeSegments: ["feed", "[slug]"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("intercepted", { status: 200 }));
+    const matchInterceptRoute = vi.fn((pathname: string, sourcePathname: string) => {
+      if (pathname !== "/photos/a%2Fb" || sourcePathname !== "/feed/a%252Fb") return null;
+      return { route: sourceRoute, params: { slug: "a%2Fb" } };
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: () => null,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/a%252Fb" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/a%2Fb", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/a%2Fb", "/feed/a%252Fb");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interceptionPathname: "/photos/a%2Fb",
+        params: { slug: "a%2Fb" },
+        route: sourceRoute,
+      }),
+    );
+  });
+
   it("promotes an interception-only target before server-action dispatch", async () => {
     const sourceRoute = createPageRoute({
       isDynamic: true,

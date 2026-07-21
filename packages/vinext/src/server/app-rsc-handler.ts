@@ -878,12 +878,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // boundary so Server Action rerenders receive the same route and params as
   // the subsequent page dispatch. Document requests remain direct-route-only.
   const directPreActionMatch = filesystemRouteEligible ? matchCleanPathname() : null;
+  const preActionRoutePathname = cleanPathnameIsRequestPathname
+    ? requestCleanPathname
+    : cleanPathname;
   const interceptionPreActionMatch =
     filesystemRouteEligible &&
     directPreActionMatch === null &&
     isRscRequest &&
     interceptionContextHeader !== null
-      ? (options.matchInterceptRoute?.(cleanPathname, interceptionContextHeader) ?? null)
+      ? (options.matchInterceptRoute?.(preActionRoutePathname, interceptionContextHeader) ?? null)
       : null;
   const preActionMatch = directPreActionMatch ?? interceptionPreActionMatch;
   const isInterceptionMatch = interceptionPreActionMatch !== null;
@@ -962,7 +965,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           mountedSlotsHeader,
           request,
           routeMatch: preActionMatch,
-          routePathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+          routePathname: preActionRoutePathname,
           searchParams: getResolvedSearchParams(),
         })
       : null;
