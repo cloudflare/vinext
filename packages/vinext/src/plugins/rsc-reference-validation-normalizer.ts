@@ -18,7 +18,7 @@ function parseReferenceValidationQuery(id: string): { type?: string; id?: string
 }
 
 function normalizeReferenceKey(id: string): string {
-  return id.replaceAll("\0", "__x00__");
+  return id.replaceAll("\0", "__x00__").replace(/\$\$cache=.*$/, "");
 }
 
 function hasReference(
