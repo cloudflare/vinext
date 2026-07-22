@@ -164,6 +164,7 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createServerAssetImportMetaUrlPlugin } from "./plugins/server-asset-import-meta-url.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -1810,9 +1811,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     mdxProxyPlugin,
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
+    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
+    // see src/plugins/og-assets.ts. This must run before the more general
+    // server asset URL transform below. Running before `commonjs()` is
+    // intentional: this transform only matches ESM `import.meta.url` syntax,
+    // so CJS conversion cannot create additional eligible inputs.
+    createOgInlineFetchAssetsPlugin(),
     // Next.js ignores requests without any statically known path component
-    // during graph analysis and leaves a deterministic runtime failure.
+    // during graph analysis and leaves a deterministic runtime failure. Run
+    // this before the server asset transform so it sees the original anchored
+    // `new URL(..., import.meta.url)` expression rather than a rewritten data
+    // URL in Cloudflare builds.
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
+    // Emit assets referenced via `new URL("./asset", import.meta.url)` in
+    // SSR/server environments after the dynamic-request guard has preserved
+    // statically anchored imports. Keep this before `vinext:og-font-patch`:
+    // that plugin injects Node fallback URL references which
+    // `createOgAssetsPlugin` must retain and deduplicate.
+    createServerAssetImportMetaUrlPlugin(() => hasCloudflarePlugin),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //
@@ -6274,9 +6290,6 @@ export const loadServerActionClient = ${
     // Expand Webpack's build-time `require.context(...)` into a static module
     // map backed by `import.meta.glob` — see src/plugins/require-context.ts
     createRequireContextPlugin(),
-    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
-    // see src/plugins/og-assets.ts
-    createOgInlineFetchAssetsPlugin(),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.

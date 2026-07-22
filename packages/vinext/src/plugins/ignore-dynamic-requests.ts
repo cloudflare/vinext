@@ -602,6 +602,36 @@ function requestHasStaticPart(
     );
   }
 
+  const memberObject = node.type === "MemberExpression" ? unwrapExpression(node.object) : null;
+  const memberProperty = node.type === "MemberExpression" ? unwrapExpression(node.property) : null;
+  const urlCallee =
+    memberObject?.type === "NewExpression" ? unwrapExpression(memberObject.callee) : null;
+  const urlArguments =
+    memberObject?.type === "NewExpression" ? nodeArray(memberObject.arguments) : [];
+  const urlBase = unwrapExpression(urlArguments[1]);
+  const urlBaseObject =
+    urlBase?.type === "MemberExpression" ? unwrapExpression(urlBase.object) : null;
+  const urlBaseProperty =
+    urlBase?.type === "MemberExpression" ? unwrapExpression(urlBase.property) : null;
+  if (
+    node.type === "MemberExpression" &&
+    node.computed !== true &&
+    isIdentifierNamed(memberProperty, "href") &&
+    memberObject?.type === "NewExpression" &&
+    isIdentifierNamed(urlCallee, "URL") &&
+    !hasAstBinding(scope, "URL") &&
+    urlArguments.length === 2 &&
+    requestHasStaticPart(urlArguments[0], scope, resolution) &&
+    urlBase?.type === "MemberExpression" &&
+    urlBase.computed !== true &&
+    urlBaseObject?.type === "MetaProperty" &&
+    isIdentifierNamed(urlBaseObject.meta, "import") &&
+    isIdentifierNamed(urlBaseObject.property, "meta") &&
+    isIdentifierNamed(urlBaseProperty, "url")
+  ) {
+    return true;
+  }
+
   return false;
 }
 

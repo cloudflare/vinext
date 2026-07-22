@@ -3,6 +3,7 @@ import {
   isBenignAssetImportError,
   isSocketErrorBackstopInstalled,
   peerDisconnectCode,
+  shouldSkipSocketErrorBackstopInstall,
 } from "../packages/vinext/src/server/socket-error-backstop.js";
 
 describe("peerDisconnectCode", () => {
@@ -116,5 +117,16 @@ describe("installSocketErrorBackstop", () => {
     // installation is short-circuited and the predicate stays false.
     expect(process.env.VITEST).toBe("true");
     expect(isSocketErrorBackstopInstalled()).toBe(false);
+  });
+
+  it("only opts NODE_ENV=test production servers in explicitly", () => {
+    expect(shouldSkipSocketErrorBackstopInstall({ NODE_ENV: "test" })).toBe(true);
+    expect(
+      shouldSkipSocketErrorBackstopInstall({
+        NODE_ENV: "test",
+        VINEXT_NEXT_DEPLOY_TEST: "1",
+      }),
+    ).toBe(false);
+    expect(shouldSkipSocketErrorBackstopInstall({ NODE_ENV: "test", VITEST: "true" })).toBe(true);
   });
 });
