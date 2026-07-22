@@ -56,7 +56,7 @@ type DecideIsrOptions = {
    * For `"dev"` call sites this is the only source of the revalidate value —
    * dev never has metadata attached to a cache entry.
    */
-  revalidateSeconds: number;
+  revalidateSeconds: number | false;
   /**
    * The expire ceiling (seconds from epoch) read from the route config.
    * Absent when the route pre-dates expire metadata support.
@@ -72,7 +72,7 @@ type DecideIsrOptions = {
 
 /** Resolve effective revalidate/expire, preferring per-entry metadata. */
 function resolveRevalidate(options: DecideIsrOptions): {
-  effectiveRevalidate: number;
+  effectiveRevalidate: number | false;
   effectiveExpire: number | undefined;
 } {
   const effectiveRevalidate = options.cacheControlMeta?.revalidate ?? options.revalidateSeconds;
@@ -95,7 +95,7 @@ function resolveRevalidate(options: DecideIsrOptions): {
 function buildCacheControl(
   disposition: "HIT" | "STALE",
   kind: IsrPolicyKind,
-  revalidate: number,
+  revalidate: number | false,
   expire: number | undefined,
 ): string {
   if (kind === "app-route") {
@@ -145,7 +145,7 @@ export function decideIsr(options: DecideIsrOptions): IsrDecision {
  * config ceiling passed directly from the caller (not a per-entry fallback).
  */
 export function buildMissIsrCacheControl(
-  revalidateSeconds: number,
+  revalidateSeconds: number | false,
   expireSeconds?: number,
 ): string {
   return buildRevalidateCacheControl(revalidateSeconds, expireSeconds);

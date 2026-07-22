@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 
-/** Options accepted by {@link imageAdapter}, forwarded to the runtime factory. */
-export type ImageAdapterOptions = {
+/** Options accepted by {@link imagesOptimizer}, forwarded to the runtime factory. */
+export type ImagesOptimizerOptions = {
   /** Cloudflare Images binding name on the Worker `env`. @default "IMAGES" */
   binding?: string;
 };
@@ -17,15 +17,17 @@ export type ImageAdapterOptions = {
  *
  * @example
  * import { vinext } from "vinext";
- * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+ * import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
  *
  * export default defineConfig({
- *   plugins: [vinext({ images: { optimizer: imageAdapter() } })],
+ *   plugins: [vinext({ images: { optimizer: imagesOptimizer() } })],
  * });
  */
-export function imageAdapter(options?: ImageAdapterOptions) {
+export function imagesOptimizer(options?: ImagesOptimizerOptions) {
   if (options?.binding !== undefined && typeof options.binding !== "string") {
-    throw new TypeError("[vinext] imageAdapter({ binding }) must be a string Images binding name.");
+    throw new TypeError(
+      "[vinext] imagesOptimizer({ binding }) must be a string Images binding name.",
+    );
   }
   return {
     adapter: fileURLToPath(import.meta.resolve("./images-optimizer.runtime.js")),

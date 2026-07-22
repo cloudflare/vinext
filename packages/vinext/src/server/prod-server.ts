@@ -22,7 +22,7 @@ import { Readable, pipeline } from "node:stream";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import path from "node:path";
+import path from "pathslash";
 import zlib from "node:zlib";
 import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
 import {
@@ -35,7 +35,11 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
-import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.js";
+import {
+  canonicalizeRequestPathname,
+  filterInternalHeaders,
+  isOpenRedirectShaped,
+} from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
   runPagesRequest,
@@ -45,9 +49,12 @@ import {
 } from "./pages-request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import {
+  normalizeNextDataPagePathname,
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
+  encodeUrlParserIgnoredCharacters,
+  urlParserCreatesPagesDataPath,
 } from "./pages-data-route.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
@@ -56,6 +63,7 @@ import {
   isAbsoluteAssetPrefix,
 } from "../utils/asset-prefix.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
+import { setPagesClientAssets } from "./pages-client-assets.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -64,6 +72,7 @@ import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import {
@@ -83,6 +92,8 @@ import {
   parseAcceptedEncodings,
   selectContentEncoding,
 } from "./accept-encoding.js";
+import type { NextI18nConfig } from "../config/next-config.js";
+import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -92,16 +103,31 @@ import {
  */
 const bareServerEntryMtimes = new Map<string, number>();
 
+function resolveCanonicalServerEntry(entryPath: string): { href: string; mtime: number } {
+  // The catch only covers realpathSync.native failing on filesystems that
+  // don't support it; it does not make a missing entry path "work" — that
+  // still throws at the statSync below, same as before this helper existed.
+  let canonicalEntryPath: string;
+  try {
+    canonicalEntryPath = fs.realpathSync.native(entryPath);
+  } catch {
+    canonicalEntryPath = entryPath;
+  }
+  return {
+    href: pathToFileURL(canonicalEntryPath).href,
+    mtime: fs.statSync(canonicalEntryPath).mtimeMs,
+  };
+}
+
 /**
  * Import a built server entry module (App Router RSC entry or Pages Router
  * server entry) by absolute file path.
  *
  * The first import of a given path uses the plain file:// URL with NO query
  * string. This is load-bearing: code-split builds emit lazy chunks that
- * import the entry back by bare specifier (default Vite builds on both
- * supported majors — Rollup on Vite 7 and Rolldown on Vite 8 — hoist modules
- * shared between the entry's static graph and lazy route chunks into the
- * entry chunk, which the chunks then import as e.g. "../../index.js").
+ * import the entry back by bare specifier (default Vite/Rolldown builds hoist
+ * modules shared between the entry's static graph and lazy route chunks into
+ * the entry chunk, which the chunks then import as e.g. "../../index.js").
  * Node keys its ESM cache on the full URL including the query string, so if
  * the server imported the entry as `index.js?t=<mtime>`, a chunk's bare
  * back-import would evaluate the entire server bundle a second time and
@@ -129,23 +155,18 @@ const bareServerEntryMtimes = new Map<string, number>();
  * Exported for direct unit testing of the URL choice.
  */
 export function resolveServerEntryImportUrl(entryPath: string): string {
-  // The catch only covers realpathSync.native failing on filesystems that
-  // don't support it; it does not make a missing entry path "work" — that
-  // still throws at the statSync below, same as before this helper existed.
-  let canonicalEntryPath: string;
-  try {
-    canonicalEntryPath = fs.realpathSync.native(entryPath);
-  } catch {
-    canonicalEntryPath = entryPath;
-  }
-  const href = pathToFileURL(canonicalEntryPath).href;
-  const mtime = fs.statSync(canonicalEntryPath).mtimeMs;
+  const { href, mtime } = resolveCanonicalServerEntry(entryPath);
   const bareMtime = bareServerEntryMtimes.get(href);
   if (bareMtime === undefined || bareMtime === mtime) {
     bareServerEntryMtimes.set(href, mtime);
     return href;
   }
   return `${href}?t=${mtime}`;
+}
+
+export function rememberCurrentServerEntryImportMtime(entryPath: string): void {
+  const { href, mtime } = resolveCanonicalServerEntry(entryPath);
+  bareServerEntryMtimes.set(href, mtime);
 }
 
 // oxlint-disable-next-line typescript/no-explicit-any -- built entry modules are untyped, matching the previous inline `await import(...)`
@@ -203,6 +224,10 @@ export type ProdServerOptions = {
   host?: string;
   /** Path to the build output directory */
   outDir?: string;
+  /** Explicit App Router RSC entry path. Defaults to `<outDir>/server/index.js`. */
+  rscEntryPath?: string;
+  /** Explicit Pages Router server entry path. Defaults to `<outDir>/server/entry.js`. */
+  serverEntryPath?: string;
   /** Disable compression (default: false) */
   noCompression?: boolean;
   /**
@@ -211,6 +236,8 @@ export type ProdServerOptions = {
    * remains stable.
    */
   purpose?: "prerender";
+  /** Suppress the startup log for internal child-process servers. */
+  silent?: boolean;
 };
 
 /** Content types that benefit from compression. */
@@ -398,8 +425,11 @@ function installClientBuildManifestGlobals(
   assetPrefix: string,
 ): void {
   const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
-  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
-  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
+  setPagesClientAssets({
+    appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
+    lazyChunks: metadata.lazyChunks,
+    dynamicPreloads: metadata.dynamicPreloads,
+  });
 }
 function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
@@ -439,7 +469,7 @@ function logProdServerStarted(host: string, port: number, purpose: ProdServerOpt
  * arguments in (headers, response) order. The request path now calls
  * `runPagesRequest`, which uses `mergeHeaders` directly; this wrapper is retained
  * only for its existing tests and any external callers, so there is a single
- * implementation to keep in sync. (deploy.ts still emits its own generated copy.)
+ * implementation to keep in sync. The init-owned Cloudflare Worker template delegates here.
  */
 function mergeWebResponse(
   middlewareHeaders: Record<string, string | string[]>,
@@ -803,33 +833,46 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
  * Convert a Node.js IncomingMessage to a Web Request object.
  *
  * When `urlOverride` is provided, it is used as the path + query string
- * instead of `req.url`. This avoids redundant path normalization when the
- * caller has already decoded and normalized the pathname (e.g. the App
- * Router prod server normalizes before static-asset lookup, and can pass
- * the result here so the downstream RSC handler doesn't re-normalize).
+ * instead of `req.url`.
  */
 function nodeToWebRequest(
   req: IncomingMessage,
   urlOverride?: string,
   prerenderSecret?: string,
+  i18nConfig?: NextI18nConfig | null,
+  authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean,
 ): Request {
   const proto = resolveRequestProtocol(req);
-  const host = resolveHost(req, "localhost");
+  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
+  const revalidationHostname = readTrustedRevalidationHostname(
+    rawHeaders,
+    i18nConfig,
+    authorizeOnDemandRevalidate,
+  );
+  const host = revalidationHostname ?? resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParamsFromHeaders(
     rawHeaders,
     prerenderSecret,
   );
+  const isTrustedSpeculativePrerender =
+    process.env.VINEXT_PRERENDER === "1" &&
+    prerenderSecret !== undefined &&
+    rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret &&
+    rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
+  if (revalidationHostname) headers.set("host", revalidationHostname);
   const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
     prerenderRouteParamsPayload,
   );
   if (prerenderRouteParamsHeader !== null) {
     headers.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+  }
+  if (isTrustedSpeculativePrerender) {
+    headers.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
   }
 
   const method = req.method ?? "GET";
@@ -949,8 +992,11 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     port = process.env.PORT ? parseInt(process.env.PORT) : 3000,
     host = "0.0.0.0",
     outDir = path.resolve("dist"),
+    rscEntryPath: explicitRscEntryPath,
+    serverEntryPath: explicitServerEntryPath,
     noCompression = false,
     purpose,
+    silent = false,
   } = options;
 
   const compress = !noCompression;
@@ -959,8 +1005,12 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   const clientDir = path.join(resolvedOutDir, "client");
 
   // Detect build type
-  const rscEntryPath = path.join(resolvedOutDir, "server", "index.js");
-  const serverEntryPath = path.join(resolvedOutDir, "server", "entry.js");
+  const rscEntryPath = explicitRscEntryPath
+    ? path.resolve(explicitRscEntryPath)
+    : path.join(resolvedOutDir, "server", "index.js");
+  const serverEntryPath = explicitServerEntryPath
+    ? path.resolve(explicitServerEntryPath)
+    : path.join(resolvedOutDir, "server", "entry.js");
   const isAppRouter = fs.existsSync(rscEntryPath);
 
   if (!isAppRouter && !fs.existsSync(serverEntryPath)) {
@@ -970,10 +1020,18 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   }
 
   if (isAppRouter) {
-    return startAppRouterServer({ port, host, clientDir, rscEntryPath, compress, purpose });
+    return startAppRouterServer({ port, host, clientDir, rscEntryPath, compress, purpose, silent });
   }
 
-  return startPagesRouterServer({ port, host, clientDir, serverEntryPath, compress, purpose });
+  return startPagesRouterServer({
+    port,
+    host,
+    clientDir,
+    serverEntryPath,
+    compress,
+    purpose,
+    silent,
+  });
 }
 
 // ─── App Router Production Server ─────────────────────────────────────────────
@@ -985,13 +1043,14 @@ type AppRouterServerOptions = {
   rscEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
+  silent?: boolean;
 };
 
 type WorkerAppRouterEntry = {
   fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
 };
 
-function createNodeExecutionContext(): ExecutionContextLike {
+function createNodeExecutionContext(trustedRevalidateOrigin?: string): ExecutionContextLike {
   return {
     waitUntil(promise: Promise<unknown>) {
       // Node doesn't provide a Workers lifecycle, but we still attach a
@@ -1000,19 +1059,45 @@ function createNodeExecutionContext(): ExecutionContextLike {
       void Promise.resolve(promise).catch(() => {});
     },
     passThroughOnException() {},
+    trustedRevalidateOrigin,
   };
 }
 
-function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<Response> {
+function resolveTrustedNodeRevalidateOrigin(
+  req: IncomingMessage,
+  configuredHost: string,
+  configuredPort: number,
+): string {
+  const port = req.socket.localPort ?? configuredPort;
+  const host = normalizeInternalFetchHost(configuredHost);
+  return `http://${host}:${port}`;
+}
+
+function normalizeInternalFetchHost(host: string): string {
+  if (!host || host === "0.0.0.0" || host === "::") {
+    return "localhost";
+  }
+  if (host.includes(":") && !host.startsWith("[")) {
+    return `[${host}]`;
+  }
+  return host;
+}
+
+function resolveAppRouterHandler(
+  entry: unknown,
+): (request: Request, ctx: ExecutionContextLike) => Promise<Response> {
   if (typeof entry === "function") {
-    return (request) => Promise.resolve(entry(request));
+    const handler = entry as (
+      request: Request,
+      ctx?: ExecutionContextLike,
+    ) => Promise<Response> | Response;
+    return (request, ctx) => Promise.resolve(handler(request, ctx));
   }
 
   if (entry && typeof entry === "object" && "fetch" in entry) {
     const workerEntry = entry as WorkerAppRouterEntry;
     if (typeof workerEntry.fetch === "function") {
-      return (request) =>
-        Promise.resolve(workerEntry.fetch(request, undefined, createNodeExecutionContext()));
+      return (request, ctx) => Promise.resolve(workerEntry.fetch(request, undefined, ctx));
     }
   }
 
@@ -1144,16 +1229,13 @@ function readSsrManifest(clientDir: string): Record<string, string[]> {
   return parsed;
 }
 
-function installPagesClientAssetGlobals(options: {
+function installPagesClientAssets(options: {
   clientDir: string;
   assetPrefix: string;
   assetBase: string;
   clientEntryLookup: PagesClientEntryLookup;
 }): Record<string, string[]> {
   const ssrManifest = readSsrManifest(options.clientDir);
-  globalThis.__VINEXT_SSR_MANIFEST__ =
-    Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined;
-
   const metadata = computeClientRuntimeMetadata({
     clientDir: options.clientDir,
     assetBase: options.assetBase,
@@ -1162,9 +1244,13 @@ function installPagesClientAssetGlobals(options: {
       options.clientEntryLookup === "pages-client-entry" ? "pages-client-entry" : true,
   });
 
-  globalThis.__VINEXT_CLIENT_ENTRY__ = metadata.clientEntryFile;
-  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
-  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
+  setPagesClientAssets({
+    clientEntry: metadata.clientEntryFile,
+    appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
+    ssrManifest: Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined,
+    lazyChunks: metadata.lazyChunks,
+    dynamicPreloads: metadata.dynamicPreloads,
+  });
 
   return ssrManifest;
 }
@@ -1187,7 +1273,7 @@ function installPagesClientAssetGlobals(options: {
  * 4. Stream the Web Response back (with optional compression)
  */
 async function startAppRouterServer(options: AppRouterServerOptions) {
-  const { port, host, clientDir, rscEntryPath, compress, purpose } = options;
+  const { port, host, clientDir, rscEntryPath, compress, purpose, silent } = options;
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
@@ -1212,6 +1298,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
   const appRouterInlineCss = rscModule.__inlineCss === true;
   const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
+  const appRouterI18nConfig: NextI18nConfig | null = rscModule.__i18nConfig ?? null;
+  const appRouterAuthorizeOnDemandRevalidate =
+    typeof rscModule.authorizeOnDemandRevalidate === "function"
+      ? rscModule.authorizeOnDemandRevalidate
+      : undefined;
   const appImageAllowedWidths: number[] = Array.isArray(rscModule.__imageAllowedWidths)
     ? rscModule.__imageAllowedWidths
     : [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
@@ -1239,7 +1330,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
   const appAssetBase = appRouterBasePath ? `${appRouterBasePath}/` : "/";
   if (appRouterHasPagesDir) {
-    installPagesClientAssetGlobals({
+    installPagesClientAssets({
       clientDir,
       assetPrefix: appRouterAssetPrefix,
       assetBase: appAssetBase,
@@ -1388,15 +1479,31 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     try {
-      // Build the normalized URL (pathname + original query string) so the
-      // RSC handler receives an already-canonical path and doesn't need to
-      // re-normalize. This deduplicates the normalizePath work done above.
-      const qs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
-      const normalizedUrl = pathname + qs;
+      // Static-asset checks above use the normalized pathname, but the RSC
+      // handler must receive the original URL so its request boundary decodes
+      // each segment exactly once. Passing `pathname` here would make encoded
+      // percent signs eligible for a second decode inside normalizeRscRequest.
+      const request = nodeToWebRequest(
+        req,
+        rawUrl,
+        prerenderSecret,
+        appRouterI18nConfig,
+        appRouterAuthorizeOnDemandRevalidate,
+      );
+      const response = await rscHandler(
+        request,
+        createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
+      );
 
-      // Convert Node.js request to Web Request and call the RSC handler
-      const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
-      const response = await rscHandler(request);
+      // Preserve the canonical build-asset 404 even when the RSC handler also
+      // identifies the request as a public/static-file lookup. Middleware may
+      // still handle or rewrite the request by returning a non-404 response.
+      if (missingBuildAsset && response.status === 404) {
+        cancelResponseBody(response);
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
 
       const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
       if (staticFileSignal) {
@@ -1435,13 +1542,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         return;
       }
 
-      if (missingBuildAsset && response.status === 404) {
-        cancelResponseBody(response);
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not Found");
-        return;
-      }
-
       // Stream the Web Response back to the Node.js response
       await sendWebResponse(response, req, res, compress);
     } catch (e) {
@@ -1461,7 +1561,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     server.listen(port, host, () => {
       const addr = server.address();
       const actualPort = typeof addr === "object" && addr ? addr.port : port;
-      logProdServerStarted(host, actualPort, purpose);
+      if (!silent) logProdServerStarted(host, actualPort, purpose);
       resolve();
     });
   });
@@ -1480,6 +1580,7 @@ type PagesRouterServerOptions = {
   serverEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
+  silent?: boolean;
 };
 
 type PagesServerEntryPageRoute = {
@@ -1509,12 +1610,14 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  *
  * Uses the server entry (dist/server/entry.js) which exports:
  * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
- * - handleApiRoute(request, url, ctx?) — API route handling (ctx optional; pass for ctx.waitUntil() on Workers)
+ * - handleApiRoute(request, url, ctx?, trustedRevalidateOrigin?) — API route handling
+ *   (ctx optional; pass for ctx.waitUntil() on Workers)
+ * - authorizeOnDemandRevalidate(header) — validates against the bundled build secret
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
  */
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
-  const { port, host, clientDir, serverEntryPath, compress, purpose } = options;
+  const { port, host, clientDir, serverEntryPath, compress, purpose, silent } = options;
 
   // Import the server entry module. importServerEntryModule uses the bare
   // file:// URL so lazy chunks that import the entry back resolve to the same
@@ -1524,6 +1627,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const {
     renderPage,
     handleApiRoute: handleApi,
+    authorizeOnDemandRevalidate,
     runMiddleware,
     vinextConfig,
     buildId: pagesBuildId,
@@ -1573,7 +1677,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Load client asset metadata used by the Pages renderer. Prerendered HTML is
   // rendered through this Node server too, so it needs the same globals that
   // Cloudflare builds inject into the Worker entry at build time.
-  const ssrManifest = installPagesClientAssetGlobals({
+  const ssrManifest = installPagesClientAssets({
     clientDir,
     assetPrefix,
     assetBase,
@@ -1597,12 +1701,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       return;
     }
 
-    // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
-    // Rebuild `url` from the decoded pathname + original query string so all
-    // downstream consumers (resolvedUrl, resolvedPathname, config matchers)
-    // always work with the decoded, canonical path.
-    const rawPagesPathname = rawPagesPathnameBeforeNormalize.replaceAll("\\", "/");
+    // Normalize backslashes (browsers treat /\ as //), then validate and
+    // normalize the decoded path for adapter-owned asset/internal checks.
+    // Request routing keeps a separate raw encoded pathname: static filesystem
+    // identity is compared before decoding, while dynamic captures decode once.
+    const rawPagesPathname = canonicalizeRequestPathname(
+      rawPagesPathnameBeforeNormalize.replaceAll("\\", "/"),
+    );
     const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
+    let requestPathname = normalizePath(rawPagesPathname);
     let pathname: string;
     try {
       pathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPagesPathname));
@@ -1612,7 +1719,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       res.end("Bad Request");
       return;
     }
-    let url = pathname + rawQs;
+    let url = requestPathname + rawQs;
 
     // Internal prerender endpoint — only reachable with the correct build-time secret.
     // Used by the prerender phase to fetch getStaticPaths results via HTTP.
@@ -1729,14 +1836,31 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // the basePath gating of rewrites/redirects/headers below — Next.js
       // only applies default rules to requests inside basePath, and only
       // applies `basePath: false` rules to requests outside it.
-      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
+      const hadBasePath = !basePath || hasBasePath(requestPathname, basePath);
+      let configMatchPathname = stripBasePath(requestPathname, basePath);
       {
-        const stripped = stripBasePath(pathname, basePath);
-        if (stripped !== pathname) {
-          const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-          url = stripped + qs;
-          pathname = stripped;
+        const strippedPathname = stripBasePath(pathname, basePath);
+        const strippedRequestPathname = stripBasePath(requestPathname, basePath);
+        pathname = strippedPathname;
+        if (strippedRequestPathname !== requestPathname) {
+          requestPathname = strippedRequestPathname;
+          url = requestPathname + rawQs;
         }
+      }
+      // WHATWG URL parsing removes TAB, LF, and CR. Do not let that transform
+      // an otherwise ordinary path into the internal Pages data namespace.
+      if (urlParserCreatesPagesDataPath(pathname)) {
+        res.writeHead(404);
+        res.end("This page could not be found");
+        return;
+      }
+      // Preserve parser-ignored bytes until route param decoding. Keep using
+      // the raw request pathname here so unrelated escapes retain their route
+      // identity and dynamic captures are decoded exactly once.
+      requestPathname = encodeUrlParserIgnoredCharacters(requestPathname);
+      {
+        const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+        url = requestPathname + qs;
       }
       // ── 3b. `_next/data` normalization ────────────────────────────
       // Pages Router client-side navigations fetch
@@ -1748,8 +1872,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // accidentally triggering middleware/SSR on a bogus path.
       let isDataReq = false;
       const originalRenderUrl = url;
-      if (isNextDataPathname(pathname)) {
-        const dataMatch = pagesBuildId ? parseNextDataPathname(pathname, pagesBuildId) : null;
+      if (isNextDataPathname(requestPathname)) {
+        const dataMatch = pagesBuildId
+          ? parseNextDataPathname(requestPathname, pagesBuildId)
+          : null;
         if (!dataMatch) {
           // Wrong buildId (or malformed) — surface a JSON 404 so the client
           // hard-navigates instead of silently rendering an empty page.
@@ -1759,14 +1885,25 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
         isDataReq = true;
         const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        url = dataMatch.pagePathname + qs;
-        pathname = dataMatch.pagePathname;
+        const pagePathname = normalizeNextDataPagePathname(
+          dataMatch.pagePathname,
+          hasMiddleware && trailingSlash,
+        );
+        url = pagePathname + qs;
+        requestPathname = pagePathname;
+        pathname = pagePathname;
+        configMatchPathname = pagePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry
       const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
+      const revalidationHostname = readTrustedRevalidationHostname(
+        rawReqHeaders,
+        i18nConfig,
+        typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
+      );
       // Only a successfully parsed `/_next/data/...json` URL is a data
       // request. The inbound x-nextjs-data header is internal and must not let
       // callers opt normal URLs into the data redirect protocol.
@@ -1774,9 +1911,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
+      if (revalidationHostname) reqHeaders.set("host", revalidationHostname);
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
-      const webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
+      const webRequest = new Request(`${protocol}://${revalidationHostname ?? hostHeader}${url}`, {
         method,
         headers: reqHeaders,
         body: hasBody ? readNodeStream(req) : undefined,
@@ -1799,6 +1937,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
+        authorizeOnDemandRevalidate:
+          typeof authorizeOnDemandRevalidate === "function"
+            ? authorizeOnDemandRevalidate
+            : undefined,
+        configMatchPathname,
         matchPageRoute: matchPageRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the
@@ -1823,7 +1966,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         handleApi:
           typeof handleApi === "function"
             ? (request: Request, apiUrl: string) =>
-                handleApi(request, apiUrl, createNodeExecutionContext())
+                handleApi(
+                  request,
+                  apiUrl,
+                  createNodeExecutionContext(),
+                  resolveTrustedNodeRevalidateOrigin(req, host, port),
+                )
             : null,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served
@@ -1925,7 +2073,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     server.listen(port, host, () => {
       const addr = server.address();
       const actualPort = typeof addr === "object" && addr ? addr.port : port;
-      logProdServerStarted(host, actualPort, purpose);
+      if (!silent) logProdServerStarted(host, actualPort, purpose);
       resolve();
     });
   });

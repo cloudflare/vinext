@@ -42,6 +42,22 @@ function mockGoogleFontsCSS(
   return { urls, count: () => urls.length };
 }
 
+function mockGoogleFontFiles(body = new Uint8Array([0, 1, 2, 3])): { urls: string[] } {
+  const urls: string[] = [];
+  server.use(
+    http.get("https://fonts.gstatic.com/*", ({ request }) => {
+      urls.push(request.url);
+      return new HttpResponse(body, {
+        headers: {
+          "content-type": "font/woff2",
+          "cache-control": "public, max-age=31536000",
+        },
+      });
+    }),
+  );
+  return { urls };
+}
+
 /** Extract the vinext:google-fonts plugin from the plugin array */
 function getGoogleFontsPlugin(): Plugin {
   const plugins = vinext() as Plugin[];
@@ -727,6 +743,16 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root");
     initPlugin(plugin, { command: "build", root });
 
+    mockGoogleFontsCSS(
+      [
+        "@font-face {",
+        "  font-family: 'Inter';",
+        "  src: url(https://fonts.gstatic.com/s/inter/v19/inter-latin-400.woff2) format('woff2');",
+        "}",
+      ].join("\n"),
+    );
+    mockGoogleFontFiles();
+
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter } from 'next/font/google';`,
@@ -1346,6 +1372,16 @@ describe("fetchAndCacheFont", () => {
     // Use the plugin's transform which internally calls fetchAndCacheFont
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS(
+      [
+        "@font-face {",
+        "  font-family: 'Inter';",
+        "  src: url(https://fonts.gstatic.com/s/inter/v19/inter-latin-400.woff2) format('woff2');",
+        "}",
+      ].join("\n"),
+    );
+    mockGoogleFontFiles();
 
     const transform = unwrapHook(plugin.transform);
     const code = [

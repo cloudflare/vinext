@@ -7,6 +7,7 @@ import {
   type AppPageBoundaryRoute,
 } from "./app-page-boundary-render.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
+import { DEFAULT_GLOBAL_NOT_FOUND_MODULE } from "./default-global-not-found-module.js";
 import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
@@ -14,6 +15,8 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { AppElements } from "./app-elements.js";
 import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
+import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
+import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = import("react").ComponentType<any>;
@@ -49,8 +52,11 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
     routePath: string,
   ) => AppPageBoundaryOnError;
   fontProviders: AppFallbackRendererFontProviders;
+  getAndClearPendingCookies?: () => string[];
   getNavigationContext: () => NavigationContext | null;
   globalErrorModule?: TModule | null;
+  /** Whether experimental.globalNotFound is enabled for route-miss 404s. */
+  globalNotFoundEnabled?: boolean;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,
    * route-miss 404s render this module as a standalone document (skipping the
@@ -75,6 +81,13 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   basePath?: string;
   /** Configured next.config `trailingSlash`, threaded into canonical URL rendering. */
   trailingSlash?: boolean;
+  /**
+   * Serialized next.config `htmlLimitedBots` regexp source. Used to decide, per
+   * request user-agent, whether a `generateMetadata()` redirect thrown from a
+   * fallback boundary should stream (200) or block (307) — matching the
+   * matched-page dispatch path via `shouldServeStreamingMetadata`.
+   */
+  htmlLimitedBots?: string;
   resolveChildSegments: (
     routeSegments: readonly string[],
     treePosition: number,
@@ -97,6 +110,7 @@ type AppFallbackRendererCallContext = {
    * render path. Defaults to `false` when no route is matched.
    */
   isEdgeRuntime?: boolean;
+  routePathname?: string;
   sourcePageSegments?: readonly string[] | null;
 };
 
@@ -120,6 +134,7 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     opts: {
       boundaryComponent?: AppPageComponent | null;
       boundaryModule?: TModule | null;
+      intercept?: AppPageInterceptOptions<TModule> | null;
       layouts?: readonly (TModule | null | undefined)[] | null;
       matchedParams?: AppPageParams;
     },
@@ -146,11 +161,14 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   const {
     applyFileBasedMetadata,
     basePath = "",
+    htmlLimitedBots,
     clearRequestContext,
     createRscOnErrorHandler: buildRscOnErrorHandler,
     fontProviders,
+    getAndClearPendingCookies,
     getNavigationContext,
     globalErrorModule,
+    globalNotFoundEnabled = false,
     loadGlobalNotFoundModule,
     makeThenableParams,
     metadataRoutes,
@@ -208,6 +226,14 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       middlewareContext,
       callContext,
     ) {
+      // Decide streaming-vs-blocking metadata redirect behavior per request,
+      // matching the matched-page dispatch path. Only affects generateMetadata()
+      // redirects thrown while rendering this fallback boundary.
+      const serveStreamingMetadata = shouldServeStreamingMetadata(
+        request.headers.get("user-agent") ?? "",
+        htmlLimitedBots,
+      );
+
       // global-not-found.tsx replaces the root layout for route-miss 404s.
       // Only applies when:
       //   - The user defined app/global-not-found.tsx
@@ -217,14 +243,16 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // regular not-found.tsx boundary inside the route's layouts.
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
       const useGlobalNotFound =
-        statusCode === 404 && !!loadGlobalNotFoundModule && !route && !opts?.boundaryComponent;
+        statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
 
-      if (useGlobalNotFound) {
+      if (useGlobalNotFound && loadGlobalNotFoundModule) {
         const globalNotFoundModule = await resolveGlobalNotFoundModule();
         const globalNotFoundComponent = globalNotFoundModule?.default ?? null;
         if (globalNotFoundComponent) {
           return renderAppPageHttpAccessFallback({
             applyFileBasedMetadata,
+            basePath,
+            trailingSlash,
             boundaryComponent: globalNotFoundComponent,
             boundaryModule: globalNotFoundModule ?? null,
             buildFontLinkHeader: fontProviders.buildFontLinkHeader,
@@ -235,6 +263,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             getFontLinks: fontProviders.getFontLinks,
             getFontPreloads: fontProviders.getFontPreloads,
             getFontStyles: fontProviders.getFontStyles,
+            getAndClearPendingCookies,
             getNavigationContext,
             globalErrorModule: effectiveGlobalErrorModule,
             isEdgeRuntime: callContext?.isEdgeRuntime,
@@ -245,6 +274,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             matchedParams: opts?.matchedParams ?? {},
             middlewareContext: middlewareContext ?? EMPTY_MW_CTX,
             metadataRoutes,
+            request,
             requestUrl: request.url,
             resolveChildSegments,
             rootForbiddenModule: null,
@@ -254,11 +284,16 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             route: null,
             renderToReadableStream: rscRenderer,
             scriptNonce,
+            serveStreamingMetadata,
             skipLayoutWrapping: true,
             statusCode,
           });
         }
       }
+
+      const routeMissRootNotFoundModule = useGlobalNotFound
+        ? (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule)
+        : effectiveRootNotFoundModule;
 
       return renderAppPageHttpAccessFallback({
         applyFileBasedMetadata,
@@ -274,25 +309,31 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getFontLinks: fontProviders.getFontLinks,
         getFontPreloads: fontProviders.getFontPreloads,
         getFontStyles: fontProviders.getFontStyles,
+        getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
+        intercept: opts?.intercept ?? null,
         isEdgeRuntime: callContext?.isEdgeRuntime,
         isRscRequest,
-        layoutModules: opts?.layouts ?? null,
+        layoutModules: useGlobalNotFound ? [] : (opts?.layouts ?? null),
         loadSsrHandler: ssrLoader,
         makeThenableParams,
         matchedParams: opts?.matchedParams ?? route?.params ?? {},
         middlewareContext: middlewareContext ?? EMPTY_MW_CTX,
         metadataRoutes,
+        request,
         requestUrl: request.url,
         resolveChildSegments,
         rootForbiddenModule,
-        rootLayouts,
-        rootNotFoundModule: effectiveRootNotFoundModule,
+        rootLayouts: useGlobalNotFound ? [] : rootLayouts,
+        rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
-        route,
+        route: useGlobalNotFound ? null : route,
+        routePathname: callContext?.routePathname,
         renderToReadableStream: rscRenderer,
         scriptNonce,
+        serveStreamingMetadata,
+        skipLayoutWrapping: useGlobalNotFound,
         sourcePageSegments: callContext?.sourcePageSegments,
         statusCode,
       });
@@ -344,6 +385,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getFontLinks: fontProviders.getFontLinks,
         getFontPreloads: fontProviders.getFontPreloads,
         getFontStyles: fontProviders.getFontStyles,
+        getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
         isEdgeRuntime: callContext?.isEdgeRuntime,
@@ -353,6 +395,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         matchedParams: matchedParams ?? route?.params ?? {},
         middlewareContext: middlewareContext ?? EMPTY_MW_CTX,
         metadataRoutes,
+        request,
         requestUrl: request.url,
         resolveChildSegments,
         rootLayouts,

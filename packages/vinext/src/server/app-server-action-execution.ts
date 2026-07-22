@@ -1,4 +1,5 @@
 import {
+  _drainPendingRevalidations,
   getAndClearActionRevalidationKind,
   type ActionRevalidationKind,
 } from "vinext/shims/cache-request-state";
@@ -21,7 +22,7 @@ import {
   runWithRootParamsScope,
   runWithRootParamsUsage,
 } from "vinext/shims/root-params";
-import { isExternalUrl } from "../config/config-matchers.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
@@ -43,10 +44,7 @@ import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import {
-  APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
-  type AppRscRenderMode,
-} from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   getNextErrorDigest,
   parseNextHttpErrorDigest,
@@ -246,6 +244,10 @@ export type HandleServerActionRscRequestOptions<
   cleanPathname: string;
   clearRequestContext: () => void;
   contentType: string;
+  /** Route selected at the request boundary before action execution. */
+  currentRouteMatch: AppServerActionMatch<TRoute> | null;
+  /** Request-aware pathname identity used for current-route interception lookup. */
+  currentRoutePathname: string;
   createNotFoundElement: (routeId: string) => TElement;
   createPayloadRouteId: (pathname: string, interceptionContext: string | null) => string;
   createRscOnErrorHandler: (
@@ -303,6 +305,7 @@ export type HandleServerActionRscRequestOptions<
 };
 
 function prepareActionPageRerenderContext(options: {
+  draftModeCookie: string | null | undefined;
   draftModeSecret: string;
   dynamicConfig: string | null | undefined;
   request: Request;
@@ -310,9 +313,13 @@ function prepareActionPageRerenderContext(options: {
   searchParams: URLSearchParams;
 }): URLSearchParams {
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    const rerenderRequest = createActionRerenderRequest({
+      draftModeCookie: options.draftModeCookie,
+      request: options.request,
+    });
     setHeadersContext(
       createStaticGenerationHeadersContext({
-        draftModeEnabled: isDraftModeRequest(options.request, options.draftModeSecret),
+        draftModeEnabled: isDraftModeRequest(rerenderRequest, options.draftModeSecret),
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "page",
@@ -321,6 +328,24 @@ function prepareActionPageRerenderContext(options: {
     );
   }
   return options.dynamicConfig === "force-static" ? new URLSearchParams() : options.searchParams;
+}
+
+function createActionRerenderRequest(options: {
+  draftModeCookie: string | null | undefined;
+  request: Request;
+}): Request {
+  if (!options.draftModeCookie) return options.request;
+
+  const headers = new Headers(options.request.headers);
+  const cookieHeader = applySetCookieMutationsToRequestCookieHeader(headers.get("cookie"), [
+    options.draftModeCookie,
+  ]);
+  if (cookieHeader === null) {
+    headers.delete("cookie");
+  } else {
+    headers.set("cookie", cookieHeader);
+  }
+  return new Request(options.request.url, { headers });
 }
 
 /**
@@ -894,6 +919,11 @@ export async function handleProgressiveServerActionRequest(
       if (actionThrew) rootParamsUsage.transitionToRender();
     }
 
+    // Next.js applies cache invalidations before the action's follow-up render
+    // so updateTag() provides read-your-own-writes semantics even though its
+    // public return type is void.
+    await _drainPendingRevalidations();
+
     if (!actionRedirect) {
       if (!actionThrew) rootParamsUsage.transitionToRender();
       // Capture cookies/headers set during action execution so the caller can
@@ -1206,6 +1236,10 @@ export async function handleServerActionRscRequest<
       if (actionThrew && !actionWasForwarded) rootParamsUsage.transitionToRender();
     }
 
+    // Keep the synchronous next/cache API surface while ensuring the Flight
+    // rerender cannot observe data that its action just invalidated.
+    await _drainPendingRevalidations();
+
     if (actionRedirect) {
       const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
       const actionDraftCookie = options.getDraftModeCookieHeader();
@@ -1261,7 +1295,7 @@ export async function handleServerActionRscRequest<
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
-      const currentMatch = options.matchRoute(options.cleanPathname);
+      const currentMatch = options.currentRouteMatch;
       // Hydrate the current route before resolving its runtime below.
       if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
 
@@ -1273,9 +1307,14 @@ export async function handleServerActionRscRequest<
         request: options.request,
         url: redirectTarget,
       });
-      setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      setHeadersContext(
+        headersContextFromRequest(redirectRenderRequest, {
+          draftModeSecret: options.draftModeSecret,
+        }),
+      );
       const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
       const redirectSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: redirectDynamicConfig,
         request: redirectRenderRequest,
@@ -1309,7 +1348,7 @@ export async function handleServerActionRscRequest<
               request: redirectRenderRequest,
               route: targetMatch.route,
               searchParams: redirectSearchParams,
-              renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+              renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
               observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
               observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
             });
@@ -1392,19 +1431,20 @@ export async function handleServerActionRscRequest<
 
     if (!actionThrew) rootParamsUsage.transitionToRender();
 
-    const match = options.matchRoute(options.cleanPathname);
+    const match = options.currentRouteMatch;
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
+    const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
       const actionRerenderTarget = await resolveAppPageActionRerenderTarget({
-        cleanPathname: options.cleanPathname,
+        cleanPathname: options.currentRoutePathname,
         currentParams: actionParams,
         currentRoute: actionRoute,
         findIntercept: options.findIntercept,
         getRouteParamNames: options.getRouteParamNames,
         getSourceRoute: options.getSourceRoute,
-        isRscRequest: options.isRscRequest,
+        isRscRequest: actionRerenderIsRscRequest,
         toInterceptOpts: options.toInterceptOpts,
       });
 
@@ -1426,6 +1466,7 @@ export async function handleServerActionRscRequest<
         actionRerenderTarget.route,
       );
       const actionRerenderSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: actionRerenderDynamicConfig,
         request: options.request,
@@ -1448,13 +1489,13 @@ export async function handleServerActionRscRequest<
         options.buildPageElement({
           cleanPathname: options.cleanPathname,
           interceptOpts: actionRerenderTarget.interceptOpts,
-          isRscRequest: options.isRscRequest,
+          isRscRequest: actionRerenderIsRscRequest,
           mountedSlotsHeader: options.mountedSlotsHeader,
           params: actionRerenderTarget.params,
           request: options.request,
           route: actionRerenderTarget.route,
           searchParams: actionRerenderSearchParams,
-          renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+          renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
           observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
           observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
         });

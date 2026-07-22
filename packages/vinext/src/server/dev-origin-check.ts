@@ -4,8 +4,8 @@
  * Prevents external websites from making cross-origin requests to the
  * local dev server and reading the responses (data exfiltration).
  *
- * Vite 7 provides built-in CORS and WebSocket origin protection, but
- * vinext overrides Vite's CORS config to allow OPTIONS passthrough.
+ * Vite provides built-in CORS and WebSocket origin protection, but vinext
+ * overrides Vite's CORS config to allow OPTIONS passthrough.
  * This module adds origin verification to vinext's own request handlers.
  */
 

@@ -3,6 +3,7 @@
 import "./server-globals.js";
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import { preinitModule } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
@@ -37,6 +38,8 @@ import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
+  waitAtLeastOneReactRenderTask,
+  type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
@@ -53,6 +56,11 @@ import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
+// @ts-expect-error — resolved by the vinext build plugin in SSR environments.
+import pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
+
+setPagesClientAssets(pagesClientAssets as PagesClientAssets);
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -253,7 +261,10 @@ function renderFontHtml(
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    // Font files are content-hashed immutable assets. Keep the preload URL
+    // byte-identical to the @font-face source so the browser consumes it;
+    // deployment IDs are only needed to cache-bust mutable static assets.
+    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (includeStyles && fontData.styles && fontData.styles.length > 0) {
@@ -302,6 +313,7 @@ function buildHeadInjectionHtml(
   formState: ReactFormState | null,
   insertedHTML: string,
   fontHTML: string,
+  dynamicStaleTimeSeconds?: number,
   scriptNonce?: string,
 ): string {
   const navPayload = {
@@ -309,7 +321,11 @@ function buildHeadInjectionHtml(
     searchParams: [...navContext.searchParams.entries()],
   };
   const rscMetadataScript = createInlineScriptTag(
-    createNavigationRuntimeRscMetadataScript(navContext.params, navPayload),
+    createNavigationRuntimeRscMetadataScript(
+      navContext.params,
+      navPayload,
+      dynamicStaleTimeSeconds,
+    ),
     scriptNonce,
   );
   const formStateScript =
@@ -375,6 +391,8 @@ export async function handleSsr(
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
+    dynamicStaleTimeSeconds?: number;
+    getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
@@ -402,19 +420,33 @@ export async function handleSsr(
 
         if (options?.sideStream) {
           ssrStream = rscStream;
-          rscEmbed = createRscEmbedTransform(options.sideStream, options?.scriptNonce);
+          rscEmbed = createRscEmbedTransform(
+            options.sideStream,
+            options?.scriptNonce,
+            options?.getInitialNavigationCacheMetadata,
+          );
           if (options.capturedRscDataRef) {
             options.capturedRscDataRef.value = rscEmbed.getRawBuffer();
           }
         } else {
           const [s1, s2] = rscStream.tee();
           ssrStream = s1;
-          rscEmbed = createRscEmbedTransform(s2, options?.scriptNonce);
+          rscEmbed = createRscEmbedTransform(
+            s2,
+            options?.scriptNonce,
+            options?.getInitialNavigationCacheMetadata,
+          );
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
 
         function VinextFlightRoot(): ReactNode {
+          for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
+            preinitModule(moduleUrl, {
+              as: "script",
+              nonce: options?.scriptNonce,
+            });
+          }
           if (!flightRoot) {
             flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
           }
@@ -584,6 +616,7 @@ export async function handleSsr(
 
         let htmlStream: ReadableStream<Uint8Array>;
         let shellErrorRecovered = false;
+        let shouldDelayInitialHtmlPull = false;
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
           const htmlAbortController = new AbortController();
@@ -602,6 +635,8 @@ export async function handleSsr(
 
             if (options?.waitForAllReady === true) {
               await streamingHtmlStream.allReady;
+            } else {
+              shouldDelayInitialHtmlPull = true;
             }
 
             htmlStream = streamingHtmlStream;
@@ -661,6 +696,7 @@ export async function handleSsr(
             options?.formState ?? null,
             insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
+            options?.dynamicStaleTimeSeconds,
             options?.scriptNonce,
           );
         };
@@ -675,6 +711,10 @@ export async function handleSsr(
         // ordering applies to scripts rendered in the initial shell.
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
+
+        if (shouldDelayInitialHtmlPull) {
+          await waitAtLeastOneReactRenderTask();
+        }
 
         const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(

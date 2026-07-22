@@ -10,6 +10,36 @@ export type AstRange = AstRecord & {
   end: number;
 };
 
+/**
+ * Cheap pre-parse gate for plugins that only transform *dynamic* `import(...)`.
+ *
+ * Static imports — `import x from "..."`, `import { ... } from "..."`,
+ * `import "..."` — never place a `(` (nor a comment leading to one) immediately
+ * after the `import` keyword. Plugins that act only on dynamic `import(...)` use
+ * this to skip `parseAst` for the overwhelming majority of modules in a large
+ * app: at ~5k routes, where almost every module is a static-import-only page,
+ * it removes most of the build's AST-parse/GC cost. This is a deliberate,
+ * measured performance filter — keep it a regex, never a parse.
+ *
+ * It intentionally errs toward over-matching: a false positive costs one
+ * redundant parse, whereas a false negative would silently skip a real dynamic
+ * import (a correctness bug). `\s*[(/]` therefore tolerates whitespace and
+ * block/line comments between the `import` keyword and its parenthesis.
+ *
+ * Usable directly as a Rolldown `transform.filter.code` regex, or via
+ * {@link mayContainDynamicImport} for an in-handler prescan.
+ */
+export const DYNAMIC_IMPORT_PRESCAN = /\bimport\s*[(/]/;
+
+/**
+ * Whether `code` might contain a dynamic `import(...)` call. See
+ * {@link DYNAMIC_IMPORT_PRESCAN} — a cheap, deliberately over-inclusive regex
+ * gate used to avoid parsing static-import-only modules.
+ */
+export function mayContainDynamicImport(code: string): boolean {
+  return DYNAMIC_IMPORT_PRESCAN.test(code);
+}
+
 const SKIP_CHILD_KEYS = new Set(["type", "parent", "loc", "start", "end"]);
 
 function getObjectProperty(value: unknown, key: string): unknown {

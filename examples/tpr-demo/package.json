@@ -5,17 +5,18 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "deploy": "vinext deploy",
+    "deploy": "vinext-cloudflare deploy",
     "simulate-traffic": "node scripts/simulate-traffic.mjs"
   },
   "dependencies": {
+    "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
-    "vinext": "workspace:*",
-    "@vitejs/plugin-rsc": "catalog:"
+    "vinext": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

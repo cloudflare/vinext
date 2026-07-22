@@ -1,11 +1,17 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  createImportMetaUrlPlugin,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
+import { toSlash } from "pathslash";
+
+function unwrapHook(hook: any): Function {
+  return typeof hook === "function" ? hook : hook?.handler;
+}
 
 describe("vinext:import-meta-url plugin", () => {
   let tmpDir: string;
@@ -22,7 +28,9 @@ describe("vinext:import-meta-url plugin", () => {
 
     await fsp.mkdir(path.dirname(pagePath), { recursive: true });
     await fsp.writeFile(pagePath, `export const url = import.meta.url;\n`);
-    canonicalPagePath = await fsp.realpath(pagePath);
+    // The plugin emits canonical forward-slash paths, so expectations are
+    // built from the slash form (path.dirname preserves separators on win32).
+    canonicalPagePath = toSlash(await fsp.realpath(pagePath));
     await fsp.symlink(realRoot, linkedRoot, "junction");
   });
 
@@ -560,5 +568,68 @@ describe("vinext:import-meta-url plugin", () => {
       `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
     );
     expect(result?.code).not.toContain(`var __filename =`);
+  });
+
+  it("reuses the cached plugin transform result per environment kind", () => {
+    const plugin = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const configResolved = unwrapHook(plugin.configResolved).bind(plugin);
+    configResolved({ root: realRoot, build: { outDir: "dist" } });
+    const transform = unwrapHook(plugin.transform);
+    const source = `export const url = import.meta.url;\n`;
+    const serverContext = { environment: { name: "rsc" } };
+    const clientContext = { environment: { name: "client" } };
+
+    const serverResult = transform.call(serverContext, source, pagePath);
+    expect(serverResult).toBeTruthy();
+    expect(transform.call(serverContext, source, pagePath)).toBe(serverResult);
+    // The SSR environment maps to the same "server" replacement, so it shares
+    // the server entry rather than recomputing.
+    expect(transform.call({ environment: { name: "ssr" } }, source, pagePath)).toBe(serverResult);
+
+    const clientResult = transform.call(clientContext, source, pagePath);
+    expect(clientResult).not.toBe(serverResult);
+    expect(clientResult?.code).toContain(`"file:///ROOT/pages/index.tsx"`);
+    expect(transform.call(clientContext, source, pagePath)).toBe(clientResult);
+
+    expect(transform.call(serverContext, `${source}console.log("changed");\n`, pagePath)).not.toBe(
+      serverResult,
+    );
+  });
+
+  it("invalidates cached server identities when a junction target changes", async () => {
+    const versionA = path.join(realRoot, "version-a");
+    const versionB = path.join(realRoot, "version-b");
+    const versionAPage = path.join(versionA, "page.tsx");
+    const versionBPage = path.join(versionB, "page.tsx");
+    const current = path.join(realRoot, "current");
+    const currentPage = path.join(current, "page.tsx");
+    const source = `export const identity = [import.meta.url, __filename, __dirname];\n`;
+
+    await Promise.all([
+      fsp.mkdir(versionA, { recursive: true }),
+      fsp.mkdir(versionB, { recursive: true }),
+    ]);
+    await Promise.all([fsp.writeFile(versionAPage, source), fsp.writeFile(versionBPage, source)]);
+    const [canonicalVersionAPage, canonicalVersionBPage] = await Promise.all([
+      fsp.realpath(versionAPage).then(toSlash),
+      fsp.realpath(versionBPage).then(toSlash),
+    ]);
+    await fsp.symlink(versionA, current, "junction");
+
+    const plugin = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const configResolved = unwrapHook(plugin.configResolved).bind(plugin);
+    configResolved({ root: realRoot, build: { outDir: "dist" } });
+    const transform = unwrapHook(plugin.transform);
+    const serverContext = { environment: { name: "rsc" } };
+
+    const firstResult = transform.call(serverContext, source, currentPage);
+    expect(firstResult?.code).toContain(canonicalVersionAPage);
+
+    await fsp.unlink(current);
+    await fsp.symlink(versionB, current, "junction");
+
+    const secondResult = transform.call(serverContext, source, currentPage);
+    expect(secondResult?.code).toContain(canonicalVersionBPage);
+    expect(secondResult?.code).not.toContain(canonicalVersionAPage);
   });
 });

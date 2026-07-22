@@ -1,13 +1,10 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
-import type { RequestContext } from "../config/config-matchers.js";
+import type { RequestContext } from "../config/request-context.js";
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
-import { applyConfigHeadersToResponse } from "./request-pipeline.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { normalizePath } from "./normalize-path.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 
 type FinalizeAppRscResponseOptions = {
@@ -29,6 +26,8 @@ type FinalizeAppRscResponseOptions = {
   requestContext: RequestContext;
 };
 
+const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
+
 /**
  * Apply App Router response finalization that must happen outside individual
  * route dispatchers.
@@ -41,11 +40,11 @@ type FinalizeAppRscResponseOptions = {
  * headers that throw on mutation, and Next.js does not apply config headers
  * to redirects regardless.
  */
-export function finalizeAppRscResponse(
+export async function finalizeAppRscResponse(
   response: Response,
   request: Request,
   options: FinalizeAppRscResponseOptions,
-): Response {
+): Promise<Response> {
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.
   if (response.status >= 300 && response.status < 400) {
@@ -73,21 +72,12 @@ export function finalizeAppRscResponse(
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }
 
-  if (!options.configHeaders.length) {
+  if (!HAS_CONFIG_HEADERS || !options.configHeaders.length) {
     return response;
   }
 
   const url = new URL(request.url);
-  let pathname: string;
-  try {
-    pathname = normalizePath(normalizePathnameForRouteMatch(url.pathname));
-  } catch {
-    // Malformed percent-encoding. The request reached this point only because
-    // normalizePathnameForRouteMatchStrict ran earlier and returned 400 for
-    // truly-malformed paths. This catch exists as a safety net for edge cases;
-    // keep the historical raw-path fallback rather than crashing the response.
-    pathname = url.pathname;
-  }
+  let pathname = url.pathname;
 
   // Config header sources are defined without basePath prefix. Strip basePath
   // at a segment boundary (not a string prefix) so /app2/page with basePath
@@ -104,6 +94,7 @@ export function finalizeAppRscResponse(
     ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, { hostname: url.hostname })
     : pathname;
 
+  const { applyConfigHeadersToResponse } = await import("./config-headers.js");
   applyConfigHeadersToResponse(response.headers, {
     configHeaders: options.configHeaders,
     pathname: matchPathname,

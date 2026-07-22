@@ -69,7 +69,7 @@ jobs:
           fi
 
       - name: Checkout code under test
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_TARGET_SHA }}
@@ -134,7 +134,7 @@ jobs:
 
       - name: Checkout pull request base
         if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_BASE_SHA }}
@@ -151,7 +151,7 @@ jobs:
           chmod 700 "$(dirname "$VINEXT_PERF_BASE_ROOT")"
 
       - name: Checkout trusted benchmark manifests
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_TRUSTED_REF }}
@@ -198,7 +198,7 @@ jobs:
           done
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@2dec1e33f4ab2c6d5bce1b0c4607961bb1a3f7a1 # v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version: "24"
           cache: true
@@ -229,11 +229,15 @@ jobs:
             local project_roots=(
               packages/vinext
               packages/cloudflare
+              packages/create-vinext-app
               benchmarks/vinext
               benchmarks/nextjs
             )
             for relative_path in "${project_roots[@]}"; do
               local path="$root/$relative_path"
+              if [ ! -d "$path" ]; then
+                continue
+              fi
               sudo chmod +t "$path"
               sudo setfacl -m u:"$user":rwx "$path"
               sudo setfacl -m d:u:"$user":rwx,d:u:"$USER":rwx "$path"
@@ -282,7 +286,7 @@ jobs:
           echo "VINEXT_PERF_BASE_USER=vinext-perf-base" >> "$GITHUB_ENV"
 
       - name: Checkout trusted performance harness
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_TRUSTED_REF }}

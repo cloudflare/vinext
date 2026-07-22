@@ -1,16 +1,19 @@
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { fileURLToPath } from "node:url";
 import MagicString from "magic-string";
 import { parseAst, type Plugin } from "vite";
 import {
   collectBindingNames,
+  DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
   hasRange,
   isAstRecord,
   isIdentifierNamed,
+  mayContainDynamicImport,
   nodeArray,
   type AstRecord,
 } from "./ast-utils.js";
+import { createTransformCache } from "./transform-cache.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -22,6 +25,12 @@ import {
 } from "./ast-scope.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
+const REQUIRE_PRESCAN =
+  /(?:\brequire\b|(?:r|\\u(?:0072|\{0*72\}))(?:e|\\u(?:0065|\{0*65\}))(?:q|\\u(?:0071|\{0*71\}))(?:u|\\u(?:0075|\{0*75\}))(?:i|\\u(?:0069|\{0*69\}))(?:r|\\u(?:0072|\{0*72\}))(?:e|\\u(?:0065|\{0*65\})))/i;
+const DYNAMIC_REQUEST_PRESCAN = new RegExp(
+  String.raw`(?:${REQUIRE_PRESCAN.source}|${DYNAMIC_IMPORT_PRESCAN.source})`,
+  "i",
+);
 const MAX_CONSTANT_BINDING_DEPTH = 1_500;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RSC_PATH =
@@ -720,7 +729,12 @@ function dynamicImportReplacement(): string {
 }
 
 function transformVeryDynamicRequests(code: string, id: string) {
-  if (!code.includes("require") && !code.includes("import")) return null;
+  // Pre-parse gate. `require` stays a broad substring check (it also covers
+  // aliasing and comment-separated `require/* … */(`), but the `import` side is
+  // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
+  // bare `import` (static ESM) otherwise matched ~every module, so this plugin
+  // parsed the whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
+  if (!REQUIRE_PRESCAN.test(code) && !mayContainDynamicImport(code)) return null;
 
   const extension = path.extname(id.split("?", 1)[0]);
   const lang =
@@ -728,7 +742,10 @@ function transformVeryDynamicRequests(code: string, id: string) {
       ? "ts"
       : extension === ".tsx"
         ? "tsx"
-        : extension === ".jsx"
+        : extension === ".js" ||
+            extension === ".jsx" ||
+            extension === ".mjs" ||
+            extension === ".cjs"
           ? "jsx"
           : "js";
   let ast: ReturnType<typeof parseAst>;
@@ -868,6 +885,8 @@ function transformVeryDynamicRequests(code: string, id: string) {
 export function createIgnoreDynamicRequestsPlugin(
   getTranspiledPackages: () => readonly string[] = () => [],
 ): Plugin {
+  const cached = createTransformCache<undefined, ReturnType<typeof transformVeryDynamicRequests>>();
+
   return {
     name: "vinext:ignore-dynamic-requests",
     enforce: "pre",
@@ -876,6 +895,7 @@ export function createIgnoreDynamicRequestsPlugin(
         id: {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
         },
+        code: DYNAMIC_REQUEST_PRESCAN,
       },
       handler(code, id) {
         const cleanId = id.split("?", 1)[0];
@@ -892,12 +912,12 @@ export function createIgnoreDynamicRequestsPlugin(
         const absoluteId = path.resolve(cleanId);
         if (
           absoluteId === VINEXT_SOURCE_ROOT ||
-          absoluteId.startsWith(`${VINEXT_SOURCE_ROOT}${path.sep}`) ||
+          absoluteId.startsWith(`${VINEXT_SOURCE_ROOT}/`) ||
           PLUGIN_RSC_PATH.test(absoluteId)
         ) {
           return null;
         }
-        return transformVeryDynamicRequests(code, id);
+        return cached(id, code, undefined, () => transformVeryDynamicRequests(code, id));
       },
     },
   };
@@ -909,7 +929,7 @@ function shouldTransformVeryDynamicRequests(
   transpiledPackages: readonly string[],
 ): boolean {
   if (environment.config.consumer === "server") return true;
-  const normalizedId = id.replaceAll("\\", "/");
+  const normalizedId = toSlash(id);
   if (!normalizedId.includes("/node_modules/")) return false;
   return !transpiledPackages.some((packageName) =>
     normalizedId.includes(`/node_modules/${packageName}/`),

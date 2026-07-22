@@ -1,12 +1,53 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   collectAppPageSearchParams,
+  prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 
 describe("app page head resolution", () => {
+  it("prepares viewport independently while generated metadata is pending", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    let releaseMetadata: (() => void) | undefined;
+    const metadataGate = new Promise<void>((resolve) => {
+      releaseMetadata = resolve;
+    });
+
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: {
+        async generateMetadata() {
+          await metadataGate;
+          return { title: "streamed page" };
+        },
+        generateViewport() {
+          return { themeColor: "#123456" };
+        },
+      },
+      params: {},
+      routePath: "/streamed",
+    });
+
+    expect(prepared.hasDynamicMetadata).toBe(true);
+    await expect(prepared.viewport).resolves.toMatchObject({
+      themeColor: [{ color: "#123456" }],
+    });
+
+    let metadataSettled = false;
+    void prepared.metadata.then(() => {
+      metadataSettled = true;
+    });
+    await Promise.resolve();
+    expect(metadataSettled).toBe(false);
+
+    releaseMetadata?.();
+    await expect(prepared.metadata).resolves.toMatchObject({ title: "streamed page" });
+  });
+
   it("reports whether the matched route has generated metadata", async () => {
     // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
@@ -169,7 +210,9 @@ describe("app page head resolution", () => {
       },
     });
     expect(result.viewport).toEqual({
+      colorScheme: null,
       initialScale: 1,
+      themeColor: null,
       width: "device-width",
     });
     expect(result.pageSearchParams).toEqual({ tag: ["next", "vinext"] });
@@ -177,6 +220,88 @@ describe("app page head resolution", () => {
     expect(layoutSearchParamsSeen).toEqual([undefined]);
     expect(layoutParamsSeen).toEqual([{}]);
     expect(pageParentImages).toEqual(["/root-og.png", "/nested-og.png"]);
+  });
+
+  it("resolves viewport descriptors with parent chaining", async () => {
+    // Matches Next.js's sequential parent resolution in accumulateViewport:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+    const parentViewports: unknown[] = [];
+    const rootLayout = {
+      viewport: {
+        themeColor: "#111111",
+        viewportFit: "cover",
+        width: "device-width",
+      },
+    };
+    const nestedLayout = {
+      async generateViewport(
+        _props: unknown,
+        parent: Promise<unknown> = Promise.resolve({ height: "default-parent" }),
+      ) {
+        parentViewports.push(await parent);
+        return {
+          initialScale: 2,
+          themeColor: {
+            color: "#222222",
+            media: "(prefers-color-scheme: dark)",
+          },
+        };
+      },
+    };
+    const page = {
+      async generateViewport(...args: [unknown, Promise<unknown>]) {
+        parentViewports.push(await args[1]);
+        return {
+          interactiveWidget: "overlays-content",
+          viewportFit: undefined,
+        };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout, nestedLayout],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: page,
+      params: {},
+      routePath: "/nested",
+      routeSegments: ["nested"],
+    });
+
+    expect(parentViewports).toEqual([
+      {
+        colorScheme: null,
+        initialScale: 1,
+        themeColor: [{ color: "#111111" }],
+        viewportFit: "cover",
+        width: "device-width",
+      },
+      {
+        colorScheme: null,
+        initialScale: 2,
+        themeColor: [
+          {
+            color: "#222222",
+            media: "(prefers-color-scheme: dark)",
+          },
+        ],
+        viewportFit: "cover",
+        width: "device-width",
+      },
+    ]);
+    expect(result.viewport).toEqual({
+      colorScheme: null,
+      initialScale: 2,
+      interactiveWidget: "overlays-content",
+      themeColor: [
+        {
+          color: "#222222",
+          media: "(prefers-color-scheme: dark)",
+        },
+      ],
+      viewportFit: undefined,
+      width: "device-width",
+    });
   });
 
   it("keeps layout tree positions aligned when layout module slots are empty", async () => {
@@ -301,7 +426,117 @@ describe("app page head resolution", () => {
 
     expect(viewportColors).toEqual(["red", "red"]);
     expect(observeParamAccess).toHaveBeenCalled();
-    expect(result.viewport.themeColor).toBe("red");
+    expect(result.viewport.themeColor).toEqual([{ color: "red" }]);
+  });
+
+  it("accumulates the primary page viewport before named slots", async () => {
+    // Next.js seeds the loader tree with `children` before named parallel
+    // segments, then walks those branches in insertion order.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+    const parentViewports: Array<{ source: string; viewport: unknown }> = [];
+    const firstSlotLayout = {
+      async generateViewport(_props: unknown, parent: Promise<unknown>) {
+        parentViewports.push({ source: "first layout", viewport: await parent });
+        return { height: 111 };
+      },
+    };
+    const firstSlotPage = {
+      async generateViewport(_props: unknown, parent: Promise<unknown>) {
+        parentViewports.push({ source: "first page", viewport: await parent });
+        return { maximumScale: 7, minimumScale: 0.5 };
+      },
+    };
+    const secondSlotPage = {
+      async generateViewport(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        const viewport = await parent;
+        parentViewports.push({ source: "second page", viewport });
+        return { initialScale: viewport.minimumScale === 0.5 ? 4 : 5 };
+      },
+    };
+    const primaryPage = {
+      async generateViewport(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        const viewport = await parent;
+        parentViewports.push({ source: "primary page", viewport });
+        return { maximumScale: viewport.initialScale === 4 ? 2 : 9 };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [{ viewport: { viewportFit: "cover" } }],
+      metadataRoutes: [],
+      pageModule: primaryPage,
+      parallelRoutes: [
+        {
+          layoutModules: [firstSlotLayout],
+          pageModule: firstSlotPage,
+          routeSegments: ["dashboard"],
+        },
+        {
+          pageModule: secondSlotPage,
+          routeSegments: ["dashboard"],
+        },
+      ],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+    });
+
+    expect(parentViewports).toEqual([
+      {
+        source: "primary page",
+        viewport: {
+          colorScheme: null,
+          initialScale: 1,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+      {
+        source: "first layout",
+        viewport: {
+          colorScheme: null,
+          initialScale: 1,
+          maximumScale: 9,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+      {
+        source: "first page",
+        viewport: {
+          colorScheme: null,
+          height: 111,
+          initialScale: 1,
+          maximumScale: 9,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+      {
+        source: "second page",
+        viewport: {
+          colorScheme: null,
+          height: 111,
+          initialScale: 1,
+          maximumScale: 7,
+          minimumScale: 0.5,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+    ]);
+    expect(result.viewport).toMatchObject({
+      height: 111,
+      initialScale: 4,
+      maximumScale: 7,
+      minimumScale: 0.5,
+      viewportFit: "cover",
+    });
   });
 
   it("bubbles layout metadata errors", async () => {
@@ -434,28 +669,80 @@ describe("app page head resolution", () => {
       }),
     ).toEqual([
       {
-        layoutModules: [],
-        layoutParams: [],
-        layoutTreePositions: [],
-        pageModule: slotPage,
-        params: { member: "alice" },
-        routeSegments: ["[member]"],
+        head: {
+          layoutModules: [],
+          layoutParams: [],
+          layoutTreePositions: [],
+          pageModule: slotPage,
+          params: { member: "alice" },
+          routeSegments: ["[member]"],
+        },
+        ownerTreePosition: 0,
       },
+    ]);
+  });
+
+  it("orders nested slot head inputs like Next.js's children-first tree walk", () => {
+    const outerFirst = {};
+    const outerSecond = {};
+    const inner = {};
+
+    const inputs = resolveActiveParallelRouteHeadInputs({
+      layoutTreePositions: [0, 2],
+      params: {},
+      routeSegments: ["dashboard", "settings"],
+      slots: {
+        outerFirst: { layoutIndex: 0, page: outerFirst },
+        outerSecond: { layoutIndex: 0, page: outerSecond },
+        inner: { layoutIndex: 1, page: inner },
+      },
+    });
+
+    expect(inputs.map((input) => input.head.pageModule)).toEqual([inner, outerFirst, outerSecond]);
+  });
+
+  it("carries slot-local not-found metadata with owner-scoped params", () => {
+    const slotNotFound = {};
+
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        layoutTreePositions: [1],
+        params: { locale: "en", slug: "primary" },
+        routeSegments: ["[locale]", "dashboard"],
+        slotParams: { sidebar: { member: "alice", slug: "slot" } },
+        slots: {
+          sidebar: {
+            layoutIndex: 0,
+            notFound: slotNotFound,
+            notFoundTreePosition: 1,
+            routeSegments: ["[member]", "[slug]"],
+          },
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        notFoundModule: slotNotFound,
+        notFoundParams: { locale: "en", member: "alice" },
+      }),
     ]);
   });
 
   it("keeps slot-root layout head inputs for intercepted slots", () => {
     const slotLayout = { metadata: { description: "slot root" } };
     const interceptLayout = { metadata: { title: "intercept" } };
+    const interceptNotFound = { metadata: { title: "intercept not found" } };
     const interceptPage = {};
     expect(
       resolveActiveParallelRouteHeadInputs({
         interceptLayouts: [interceptLayout],
         interceptBranchSegments: ["[photo]", "[comment]"],
         interceptLayoutSegments: [["[photo]"]],
+        interceptNotFound,
+        interceptNotFoundTreePosition: 2,
         interceptPage,
         interceptParams: { locale: "en", photo: "42", comment: "7" },
         interceptSlotKey: "modal",
+        interceptSourcePageSegments: ["[locale]", "@modal", "(.)photos", "[photo]", "[comment]"],
         layoutTreePositions: [1],
         params: { locale: "en" },
         routeSegments: ["[locale]", "photos"],
@@ -463,13 +750,63 @@ describe("app page head resolution", () => {
       }),
     ).toEqual([
       {
-        layoutModules: [slotLayout, interceptLayout],
-        layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
-        layoutTreePositions: [0, 2],
-        pageModule: interceptPage,
-        params: { locale: "en", photo: "42", comment: "7" },
-        routeSegments: ["[locale]", "photos"],
+        head: {
+          layoutModules: [slotLayout, interceptLayout],
+          layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
+          layoutTreePositions: [0, 2],
+          pageModule: interceptPage,
+          params: { locale: "en", photo: "42", comment: "7" },
+          routeSegments: ["[locale]", "@modal", "(.)photos", "[photo]", "[comment]"],
+        },
+        notFoundModule: interceptNotFound,
+        notFoundParams: { locale: "en", photo: "42", comment: "7" },
+        ownerTreePosition: 1,
       },
+    ]);
+  });
+
+  it("scopes a nested intercept not-found before the intercepted child params", () => {
+    const interceptNotFound = {};
+
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        interceptBranchSegments: ["video", "[id]"],
+        interceptNotFoundBranchSegments: ["[locale]", "feed", "video", "[id]"],
+        interceptNotFound,
+        interceptNotFoundTreePosition: 3,
+        interceptPage: {},
+        interceptParams: { locale: "en", id: "42" },
+        interceptSlotKey: "modal",
+        layoutTreePositions: [0],
+        params: {},
+        routeSegments: ["source"],
+        slots: { modal: { layoutIndex: 0 } },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        notFoundModule: interceptNotFound,
+        notFoundParams: { locale: "en" },
+      }),
+    ]);
+
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        interceptBranchSegments: ["video", "[id]"],
+        interceptNotFoundBranchSegments: ["[locale]", "feed", "video", "[id]"],
+        interceptNotFound,
+        interceptNotFoundTreePosition: 0,
+        interceptPage: {},
+        interceptParams: { locale: "en", id: "42" },
+        interceptSlotKey: "modal",
+        params: {},
+        routeSegments: ["source"],
+        slots: { modal: {} },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        notFoundModule: interceptNotFound,
+        notFoundParams: {},
+      }),
     ]);
   });
 
@@ -501,14 +838,49 @@ describe("app page head resolution", () => {
     expect(seen).toEqual([{ owner: "root" }, { owner: "root", team: "alpha" }]);
   });
 
-  // Regression: a `generateMetadata` that does not declare the `parent`
-  // argument must NOT receive it. Matches Next.js, which omits the parent
-  // argument for cached `generateMetadata` functions that don't use it
-  // (resolve-metadata.ts `getResult` / `useCacheFunctionInfo.usedArgs[1]`).
-  // Passing the parent into a `'use cache'` function feeds it to the cache-key
-  // encoder (encodeReply), which throws on non-serializable values such as a
-  // `URL` `metadataBase` ("URL objects are not supported").
-  it("omits the parent argument for generateMetadata that does not declare it", async () => {
+  // Extends Next.js's generateMetadata parent-resolution coverage:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/app/dynamic/%5Bslug%5D/page.tsx
+  it("passes the parent to regular generateMetadata with default and rest parameters", async () => {
+    const fallbackMetadata = { description: "Fallback description" };
+    const receivedArgCounts: number[] = [];
+    const withDefault = async function (
+      _props: unknown,
+      parent = Promise.resolve(fallbackMetadata),
+    ) {
+      receivedArgCounts.push(arguments.length);
+      return { title: String((await parent).description) };
+    };
+    const withRest = async function (...args: [unknown, Promise<Record<string, unknown>>?]) {
+      receivedArgCounts.push(args.length);
+      const parent = args[1] ?? Promise.resolve(fallbackMetadata);
+      return { title: String((await parent).description) };
+    };
+    const titles: unknown[] = [];
+
+    for (const generateMetadata of [withDefault, withRest]) {
+      const result = await resolveAppPageHead<Record<string, unknown>>({
+        layoutModules: [{ metadata: { description: "Root description" } }],
+        layoutTreePositions: [0],
+        metadataRoutes: [],
+        pageModule: { generateMetadata },
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+      titles.push(result.metadata?.title);
+    }
+
+    expect(withDefault.length).toBe(1);
+    expect(withRest.length).toBe(0);
+    expect(receivedArgCounts).toEqual([2, 2]);
+    expect(titles).toEqual(["Root description", "Root description"]);
+  });
+
+  // Regression: a cached `generateMetadata` that does not declare the
+  // `parent` argument must NOT receive it. Passing the parent into the cache
+  // wrapper feeds it to the cache-key encoder, which throws on non-serializable
+  // values such as a `URL` `metadataBase` ("URL objects are not supported").
+  it("omits the parent argument for cached generateMetadata that does not declare it", async () => {
     const receivedArgCounts: number[] = [];
     const rootLayout = {
       metadata: {
@@ -516,19 +888,20 @@ describe("app page head resolution", () => {
         title: "Root",
       },
     };
-    const page = {
-      // Arity 0 — declares no `parent` parameter.
-      generateMetadata: async function () {
-        receivedArgCounts.push(arguments.length);
-        return { title: "Page" };
-      },
+    const generateMetadata = async function () {
+      receivedArgCounts.push(arguments.length);
+      return { title: "Page" };
     };
+    Object.assign(generateMetadata, {
+      [Symbol.for("vinext.useCacheFunction")]: true,
+      [Symbol.for("vinext.useCacheAcceptsSecondArgument")]: false,
+    });
 
     const result = await resolveAppPageHead<Record<string, unknown>>({
       layoutModules: [rootLayout],
       layoutTreePositions: [0],
       metadataRoutes: [],
-      pageModule: page,
+      pageModule: { generateMetadata },
       params: {},
       routePath: "/",
       routeSegments: [],
@@ -542,7 +915,7 @@ describe("app page head resolution", () => {
     expect(result.metadata?.title).toBe("Page");
   });
 
-  it("still passes the parent argument to generateMetadata that declares it", async () => {
+  it("passes the parent argument to cached generateMetadata that declares it", async () => {
     const receivedArgCounts: number[] = [];
     const rootLayout = {
       metadata: {
@@ -550,20 +923,23 @@ describe("app page head resolution", () => {
         description: "Root description",
       },
     };
-    const page = {
-      // Arity 2 — declares `parent`, so it must receive it.
-      generateMetadata: async function (_props: unknown, parent: Promise<Record<string, unknown>>) {
-        receivedArgCounts.push(arguments.length);
-        const parentMetadata = await parent;
-        return { title: String(parentMetadata.description) };
-      },
+    const generateMetadata = async function (
+      _props: unknown,
+      parent: Promise<Record<string, unknown>>,
+    ) {
+      receivedArgCounts.push(arguments.length);
+      const parentMetadata = await parent;
+      return { title: String(parentMetadata.description) };
     };
+    Object.assign(generateMetadata, {
+      [Symbol.for("vinext.useCacheFunction")]: true,
+    });
 
     const result = await resolveAppPageHead<Record<string, unknown>>({
       layoutModules: [rootLayout],
       layoutTreePositions: [0],
       metadataRoutes: [],
-      pageModule: page,
+      pageModule: { generateMetadata },
       params: {},
       routePath: "/",
       routeSegments: [],
@@ -571,6 +947,48 @@ describe("app page head resolution", () => {
 
     expect(receivedArgCounts).toEqual([2]);
     expect(result.metadata?.title).toBe("Root description");
+  });
+
+  // Extends Next.js's cached generateMetadata parent-argument coverage:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+  it("passes the parent to cached generateMetadata with default and rest parameters", async () => {
+    const fallbackMetadata = { description: "Fallback description" };
+    const receivedArgCounts: number[] = [];
+    const withDefault = async function (
+      _props: unknown,
+      parent = Promise.resolve(fallbackMetadata),
+    ) {
+      receivedArgCounts.push(arguments.length);
+      return { title: String((await parent).description) };
+    };
+    const withRest = async function (...args: [unknown, Promise<Record<string, unknown>>?]) {
+      receivedArgCounts.push(args.length);
+      const parent = args[1] ?? Promise.resolve(fallbackMetadata);
+      return { title: String((await parent).description) };
+    };
+    const titles: unknown[] = [];
+
+    for (const generateMetadata of [withDefault, withRest]) {
+      Object.assign(generateMetadata, {
+        [Symbol.for("vinext.useCacheFunction")]: true,
+        [Symbol.for("vinext.useCacheAcceptsSecondArgument")]: true,
+      });
+      const result = await resolveAppPageHead<Record<string, unknown>>({
+        layoutModules: [{ metadata: { description: "Root description" } }],
+        layoutTreePositions: [0],
+        metadataRoutes: [],
+        pageModule: { generateMetadata },
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+      titles.push(result.metadata?.title);
+    }
+
+    expect(withDefault.length).toBe(1);
+    expect(withRest.length).toBe(0);
+    expect(receivedArgCounts).toEqual([2, 2]);
+    expect(titles).toEqual(["Root description", "Root description"]);
   });
 
   it("keeps primary page title handling independent from active parallel route metadata", async () => {

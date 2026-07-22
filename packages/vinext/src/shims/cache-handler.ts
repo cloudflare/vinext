@@ -1,5 +1,8 @@
 import type { RenderObservation } from "../server/cache-proof.js";
-import { readCacheControlNumberField } from "../utils/cache-control-metadata.js";
+import {
+  readCacheControlNumberField,
+  readCacheControlRevalidateField,
+} from "../utils/cache-control-metadata.js";
 
 export type CacheHandlerValue = {
   lastModified: number;
@@ -10,7 +13,7 @@ export type CacheHandlerValue = {
 };
 
 export type CacheControlMetadata = {
-  revalidate: number;
+  revalidate: number | false;
   expire?: number;
 };
 
@@ -178,6 +181,14 @@ function readStringArrayField(ctx: Record<string, unknown> | undefined, field: s
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function readPositiveNumberField(
+  ctx: Record<string, unknown> | undefined,
+  field: string,
+): number | undefined {
+  const value = ctx?.[field];
+  return typeof value === "number" && value > 0 ? value : undefined;
+}
+
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
@@ -235,14 +246,26 @@ export class MemoryCacheHandler implements CacheHandler {
       }
     }
 
-    if (entry.expireAt !== null && Date.now() > entry.expireAt) {
-      this.deleteEntry(key);
-      return null;
-    }
-
     this.touchEntry(key, entry);
 
-    if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+    const now = Date.now();
+    if (entry.expireAt !== null && now > entry.expireAt) {
+      return {
+        lastModified: entry.lastModified,
+        value: entry.value,
+        cacheState: "expired",
+        cacheControl: entry.cacheControl,
+      };
+    }
+
+    const requestedRevalidate = readPositiveNumberField(ctx, "revalidate");
+    const requestedRevalidateAt =
+      requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
+    const isStale =
+      (entry.revalidateAt !== null && now > entry.revalidateAt) ||
+      (requestedRevalidateAt !== null && now > requestedRevalidateAt);
+
+    if (isStale) {
       return {
         lastModified: entry.lastModified,
         value: entry.value,
@@ -272,10 +295,14 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     const tags = [...tagSet];
 
-    let effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    let effectiveRevalidate = readCacheControlRevalidateField(ctx);
     const effectiveExpire = readCacheControlNumberField(ctx, "expire");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
+    } else if (data && "revalidate" in data && data.revalidate === false) {
+      // Preserve a non-expiring value when no context policy was supplied,
+      // but never let it override an explicit `ctx.revalidate: 0` no-store.
+      effectiveRevalidate ??= false;
     }
     if (effectiveRevalidate === 0) return;
 
@@ -289,7 +316,7 @@ export class MemoryCacheHandler implements CacheHandler {
         ? now + effectiveExpire * 1000
         : null;
     const cacheControl =
-      typeof effectiveRevalidate === "number"
+      typeof effectiveRevalidate === "number" || effectiveRevalidate === false
         ? effectiveExpire === undefined
           ? { revalidate: effectiveRevalidate }
           : { revalidate: effectiveRevalidate, expire: effectiveExpire }

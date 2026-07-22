@@ -1,4 +1,12 @@
 {
   "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "vinext/internal/*": ["../vinext/src/*"],
+      "vinext/shims/*": ["../vinext/src/shims/*"],
+      "@vinext/cloudflare/cache/*": ["./src/cache/*"],
+      "@vinext/cloudflare/images/*": ["./src/images/*"]
+    }
+  },
   "include": ["src"]
 }

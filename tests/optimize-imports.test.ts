@@ -16,7 +16,7 @@ import {
 } from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@ let testId = 0;
  * slashes. A drive-less fixture diverges from the source's resolution.
  */
 function uniquePath(name: string): string {
-  return normalizePathSeparators(path.resolve(`/fake/${name}-${++testId}/entry.js`));
+  return toSlash(path.resolve(`/fake/${name}-${++testId}/entry.js`));
 }
 
 // ── Plugin existence ─────────────────────────────────────────
@@ -113,7 +113,7 @@ describe("vinext:optimize-imports plugin", () => {
   });
 
   it("picks up optimizePackageImports from vinext({ nextConfig })", async () => {
-    const tmpDir = normalizePathSeparators(
+    const tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inline-optimize-"))),
     );
 
@@ -554,7 +554,7 @@ describe("vinext:optimize-imports transform", () => {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
     // next.config.js) for the plugin's buildStart to include it.
-    tmpDir = normalizePathSeparators(
+    tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
     );
     fs.writeFileSync(
@@ -679,7 +679,7 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("skips transform on client environment", async () => {
-    tmpDir = normalizePathSeparators(
+    tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
     );
     fs.writeFileSync(
@@ -803,7 +803,7 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("rewrites same-file alias exports from wildcard re-exports", async () => {
-    tmpDir = normalizePathSeparators(
+    tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
     );
     fs.writeFileSync(
@@ -847,7 +847,7 @@ describe("vinext:optimize-imports transform", () => {
     // antd is in DEFAULT_OPTIMIZE_PACKAGES.
     // Barrel uses `export * from "./button"` — the plugin should recurse and resolve
     // `Button` via the sub-module.
-    tmpDir = normalizePathSeparators(
+    tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
     );
     fs.writeFileSync(
@@ -896,7 +896,7 @@ describe("vinext:optimize-imports transform", () => {
     // fall through to the cross-env fallback instead of hitting SSR's own map.
     // After the fix, each environment maintains its own registeredBarrels key so both RSC and SSR
     // independently populate their own subpkgOrigin maps.
-    tmpDir = normalizePathSeparators(
+    tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
     );
     fs.writeFileSync(
@@ -948,7 +948,7 @@ describe("vinext:optimize-imports transform", () => {
     // under "react-server" vs "import" export conditions.
     // In the RSC environment the plugin should pick the react-server entry;
     // in SSR it must use the standard import entry (SSR uses the full React runtime).
-    tmpDir = normalizePathSeparators(
+    tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
     );
     fs.writeFileSync(

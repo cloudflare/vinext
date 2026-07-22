@@ -3,20 +3,34 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import { toSlash } from "pathslash";
 import {
   buildAppRouteGraph,
   findOwnerRouteForDir,
   type AppRouteGraphRoute,
   type RouteManifest,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+import { matchAppRoute } from "../packages/vinext/src/routing/app-router.js";
 
-// normalizePathSeparators is a platform-gated no-op on POSIX. CI never runs
-// Windows, so force the Windows behavior to let the separator-mismatch tests
-// below exercise the real normalization logic. Harmless for the other tests:
-// POSIX paths contain no backslashes, so the replace is an identity for them.
-vi.mock("../packages/vinext/src/utils/path.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../packages/vinext/src/utils/path.js")>();
-  return { ...actual, normalizePathSeparators: (p: string) => p.replace(/\\/g, "/") };
+// pathslash picks its platform flavor once at module load: on POSIX the
+// default export is plain node:path.posix and `toSlash` is an identity, so the
+// separator-mismatch tests below would exercise nothing on POSIX CI (which
+// never runs vitest on Windows). Force the Windows flavor instead — `win32`
+// works on any host and emits forward-slash output, and an always-replace
+// `toSlash` mirrors its Windows behavior. Harmless for the other tests: POSIX
+// paths contain no backslashes, so both are identities for them.
+vi.mock("pathslash", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("pathslash")>();
+  // Spread win32's members too so future named imports (`import { dirname }`)
+  // stay win32-forced instead of silently reverting to the host flavor.
+  return {
+    ...actual,
+    ...actual.win32,
+    default: actual.win32,
+    win32: actual.win32,
+    posix: actual.posix,
+    toSlash: (p: string) => p.replace(/\\/g, "/"),
+  };
 });
 
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
@@ -39,6 +53,11 @@ async function writeAppFile(appDir: string, relativePath: string, contents: stri
   const filePath = path.join(appDir, relativePath);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, contents);
+}
+
+/** Expected canonical (forward-slash) path for graph-output assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 function findRoute(routes: readonly AppRouteGraphRoute[], pattern: string): AppRouteGraphRoute {
@@ -121,15 +140,15 @@ describe("App Router route graph builder", () => {
 
       const dashboard = findRoute(graph.routes, "/dashboard");
       expect(dashboard.layouts).toEqual([
-        path.join(appDir, "layout.tsx"),
-        path.join(appDir, "dashboard/layout.tsx"),
+        canonical(appDir, "layout.tsx"),
+        canonical(appDir, "dashboard/layout.tsx"),
       ]);
       expect(dashboard.parallelSlots).toHaveLength(1);
       expect(dashboard.parallelSlots[0]).toMatchObject({
         key: "team@dashboard/@team",
         name: "team",
-        pagePath: path.join(appDir, "dashboard/@team/page.tsx"),
-        defaultPath: path.join(appDir, "dashboard/@team/default.tsx"),
+        pagePath: canonical(appDir, "dashboard/@team/page.tsx"),
+        defaultPath: canonical(appDir, "dashboard/@team/default.tsx"),
         layoutIndex: 1,
         routeSegments: [],
       });
@@ -139,7 +158,7 @@ describe("App Router route graph builder", () => {
         key: "team@dashboard/@team",
         name: "team",
         pagePath: null,
-        defaultPath: path.join(appDir, "dashboard/@team/default.tsx"),
+        defaultPath: canonical(appDir, "dashboard/@team/default.tsx"),
         layoutIndex: 1,
         routeSegments: null,
       });
@@ -147,7 +166,7 @@ describe("App Router route graph builder", () => {
       const handler = findRoute(graph.routes, "/dashboard/api");
       expect(handler).toMatchObject({
         pagePath: null,
-        routePath: path.join(appDir, "dashboard/api/route.ts"),
+        routePath: canonical(appDir, "dashboard/api/route.ts"),
       });
     });
   });
@@ -171,10 +190,10 @@ describe("App Router route graph builder", () => {
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
 
       const sharedLayouts = [
-        path.join(appDir, "layout.tsx"),
-        path.join(appDir, "dashboard/layout.tsx"),
+        canonical(appDir, "layout.tsx"),
+        canonical(appDir, "dashboard/layout.tsx"),
       ];
-      const nearestNotFound = path.join(appDir, "dashboard/not-found.tsx");
+      const nearestNotFound = canonical(appDir, "dashboard/not-found.tsx");
 
       for (const pattern of [
         "/dashboard/reports",
@@ -209,15 +228,16 @@ describe("App Router route graph builder", () => {
 
       const members = findRoute(graph.routes, "/dashboard/members");
       expect(members).toMatchObject({
-        pagePath: path.join(appDir, "dashboard/default.tsx"),
+        pagePath: canonical(appDir, "dashboard/default.tsx"),
         routePath: null,
         routeSegments: ["dashboard", "members"],
+        childrenRouteSegments: ["dashboard"],
         patternParts: ["dashboard", "members"],
       });
       expect(members.parallelSlots[0]).toMatchObject({
         key: "team@dashboard/@team",
         name: "team",
-        pagePath: path.join(appDir, "dashboard/@team/members/page.tsx"),
+        pagePath: canonical(appDir, "dashboard/@team/members/page.tsx"),
         routeSegments: ["members"],
       });
     });
@@ -235,6 +255,7 @@ describe("App Router route graph builder", () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@global/default.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "nested/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/default.tsx", EMPTY_PAGE);
@@ -245,27 +266,35 @@ describe("App Router route graph builder", () => {
       await writeAppFile(appDir, "nested/@bar/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/@bar/default.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/@bar/subroute/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@bar/modal/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/settings/page.tsx", EMPTY_PAGE);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
 
       // At /nested the children slot must render nested/page.tsx, not the
       // sibling nested/default.tsx fallback.
       const nested = findRoute(graph.routes, "/nested");
-      expect(nested.pagePath).toBe(path.join(appDir, "nested/page.tsx"));
+      expect(nested.pagePath).toBe(canonical(appDir, "nested/page.tsx"));
+      expect(nested.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "active",
+      });
+      expect(nested.parallelSlots.some((slot) => slot.ownerTreePath === "/")).toBe(true);
 
       // Each sibling slot has its own page AND its own default — the page wins.
       const foo = nested.parallelSlots.find((slot) => slot.name === "foo");
       const bar = nested.parallelSlots.find((slot) => slot.name === "bar");
       expect(foo).toMatchObject({
         name: "foo",
-        pagePath: path.join(appDir, "nested/@foo/page.tsx"),
-        defaultPath: path.join(appDir, "nested/@foo/default.tsx"),
+        pagePath: canonical(appDir, "nested/@foo/page.tsx"),
+        defaultPath: canonical(appDir, "nested/@foo/default.tsx"),
         routeSegments: [],
       });
       expect(bar).toMatchObject({
         name: "bar",
-        pagePath: path.join(appDir, "nested/@bar/page.tsx"),
-        defaultPath: path.join(appDir, "nested/@bar/default.tsx"),
+        pagePath: canonical(appDir, "nested/@bar/page.tsx"),
+        defaultPath: canonical(appDir, "nested/@bar/default.tsx"),
         routeSegments: [],
       });
 
@@ -273,18 +302,107 @@ describe("App Router route graph builder", () => {
       // falls back to nested/default.tsx, @bar mirrors its subroute page, and
       // @foo (no subroute page) keeps its default fallback.
       const subroute = findRoute(graph.routes, "/nested/subroute");
-      expect(subroute.pagePath).toBe(path.join(appDir, "nested/default.tsx"));
+      expect(subroute.pagePath).toBe(canonical(appDir, "nested/default.tsx"));
+      expect(subroute.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "default",
+      });
       const subBar = subroute.parallelSlots.find((slot) => slot.name === "bar");
       const subFoo = subroute.parallelSlots.find((slot) => slot.name === "foo");
       expect(subBar).toMatchObject({
         name: "bar",
-        pagePath: path.join(appDir, "nested/@bar/subroute/page.tsx"),
+        pagePath: canonical(appDir, "nested/@bar/subroute/page.tsx"),
         routeSegments: ["subroute"],
       });
       expect(subFoo).toMatchObject({
         name: "foo",
         pagePath: null,
-        defaultPath: path.join(appDir, "nested/@foo/default.tsx"),
+        defaultPath: canonical(appDir, "nested/@foo/default.tsx"),
+      });
+
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get("route:/nested::slot:children:/nested"),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/nested",
+        slotId: "slot:children:/nested",
+        state: "active",
+      });
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get(
+          "route:/nested/subroute::slot:children:/nested",
+        ),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/nested",
+        slotId: "slot:children:/nested",
+        state: "default",
+      });
+
+      const settings = findRoute(graph.routes, "/nested/settings");
+      expect(settings.pagePath).toBe(canonical(appDir, "nested/settings/page.tsx"));
+      expect(settings.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "active",
+      });
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get(
+          "route:/nested/settings::slot:children:/nested",
+        ),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/nested",
+        slotId: "slot:children:/nested",
+        state: "active",
+      });
+
+      const modal = findRoute(graph.routes, "/nested/modal");
+      expect(modal.pagePath).toBe(canonical(appDir, "nested/default.tsx"));
+      expect(modal.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "default",
+      });
+    });
+  });
+
+  it("prefers the nearest implicit children owner for nested parallel-route families", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@analytics/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@analytics/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@analytics/sub/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/team/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/@members/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/@members/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/@members/sub/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const team = findRoute(graph.routes, "/dashboard/team");
+      expect(team.childrenSlot).toEqual({
+        id: "slot:children:/dashboard/team",
+        ownerTreePath: "/dashboard/team",
+        state: "active",
+      });
+
+      const teamSubroute = findRoute(graph.routes, "/dashboard/team/sub");
+      expect(teamSubroute.childrenSlot).toEqual({
+        id: "slot:children:/dashboard/team",
+        ownerTreePath: "/dashboard/team",
+        state: "default",
+      });
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get(
+          "route:/dashboard/team::slot:children:/dashboard/team",
+        ),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/dashboard/team",
+        state: "active",
       });
     });
   });
@@ -315,11 +433,11 @@ describe("App Router route graph builder", () => {
       const catcher = findRoute(graph.routes, "/:catcher+");
       // The layout-only ghost parent is not added to routes, but the synthetic
       // sub-route inherits (group-a)'s layout chain.
-      expect(catcher.layouts).toEqual([path.join(appDir, "(group-a)/layout.tsx")]);
+      expect(catcher.layouts).toEqual([canonical(appDir, "(group-a)/layout.tsx")]);
       expect(catcher.parallelSlots).toHaveLength(1);
       expect(catcher.parallelSlots[0]).toMatchObject({
         name: "parallel",
-        pagePath: path.join(appDir, "(group-a)/@parallel/[...catcher]/page.tsx"),
+        pagePath: canonical(appDir, "(group-a)/@parallel/[...catcher]/page.tsx"),
         routeSegments: ["[...catcher]"],
       });
 
@@ -428,7 +546,7 @@ describe("App Router route graph builder", () => {
         // The root URL must resolve as a real page, sourced from @children/page.tsx.
         expect(patterns).toContain("/");
         const root = findRoute(graph.routes, "/");
-        expect(root.pagePath).toBe(path.join(appDir, "@children/page.tsx"));
+        expect(root.pagePath).toBe(canonical(appDir, "@children/page.tsx"));
 
         // The catch-all must still cover deeper paths.
         expect(patterns).toContain("/:catchAll+");
@@ -456,7 +574,7 @@ describe("App Router route graph builder", () => {
 
         expect(patterns).toContain("/nested");
         const nested = findRoute(graph.routes, "/nested");
-        expect(nested.pagePath).toBe(path.join(appDir, "nested/@children/page.tsx"));
+        expect(nested.pagePath).toBe(canonical(appDir, "nested/@children/page.tsx"));
       });
     });
   });
@@ -465,6 +583,26 @@ describe("App Router route graph builder", () => {
   // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall/
   // ("should match correctly when defining an explicit slot but no page").
   describe("explicit slot but no page (issue #1535)", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+    // https://github.com/vercel/next.js/tree/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+    it("uses the parent children default for a leaf parallel-slot sub-route", async () => {
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "no-children/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "no-children/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "no-children/@slot/other/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const route = findRoute(graph.routes, "/no-children/other");
+
+        expect(route.pagePath).toBe(canonical(appDir, "no-children/default.tsx"));
+        expect(route.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+          canonical(appDir, "no-children/@slot/other/page.tsx"),
+        );
+      });
+    });
+
     it("falls children through to the sibling catch-all for a slot-only sub-route", async () => {
       // /baz: @slot/baz/page.tsx exists, but there is no baz/page.tsx and no
       // root default.tsx. Next.js serves /baz's children from the sibling
@@ -493,13 +631,13 @@ describe("App Router route graph builder", () => {
         const baz = findRoute(graph.routes, "/baz");
 
         // Children fall through to the sibling catch-all (not null → no hang).
-        expect(baz.pagePath).toBe(path.join(appDir, "[...catchAll]/page.tsx"));
+        expect(baz.pagePath).toBe(canonical(appDir, "[...catchAll]/page.tsx"));
 
         // The @slot slot resolves to the explicit @slot/baz page, not the
         // slot's catch-all.
         const slot = baz.parallelSlots.find((s) => s.name === "slot");
-        expect(slot?.pagePath).toBe(path.join(appDir, "@slot/baz/page.tsx"));
-        expect(slot?.configLayoutPaths).toEqual([path.join(appDir, "@slot/baz/layout.tsx")]);
+        expect(slot?.pagePath).toBe(canonical(appDir, "@slot/baz/page.tsx"));
+        expect(slot?.configLayoutPaths).toEqual([canonical(appDir, "@slot/baz/layout.tsx")]);
 
         // The top-level catch-all is still present for fully-unmatched paths.
         expect(patterns).toContain("/:catchAll+");
@@ -522,7 +660,7 @@ describe("App Router route graph builder", () => {
         const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
         const baz = findRoute(graph.routes, "/baz");
 
-        expect(baz.pagePath).toBe(path.join(appDir, "[...catchAll]/page.tsx"));
+        expect(baz.pagePath).toBe(canonical(appDir, "[...catchAll]/page.tsx"));
         // Static pattern → no catch-all param captured for the children page.
         expect(baz.isDynamic).toBe(false);
         expect(baz.params).toEqual([]);
@@ -544,7 +682,7 @@ describe("App Router route graph builder", () => {
 
         const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
         const baz = findRoute(graph.routes, "/baz");
-        expect(baz.pagePath).toBe(path.join(appDir, "default.tsx"));
+        expect(baz.pagePath).toBe(canonical(appDir, "default.tsx"));
       });
     });
   });
@@ -575,11 +713,86 @@ describe("App Router route graph builder", () => {
       expect(catchAll.parallelSlots).toHaveLength(1);
       expect(catchAll.parallelSlots[0]).toMatchObject({
         name: "slot",
-        pagePath: path.join(appDir, "[...catchAll]/@slot/(group)/page.tsx"),
+        pagePath: canonical(appDir, "[...catchAll]/@slot/(group)/page.tsx"),
         hasPage: true,
         // The route group is transparent in the URL, so routeSegments is empty.
         routeSegments: [],
       });
+    });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-catchall-default/parallel-routes-catchall-default.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-catchall-default/parallel-routes-catchall-default.test.ts
+  it("matches nested parallel slot pages before an ancestor optional catch-all", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/[[...catchAll]]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/nested/[foo]/[bar]/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[locale]/nested/[foo]/[bar]/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/nested/[foo]/[bar]/@slot/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/nested/[foo]/[bar]/@slot/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/nested/[foo]/[bar]/@slot/[baz]/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/nested/[foo]/[bar]/@slot/[baz]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const nested = findRoute(graph.routes, "/:locale/nested/:foo/:bar");
+      const nestedBaz = findRoute(graph.routes, "/:locale/nested/:foo/:bar/:baz");
+
+      expect(nested.pagePath).toBe(canonical(appDir, "[locale]/nested/[foo]/[bar]/default.tsx"));
+      expect(nested.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "[locale]/nested/[foo]/[bar]/@slot/page.tsx"),
+      );
+      expect(nestedBaz.pagePath).toBe(canonical(appDir, "[locale]/nested/[foo]/[bar]/default.tsx"));
+      expect(nestedBaz.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "[locale]/nested/[foo]/[bar]/@slot/[baz]/page.tsx"),
+      );
+    });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-catchall-slotted-non-catchalls/parallel-routes-catchall-slotted-non-catchalls.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-catchall-slotted-non-catchalls/parallel-routes-catchall-slotted-non-catchalls.test.ts
+  it("lets an optional catch-all supply children for a layout-only slot owner", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[locale]/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/@slot/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/@slot/other/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[locale]/[[...catchAll]]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const localeCatchAll = findRoute(graph.routes, "/:locale/:catchAll*");
+
+      expect(graph.routes.some((route) => route.pattern === "/:locale")).toBe(false);
+      expect(localeCatchAll.parallelSlots.find((slot) => slot.name === "slot")).toMatchObject({
+        pagePath: null,
+        defaultPath: canonical(appDir, "[locale]/@slot/default.tsx"),
+      });
+    });
+  });
+
+  it("keeps a standalone layout-only slot owner as a route", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "parallel-nested/home/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "parallel-nested/home/@parallel/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "parallel-nested/home/@parallel/nested/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const parent = findRoute(graph.routes, "/parallel-nested/home");
+      const nested = findRoute(graph.routes, "/parallel-nested/home/nested");
+
+      expect(parent.pagePath).toBeNull();
+      expect(parent.parallelSlots.find((slot) => slot.name === "parallel")?.defaultPath).toBe(
+        canonical(appDir, "parallel-nested/home/@parallel/default.tsx"),
+      );
+      expect(nested.parallelSlots.find((slot) => slot.name === "parallel")?.pagePath).toBe(
+        canonical(appDir, "parallel-nested/home/@parallel/nested/page.tsx"),
+      );
     });
   });
 
@@ -598,10 +811,10 @@ describe("App Router route graph builder", () => {
       const route = findRoute(graph.routes, "/group-depth");
       const slot = route.parallelSlots.find((candidate) => candidate.name === "slot");
 
-      expect(route.pagePath).toBe(path.join(appDir, "group-depth/(children)/page.tsx"));
+      expect(route.pagePath).toBe(canonical(appDir, "group-depth/(children)/page.tsx"));
       expect(slot).toMatchObject({
-        pagePath: path.join(appDir, "group-depth/@slot/page.tsx"),
-        layoutPath: path.join(appDir, "group-depth/@slot/layout.tsx"),
+        pagePath: canonical(appDir, "group-depth/@slot/page.tsx"),
+        layoutPath: canonical(appDir, "group-depth/@slot/layout.tsx"),
         routeSegments: [],
       });
     });
@@ -620,8 +833,8 @@ describe("App Router route graph builder", () => {
       const slot = route.parallelSlots.find((candidate) => candidate.name === "slot");
 
       expect(slot).toMatchObject({
-        pagePath: path.join(appDir, "@slot/dashboard/page.tsx"),
-        configLayoutPaths: [path.join(appDir, "@slot/dashboard/layout.tsx")],
+        pagePath: canonical(appDir, "@slot/dashboard/page.tsx"),
+        configLayoutPaths: [canonical(appDir, "@slot/dashboard/layout.tsx")],
         configLayoutTreePositions: [1],
       });
     });
@@ -638,7 +851,7 @@ describe("App Router route graph builder", () => {
 
       const about = findRoute(graph.routes, "/about");
       expect(about).toMatchObject({
-        pagePath: path.join(appDir, "(marketing)/about/page.tsx"),
+        pagePath: canonical(appDir, "(marketing)/about/page.tsx"),
         routeSegments: ["(marketing)", "about"],
         patternParts: ["about"],
       });
@@ -660,7 +873,7 @@ describe("App Router route graph builder", () => {
 
       expect(route.layoutTreePositions).toEqual([0]);
       expect(route.layoutErrorPaths).toEqual([null]);
-      expect(route.errorPaths).toEqual([path.join(appDir, "docs/(group)/error.tsx")]);
+      expect(route.errorPaths).toEqual([canonical(appDir, "docs/(group)/error.tsx")]);
       expect(route.errorTreePositions).toEqual([2]);
     });
   });
@@ -1069,9 +1282,9 @@ describe("App Router route graph builder", () => {
       expect(about.parallelSlots).toHaveLength(1);
       expect(about.parallelSlots[0]).toMatchObject({
         name: "breadcrumbs",
-        pagePath: path.join(appDir, "@breadcrumbs/about/page.tsx"),
-        defaultPath: path.join(appDir, "@breadcrumbs/default.tsx"),
-        configLayoutPaths: [path.join(appDir, "@breadcrumbs/about/layout.tsx")],
+        pagePath: canonical(appDir, "@breadcrumbs/about/page.tsx"),
+        defaultPath: canonical(appDir, "@breadcrumbs/default.tsx"),
+        configLayoutPaths: [canonical(appDir, "@breadcrumbs/about/layout.tsx")],
         routeSegments: ["about"],
       });
     });
@@ -1088,7 +1301,7 @@ describe("App Router route graph builder", () => {
       const slug = findRoute(graph.routes, "/:slug+");
       expect(slug.parallelSlots[0]).toMatchObject({
         name: "breadcrumbs",
-        pagePath: path.join(appDir, "@breadcrumbs/[...slug]/page.tsx"),
+        pagePath: canonical(appDir, "@breadcrumbs/[...slug]/page.tsx"),
         routeSegments: ["[...slug]"],
       });
     });
@@ -1105,7 +1318,7 @@ describe("App Router route graph builder", () => {
       expect(about.parallelSlots[0]).toMatchObject({
         name: "breadcrumbs",
         pagePath: null,
-        defaultPath: path.join(appDir, "@breadcrumbs/default.tsx"),
+        defaultPath: canonical(appDir, "@breadcrumbs/default.tsx"),
         routeSegments: null,
       });
     });
@@ -1122,8 +1335,8 @@ describe("App Router route graph builder", () => {
       const about = findRoute(graph.routes, "/about");
       expect(about.parallelSlots[0]).toMatchObject({
         name: "breadcrumbs",
-        pagePath: path.join(appDir, "@breadcrumbs/about/page.tsx"),
-        defaultPath: path.join(appDir, "@breadcrumbs/default.tsx"),
+        pagePath: canonical(appDir, "@breadcrumbs/about/page.tsx"),
+        defaultPath: canonical(appDir, "@breadcrumbs/default.tsx"),
         routeSegments: ["about"],
       });
     });
@@ -1139,7 +1352,7 @@ describe("App Router route graph builder", () => {
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const items = findRoute(graph.routes, "/shop/items");
       expect(items.parallelSlots[0]).toMatchObject({
-        pagePath: path.join(appDir, "@breadcrumbs/shop/items/page.tsx"),
+        pagePath: canonical(appDir, "@breadcrumbs/shop/items/page.tsx"),
         routeSegments: ["shop", "items"],
       });
     });
@@ -1156,7 +1369,7 @@ describe("App Router route graph builder", () => {
       const route = findRoute(graph.routes, "/shop/:id");
       expect(route.parallelSlots[0]).toMatchObject({
         name: "breadcrumbs",
-        pagePath: path.join(appDir, "@breadcrumbs/shop/[name]/page.tsx"),
+        pagePath: canonical(appDir, "@breadcrumbs/shop/[name]/page.tsx"),
         routeSegments: ["shop", "[name]"],
         slotPatternParts: ["shop", ":name"],
         slotParamNames: ["name"],
@@ -1176,7 +1389,7 @@ describe("App Router route graph builder", () => {
       const route = findRoute(graph.routes, "/:teamID/sub/folder");
       expect(route.parallelSlots[0]).toMatchObject({
         name: "slot",
-        pagePath: path.join(appDir, "[teamID]/@slot/[...catchAll]/page.tsx"),
+        pagePath: canonical(appDir, "[teamID]/@slot/[...catchAll]/page.tsx"),
         routeSegments: ["[...catchAll]"],
         slotPatternParts: [":teamID", ":catchAll+"],
         slotParamNames: ["teamID", "catchAll"],
@@ -1196,8 +1409,8 @@ describe("App Router route graph builder", () => {
       const detail = findRoute(graph.routes, "/shop/items/detail");
       expect(detail.parallelSlots[0]).toMatchObject({
         name: "sidebar",
-        pagePath: path.join(appDir, "shop/@sidebar/items/detail/page.tsx"),
-        defaultPath: path.join(appDir, "shop/@sidebar/default.tsx"),
+        pagePath: canonical(appDir, "shop/@sidebar/items/detail/page.tsx"),
+        defaultPath: canonical(appDir, "shop/@sidebar/default.tsx"),
         routeSegments: ["items", "detail"],
         slotPatternParts: ["shop", "items", "detail"],
       });
@@ -1230,6 +1443,28 @@ describe("App Router route graph builder", () => {
 
       expect(patterns).toContain("/products/:variant.id");
       expect(patterns).toContain("/users/:user@domain");
+    });
+  });
+
+  it("discovers route handlers inside dot-directories like .well-known", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, ".well-known/openid-configuration/route.ts", EMPTY_ROUTE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(graph.routes, "/.well-known/openid-configuration");
+
+      expect(route.routePath).toBe(canonical(appDir, ".well-known/openid-configuration/route.ts"));
+      expect(route.ids.routeHandler).toBe("route-handler:/.well-known/openid-configuration");
+      expect(graph.routeManifest.segmentGraph.routeHandlers.get(route.ids.routeHandler!)).toEqual({
+        id: "route-handler:/.well-known/openid-configuration",
+        routeId: "route:/.well-known/openid-configuration",
+        pattern: "/.well-known/openid-configuration",
+      });
+      expect(matchAppRoute("/.well-known/openid-configuration", graph.routes)).toEqual({
+        params: {},
+        route,
+      });
     });
   });
 

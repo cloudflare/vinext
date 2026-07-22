@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mergeServerExternalPackages } from "../packages/vinext/src/config/server-external-packages.js";
 
 describe("mergeServerExternalPackages", () => {

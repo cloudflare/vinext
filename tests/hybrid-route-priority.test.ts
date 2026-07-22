@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { compareHybridRoutePatterns } from "../packages/vinext/src/routing/utils.js";
 import {
   pagesRouteHasPriorityOverAppRoute,

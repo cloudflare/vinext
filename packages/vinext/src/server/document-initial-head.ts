@@ -63,14 +63,15 @@ export async function callDocumentGetInitialProps(
   }
 
   try {
-    const initialProps = await getInitialProps({
+    const context = {
       // Minimal DocumentContext — vinext does not yet plumb the full context
       // (req/res/renderPage/defaultGetInitialProps) for SSR. User code that
       // relies on those fields receives no-op stand-ins; matches the
       // documented limitation in `shims/document.tsx`.
       defaultGetInitialProps: async () => ({ html: "", head: [], styles: undefined }),
       renderPage: () => ({ html: "" }),
-    });
+    } as unknown as DocumentContext;
+    const initialProps = await getInitialProps(context);
     const initialHead = Array.isArray(initialProps?.head)
       ? (initialProps.head as React.ReactNode[])
       : [];

@@ -41,7 +41,13 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
 async function writeFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const targetDir = path.join(appDir, "target");
-  await fs.mkdir(targetDir, { recursive: true });
+  const settledTargetDir = path.join(appDir, "settled-target");
+  const noPrefetchTargetDir = path.join(appDir, "no-prefetch-target");
+  await Promise.all([
+    fs.mkdir(targetDir, { recursive: true }),
+    fs.mkdir(settledTargetDir, { recursive: true }),
+    fs.mkdir(noPrefetchTargetDir, { recursive: true }),
+  ]);
   await linkFixtureNodeModules(fixtureRoot);
 
   await fs.writeFile(
@@ -60,7 +66,11 @@ async function writeFixture(fixtureRoot: string): Promise<void> {
     `import Link from "next/link";
 
 export default function HomePage() {
-  return <Link href="/target" id="full-prefetch-link" prefetch={true}>Target</Link>;
+  return <>
+    <Link href="/target" id="full-prefetch-link" prefetch={true}>Target</Link>
+    <Link href="/settled-target" id="settled-prefetch-link" prefetch={true}>Settled target</Link>
+    <Link href="/no-prefetch-target" id="no-prefetch-link" prefetch={false}>No prefetch target</Link>
+  </>;
 }
 `,
   );
@@ -75,6 +85,20 @@ export default function HomePage() {
     path.join(targetDir, "page.tsx"),
     `export default function TargetPage() {
   return <h1 id="target-content">Full prefetch page content</h1>;
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(settledTargetDir, "page.tsx"),
+    `export default function SettledTargetPage() {
+  return <h1 id="settled-target-content">Settled prefetch page content</h1>;
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(noPrefetchTargetDir, "page.tsx"),
+    `export default function NoPrefetchTargetPage() {
+  return <h1 id="no-prefetch-target-content">No prefetch page content</h1>;
 }
 `,
   );
@@ -152,8 +176,15 @@ test("explicit full prefetch returns page content and shares its pending request
         }
 
         if (url.pathname === "/target" && url.searchParams.has("_rsc")) {
+          const routerPrefetchHeader = headers.get("next-router-prefetch");
+          // Main may warm a loading shell alongside an explicit full prefetch.
+          // This fixture gates and counts only the full response whose pending
+          // request must be shared with the click navigation.
+          if (routerPrefetchHeader !== null) {
+            return originalFetch(input, init);
+          }
           state.requestCount += 1;
-          state.routerPrefetchHeader = headers.get("next-router-prefetch");
+          state.routerPrefetchHeader = routerPrefetchHeader;
           state.routerStateHeader = headers.get("next-router-state-tree");
           const response = await originalFetch(input, init);
           state.responseText = await response.clone().text();
@@ -208,6 +239,71 @@ test("explicit full prefetch returns page content and shares its pending request
         () => (window as FullPrefetchWindow).__VINEXT_FULL_PREFETCH_TEST__?.routerStateHeader,
       ),
     ).toBeTruthy();
+  } finally {
+    await page.close();
+    if (server) await closeServer(server);
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("only a settled prepared prefetch commits in the initiating click task", async ({ page }) => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-settled-prefetch-"));
+  let server: Server | undefined;
+
+  try {
+    await writeFixture(fixtureRoot);
+    const { createBuilder } = await import("vite");
+    const builder = await createBuilder({
+      root: fixtureRoot,
+      configFile: path.join(fixtureRoot, "vite.config.ts"),
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const { startProdServer } = await import(
+      pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href
+    );
+    const started = await startProdServer({
+      host: "127.0.0.1",
+      port: 0,
+      outDir: path.join(fixtureRoot, "dist"),
+      noCompression: true,
+    });
+    server = started.server;
+    const baseUrl = `http://127.0.0.1:${started.port}`;
+
+    const settledFullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/settled-target" &&
+        url.searchParams.has("_rsc") &&
+        response.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await (await settledFullResponse).finished();
+    // Preparation is CPU-local once the full response body settles.
+    await page.waitForTimeout(50);
+
+    expect(
+      await page.evaluate(() => {
+        document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
+        return document.querySelector("#settled-target-content")?.textContent ?? null;
+      }),
+    ).toBe("Settled prefetch page content");
+
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    expect(
+      await page.evaluate(() => {
+        document.querySelector<HTMLElement>("#no-prefetch-link")?.click();
+        return document.querySelector("#no-prefetch-target-content")?.textContent ?? null;
+      }),
+    ).toBeNull();
+    await expect(page.locator("#no-prefetch-target-content")).toHaveText(
+      "No prefetch page content",
+    );
   } finally {
     await page.close();
     if (server) await closeServer(server);

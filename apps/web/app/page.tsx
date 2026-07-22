@@ -30,18 +30,18 @@ export const revalidate = 300;
 
 const STATS = [
   {
-    value: "Up to 4×",
+    value: "Up to 2×",
     label: "faster production builds",
     detail: "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
   },
   {
-    value: "~50%",
+    value: "~33%",
     label: "smaller client bundles",
     detail:
-      "168.9 KB → 72.9 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
+      "185 KB → 125 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
   },
   {
-    value: "94%",
+    value: "92%",
     label: "of the Next.js 16 API surface",
     detail:
       "App Router, Pages Router, RSC, server actions, ISR, middleware, route handlers. Coverage and gaps tracked openly.",
@@ -65,7 +65,7 @@ const PILLARS = [
     icon: PlugsIcon,
     title: "Deploy anywhere",
     description:
-      "Cloudflare Workers is the first deployment target, with one-command deploys via vinext deploy. Vercel, Netlify, AWS, Deno Deploy, and more, work through Nitro, and standalone Node bundles are emitted on demand.",
+      "Cloudflare Workers is the first deployment target, with one-command deploys via npx @vinext/cloudflare deploy. Vercel, Netlify, AWS, Deno Deploy, and more, work through Nitro, and standalone Node bundles are emitted on demand.",
   },
 ] as const;
 
@@ -87,7 +87,7 @@ const PLATFORM_FEATURES: readonly PlatformFeature[] = [
     icon: DatabaseIcon,
     title: "ISR out of the box",
     description:
-      "Stale-while-revalidate with background regeneration, matching the Next.js 16 CacheHandler interface. A KV-backed handler ships by default; R2 or your own backend can drop in.",
+      "Stale-while-revalidate with background regeneration, matching the Next.js 16 CacheHandler interface. Cloudflare Workers Cache serves route-level ISR at the edge, while Workers KV backs the data cache.",
   },
   {
     icon: SparkleIcon,
@@ -133,10 +133,11 @@ export default defineConfig({
   {
     title: "Deploy to Cloudflare Workers",
     description:
-      "Add the Cloudflare Vite plugin, Workers KV caching, and Cloudflare Images optimization.",
+      "Add the Cloudflare Vite plugin, Workers Cache for route-level ISR, Workers KV for data caching, and Cloudflare Images optimization.",
     code: `import { cloudflare } from "@cloudflare/vite-plugin";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
-import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import { defineConfig } from "vite";
 import vinext from "vinext";
 
@@ -144,10 +145,11 @@ export default defineConfig({
   plugins: [
     vinext({
       cache: {
+        cdn: cdnAdapter(),
         data: kvDataAdapter(),
       },
       images: {
-        optimizer: imageAdapter(),
+        optimizer: imagesOptimizer(),
       },
     }),
     cloudflare({

@@ -18,6 +18,7 @@ type NitroSetupTarget = {
   options: {
     dev?: boolean;
     routeRules?: Record<string, NitroRouteRuleConfig>;
+    traceDeps?: string[];
   };
   logger?: {
     warn?: (message: string) => void;
@@ -279,6 +280,32 @@ describe("collectNitroRouteRules", () => {
 });
 
 describe("vinext Nitro setup integration", () => {
+  it("propagates server externals to Nitro traceDeps", async () => {
+    const root = createAppProject();
+    writeProjectFile(
+      root,
+      "next.config.mjs",
+      `export default { serverExternalPackages: ["custom-apm", "@scope/traced"] };\n`,
+    );
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro = {
+      options: {
+        dev: false,
+        routeRules: {},
+        traceDeps: ["existing-trace", "pg"],
+      },
+    };
+
+    await nitroPlugin.nitro!.setup!(nitro);
+
+    expect(nitro.options.traceDeps?.slice(0, 2)).toEqual(["existing-trace", "pg"]);
+    expect(nitro.options.traceDeps).toContain("pg");
+    expect(nitro.options.traceDeps).toContain("mongodb");
+    expect(nitro.options.traceDeps).toContain("custom-apm");
+    expect(nitro.options.traceDeps).toContain("@scope/traced");
+    expect(new Set(nitro.options.traceDeps).size).toBe(nitro.options.traceDeps?.length);
+  });
+
   it("merges generated route rules into Nitro before build", async () => {
     const root = createAppProject();
     const nitroPlugin = await initializeNitroSetupPlugin(root);
@@ -327,18 +354,22 @@ describe("vinext Nitro setup integration", () => {
     expect(warn.mock.calls[0]?.[0]).toContain("/blog/*");
   });
 
-  it("skips route rule generation during Nitro dev", async () => {
+  it("propagates server externals but skips route rule generation during Nitro dev", async () => {
     const root = createAppProject();
     const nitroPlugin = await initializeNitroSetupPlugin(root);
     const nitro = {
       options: {
         dev: true,
         routeRules: {},
+        traceDeps: ["existing-trace"],
       },
     };
 
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({});
+    expect(nitro.options.traceDeps?.slice(0, 1)).toEqual(["existing-trace"]);
+    expect(nitro.options.traceDeps).toContain("pg");
+    expect(nitro.options.traceDeps).toContain("mongodb");
   });
 });

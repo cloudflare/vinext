@@ -16,13 +16,14 @@
  *   'export'   — SSR routes are build errors; ISR treated as static (no revalidate)
  */
 
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import os from "node:os";
 import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -38,8 +39,10 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../server/headers.js";
 import {
   encodePrerenderRouteParams,
@@ -47,6 +50,12 @@ import {
   type PrerenderRouteParamsPayload,
 } from "../server/prerender-route-params.js";
 import { startProdServer } from "../server/prod-server.js";
+import {
+  prerenderPoolAvailable,
+  resolvePrerenderPoolSize,
+  startPrerenderServerPool,
+  type PrerenderServerPool,
+} from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
@@ -70,6 +79,25 @@ function getErrorMessageWithStack(err: Error): string {
   // and the server bundle includes sourcemaps, this resolves bundled stack frames to
   // original source files, matching Next.js's enablePrerenderSourceMaps behavior.
   return err.stack || err.message;
+}
+
+async function startOptionalPrerenderServerPool(
+  outDir: string,
+  poolSize: number,
+): Promise<PrerenderServerPool | null> {
+  try {
+    return await startPrerenderServerPool(outDir, poolSize);
+  } catch (e) {
+    // The pool is a performance optimization layered over the already-running
+    // in-process prerender server. Startup failure is still before any route has
+    // rendered, so degrade; render-time worker failures remain fatal later.
+    console.warn(
+      `[vinext] prerender render pool failed to start; falling back to single-process render: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return null;
+  }
 }
 
 // A user's generateStaticParams/getStaticPaths threw, surfaced by the prerender
@@ -123,6 +151,8 @@ export type PrerenderRouteResult =
       path?: string;
       /** Which router produced this route. Used by cache seeding. */
       router: "app" | "pages";
+      /** Response headers that must be replayed with the prerendered artifact. */
+      headers?: Record<string, string>;
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
     }
@@ -278,7 +308,11 @@ export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array |
   while ((match = scriptPattern.exec(html)) !== null) {
     const script = (match[1] ?? "").trim().replace(/;$/, "");
 
-    if (script === RSC_RUNTIME_DONE_SCRIPT || script === RSC_LEGACY_DONE_SCRIPT) {
+    if (
+      script === RSC_RUNTIME_DONE_SCRIPT ||
+      script === RSC_LEGACY_DONE_SCRIPT ||
+      script.endsWith(`;${RSC_RUNTIME_DONE_SCRIPT}`)
+    ) {
       sawDone = true;
       continue;
     }
@@ -383,7 +417,7 @@ async function runWithConcurrency<T, R>(
  * caller (prerenderPages / prerenderApp) catches this and surfaces it as a
  * per-route error result.
  */
-function buildUrlFromParams(
+export function buildUrlFromParams(
   pattern: string,
   params: Record<string, string | string[]> | undefined | null,
 ): string {
@@ -588,6 +622,8 @@ export async function prerenderPages({
   // ownedProdServerHandle: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
+  // Forked render-server pool (declared out here so the finally can close it).
+  let renderPool: PrerenderServerPool | null = null;
   try {
     // Read the prerender secret written at build time by vinext:server-manifest.
     // When _prerenderSecret is provided by the caller (hybrid builds where
@@ -646,8 +682,22 @@ export async function prerenderPages({
       filePath: string;
     };
 
-    const renderPage = (urlPath: string) =>
-      fetch(`${baseUrl}${urlPath}`, { headers: secretHeaders, redirect: "manual" });
+    // Render servers the per-route fetches are load-balanced across. Starts as
+    // the single in-process server (`baseUrl`); when there are enough routes
+    // (and we started our own server, i.e. not a hybrid shared server) we fork
+    // a pool of production servers below and repoint these ports at them so
+    // rendering — which is CPU-bound and otherwise serialized on one core —
+    // spreads across cores. getStaticPaths/secret endpoints keep using
+    // `baseUrl` (the in-process server).
+    let renderPorts: number[] = [prodServer.port];
+    let renderRoundRobin = 0;
+    const renderPage = (urlPath: string) => {
+      const port = renderPorts[renderRoundRobin++ % renderPorts.length];
+      return fetch(`http://127.0.0.1:${port}${urlPath}`, {
+        headers: secretHeaders,
+        redirect: "manual",
+      });
+    };
 
     // Build the bundlePageRoutes list from static file analysis + route info.
     // getStaticPaths is fetched from the prod server via a prerender endpoint.
@@ -809,6 +859,20 @@ export async function prerenderPages({
       }
     }
 
+    // ── Spread rendering across a pool of production servers ──────────────
+    // Only when we own the server (not a hybrid shared server) and there are
+    // enough routes to outweigh the fork/startup cost. The main thread keeps
+    // doing the per-route fetch + file write; the forked servers do the
+    // CPU-bound rendering on their own cores.
+    if (!options._prodServer && pagesBundlePath && prerenderPoolAvailable()) {
+      const poolSize = resolvePrerenderPoolSize(pagesToRender.length, concurrency);
+      if (poolSize > 1) {
+        const poolOutDir = path.dirname(path.dirname(pagesBundlePath));
+        renderPool = await startOptionalPrerenderServerPool(poolOutDir, poolSize);
+        if (renderPool) renderPorts = renderPool.ports;
+      }
+    }
+
     // ── Render each page ──────────────────────────────────────────────────
     let completed = 0;
     const pageResults = await runWithConcurrency(
@@ -857,6 +921,7 @@ export async function prerenderPages({
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
           };
         } catch (e) {
+          renderPool?.recordRenderError(e);
           const err = e as Error;
           result = {
             route: route.pattern,
@@ -874,6 +939,11 @@ export async function prerenderPages({
       },
     );
     results.push(...pageResults);
+
+    // A worker that crashed mid-render makes its routes fail with connection
+    // errors that are otherwise recorded as non-fatal — fail the build loudly
+    // instead of shipping partial output.
+    renderPool?.assertHealthy();
 
     // ── Render 404 page ───────────────────────────────────────────────────
     const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
@@ -894,10 +964,14 @@ export async function prerenderPages({
             router: "pages",
           });
         }
-      } catch {
-        // No custom 404
+      } catch (e) {
+        // No custom 404. When the render-worker pool is active, a transport
+        // failure here is still captured by assertHealthy() below so a crashed
+        // worker cannot silently skip an existing custom 404.
+        renderPool?.recordRenderError(e);
       }
     }
+    renderPool?.assertHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
     if (!skipManifest)
@@ -908,6 +982,7 @@ export async function prerenderPages({
 
     return { routes: results };
   } finally {
+    if (renderPool) await renderPool.close();
     setCacheHandler(previousHandler);
     if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
     else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
@@ -969,6 +1044,12 @@ export async function prerenderApp({
   // ownedProdServer: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
+  // Forked render-server pool (declared out here so the finally can close it).
+  let renderPool: PrerenderServerPool | null = null;
+  // Render servers the per-route fetches are load-balanced across. Starts as the
+  // single in-process server; repointed at the forked pool below for large apps.
+  let renderPorts: number[] = [];
+  let renderRoundRobin = 0;
 
   try {
     // Start a local prod server and fetch via HTTP.
@@ -1002,12 +1083,14 @@ export async function prerenderApp({
         })();
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
+    renderPorts = [prodServer.port];
     const secretHeaders: Record<string, string> = prerenderSecret
       ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
       : {};
 
     rscHandler = (req: Request) => {
-      // Forward the request to the local prod server.
+      // Forward the request to a prod server (round-robin across the render
+      // pool when one was forked; otherwise the single in-process server).
       // `redirect: "manual"` ensures pages that call `redirect()` surface as
       // their original 3xx response — otherwise fetch follows the Location
       // header server-side, the prerender harness sees a 200 for the
@@ -1017,7 +1100,8 @@ export async function prerenderApp({
       // document load. Mirrors the pages-prerender `renderPage` helper above.
       // See: https://github.com/cloudflare/vinext/issues/1530
       const parsed = new URL(req.url);
-      const url = `${baseUrl}${parsed.pathname}${parsed.search}`;
+      const port = renderPorts[renderRoundRobin++ % renderPorts.length];
+      const url = `http://127.0.0.1:${port}${parsed.pathname}${parsed.search}`;
       return fetch(url, {
         method: req.method,
         headers: { ...secretHeaders, ...Object.fromEntries(req.headers.entries()) },
@@ -1349,16 +1433,22 @@ export async function prerenderApp({
         if (prerenderRouteParamsHeader !== null) {
           htmlHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
         }
+        if (isSpeculative) {
+          htmlHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
+        }
         const htmlRequest = new Request(`http://localhost${urlPath}`, { headers: htmlHeaders });
         const htmlRender = await runWithHeadersContext(
           headersContextFromRequest(htmlRequest),
           async () => {
             const response = await rscHandler(htmlRequest);
             const cacheControl = response.headers.get("cache-control") ?? "";
-            if (!response.ok || (isSpeculative && cacheControl.includes("no-store"))) {
+            const linkHeader = response.headers.get("link");
+            const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
+            if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
                 cacheControl,
+                linkHeader,
                 html: null,
                 ok: response.ok,
                 requestCacheLife: null,
@@ -1367,11 +1457,16 @@ export async function prerenderApp({
             }
 
             const html = await response.text();
+            // Prefer the response side channel so single-process and pooled
+            // prerender record the same cache-life metadata; still consume the
+            // process-local value to drain/fallback when no header exists.
+            const processCacheLife = _consumeRequestScopedCacheLife();
             return {
               cacheControl,
+              linkHeader,
               html,
               ok: true,
-              requestCacheLife: _consumeRequestScopedCacheLife(),
+              requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
             };
           },
@@ -1388,14 +1483,14 @@ export async function prerenderApp({
           };
         }
 
-        // Detect dynamic usage for speculative routes via Cache-Control header.
-        // When headers(), cookies(), connection(), or noStore() are called during
-        // render, the server sets Cache-Control: no-store. We treat this as a
-        // signal that the route is dynamic and should be skipped.
-        if (isSpeculative) {
-          if (htmlCacheControl.includes("no-store")) {
-            return { route: routePattern, status: "skipped", reason: "dynamic" };
-          }
+        // Detect dynamic usage via Cache-Control header. When headers(),
+        // cookies(), connection(), noStore(), or a no-store fetch are called
+        // during render, the server sets Cache-Control: no-store. Treat that
+        // as a dynamic skip even for concrete generateStaticParams paths: a
+        // generated param decides which URLs are admissible, not that the
+        // render output is reusable.
+        if (htmlCacheControl.includes("no-store")) {
+          return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
 
         if (htmlRender.html === null) {
@@ -1410,10 +1505,9 @@ export async function prerenderApp({
           : htmlRender.html;
 
         // Reconstruct the RSC payload from the inline bootstrap chunks already
-        // streamed into the HTML body. The chunks went through fixFlightHints
-        // (createRscEmbedTransform applies it before pushing each chunk into
-        // the embed scripts), so the resulting `.rsc` file contains the
-        // rewritten Flight form rather than raw Flight bytes.
+        // streamed into the HTML body. The generated RSC entry performs
+        // framing-aware hint normalization at the stream source, so the
+        // resulting `.rsc` file contains the same Flight bytes.
         //
         // Falls back to a second invocation with `RSC: 1` when the HTML has
         // no chunk scripts at all — covers cases where middleware
@@ -1424,6 +1518,9 @@ export async function prerenderApp({
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+          }
+          if (isSpeculative) {
+            rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
           }
           const rscRequest = new Request(`http://localhost${urlPath}`, {
             headers: rscHeaders,
@@ -1477,10 +1574,12 @@ export async function prerenderApp({
             ? { expire: renderedCacheControl.expire }
             : {}),
           router: "app",
+          ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
         };
       } catch (e) {
+        renderPool?.recordRenderError(e);
         if (isSpeculative) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
@@ -1488,6 +1587,19 @@ export async function prerenderApp({
         const base = config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message;
         const msg = err.digest ? `${base} (digest: ${err.digest})` : base;
         return { route: routePattern, status: "error", error: msg };
+      }
+    }
+
+    // ── Spread rendering across a pool of production servers ──────────────
+    // Only when we own the server (not a hybrid shared server) and there are
+    // enough routes to outweigh the fork/startup cost. The main thread keeps
+    // collecting HTML/RSC and writing files; the forked servers render on
+    // their own cores.
+    if (!options._prodServer && prerenderPoolAvailable()) {
+      const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
+      if (poolSize > 1) {
+        renderPool = await startOptionalPrerenderServerPool(path.dirname(serverDir), poolSize);
+        if (renderPool) renderPorts = renderPool.ports;
       }
     }
 
@@ -1503,6 +1615,10 @@ export async function prerenderApp({
       return result;
     });
     results.push(...appResults);
+
+    // Fail loudly if a render worker crashed mid-build (otherwise its routes
+    // fail with connection errors recorded as non-fatal → partial output).
+    renderPool?.assertHealthy();
 
     const outputFiles =
       mode === "export" && metadataRoutes.length > 0
@@ -1532,9 +1648,14 @@ export async function prerenderApp({
           router: "app",
         });
       }
-    } catch {
-      // No custom 404 — skip silently
+    } catch (e) {
+      // No custom 404. When the render-worker pool is active, a transport
+      // failure here is still captured by assertHealthy() below so a crashed
+      // worker cannot silently skip an existing custom 404 (mirrors the
+      // Pages Router 404 path).
+      renderPool?.recordRenderError(e);
     }
+    renderPool?.assertHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
     if (!skipManifest)
@@ -1548,6 +1669,7 @@ export async function prerenderApp({
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
     };
   } finally {
+    if (renderPool) await renderPool.close();
     setCacheHandler(previousHandler);
     if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
     else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
@@ -1576,6 +1698,27 @@ function resolveRenderedCacheControl(
       }),
     ...(revalidate === undefined ? {} : { revalidate }),
   };
+}
+
+function readPrerenderCacheLifeHeader(
+  headers: Headers,
+): { expire?: number; revalidate?: number } | null {
+  const value = headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value) as { expire?: unknown; revalidate?: unknown };
+    const cacheLife: { expire?: number; revalidate?: number } = {};
+    if (typeof parsed.revalidate === "number" && Number.isFinite(parsed.revalidate)) {
+      cacheLife.revalidate = parsed.revalidate;
+    }
+    if (typeof parsed.expire === "number" && Number.isFinite(parsed.expire)) {
+      cacheLife.expire = parsed.expire;
+    }
+    return cacheLife.revalidate === undefined && cacheLife.expire === undefined ? null : cacheLife;
+  } catch {
+    return null;
+  }
 }
 
 function resolveRenderedExpireSeconds(options: {
@@ -1630,6 +1773,7 @@ export function writePrerenderIndex(
         revalidate: r.revalidate,
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         router: r.router,
+        ...(r.headers ? { headers: r.headers } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
       };
@@ -1644,6 +1788,7 @@ export function writePrerenderIndex(
     ...(buildId ? { buildId } : {}),
     ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
     routes: indexRoutes,
+    pregeneratedConcretePaths: buildPregeneratedConcretePathTable({ routes: indexRoutes }),
   };
   fs.writeFileSync(
     path.join(outDir, "vinext-prerender.json"),

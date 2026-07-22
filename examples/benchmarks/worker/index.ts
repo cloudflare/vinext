@@ -5,7 +5,7 @@
  * 1. API routes (/api/upload, /api/results) with D1 database access
  * 2. All other routes delegated to the vinext RSC handler
  */
-import handler from "vinext/server/app-router-entry";
+import handler from "vinext/server/fetch-handler";
 
 interface Env {
   DB: D1Database;

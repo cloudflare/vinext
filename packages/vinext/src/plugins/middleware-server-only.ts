@@ -1,5 +1,5 @@
 import type { Plugin } from "vite";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
 
 /**
  * Allow `import 'server-only'` from neutral server targets (and any module
@@ -63,15 +63,15 @@ export function createMiddlewareServerOnlyPlugin(options: {
   const tainted = new Set<string>();
 
   // Canonicalize an id into the space the taint set lives in: forward slashes
-  // (Rolldown ids are POSIX-normalized) with the query suffix stripped. The
-  // seed paths come from `path.join`, which is backslash on Windows, so they
-  // must be normalized to match the importer ids Rolldown passes in.
+  // (Rolldown ids are POSIX-normalized) with the query suffix stripped. Seed
+  // paths can come from `fs.realpathSync`, which is backslash on Windows, so
+  // they must be normalized to match the importer ids Rolldown passes in.
   function canonicalizeId(id: string): string {
     const queryIndex = id.indexOf("?");
     // Strip query string suffix (e.g. ?v=hash, ?rsc, ?used). Rolldown stores
     // module IDs with the query in `importer` strings for HMR / dep optimizer
     // round-trips; the canonical id we tracked doesn't carry one.
-    return normalizePathSeparators(queryIndex === -1 ? id : id.slice(0, queryIndex));
+    return toSlash(queryIndex === -1 ? id : id.slice(0, queryIndex));
   }
 
   function isTainted(id: string | undefined): boolean {

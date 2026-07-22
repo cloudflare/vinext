@@ -24,9 +24,10 @@ import os from "node:os";
 import fsp from "node:fs/promises";
 import {
   buildSassPreprocessorOptions,
+  createSassCssUrlAssetImporter,
   createSassTildeImporter,
 } from "../packages/vinext/src/plugins/sass.js";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect.
 // Save/restore so tests that call config() don't leak between files.
@@ -129,6 +130,99 @@ describe("buildSassPreprocessorOptions", () => {
       includePaths: ["./valid", 42, null] as unknown as string[],
     });
     expect(result?.loadPaths).toEqual(["./valid"]);
+  });
+});
+
+describe("createSassCssUrlAssetImporter", () => {
+  it("marks asset URLs relative to an imported partial before Sass flattens it", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-partial-url-"));
+    const stylesDir = path.join(tmpDir, "styles");
+    const partialDir = path.join(stylesDir, "subdirectory");
+    await fsp.mkdir(partialDir, { recursive: true });
+    const entryPath = path.join(stylesDir, "global.scss");
+    const partialPath = path.join(partialDir, "_partial.scss");
+    await fsp.writeFile(entryPath, `@import './subdirectory/partial';`);
+    await fsp.writeFile(
+      partialPath,
+      `.red { background-image: url('./darka.svg'), url(darkb.svg); }`,
+    );
+
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const rewritten = importer.rewriteImports(`@import "./subdirectory/partial";`, entryPath);
+      const importUrl = rewritten.match(/@import "([^"]+)"/)?.[1];
+      expect(importUrl).toContain("vinext-css-url-asset:");
+      const canonicalUrl = importer.canonicalize(importUrl!);
+      expect(canonicalUrl?.href).toBe(pathToFileURL(partialPath).href);
+      const loaded = importer.load(canonicalUrl!);
+      expect(loaded?.syntax).toBe("scss");
+      expect(loaded?.contents).toContain("vinext_css_url_asset=darka.svg");
+      expect(loaded?.contents).toContain("vinext_css_url_asset=darkb.svg");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the default namespace for @use and supports explicit @use/@forward", async () => {
+    const sass = await import("sass");
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-use-url-"));
+    const entryPath = path.join(tmpDir, "entry.scss");
+    const partialPath = path.join(tmpDir, "_card.scss");
+    await fsp.writeFile(partialPath, `$fg: red;\n.card { background-image: url('./card.svg'); }`);
+
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const defaultUse = importer.rewriteImports(
+        `@use "./card";\n.test { color: card.$fg; }`,
+        entryPath,
+      );
+      expect(defaultUse).toContain(" as card;");
+      expect(
+        sass.compileString(defaultUse, {
+          importers: [importer],
+          syntax: "scss",
+        }).css,
+      ).toContain("vinext_css_url_asset=card.svg");
+
+      const explicitUse = importer.rewriteImports(
+        `@use "./card" as c;\n.test { color: c.$fg; }`,
+        entryPath,
+      );
+      expect(explicitUse).not.toContain(" as card as c");
+      expect(() =>
+        sass.compileString(explicitUse, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+
+      const forwarded = importer.rewriteImports(`@forward "./card";`, entryPath);
+      expect(() =>
+        sass.compileString(forwarded, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves underscores in Sass default namespaces", async () => {
+    const sass = await import("sass");
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-namespace-url-"));
+    const entryPath = path.join(tmpDir, "entry.scss");
+    await fsp.writeFile(
+      path.join(tmpDir, "_my_colors.scss"),
+      `$fg: red;\n.colors { background-image: url('./colors.svg'); }`,
+    );
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const underscored = importer.rewriteImports(
+        `@use "./my_colors";\n.test { color: my_colors.$fg; }`,
+        entryPath,
+      );
+      expect(underscored).toContain(" as my_colors;");
+      expect(() =>
+        sass.compileString(underscored, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -238,9 +332,13 @@ describe("vinext config hook threads sassOptions into css.preprocessorOptions", 
       `export default { sassOptions: { additionalData: '$var: red;' } };`,
     );
     // oxlint-disable-next-line typescript/no-explicit-any
-    expect((css as any)?.preprocessorOptions?.scss?.additionalData).toBe("$var: red;");
+    expect(
+      await (css as any)?.preprocessorOptions?.scss?.additionalData(".test {}", "/tmp/test.scss"),
+    ).toBe("$var: red;.test {}");
     // oxlint-disable-next-line typescript/no-explicit-any
-    expect((css as any)?.preprocessorOptions?.sass?.additionalData).toBe("$var: red;");
+    expect(
+      await (css as any)?.preprocessorOptions?.sass?.additionalData(".test {}", "/tmp/test.sass"),
+    ).toBe("$var: red;.test {}");
   }, 15000);
 
   it("aliases includePaths into loadPaths in css.preprocessorOptions.scss", async () => {

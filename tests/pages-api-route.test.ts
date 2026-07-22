@@ -26,6 +26,30 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("does not expose process environment variables on the request", async () => {
+    const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+    process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch((req, res) => {
+          res.json({ hasEnv: Object.hasOwn(req, "env") });
+        }),
+        request: new Request("https://example.com/api/env"),
+        url: "/api/env",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ hasEnv: false });
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+      } else {
+        process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+      }
+    }
+  });
+
   it("merges dynamic params with duplicate query-string values", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch(
@@ -191,9 +215,12 @@ describe("pages api route", () => {
   });
 
   it("res.redirect() uses 307 by default and 2-arg form uses the given status", async () => {
+    let defaultReturnedResponse: unknown;
+    let defaultHandlerResponse: unknown;
     const defaultRedirectResponse = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
-        res.redirect("/new-path");
+        defaultHandlerResponse = res;
+        defaultReturnedResponse = res.redirect("/new-path");
       }),
       request: new Request("https://example.com/api/redir"),
       url: "/api/redir",
@@ -201,10 +228,16 @@ describe("pages api route", () => {
 
     expect(defaultRedirectResponse.status).toBe(307);
     expect(defaultRedirectResponse.headers.get("location")).toBe("/new-path");
+    expect(defaultRedirectResponse.headers.get("content-type")).toBeNull();
+    await expect(defaultRedirectResponse.text()).resolves.toBe("/new-path");
+    expect(defaultReturnedResponse).toBe(defaultHandlerResponse);
 
+    let customReturnedResponse: unknown;
+    let customHandlerResponse: unknown;
     const customRedirectResponse = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
-        res.redirect(301, "/permanent");
+        customHandlerResponse = res;
+        customReturnedResponse = res.redirect(301, "/permanent");
       }),
       request: new Request("https://example.com/api/redir"),
       url: "/api/redir",
@@ -212,6 +245,91 @@ describe("pages api route", () => {
 
     expect(customRedirectResponse.status).toBe(301);
     expect(customRedirectResponse.headers.get("location")).toBe("/permanent");
+    expect(customRedirectResponse.headers.get("content-type")).toBeNull();
+    await expect(customRedirectResponse.text()).resolves.toBe("/permanent");
+    expect(customReturnedResponse).toBe(customHandlerResponse);
+  });
+
+  it.each([
+    [null, undefined],
+    [307, undefined],
+    [true, "/destination"],
+  ])("res.redirect() rejects invalid arguments %#", async (statusOrUrl, url) => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.redirect(statusOrUrl as string | number, url);
+      }),
+      request: new Request("https://example.com/api/redir"),
+      url: "/api/redir",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("Internal Server Error");
+  });
+
+  it("res.revalidate() uses the trusted origin instead of the request host", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: URL | undefined;
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      capturedUrl =
+        typeof input === "string"
+          ? new URL(input)
+          : input instanceof URL
+            ? input
+            : new URL(input.url);
+      expect(input instanceof Request ? input.method : init?.method).toBe("HEAD");
+      return new Response(null, { status: 200 });
+    };
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch(async (_req, res) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        }),
+        request: new Request("http://127.0.0.1:9999/api/revalidate"),
+        trustedRevalidateOrigin: "http://app.local:3000",
+        url: "/api/revalidate",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ revalidated: true });
+      expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("res.revalidate() ignores Host header spoofing in Fetch request adapters", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: URL | undefined;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      capturedUrl =
+        typeof input === "string"
+          ? new URL(input)
+          : input instanceof URL
+            ? input
+            : new URL(input.url);
+      return new Response(null, { status: 200 });
+    };
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch(async (_req, res) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        }),
+        request: new Request("http://app.local:3000/api/revalidate", {
+          headers: { host: "127.0.0.1:9999" },
+        }),
+        url: "/api/revalidate",
+      });
+
+      expect(response.status).toBe(200);
+      expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("res.writeHead() lowercases header keys and joins array values", async () => {

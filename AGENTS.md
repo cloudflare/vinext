@@ -224,7 +224,7 @@ The `examples/` directory contains real-world Next.js apps ported to run on vine
 
 1. Create a directory under `examples/` with a `package.json` (use `"vinext": "workspace:*"`)
 2. Add a `vite.config.ts` with `vinext()` and `cloudflare()` plugins
-3. Add a `wrangler.jsonc` — for simple apps use `"main": "vinext/server/app-router-entry"` (no custom worker entry needed)
+3. Add a `wrangler.jsonc` — for simple apps use `"main": "vinext/server/fetch-handler"` (no custom worker entry needed)
 4. Add the example to the deploy matrix in `.github/workflows/deploy-examples.yml`:
    - Add to `matrix.example` array (with `name`, `project`, `wrangler_config`)
    - Add to the `examples` array in the PR comment step
@@ -318,6 +318,18 @@ Always use Node.js built-in modules and APIs before reaching for third-party pac
 - `structuredClone` for deep cloning (not `lodash.cloneDeep`)
 
 If a Node built-in does the job, use it. Only reach for a dependency when the built-in is genuinely insufficient.
+
+### Path Handling: `pathslash` in Source, `node:path` in Tests
+
+One deliberate exception to the rule above: **source files under `packages/vinext/src` import `path` from [`pathslash`](https://github.com/shulaoda/pathslash), never `node:path`** (lint-enforced via `no-restricted-imports`). pathslash delegates every operation to the real `node:path` — drive letters, per-drive cwd, case-insensitive `relative` all keep native semantics — and only converts Windows output separators to `/`. That makes every `join`/`resolve`/`relative`/`dirname` result a canonical forward-slash id by construction, so ids compose safely with Vite module ids, `startsWith`/`split("/")` route logic, and generated `import` specifiers on every platform.
+
+- Use `toSlash` (also from `pathslash`) only where an **external-origin** string enters the codebase: `process.cwd()`, `config.root`, `fileURLToPath`, `require.resolve`, `fs.realpathSync.native`, node's glob output, and bundler-reported ids (`resolveId` importers, `watchChange`). Everything downstream of a pathslash call needs no normalization.
+- `toSlash` is platform-gated (a no-op on POSIX) — and that IS the contract: Windows-style paths do not occur on POSIX at runtime. Never add an unconditional `.replaceAll("\\", "/")` to source just to make a cross-platform test pass, and don't feed Windows-shaped fixtures to tests that run on every platform. Gate Windows-only scenarios with `it.runIf(process.platform === "win32")` and keep their assertions unconditional (see `tests/build-optimization.test.ts`, `tests/dev-stack-sourcemap.test.ts`). `tests/app-route-graph.test.ts`'s `vi.mock("pathslash", ...)` (win32 flavor) is the one deliberate exception, kept so POSIX CI exercises the route graph's Windows semantics.
+- Do NOT write "must be forward-slash" JSDoc contracts — the import itself is the guarantee.
+- Do NOT touch URL-space backslash defenses (request-pathname `replaceAll("\\", "/")` sanitizers) — those are URL hygiene, not filesystem paths.
+- A few files legitimately stay on `node:path` with an inline `oxlint-disable` and a reason: `build/standalone.ts` (native-space tree copier), `utils/commonjs-loader.ts` (Node's CJS machinery is native-keyed), `server/app-ssr-entry.ts` (dynamic builtin import in a runtime fallback). Follow that pattern if you find another genuine native-space need.
+
+**Tests are the opposite:** keep building fixture **inputs** with native `node:path` (`mkdtemp`, `path.join`, `path.resolve`) so a Windows run feeds real backslash paths into the source and actually exercises the conversion. Only the **expectations** that compare against source output move to canonical form — wrap them with `toSlash(path.join(...))` (many test files define a local `canonical()` helper for this). Switching test inputs to pathslash would make Windows runs vacuous: both sides would be forward-slash by construction and a source regression that stops normalizing would pass silently.
 
 ### Never Install With `--no-frozen-lockfile`
 

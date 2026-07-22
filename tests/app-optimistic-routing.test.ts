@@ -353,6 +353,49 @@ describe("App Router optimistic routing", () => {
     });
   });
 
+  it("learns optimistic templates from an implicit children slot", () => {
+    const childrenSlotId = "slot:children:/blog";
+    const routeManifest = manifest([
+      route({
+        id: "route:/blog/:slug",
+        isDynamic: true,
+        paramNames: ["slug"],
+        pattern: "/blog/:slug",
+        patternParts: ["blog", ":slug"],
+        slotIds: [childrenSlotId],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/blog"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [childrenSlotId]: createElement("article", null, "Post 1"),
+      [routeId]: createElement(
+        Suspense,
+        { fallback: createElement("p", null, "Loading") },
+        createElement("main", null, "Route"),
+      ),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    expect(template?.pageElementIds).toEqual([childrenSlotId]);
+    expect(createOptimisticRouteElements(template!)[childrenSlotId]).not.toBe(
+      elements[childrenSlotId],
+    );
+  });
+
   it("does not learn routes without a loading boundary", () => {
     const routeManifest = blogManifest();
     const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);

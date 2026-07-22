@@ -37,11 +37,13 @@ import {
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
-import { isDangerousScheme } from "./url-safety.js";
-import { toSameOriginPath, withBasePath } from "./url-utils.js";
+import { assertSafeNavigationUrl } from "./url-safety.js";
+import { withBasePath } from "./url-utils.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../server/app-rsc-render-mode.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 
 // Mirrors `__NEXT_ROUTER_BASEPATH` exposure in `next/link` / `next/router`.
 // `addBasePath` is only applied to the form-level `action` prop. A submitter's
@@ -64,25 +66,17 @@ const SUPPORTED_FORM_ENCTYPE = "application/x-www-form-urlencoded";
 const SUPPORTED_FORM_METHOD = "GET";
 const SUPPORTED_FORM_TARGET = "_self";
 
-function isSafeAction(action: string): boolean {
-  // Block dangerous URI schemes
-  if (isDangerousScheme(action)) return false;
-  // Block protocol-relative URLs (//evil.com/...)
-  if (action.startsWith("//")) return false;
-  // Block absolute URLs to external origins (client-side: compare origins)
-  if (/^https?:\/\//i.test(action)) {
-    if (typeof window !== "undefined") {
-      try {
-        const actionUrl = new URL(action);
-        return actionUrl.origin === window.location.origin;
-      } catch {
-        return false;
-      }
-    }
-    // Server-side: block all absolute URLs (can't compare origins)
+function isPrefetchableAction(action: string): boolean {
+  // Browser-only: callers must guard this behind a client environment check.
+  try {
+    const actionUrl = new URL(action, window.location.href);
+    return (
+      (actionUrl.protocol === "http:" || actionUrl.protocol === "https:") &&
+      actionUrl.origin === window.location.origin
+    );
+  } catch {
     return false;
   }
-  return true;
 }
 
 function getSubmitter(nativeEvent: unknown): FormSubmitter | null {
@@ -177,7 +171,7 @@ function hasUnsupportedSubmitterAttributes(submitter: FormSubmitter): boolean {
   return false;
 }
 
-function createFormSubmitDestinationUrl(
+export function createFormSubmitDestinationUrl(
   action: string,
   form: HTMLFormElement,
   submitter: FormSubmitter | null,
@@ -204,7 +198,7 @@ function createFormSubmitDestinationUrl(
     }
   }
 
-  return toSameOriginPath(targetUrl.href) ?? targetUrl.href;
+  return targetUrl.href;
 }
 
 function buildFormData(form: HTMLFormElement, submitter: FormSubmitter | null): FormData {
@@ -311,9 +305,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
   useEffect(() => {
     if (typeof action !== "string") return;
     if (prefetch === false || process.env.NODE_ENV !== "production") return;
-    // Don't prefetch actions the submit path refuses to navigate to (external
-    // origins, dangerous schemes, protocol-relative). Matches the submit-path gate.
-    if (!isSafeAction(action)) return;
+    // External destinations remain valid form markup and native navigation
+    // targets, but only same-origin HTTP(S) actions can produce reusable RSC.
+    if (!isPrefetchableAction(actionHref)) return;
     if (!hasAppNavigationRuntime()) return;
     const node = formRef.current;
     if (!node) return;
@@ -324,6 +318,8 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
         for (const entry of entries) {
           if (entry.isIntersecting || entry.intersectionRatio > 0) {
             void (async () => {
+              if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
+
               // Mirror the Link/router prefetch computation so the cache key the
               // navigation later looks up matches what we prefetch here. Without
               // this, intercepted routes or pages with mounted parallel slots
@@ -331,7 +327,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               // (See link.tsx:373-389 and navigation.ts:1909-1916.)
               const interceptionContext = getPrefetchInterceptionContext(actionHref);
               const mountedSlotsHeader = getMountedSlotsHeader();
-              const headers = createRscRequestHeaders({ interceptionContext });
+              const headers = createRscRequestHeaders({
+                interceptionContext,
+                renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+              });
               if (mountedSlotsHeader) {
                 headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
               }
@@ -363,8 +362,8 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
                 mountedSlotsHeader,
                 undefined,
                 {
-                  cacheForNavigation: true,
-                  optimisticRouteShell: false,
+                  cacheForNavigation: false,
+                  optimisticRouteShell: true,
                 },
               );
             })();
@@ -389,17 +388,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     return <form ref={setRefs} action={action} onSubmit={onSubmit} {...cleanRest} />;
   }
 
-  // Block dangerous action URLs. Render <form> without action attribute
-  // so it submits to the current page (safe default).
-  // (Dev-mode `action` URL validation runs earlier, in the top validation block.)
-  if (!isSafeAction(action)) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn(`<Form> blocked unsafe action: ${action}`);
-    }
-    return <form ref={setRefs} onSubmit={onSubmit} {...cleanRest} />;
-  }
-
-  async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
+  function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
     if (onSubmit) {
       onSubmit(e);
@@ -435,47 +424,44 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (process.env.NODE_ENV !== "production" && submitter?.getAttribute("formaction") !== null) {
       checkFormActionUrl(effectiveAction, "formAction");
     }
-    if (!isSafeAction(effectiveAction)) {
-      if (process.env.NODE_ENV !== "production") {
-        console.warn(`<Form> blocked unsafe action: ${effectiveAction}`);
-      }
-      e.preventDefault();
-      return;
-    }
-
-    e.preventDefault();
     const url = createFormSubmitDestinationUrl(effectiveAction, e.currentTarget, submitter);
+    e.preventDefault();
 
     // Navigate client-side
     if (hasAppNavigationRuntime()) {
-      // App Router: use the shared navigator so URL/history publish stays
-      // aligned with the committed RSC tree.
-      await navigateClientSide(url, replace ? "replace" : "push", scroll);
+      // App Router: preserve the same dangerous-scheme guard used by
+      // router.push()/replace(), then use the shared navigator so URL/history
+      // publication stays aligned with the committed RSC tree.
+      assertSafeNavigationUrl(url);
+      void navigateClientSide(url, replace ? "replace" : "push", scroll);
     } else {
       // Pages Router: delegate to the Router singleton so navigation flows
       // through `performNavigation` (route events, HTML fetch, scroll
       // handling). Mirrors what `<Link>` does at link.tsx:619-623.
-      try {
-        const routerModule = await import("./router.js");
-        const Router = routerModule.default;
-        if (replace) {
-          await Router.replace(url, undefined, { scroll });
-        } else {
-          await Router.push(url, undefined, { scroll });
+      // Keep the shared guard synchronous so React receives the error; the
+      // async import fallback below must never turn it into history navigation.
+      assertSafeNavigationUrl(url);
+      void (async () => {
+        let Router: (typeof import("./router.js"))["default"];
+        try {
+          const routerModule = await import("./router.js");
+          Router = routerModule.default;
+          if (replace) {
+            await Router.replace(url, undefined, { scroll });
+          } else {
+            await Router.push(url, undefined, { scroll });
+          }
+        } catch {
+          // If the Pages Router cannot load or initialize navigation, use a
+          // real document navigation rather than publishing a stale URL via
+          // history alone.
+          if (replace) {
+            window.location.replace(url);
+          } else {
+            window.location.assign(url);
+          }
         }
-      } catch {
-        // Fallback: pushState + popstate keeps the URL in sync even if the
-        // Router singleton import fails (e.g. in test/SSR-only contexts).
-        if (replace) {
-          window.history.replaceState({}, "", url);
-        } else {
-          window.history.pushState({}, "", url);
-        }
-        window.dispatchEvent(new PopStateEvent("popstate"));
-        if (scroll) {
-          window.scrollTo(0, 0);
-        }
-      }
+      })();
     }
   }
 
@@ -484,7 +470,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       ref={setRefs}
       action={actionHref}
       onSubmit={(event) => {
-        void handleSubmit(event);
+        handleSubmit(event);
       }}
       {...cleanRest}
     />

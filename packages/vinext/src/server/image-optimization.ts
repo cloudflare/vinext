@@ -30,8 +30,22 @@ export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
  */
 export const VINEXT_IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 
-/** Returns true when `pathname` is either supported image optimization endpoint. */
+/**
+ * Returns true when `pathname` is either supported image optimization
+ * endpoint.
+ *
+ * A single trailing slash is accepted (`/_next/image/`): with
+ * `trailingSlash: true`, Next.js 308-redirects `/_next/image?url=...` to
+ * `/_next/image/?url=...` and then serves the slashed form — its route
+ * matching strips a trailing slash before matching internal paths (see
+ * getItem in packages/next/src/server/lib/router-utils/filesystem.ts).
+ * Rejecting the slashed form 404'd every dev-mode next/image request under
+ * `trailingSlash: true`.
+ */
 export function isImageOptimizationPath(pathname: string): boolean {
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    pathname = pathname.slice(0, -1);
+  }
   return pathname === IMAGE_OPTIMIZATION_PATH || pathname === VINEXT_IMAGE_OPTIMIZATION_PATH;
 }
 
@@ -119,7 +133,7 @@ export function parseImageParams(
   // Intentional hardening divergence from Next.js: reject duplicate and unknown
   // parameters so semantically identical transforms cannot occupy distinct
   // cache keys and amplify image transformation work.
-  const allowedParamNames = new Set(["url", "w", "q"]);
+  const allowedParamNames = new Set(["url", "w", "q", "dpl"]);
   for (const name of url.searchParams.keys()) {
     if (!allowedParamNames.has(name) || url.searchParams.getAll(name).length !== 1) return null;
   }
@@ -382,7 +396,7 @@ export async function handleImageOptimization(
 
 /**
  * A server-side image optimizer: the transform backend that resizes/transcodes
- * a source image. Produced by an adapter factory (e.g. `imageAdapter()` from
+ * a source image. Produced by an adapter factory (e.g. `imagesOptimizer()` from
  * `@vinext/cloudflare/images/images-optimizer`) and registered via
  * {@link setImageOptimizer}.
  */
@@ -408,10 +422,10 @@ const _gImageOptimizer = globalThis as unknown as Record<PropertyKey, ImageOptim
  *
  * ```ts
  * import { vinext } from "vinext";
- * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+ * import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
  *
  * export default defineConfig({
- *   plugins: [vinext({ images: { optimizer: imageAdapter() } })],
+ *   plugins: [vinext({ images: { optimizer: imagesOptimizer() } })],
  * });
  * ```
  *

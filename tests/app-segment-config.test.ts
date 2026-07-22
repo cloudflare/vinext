@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   isEdgeRuntime,
   resolveAppPageFetchCacheMode,
@@ -66,7 +66,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "only-cache",
       revalidateSeconds: null,
     });
@@ -80,7 +79,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "default-cache",
       revalidateSeconds: null,
     });
@@ -133,12 +131,11 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "force-static",
-      dynamicParamsConfig: false,
       revalidateSeconds: null,
     });
   });
 
-  it("defaults dynamicParams to false for static-only dynamic modes", () => {
+  it("keeps implicit dynamicParams separate from static render modes", () => {
     expect(
       resolveAppPageSegmentConfig({
         layouts: [{ dynamic: "error" }],
@@ -146,7 +143,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "only-cache",
       revalidateSeconds: null,
     });
@@ -158,7 +154,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "force-static",
-      dynamicParamsConfig: false,
       revalidateSeconds: null,
     });
   });
@@ -206,6 +201,43 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toEqual({
       dynamicParamsConfig: false,
       revalidateSeconds: null,
+    });
+  });
+
+  it("allows an ungenerated dynamic child below an ancestor dynamicParams=false segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
+        layoutTreePositions: [1, 2],
+        page: {},
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBeUndefined();
+  });
+
+  it("enforces ancestor dynamicParams=false when the dynamic child generates params", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
+        layoutTreePositions: [1, 2],
+        page: { generateStaticParams() {} },
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
+  it("ignores route groups when assigning layout config to a dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{}, { dynamicParams: false, generateStaticParams: () => [{ region: "SE" }] }],
+        layoutTreePositions: [0, 2],
+        page: { dynamic: "force-dynamic" },
+        routeSegments: ["[region]", "(default)", "static-prefetch"],
+      }),
+    ).toEqual({
+      dynamicConfig: "force-dynamic",
+      dynamicParamsConfig: false,
+      revalidateSeconds: 0,
     });
   });
 
@@ -288,6 +320,70 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("keeps dynamicParams=false active when a parallel layout generates the leaf param", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams: () => [{ locale: "en" }] }],
+        layoutTreePositions: [1],
+        parallelBranches: [
+          {
+            configLayouts: [{ generateStaticParams: () => [{ slug: "static-123" }] }],
+            configLayoutTreePositions: [2],
+            routeSegments: ["stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
+  it("ignores parallel generateStaticParams owned by a parent dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams: () => [{ locale: "en" }] }],
+        layoutTreePositions: [1],
+        parallelBranches: [
+          {
+            configLayouts: [{ generateStaticParams: () => [{ locale: "en" }] }],
+            configLayoutTreePositions: [1],
+            routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBeUndefined();
+  });
+
+  it("ignores parallel dynamicParams=false owned by a parent dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        parallelBranches: [
+          {
+            configLayouts: [{ dynamicParams: false }],
+            configLayoutTreePositions: [1],
+            routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBeUndefined();
+  });
+
+  it("enforces parallel dynamicParams=false owned by the leaf dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        parallelBranches: [
+          {
+            configLayouts: [{ dynamicParams: false }],
+            configLayoutTreePositions: [2],
+            routeSegments: ["stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
   it("uses slot-only route config values", () => {
     // Next.js collectAppPageSegments() includes parallel route layouts/pages
     // before reduceAppConfig() selects the route-level config.
@@ -319,7 +415,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "only-cache",
       revalidateSeconds: null,
       runtime: "nodejs",

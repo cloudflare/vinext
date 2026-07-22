@@ -68,6 +68,8 @@ export type { OperationLane } from "./navigation-planner.js";
 type OperationRecordBase = {
   id: number;
   lane: OperationLane;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   startedVisibleCommitVersion: number;
 };
 
@@ -127,12 +129,17 @@ export type PendingNavigationCommit = {
   previousNextUrl: string | null;
   rootLayoutTreePath: string | null;
   routeId: string;
+  restoredHistorySnapshot?: boolean;
   skippedLayoutIds: readonly string[];
 };
 
 export type AppNavigationPayloadOrigin = Readonly<
-  { origin: "fresh" } | { origin: "visited-cache" }
+  { origin: "committed-cache" } | { origin: "fresh" } | { origin: "visited-cache" }
 >;
+
+export const COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
+  origin: "committed-cache",
+};
 
 export const FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
   origin: "fresh",
@@ -144,6 +151,7 @@ export const VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOr
 type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
 type CacheRestorableAppPayloadMetadata = Readonly<{
   cacheEntryReuseProof?: CacheEntryReuseProof;
+  dynamicStaleTimeSeconds?: number;
   skippedLayoutIds: readonly string[];
 }>;
 type DispatchPendingNavigationCommitDispositionDecision = {
@@ -165,24 +173,35 @@ type PendingNavigationCommitDispositionDecision =
 function createOperationRecord(options: {
   id: number;
   lane: OperationLane;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   startedVisibleCommitVersion: number;
 }): PendingOperationRecord {
   return {
     id: options.id,
     lane: options.lane,
+    ...(options.navigationCommitKind !== undefined
+      ? { navigationCommitKind: options.navigationCommitKind }
+      : {}),
+    ...(options.navigationId !== undefined ? { navigationId: options.navigationId } : {}),
     startedVisibleCommitVersion: options.startedVisibleCommitVersion,
     state: "pending",
   };
 }
 
+export function isCompleteAppPayloadMetadata(metadata: CacheRestorableAppPayloadMetadata): boolean {
+  return metadata.skippedLayoutIds.length === 0;
+}
+
 export function isCacheRestorableAppPayloadMetadata(
   metadata: CacheRestorableAppPayloadMetadata,
 ): metadata is CacheRestorableAppPayloadMetadata & { cacheEntryReuseProof: CacheEntryReuseProof } {
-  return metadata.cacheEntryReuseProof !== undefined && metadata.skippedLayoutIds.length === 0;
+  return metadata.cacheEntryReuseProof !== undefined && isCompleteAppPayloadMetadata(metadata);
 }
 
 function requiresCacheEntryReuseProof(origin: AppNavigationPayloadOrigin): boolean {
   switch (origin.origin) {
+    case "committed-cache":
     case "fresh":
       return false;
     case "visited-cache":
@@ -230,6 +249,7 @@ type ResolveServerActionRequestStateOptions = {
   actionId: string;
   basePath: string;
   elements: AppElements;
+  interceptionContext?: string | null;
   previousNextUrl: string | null;
 };
 
@@ -255,10 +275,10 @@ export function resolveServerActionRequestState(
   headers.set(RSC_ACTION_HEADER, options.actionId);
   headers.set(NEXT_ACTION_HEADER, options.actionId);
 
-  const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
-    options.previousNextUrl,
-    options.basePath,
-  );
+  const interceptionContext =
+    resolveInterceptionContextFromPreviousNextUrl(options.previousNextUrl, options.basePath) ??
+    options.interceptionContext ??
+    null;
   if (interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
   }
@@ -288,13 +308,35 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     targetSnapshot,
   });
 
+  if (
+    options.pending.action.operation.navigationCommitKind === "detached" &&
+    options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
+    options.currentState.activeOperation.navigationCommitKind === "authoritative"
+  ) {
+    return {
+      disposition: "skip",
+      preserveElementIds: [],
+      trace: createNavigationTrace(NavigationTraceReasonCodes.staleOperation, traceFields),
+    };
+  }
+
   // OperationToken is the single eligibility authority for commit approval: a
   // result may enter commit approval only if its token proves it belongs to the
   // active navigation and the visible commit version it started from is still
   // current. The token verifies; ApprovedVisibleCommit (downstream) mutates.
+  // A detached/optimistic payload and the authoritative payload that follows
+  // are two renders in one navigation lifecycle. The first visible commit may
+  // advance the version, but it does not supersede its own authoritative data.
+  const isAuthoritativeSameNavigationHandoff =
+    options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
+    options.currentState.activeOperation.navigationCommitKind === "detached" &&
+    options.pending.action.operation.navigationCommitKind === "authoritative";
+  const visibleCommitVersion = isAuthoritativeSameNavigationHandoff
+    ? options.pending.action.operation.startedVisibleCommitVersion
+    : options.currentState.visibleCommitVersion;
   const verdict = verifyOperationTokenForCommit(token, {
     activeNavigationId: options.activeNavigationId,
-    visibleCommitVersion: options.currentState.visibleCommitVersion,
+    visibleCommitVersion,
   });
   if (!verdict.authorized) {
     // staleOperation — the navigation that created `pending` was superseded, or
@@ -366,7 +408,9 @@ function createMountedParallelSlotSnapshots(
 
 function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
   const displayUrl = createSnapshotPathAndSearch(state.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
+  const matchedUrl =
+    state.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: state.interception,
@@ -389,9 +433,9 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
 
 function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnapshot {
   const displayUrl = createSnapshotPathAndSearch(pending.action.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(
-    pending.action.navigationSnapshot.pathname,
-  );
+  const matchedUrl =
+    pending.action.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(pending.action.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: pending.action.interception,
@@ -465,6 +509,7 @@ function planPendingRootBoundaryFlightResponse(options: {
       kind: "flightResponseArrived",
       result: {
         ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
+        ...(options.pending.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
         // Approval call sites must pass the executor's targetHref so the
         // planner trace and future hard-nav executor agree with the browser
         // URL. The fallback remains for lower-level tests and direct disposition
@@ -588,9 +633,17 @@ function mergeSkippedLayoutSlotPreservation(options: {
   return preservePreviousSlotIds;
 }
 
-export async function createPendingNavigationCommit(options: {
+type CreatePendingNavigationCommitOptions = {
+  // Baseline for bfcacheId diffing, skip-preservation, and
+  // startedVisibleCommitVersion — not necessarily the live router state.
+  // Navigation callers must pass the state captured when the navigation
+  // began, not a live read, or a later hop's preparation can reuse identities
+  // from a state a detached commit already replaced. HMR is the one caller
+  // that legitimately wants the live state, since it has no prior navigation
+  // start to anchor to.
   currentState: AppRouterState;
-  nextElements: Promise<AppElements>;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   operationLane: OperationLane;
   payloadOrigin: AppNavigationPayloadOrigin;
@@ -601,8 +654,12 @@ export async function createPendingNavigationCommit(options: {
   restoredBfcacheIds?: BfcacheIdMap | null;
   reuseCurrentBfcacheIds?: boolean;
   type: "navigate" | "replace" | "traverse";
-}): Promise<PendingNavigationCommit> {
-  const elements = await options.nextElements;
+};
+
+export function createPendingNavigationCommitFromElements(
+  options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
+): PendingNavigationCommit {
+  const elements = options.nextElements;
   const metadata = AppElementsWire.readMetadata(elements);
   const cacheEntryReuseProof =
     metadata.cacheEntryReuseProof ??
@@ -637,6 +694,8 @@ export async function createPendingNavigationCommit(options: {
       operation: createOperationRecord({
         id: options.renderId,
         lane: options.operationLane,
+        navigationCommitKind: options.navigationCommitKind,
+        navigationId: options.navigationId,
         startedVisibleCommitVersion: options.currentState.visibleCommitVersion,
       }),
       previousNextUrl,
@@ -656,4 +715,13 @@ export async function createPendingNavigationCommit(options: {
     routeId: metadata.routeId,
     skippedLayoutIds: metadata.skippedLayoutIds,
   };
+}
+
+export async function createPendingNavigationCommit(
+  options: CreatePendingNavigationCommitOptions & { nextElements: Promise<AppElements> },
+): Promise<PendingNavigationCommit> {
+  return createPendingNavigationCommitFromElements({
+    ...options,
+    nextElements: await options.nextElements,
+  });
 }

@@ -13,6 +13,7 @@ export type VinextLinkPrefetchRoute = {
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
 };
 
 /**
@@ -30,6 +31,7 @@ export type VinextPagesLinkPrefetchRoute = {
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
 };
 
 export type VinextNextData = {
@@ -43,6 +45,8 @@ export type VinextNextData = {
     hasMiddleware?: boolean;
     /** True when build-time rewrites can affect the initial Pages Router ready state. */
     hasRewrites?: boolean;
+    /** Server-resolved Pages route URL used to hydrate fallback shells behind rewrites. */
+    routeUrl?: string;
   };
 } & NEXT_DATA;
 

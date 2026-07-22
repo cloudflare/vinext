@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vinext build --prerender-all",
+    "build": "vinext build",
     "start": "vinext start --port 4187",
     "wrangler": "wrangler dev --config dist/server/wrangler.json --port 4187"
   },

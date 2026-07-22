@@ -24,14 +24,15 @@ Detect the router: if an `app/` directory exists at root or under `src/`, it's A
 
 ## Quick Reference
 
-| Command         | Purpose                                                                |
-| --------------- | ---------------------------------------------------------------------- |
-| `vinext check`  | Scan project for compatibility issues, produce scored report           |
-| `vinext init`   | Automated migration — installs deps, generates config, converts to ESM |
-| `vinext dev`    | Development server with HMR                                            |
-| `vinext build`  | Production build (multi-environment for App Router)                    |
-| `vinext start`  | Local production server                                                |
-| `vinext deploy` | Build and deploy to Cloudflare Workers                                 |
+| Command                            | Purpose                                                                |
+| ---------------------------------- | ---------------------------------------------------------------------- |
+| `vinext check`                     | Scan project for compatibility issues, produce scored report           |
+| `vinext init`                      | Automated migration — installs deps, generates config, converts to ESM |
+| `vinext dev`                       | Development server with HMR                                            |
+| `vinext build`                     | Production build (multi-environment for App Router)                    |
+| `vinext start`                     | Local production server                                                |
+| `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                 |
+| `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                      |
 
 ## Phase 1: Check Compatibility
 
@@ -128,7 +129,7 @@ Ensure vinext-generated output and caches are ignored:
 
 ### Option A: Cloudflare Workers (recommended for Cloudflare)
 
-If the user wants to deploy to Cloudflare Workers, use `vinext deploy`. It auto-generates `wrangler.jsonc`, worker entry, and Vite config if missing, installs `@cloudflare/vite-plugin` and `wrangler`, then builds and deploys.
+If the user wants to deploy to Cloudflare Workers, use `npx @vinext/cloudflare deploy`. With Vite+, use `vp exec vinext-cloudflare deploy` when running the locally installed bin. It builds and deploys via wrangler.
 
 For manual setup or custom worker entries, see [references/config-examples.md](references/config-examples.md).
 
@@ -181,7 +182,7 @@ NITRO_PRESET=node npx vite build      # Node.js server
 
 Nitro auto-detects the platform in most CI/CD environments, so the preset is often unnecessary.
 
-**Note:** For Cloudflare Workers, Nitro works but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended for the best developer experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
+**Note:** For Cloudflare Workers, Nitro works but the native integration (`npx @vinext/cloudflare deploy` / `vp exec vinext-cloudflare deploy` / `@cloudflare/vite-plugin`) is recommended for the best developer experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
 
 ## Phase 5: Verify
 
@@ -212,4 +213,4 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 - **Do not skip the compatibility check.** Run `vinext check` before migration to surface issues early.
 - **Do not remove `next.config.js`** unless replacing it with `next.config.ts` or `.mjs`. vinext reads it for redirects, rewrites, headers, basePath, i18n, images, and env config.
 - **Do not use `getPlatformProxy()` or custom worker entries for bindings.** Use `import { env } from "cloudflare:workers"` instead. This is the modern pattern and works out of the box with vinext and `@cloudflare/vite-plugin`.
-- **For Cloudflare Workers, prefer the native integration over Nitro.** `vinext deploy` / `@cloudflare/vite-plugin` provides the best experience with `cloudflare:workers` bindings, KV caching, and image optimization. Nitro works for Cloudflare but the native setup is recommended.
+- **For Cloudflare Workers, prefer the native integration over Nitro.** `npx @vinext/cloudflare deploy` / `vp exec vinext-cloudflare deploy` / `@cloudflare/vite-plugin` provides the best experience with `cloudflare:workers` bindings, KV caching, and image optimization. Nitro works for Cloudflare but the native setup is recommended.

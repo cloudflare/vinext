@@ -1,7 +1,7 @@
 import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
 import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
@@ -476,11 +476,12 @@ function cleanResolvedId(id: string): string {
     start += 1;
   }
 
-  return id
-    .slice(start)
-    .replace(/^\/@fs\//, "/")
-    .split("?")[0]
-    .replace(/\\/g, "/");
+  return toSlash(
+    id
+      .slice(start)
+      .replace(/^\/@fs\//, "/")
+      .split("?")[0],
+  );
 }
 
 // `toManifestModuleId` runs once per resolved specifier but `root` is constant
@@ -526,11 +527,11 @@ function toManifestModuleId(root: string, resolvedId: string): string | null {
   // diverge (the lookup would miss and the preload would be skipped — no crash).
   const rootCandidates = new Set<string>([root]);
   const realRoot = cachedRootRealpath(root);
-  if (realRoot) rootCandidates.add(realRoot);
+  if (realRoot) rootCandidates.add(toSlash(realRoot));
 
   const moduleCandidates = new Set<string>([cleaned]);
   const realCleaned = tryRealpathSync(cleaned);
-  if (realCleaned) moduleCandidates.add(realCleaned.replace(/\\/g, "/"));
+  if (realCleaned) moduleCandidates.add(toSlash(realCleaned));
 
   for (const rootCandidate of rootCandidates) {
     for (const moduleCandidate of moduleCandidates) {
@@ -669,7 +670,7 @@ export async function transformNextDynamicPreloadMetadata(
 }
 
 export function createDynamicPreloadMetadataPlugin(): Plugin {
-  let root = process.cwd();
+  let root = toSlash(process.cwd());
 
   return {
     name: "vinext:dynamic-preload-metadata",

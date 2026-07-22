@@ -19,10 +19,11 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
-import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
+import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { markDynamicUsage } from "./headers.js";
+import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -484,6 +485,7 @@ export type FetchCacheState = {
   currentFetchCacheMode: FetchCacheMode | null;
   currentForceDynamicFetchDefault: boolean;
   dynamicFetchUrls: Set<string>;
+  refreshStaleFetchesInForeground: boolean;
   isFetchDedupeActive: boolean;
   currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
 };
@@ -520,6 +522,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentFetchCacheMode: null,
   currentForceDynamicFetchDefault: false,
   dynamicFetchUrls: new Set<string>(),
+  refreshStaleFetchesInForeground: false,
   isFetchDedupeActive: false,
   currentFetchDedupeEntries: new Map(),
 } satisfies FetchCacheState) as FetchCacheState;
@@ -542,6 +545,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentFetchCacheMode = null;
   _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
+  _fallbackState.refreshStaleFetchesInForeground = false;
   _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
   _fallbackState.currentFetchDedupeEntries = new Map();
 }
@@ -561,6 +565,92 @@ function markUncachedFetchForPageOutput(input: string | URL | Request): void {
 
 function recordCacheableFetchObservation(input: string | URL | Request): void {
   _getState().cacheableFetchUrls.add(getFetchObservationUrl(input));
+}
+
+function recordFiniteFetchRevalidate(revalidateSeconds: number): void {
+  if (Number.isFinite(revalidateSeconds) && revalidateSeconds > 0) {
+    _setRequestScopedCacheLife({ revalidate: revalidateSeconds });
+  }
+}
+
+function shouldRefreshStaleFetchInForeground(): boolean {
+  return _getState().refreshStaleFetchesInForeground;
+}
+
+async function buildFetchCacheValue(
+  response: Response,
+  tags: string[],
+  revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
+): Promise<CachedFetchValue | null> {
+  if (response.status !== 200) return null;
+
+  const responseForCache = options?.cloneForReturn === false ? response : response.clone();
+  const body = await responseForCache.text();
+  const headers: Record<string, string> = {};
+  responseForCache.headers.forEach((v, k) => {
+    if (k.toLowerCase() === "set-cookie") return;
+    headers[k] = v;
+  });
+
+  return {
+    kind: "FETCH",
+    data: {
+      headers,
+      body,
+      url: response.url,
+      status: responseForCache.status,
+    },
+    tags,
+    revalidate: revalidateSeconds,
+  };
+}
+
+async function writeFetchCacheResponse(
+  handler: CacheHandler,
+  cacheKey: string,
+  response: Response,
+  tags: string[],
+  revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
+): Promise<void> {
+  const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
+  if (!cacheValue) return;
+
+  await handler.set(cacheKey, cacheValue, {
+    fetchCache: true,
+    tags,
+    revalidate: revalidateSeconds,
+  });
+}
+
+async function lowerFetchCacheRevalidateIfNeeded(
+  handler: CacheHandler,
+  cacheKey: string,
+  cachedValue: CachedFetchValue,
+  tags: string[],
+  revalidateSeconds: number,
+): Promise<void> {
+  if (
+    !Number.isFinite(revalidateSeconds) ||
+    revalidateSeconds <= 0 ||
+    typeof cachedValue.revalidate !== "number" ||
+    cachedValue.revalidate <= revalidateSeconds
+  ) {
+    return;
+  }
+
+  const mergedTags = Array.from(new Set([...(cachedValue.tags ?? []), ...tags]));
+  const updatedValue: CachedFetchValue = {
+    ...cachedValue,
+    tags: mergedTags,
+    revalidate: revalidateSeconds,
+  };
+  await handler.set(cacheKey, updatedValue, {
+    fetchCache: true,
+    tags: mergedTags,
+    revalidate: revalidateSeconds,
+  });
 }
 
 export function peekCacheableFetchObservations(): string[] {
@@ -637,6 +727,10 @@ export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
 
 export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
   _getState().currentForceDynamicFetchDefault = enabled;
+}
+
+export function setRefreshStaleFetchesInForeground(enabled: boolean): void {
+  _getState().refreshStaleFetchesInForeground = enabled;
 }
 
 function isNoStoreFetch(
@@ -1031,6 +1125,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // recording both cacheable and dynamic is conservative — a false "unsafe"
     // result costs performance, not correctness.
     recordCacheableFetchObservation(input);
+    recordFiniteFetchRevalidate(revalidateSeconds);
     const reqTags = _getState().currentRequestTags;
     const tags = encodeCacheTags(nextOpts?.tags ?? []);
     if (tags.length > 0) {
@@ -1066,11 +1161,33 @@ function createPatchedFetch(): typeof globalThis.fetch {
       throw err;
     }
     const handler = getDataCacheHandler();
+    let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
     // Try cache first
     try {
-      const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
+      let cached = mustBypassPendingRevalidation
+        ? null
+        : await handler.get(cacheKey, {
+            kind: "FETCH",
+            tags,
+            softTags,
+            revalidate: revalidateSeconds,
+          });
+      if (
+        cached?.value?.kind === "FETCH" &&
+        _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
+      ) {
+        mustBypassPendingRevalidation = true;
+        cached = null;
+      }
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+        await lowerFetchCacheRevalidateIfNeeded(
+          handler,
+          cacheKey,
+          cached.value,
+          tags,
+          revalidateSeconds,
+        );
         const cachedData = cached.value.data;
         return buildCachedFetchResponse(cachedData, input);
       }
@@ -1079,6 +1196,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
       // However, if we have a stale entry, return it and trigger background refetch.
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+        if (shouldRefreshStaleFetchInForeground()) {
+          const freshResponse = await dedupeFetch(input, fetchInit);
+          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
+          return freshResponse;
+        }
+
         const staleData = cached.value.data;
 
         // Background refetch — deduped so only one in-flight refetch runs
@@ -1086,32 +1209,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
         if (!pendingRefetches.has(cacheKey)) {
           const refetchPromise = originalFetch(input, fetchInit)
             .then(async (freshResp) => {
-              // Only cache 200 responses — a transient error or unexpected
-              // status must not overwrite previously-good cached data.
-              if (freshResp.status !== 200) return;
-
-              const freshBody = await freshResp.text();
-              const freshHeaders: Record<string, string> = {};
-              freshResp.headers.forEach((v, k) => {
-                if (k.toLowerCase() === "set-cookie") return;
-                freshHeaders[k] = v;
-              });
-
-              const freshValue: CachedFetchValue = {
-                kind: "FETCH",
-                data: {
-                  headers: freshHeaders,
-                  body: freshBody,
-                  url: freshResp.url,
-                  status: freshResp.status,
-                },
-                tags,
-                revalidate: revalidateSeconds,
-              };
-              await handler.set(cacheKey, freshValue, {
-                fetchCache: true,
-                tags,
-                revalidate: revalidateSeconds,
+              await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
+                cloneForReturn: false,
               });
             })
             .catch((err) => {
@@ -1158,34 +1257,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Cache miss — fetch from network
-    const response = await dedupeFetch(input, fetchInit);
+    const response = await (mustBypassPendingRevalidation
+      ? originalFetch(input, fetchInit)
+      : dedupeFetch(input, fetchInit));
 
-    // Only cache 200 responses
-    if (response.status === 200) {
-      // Clone before reading body
-      const cloned = response.clone();
-      const body = await cloned.text();
-      const headers: Record<string, string> = {};
-      cloned.headers.forEach((v, k) => {
-        // Never cache Set-Cookie headers — they are per-user and must not
-        // be replayed to subsequent requests from different users.
-        if (k.toLowerCase() === "set-cookie") return;
-        headers[k] = v;
-      });
-
-      const cacheValue: CachedFetchValue = {
-        kind: "FETCH",
-        data: {
-          headers,
-          body,
-          url: response.url,
-          status: cloned.status,
-        },
-        tags,
-        revalidate: revalidateSeconds,
-      };
-
-      // Store in cache (fire-and-forget)
+    const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+    if (cacheValue) {
       handler
         .set(cacheKey, cacheValue, {
           fetchCache: true,
@@ -1278,6 +1355,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       uCtx.currentRequestTags = [];
       uCtx.currentFetchSoftTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
+      uCtx.refreshStaleFetchesInForeground = false;
       uCtx.isFetchDedupeActive = true;
       uCtx.currentFetchDedupeEntries = new Map();
     }, fn);
@@ -1290,6 +1368,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentFetchCacheMode: null,
       currentForceDynamicFetchDefault: false,
       dynamicFetchUrls: new Set<string>(),
+      refreshStaleFetchesInForeground: false,
       isFetchDedupeActive: true,
       currentFetchDedupeEntries: new Map(),
     },
