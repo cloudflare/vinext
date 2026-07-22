@@ -865,6 +865,21 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(manifestRoute).toMatchObject({ revalidate: 1, expire: 3 });
   });
 
+  it("records collected App Router cache tags for cache seeding", () => {
+    const r = findRoute(results, "/unstable-cache-test");
+    expect(r).toMatchObject({
+      status: "rendered",
+      tags: expect.arrayContaining(["unstable-data"]),
+    });
+
+    const indexPath = path.join(outDir, "vinext-prerender.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const manifestRoute = index.routes.find(
+      (route: { route: string }) => route.route === "/unstable-cache-test",
+    );
+    expect(manifestRoute.tags).toEqual(expect.arrayContaining(["unstable-data"]));
+  });
+
   it("infers App Router ISR prerender metadata from cacheLife without route revalidate", () => {
     const r = findRoute(results, "/prerender-cache-life-only");
     expect(r).toMatchObject({

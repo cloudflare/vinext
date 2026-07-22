@@ -48,6 +48,7 @@ describe("buildPrerenderKVPairs", () => {
             expire: 300,
             router: "app",
             headers: { link: "</font.woff2>; rel=preload; as=font" },
+            tags: ["test-update-tag"],
           },
         ],
       },
@@ -85,6 +86,7 @@ describe("buildPrerenderKVPairs", () => {
     expect(pairs[0].metadata).toEqual({ tags: htmlEntry.tags });
     expect(htmlEntry.tags).toContain("/about");
     expect(htmlEntry.tags).toContain("_N_T_/about/page");
+    expect(htmlEntry.tags).toContain("test-update-tag");
 
     const rscEntry = JSON.parse(pairs[1].value);
     expect(rscEntry.value).toMatchObject({

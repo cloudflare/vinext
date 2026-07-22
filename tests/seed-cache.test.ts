@@ -469,6 +469,42 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(await getCacheHandler().get(rscKey)).toBeNull();
   });
 
+  it("user cache tags from the prerender manifest invalidate seeded entries", async () => {
+    const buildId = "revalidate-seeded-user-tag-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/update-tag-test",
+            status: "rendered",
+            revalidate: false,
+            router: "app",
+            tags: ["test-update-tag"],
+          },
+        ],
+      },
+      {
+        "update-tag-test.html": "<html>Seeded data</html>",
+        "update-tag-test.rsc": "RSC seeded data",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/update-tag-test", buildId);
+    const htmlKey = baseKey + ":html";
+    const rscKey = baseKey + ":rsc";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+    expect(await getCacheHandler().get(rscKey)).not.toBeNull();
+
+    await getCacheHandler().revalidateTag("test-update-tag");
+
+    expect(await getCacheHandler().get(htmlKey)).toBeNull();
+    expect(await getCacheHandler().get(rscKey)).toBeNull();
+  });
+
   // ── Static routes (revalidate: false) ─────────────────────────────────────
 
   it("seeds static routes (revalidate: false) with no expiry", async () => {

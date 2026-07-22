@@ -831,6 +831,7 @@ export async function renderAppPageLifecycle(
       !options.isForceStatic &&
       (dynamicUsedDuringBuild || !shouldCaptureRscForCacheMetadata);
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       // Only emit on dynamic renders — Next.js gates on !workStore.isStaticGeneration (line 2223).
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L2223-L2229
       // shouldCaptureRscForCacheMetadata is the runtime analog of isStaticGeneration: a render
@@ -1103,6 +1104,7 @@ export async function renderAppPageLifecycle(
 
   if (htmlRender.shellErrorRecovered) {
     const response = buildAppPageHtmlResponse(safeHtmlStream, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
       linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
@@ -1131,6 +1133,7 @@ export async function renderAppPageLifecycle(
 
   if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
       linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
@@ -1202,6 +1205,7 @@ export async function renderAppPageLifecycle(
   }
 
   return buildAppPageHtmlResponse(safeHtmlStream, {
+    cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
     isEdgeRuntime: options.isEdgeRuntime,

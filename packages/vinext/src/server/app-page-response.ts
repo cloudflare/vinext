@@ -4,6 +4,7 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
+  NEXT_CACHE_TAGS_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -67,6 +68,7 @@ type AppPageHtmlResponsePolicy = {
 } & AppPageResponsePolicy;
 
 type BuildAppPageRscResponseOptions = {
+  cacheTags?: readonly string[];
   dynamicStaleTimeSeconds?: number;
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
@@ -79,6 +81,7 @@ type BuildAppPageRscResponseOptions = {
 };
 
 type BuildAppPageHtmlResponseOptions = {
+  cacheTags?: readonly string[];
   draftCookie?: string | null;
   /** Combined preload `Link` header value (React hints + font preloads), already capped. */
   linkHeader?: string;
@@ -134,6 +137,14 @@ function applyPrerenderCacheLifeHeader(
   }
   if (payload.revalidate === undefined && payload.expire === undefined) return;
   headers.set(VINEXT_PRERENDER_CACHE_LIFE_HEADER, JSON.stringify(payload));
+}
+
+function applyPrerenderCacheTagsHeader(headers: Headers, cacheTags: readonly string[] | undefined) {
+  if (cacheTags && cacheTags.length > 0) {
+    // Match Next.js's static-generation side channel. Tags are already
+    // canonicalized by buildAppPageTags before reaching response shaping.
+    headers.set(NEXT_CACHE_TAGS_HEADER, cacheTags.join(","));
+  }
 }
 
 export function resolveAppPageRscResponsePolicy(
@@ -316,6 +327,7 @@ export function buildAppPageRscResponse(
   applyRscCompatibilityIdHeader(headers);
   applyRscDeploymentIdHeader(headers);
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
+  applyPrerenderCacheTagsHeader(headers, options.cacheTags);
 
   applyTimingHeader(headers, options.timing);
 
@@ -351,6 +363,7 @@ export function buildAppPageHtmlResponse(
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
+  applyPrerenderCacheTagsHeader(headers, options.cacheTags);
 
   applyTimingHeader(headers, options.timing);
 

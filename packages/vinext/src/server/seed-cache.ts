@@ -118,10 +118,10 @@ export async function seedMemoryCacheFromPrerender(
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
 
-    // Path-derived implicit tags so revalidatePath()/revalidateTag() can
-    // invalidate seeded entries. Without this the seeded entry has no tags
-    // and tag-based invalidation can never reach it (#1486).
-    const tags = buildAppPageCacheTags(cachePathname, []);
+    // Preserve both path-derived implicit tags and user tags collected during
+    // prerender so revalidatePath()/revalidateTag() can invalidate the seeded
+    // page artifact, not only its nested data-cache entries (#1486).
+    const tags = buildAppPageCacheTags(cachePathname, route.tags ?? []);
 
     if (
       await seedHtml(

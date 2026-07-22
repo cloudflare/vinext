@@ -28,6 +28,7 @@ import {
   type ClientReuseManifestSkipDisposition,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
+  NEXT_CACHE_TAGS_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -1167,6 +1168,9 @@ describe("app page render lifecycle", () => {
 
     const response = await renderAppPageLifecycle({
       ...common.options,
+      getPageTags() {
+        return ["_N_T_/posts/post", "test-update-tag"];
+      },
       getRequestCacheLife: consumeRequestCacheLife,
       isPrerender: true,
       isProduction: false,
@@ -1194,6 +1198,7 @@ describe("app page render lifecycle", () => {
     expect(response.headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(
       '{"revalidate":1,"expire":1}',
     );
+    expect(response.headers.get(NEXT_CACHE_TAGS_HEADER)).toBe("_N_T_/posts/post,test-update-tag");
     await expect(response.text()).resolves.toBe("<html>page</html>");
     expect(consumeRequestCacheLife()).toEqual({ revalidate: 1, expire: 1 });
   });
