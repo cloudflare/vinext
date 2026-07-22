@@ -41,6 +41,13 @@ type RootPaths = {
   excludedRelativePrefixes: string[];
 };
 
+type ImportMetaUrlCacheEntry = {
+  source: string;
+  canonicalRoot: string;
+  canonicalId: string;
+  results: Map<ImportMetaUrlEnvironment, { value: RewriteResult | null }>;
+};
+
 const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -54,6 +61,10 @@ const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
 export function createImportMetaUrlPlugin(options: { getRoot: () => string | undefined }): Plugin {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
+  // Keep path dependencies as separate equality fields so cache hits avoid
+  // allocating and hashing a composite string containing both full paths.
+  // Replacing the entry also bounds each raw id to one source/path combination.
+  const transformCache = new Map<string, ImportMetaUrlCacheEntry>();
 
   function getRootPaths(): RootPaths | undefined {
     const root = options.getRoot();
@@ -89,12 +100,28 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
 
         const environment: ImportMetaUrlEnvironment =
           this.environment?.name === "client" ? "client" : "server";
-        const rewritten = rewriteCanonicalSourceIdentity(code, canonicalId, paths, environment);
-        if (!rewritten) return null;
-        return {
-          code: rewritten.code,
-          map: rewritten.map,
-        };
+        let entry = transformCache.get(id);
+        if (
+          !entry ||
+          entry.source !== code ||
+          entry.canonicalRoot !== paths.canonicalRoot ||
+          entry.canonicalId !== canonicalId
+        ) {
+          entry = {
+            source: code,
+            canonicalRoot: paths.canonicalRoot,
+            canonicalId,
+            results: new Map(),
+          };
+          transformCache.set(id, entry);
+        }
+
+        const cached = entry.results.get(environment);
+        if (cached) return cached.value;
+
+        const value = rewriteCanonicalSourceIdentity(code, canonicalId, paths, environment);
+        entry.results.set(environment, { value });
+        return value;
       },
     },
   };

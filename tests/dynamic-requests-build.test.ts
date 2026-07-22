@@ -171,14 +171,16 @@ describe("App Router dynamic requests", () => {
     if (!transform || typeof transform === "function") {
       throw new Error("dynamic request transform hook not found");
     }
-    const runTransform = (consumer: "client" | "server", id: string) =>
-      transform.handler.call(
-        { environment: { config: { consumer } } } as never,
-        "import(request)",
-        id,
-      );
+    const runTransform = (consumer: "client" | "server", id: string, code = "import(request)") =>
+      transform.handler.call({ environment: { config: { consumer } } } as never, code, id);
 
-    expect(runTransform("server", "/app/page.tsx")).toBeTruthy();
+    const cachedServerResult = runTransform("server", "/app/page.tsx");
+    expect(cachedServerResult).toBeTruthy();
+    expect(runTransform("server", "/app/page.tsx")).toBe(cachedServerResult);
+    expect(runTransform("server", "/app/page.tsx", "import(otherRequest)")).not.toBe(
+      cachedServerResult,
+    );
+    expect(runTransform("server", "/app/other.tsx")).not.toBe(cachedServerResult);
     expect(runTransform("client", "/app/page.tsx")).toBeNull();
     expect(
       runTransform("client", "/app/node_modules/dynamic-request-dependency/index.js"),

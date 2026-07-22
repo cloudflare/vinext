@@ -8,6 +8,7 @@ import {
   nodeArray,
   type AstRecord,
 } from "./ast-utils.js";
+import { createTransformCache } from "./transform-cache.js";
 
 const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"];
 const TRANSFORMABLE_EXTENSIONS = new Set([
@@ -32,6 +33,9 @@ type ExtensionlessImport = {
 
 export function createExtensionlessDynamicImportPlugin(): Plugin {
   let moduleExtensions = MODULE_EXTENSIONS;
+  // Keyed by the extensions array reference: configResolved replaces the array
+  // wholesale, so results computed under a previous config never leak forward.
+  const cached = createTransformCache<readonly string[], TransformResult>();
 
   return {
     name: "vinext:extensionless-dynamic-import",
@@ -48,34 +52,49 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
         code: DYNAMIC_IMPORT_PRESCAN,
       },
       handler(code, id) {
-        const lang = langForId(id)!;
-
-        let ast: unknown;
-        try {
-          ast = parseAst(code, { lang });
-        } catch {
-          return null;
-        }
-
-        const imports = collectExtensionlessImports(ast, code, moduleExtensions);
-        if (imports.length === 0) return null;
-
-        const output = new MagicString(code);
-        for (const dynamicImport of imports) {
-          const source = code.slice(dynamicImport.sourceStart, dynamicImport.sourceEnd);
-          output.overwrite(
-            dynamicImport.start,
-            dynamicImport.end,
-            buildReplacement(source, dynamicImport.globPattern, dynamicImport.moduleExtensions),
-          );
-        }
-
-        return {
-          code: output.toString(),
-          map: output.generateMap({ hires: "boundary" }),
-        };
+        return cached(id, code, moduleExtensions, () =>
+          transformExtensionlessImports(code, id, moduleExtensions),
+        );
       },
     },
+  };
+}
+
+type TransformResult = {
+  code: string;
+  map: ReturnType<MagicString["generateMap"]>;
+} | null;
+
+function transformExtensionlessImports(
+  code: string,
+  id: string,
+  moduleExtensions: readonly string[],
+): TransformResult {
+  const lang = langForId(id)!;
+
+  let ast: unknown;
+  try {
+    ast = parseAst(code, { lang });
+  } catch {
+    return null;
+  }
+
+  const imports = collectExtensionlessImports(ast, code, moduleExtensions);
+  if (imports.length === 0) return null;
+
+  const output = new MagicString(code);
+  for (const dynamicImport of imports) {
+    const source = code.slice(dynamicImport.sourceStart, dynamicImport.sourceEnd);
+    output.overwrite(
+      dynamicImport.start,
+      dynamicImport.end,
+      buildReplacement(source, dynamicImport.globPattern, dynamicImport.moduleExtensions),
+    );
+  }
+
+  return {
+    code: output.toString(),
+    map: output.generateMap({ hires: "boundary" }),
   };
 }
 

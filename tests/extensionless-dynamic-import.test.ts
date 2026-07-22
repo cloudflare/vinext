@@ -59,6 +59,33 @@ describe("vinext:extensionless-dynamic-import", () => {
     expect(result.code).toContain("import.meta.glob");
   });
 
+  it("reuses the cached transform result for a repeated id/source pair", () => {
+    const transform = createTransform();
+    const source = "await import(`./${slug}`)";
+
+    const first = transform(source, "/app/page.tsx");
+    expect(first).toBeTruthy();
+    expect(transform(source, "/app/page.tsx")).toBe(first);
+    expect(transform("await import(`./other/${slug}`)", "/app/page.tsx")).not.toBe(first);
+    expect(transform(source, "/app/other.tsx")).not.toBe(first);
+  });
+
+  it("keeps cached results distinct across resolver extension configs", () => {
+    const plugin = createExtensionlessDynamicImportPlugin();
+    const configResolved = unwrapHook(plugin.configResolved).bind(plugin);
+    const transform = unwrapHook(plugin.transform).bind(plugin);
+    const source = "await import(`./${slug}`)";
+
+    configResolved({ resolve: { extensions: [".tsx"] } });
+    const first = transform(source, "/app/page.tsx");
+    expect(first.code).toContain('[".tsx"]');
+
+    configResolved({ resolve: { extensions: [".js"] } });
+    const second = transform(source, "/app/page.tsx");
+    expect(second).not.toBe(first);
+    expect(second.code).toContain('[".js"]');
+  });
+
   it("transforms imports with a static filename prefix", () => {
     const transform = createTransform();
     const result = transform("await import(`./components/prefixed-${slug}`)", "/app/page.tsx");

@@ -131,6 +131,8 @@ describe("isPagesStreamingBot", () => {
   it("detects other known HTML-limited bots", () => {
     expect(isPagesStreamingBot("Bingbot/2.0")).toBe(true);
     expect(isPagesStreamingBot("facebookexternalhit/1.1")).toBe(true);
+    expect(isPagesStreamingBot("meta-externalagent/1.1")).toBe(true);
+    expect(isPagesStreamingBot("meta-externalfetcher/1.1")).toBe(true);
     expect(isPagesStreamingBot("Twitterbot/1.0")).toBe(true);
     expect(isPagesStreamingBot("Slackbot-LinkExpanding 1.0")).toBe(true);
   });
