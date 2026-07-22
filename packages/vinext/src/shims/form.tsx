@@ -27,7 +27,10 @@ import {
   type FormHTMLAttributes,
   type ForwardedRef,
 } from "react";
-import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
+import {
+  applyNavigationRuntimeRscState,
+  hasAppNavigationRuntime,
+} from "../client/navigation-runtime.js";
 import { useMergedRef } from "./use-merged-ref.js";
 import {
   getMountedSlotsHeader,
@@ -334,6 +337,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               if (mountedSlotsHeader) {
                 headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
               }
+              applyNavigationRuntimeRscState(headers);
               const rscUrl = await createRscRequestUrl(actionHref, headers);
               const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
               // Dedup: skip if already in-flight or a fresh cache entry exists,

@@ -13,6 +13,7 @@
 import * as React from "react";
 import type { Params } from "@vinext/types/next/upstream/dist/server/request/params";
 import {
+  applyNavigationRuntimeRscState,
   getNavigationRuntime,
   hasAppNavigationRuntime,
   type NavigationRuntimeVisibleCommitMode,
@@ -2239,6 +2240,7 @@ const _appRouter: AppRouterInstance = {
       if (mountedSlotsHeader) {
         headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
       }
+      applyNavigationRuntimeRscState(headers);
       const rscUrl = await createRscRequestUrl(fullHref, headers);
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
       const prefetched = getPrefetchedUrls();

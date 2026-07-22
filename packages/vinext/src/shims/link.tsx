@@ -21,6 +21,7 @@ import React, {
 } from "react";
 import type { UrlObject } from "node:url";
 import {
+  applyNavigationRuntimeRscState,
   getNavigationRuntime,
   hasAppNavigationRuntime,
   registerNavigationRuntimeFunctions,
@@ -571,6 +572,7 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
+        applyNavigationRuntimeRscState(headers);
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const rscUrl = await createRscRequestUrl(fullHref, headers);
@@ -612,6 +614,7 @@ function prefetchUrl(
           if (mountedSlotsHeader) {
             shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
           }
+          applyNavigationRuntimeRscState(shellHeaders);
           const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
           const shellCacheKey = AppElementsWire.encodeCacheKey(shellRscUrl, interceptionContext);
           const shellCache = getPrefetchCache();
@@ -654,6 +657,7 @@ function prefetchUrl(
           if (mountedSlotsHeader) {
             probeHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
           }
+          applyNavigationRuntimeRscState(probeHeaders);
           const probeRscUrl = await createRscRequestUrl(fullHref, probeHeaders);
           return fetch(probeRscUrl, {
             method: "HEAD",
@@ -723,6 +727,7 @@ function prefetchUrl(
                 if (mountedSlotsHeader) {
                   shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
                 }
+                applyNavigationRuntimeRscState(shellHeaders);
                 const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
                 const shellCacheKey = AppElementsWire.encodeCacheKey(
                   shellRscUrl,

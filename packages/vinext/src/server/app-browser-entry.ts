@@ -166,6 +166,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
+import { createAppRscStateFingerprint } from "./app-rsc-state-fingerprint.js";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
   createOptimisticRouteTemplate,
@@ -179,6 +180,7 @@ import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
   VINEXT_RSC_REDIRECT_TYPE_HEADER,
+  VINEXT_RSC_STATE_HEADER,
 } from "./headers.js";
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 import {
@@ -1785,6 +1787,10 @@ function bootstrapHydration(
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
         });
+        requestHeaders.set(
+          VINEXT_RSC_STATE_HEADER,
+          createAppRscStateFingerprint(navigationInitiationState),
+        );
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
@@ -2324,6 +2330,7 @@ function bootstrapHydration(
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    getRscStateFingerprint: () => createAppRscStateFingerprint(getBrowserRouterState()),
     navigate: navigateRsc,
   });
 

@@ -1,6 +1,7 @@
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
+import { VINEXT_RSC_STATE_HEADER } from "../utils/protocol-headers.js";
 
 export type NavigationRuntimeSnapshot = {
   pathname: string;
@@ -63,6 +64,8 @@ export type NavigationRuntimeFunctions = {
    */
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
+  /** Returns the current visible App Router state variant used for RSC request identity. */
+  getRscStateFingerprint?: () => string;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -116,7 +119,8 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))
+    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "getRscStateFingerprint"))
   );
 }
 
@@ -303,6 +307,13 @@ export function registerNavigationRuntimeFunctions(
     ...functions,
   };
   return runtime;
+}
+
+export function applyNavigationRuntimeRscState(headers: Headers): void {
+  const fingerprint = getNavigationRuntime()?.functions.getRscStateFingerprint?.();
+  if (fingerprint) {
+    headers.set(VINEXT_RSC_STATE_HEADER, fingerprint);
+  }
 }
 
 export function ensureNavigationRuntimeRscBootstrap(): NavigationRuntimeRscBootstrap {

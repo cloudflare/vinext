@@ -15,6 +15,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_RSC_STATE_HEADER,
 } from "./headers.js";
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 
@@ -37,6 +38,7 @@ export const VINEXT_RSC_VARY_HEADER = [
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_URL_HEADER,
+  VINEXT_RSC_STATE_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -168,6 +170,7 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 
 type CreateCacheBustingInputOptions = {
   includeRenderModeHeader?: boolean;
+  includeStateHeader?: boolean;
 };
 
 function createCacheBustingInput(
@@ -181,6 +184,7 @@ function createCacheBustingInput(
     headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
     headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
     headers.get(NEXT_URL_HEADER),
+    ...(options.includeStateHeader === false ? [] : [headers.get(VINEXT_RSC_STATE_HEADER)]),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
     headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     ...(options.includeRenderModeHeader === false
@@ -206,7 +210,9 @@ function computeLegacyRscCacheBustingSearchParam(headers: Headers): string {
 }
 
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeStateHeader: false,
+  });
   if (input === null) {
     return null;
   }
@@ -215,7 +221,31 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
 }
 
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeStateHeader: false,
+  });
+  return input === null ? null : fnv1a64(input);
+}
+
+async function computePreRenderModeRscCacheBustingSearchParam(
+  headers: Headers,
+): Promise<string | null> {
+  const input = createCacheBustingInput(headers, {
+    includeRenderModeHeader: false,
+    includeStateHeader: false,
+  });
+  if (input === null) {
+    return null;
+  }
+
+  return sha256CacheBustingHash(input);
+}
+
+function computePreRenderModeLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
+  const input = createCacheBustingInput(headers, {
+    includeRenderModeHeader: false,
+    includeStateHeader: false,
+  });
   return input === null ? null : fnv1a64(input);
 }
 
@@ -373,16 +403,24 @@ export async function resolveInvalidRscCacheBustingRequest(
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
+    const previousHash = await computePreviousRscCacheBustingSearchParam(options.request.headers);
+    const previousLegacyHash = computePreviousLegacyRscCacheBustingSearchParam(
+      options.request.headers,
+    );
+    if (previousHash !== null) acceptedHashes.add(previousHash);
+    if (previousLegacyHash !== null) acceptedHashes.add(previousLegacyHash);
     if (
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
       null
     ) {
-      const previousHash = await computePreviousRscCacheBustingSearchParam(options.request.headers);
-      const previousLegacyHash = computePreviousLegacyRscCacheBustingSearchParam(
+      const preRenderModeHash = await computePreRenderModeRscCacheBustingSearchParam(
         options.request.headers,
       );
-      if (previousHash !== null) acceptedHashes.add(previousHash);
-      if (previousLegacyHash !== null) acceptedHashes.add(previousLegacyHash);
+      const preRenderModeLegacyHash = computePreRenderModeLegacyRscCacheBustingSearchParam(
+        options.request.headers,
+      );
+      if (preRenderModeHash !== null) acceptedHashes.add(preRenderModeHash);
+      if (preRenderModeLegacyHash !== null) acceptedHashes.add(preRenderModeLegacyHash);
     }
   }
 

@@ -90,6 +90,13 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Ported from Next.js: test/e2e/app-dir/rsc-query-routing/next.config.js
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/rsc-query-routing/next.config.js
+      {
+        source: "/nextjs-compat/rsc-query-redirect/source",
+        destination: "/nextjs-compat/rsc-query-redirect/dest",
+        permanent: true,
+      },
     ];
   },
 
@@ -140,6 +147,12 @@ const nextConfig: NextConfig = {
         {
           source: "/rewrite-search-param/:term",
           destination: "/search?q=from-rewrite",
+        },
+        // Ported from Next.js: test/e2e/app-dir/rsc-query-routing/next.config.js
+        // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/rsc-query-routing/next.config.js
+        {
+          source: "/nextjs-compat/rsc-query-rewrite/source",
+          destination: "/nextjs-compat/rsc-query-rewrite/dest",
         },
       ],
       afterFiles: [
