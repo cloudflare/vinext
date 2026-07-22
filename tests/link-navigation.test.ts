@@ -600,6 +600,52 @@ describe("Link App Router navigation scheduling", () => {
     expect(transitionStates).toEqual([true]);
   });
 
+  it("preserves the current query when an App Router Link changes only the hash", async () => {
+    // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const result = await renderIsolatedLink({
+      href: "#h1",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: {
+        history: { pushState, replaceState, state: {} },
+        location: {
+          href: "https://example.com/nested-relative-query-and-hash?here=ok#h2",
+          origin: "https://example.com",
+          pathname: "/nested-relative-query-and-hash",
+          search: "?here=ok",
+        },
+      },
+    });
+
+    try {
+      const onClick = result.capturedAnchorProps.onClick;
+      expect(onClick).toBeTypeOf("function");
+      if (onClick === undefined) {
+        throw new Error("Expected rendered Link anchor to expose an onClick handler");
+      }
+      await onClick({
+        button: 0,
+        currentTarget: { hasAttribute: () => false, target: "" },
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      });
+
+      expect(pushState).toHaveBeenCalledWith(
+        null,
+        "",
+        "/nested-relative-query-and-hash?here=ok#h1",
+      );
+      expect(result.navigate).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("lets the browser handle native URI schemes without app-router navigation", async () => {
     const userOnClick = vi.fn();
     const hrefs = ["mailto:hello@example.com", "tel:+123456789", "sms:+123456789"];
@@ -1317,6 +1363,8 @@ async function renderIsolatedLink(options: {
   vi.stubGlobal("fetch", fetch);
   vi.stubGlobal("document", {
     createElement: vi.fn(() => ({})),
+    getElementById: vi.fn(() => null),
+    getElementsByName: vi.fn(() => []),
     head: {
       appendChild: vi.fn((node: CapturedPrefetchLinkElement) => {
         pagePrefetchLinks.push(node);
@@ -1492,6 +1540,25 @@ describe("Link prefetch scheduling", () => {
           priority: "low",
         }),
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not viewport-prefetch same-page query and hash links", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/current?with-query-param#hash-160",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+
+      // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+      expect(result.fetch).not.toHaveBeenCalled();
     } finally {
       result.restoreNodeEnv();
     }

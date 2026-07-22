@@ -79,6 +79,10 @@ import {
   type AppElementsSlotBinding,
 } from "../packages/vinext/src/server/app-elements.js";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
+import {
+  beginAppRouterScrollIntent,
+  clearAppRouterScrollIntent,
+} from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createHistoryStateWithNavigationMetadata,
@@ -3454,6 +3458,178 @@ describe("app browser navigation controller", () => {
     } finally {
       detach();
       vi.unstubAllEnvs();
+    }
+  });
+
+  it("forces same-path search and hash state into a synchronous React commit", async () => {
+    const initialElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "hash page"),
+    });
+    const initialState = createState({
+      elements: initialElements,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/hash#non-existent",
+        {},
+      ),
+      routeId: "route:/hash",
+    });
+    const { controller, detach, setBrowserRouterState, stateRef } =
+      createControllerHarness(initialState);
+    const commitEffect = vi.fn();
+    const scrollIntent = beginAppRouterScrollIntent("#hash-160");
+
+    stubWindow("https://example.com/hash#non-existent");
+
+    try {
+      const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/hash?with-query-param#hash-160",
+          {},
+        ),
+        nextElements: Promise.resolve(initialElements),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/hash?with-query-param#hash-160",
+        navId,
+      });
+
+      const outcome = await Promise.race([
+        renderPromise,
+        new Promise<"timeout">((resolve) => {
+          setTimeout(() => resolve("timeout"), 50);
+        }),
+      ]);
+
+      expect(outcome).toBe("timeout");
+      expect(stateRef.current.renderId).toBeGreaterThan(0);
+      expect(stateRef.current.navigationSnapshot.searchParams.get("with-query-param")).toBe("");
+      expect(setBrowserRouterState).toHaveBeenLastCalledWith(stateRef.current);
+      // URL and scroll effects still wait for NavigationCommitSignal's layout
+      // effect; hash-rsc-requests.browser.spec.ts verifies that real commit.
+      expect(commitEffect).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
+    }
+  });
+
+  it("waits for the commit signal when a same-path search and hash navigation changes the tree", async () => {
+    const initialElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "old hash page"),
+    });
+    const nextElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "new hash page"),
+    });
+    const initialState = createState({
+      elements: initialElements,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/hash?old=1#old-content",
+        {},
+      ),
+      routeId: "route:/hash",
+    });
+    const { controller, detach } = createControllerHarness(initialState);
+    const commitEffect = vi.fn();
+    const scrollIntent = beginAppRouterScrollIntent("#new-content");
+
+    stubWindow("https://example.com/hash?old=1#old-content");
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/hash?new=1#new-content",
+          {},
+        ),
+        nextElements: Promise.resolve(nextElements),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: controller.beginPendingBrowserRouterState(),
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/hash?new=1#new-content",
+        navId,
+      });
+
+      await expect(
+        Promise.race([
+          renderPromise,
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
+        ]),
+      ).resolves.toBe("timeout");
+      expect(commitEffect).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
+    }
+  });
+
+  it("does not settle an unchanged search and hash render after a newer navigation starts", async () => {
+    const initialElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "hash page"),
+    });
+    const initialState = createState({
+      elements: initialElements,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/hash", {}),
+      routeId: "route:/hash",
+    });
+    const { controller, detach } = createControllerHarness(initialState);
+    const commitEffect = vi.fn();
+    const scrollIntent = beginAppRouterScrollIntent("#hash-160");
+
+    stubWindow("https://example.com/hash");
+
+    try {
+      const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/hash?with-query-param#hash-160",
+          {},
+        ),
+        nextElements: Promise.resolve(initialElements),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/hash?with-query-param#hash-160",
+        navId,
+      });
+
+      for (let attempts = 0; attempts < 5 && !pendingRouterState.settled; attempts++) {
+        await Promise.resolve();
+      }
+      expect(pendingRouterState.settled).toBe(true);
+      controller.beginNavigation();
+
+      await expect(
+        Promise.race([
+          renderPromise,
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
+        ]),
+      ).resolves.toBe("timeout");
+      expect(commitEffect).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
     }
   });
 

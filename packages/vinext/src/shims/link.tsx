@@ -464,6 +464,19 @@ function prefetchUrl(
   ) {
     return;
   }
+  if (
+    mode === "auto" &&
+    priority === "low" &&
+    target.origin === window.location.origin &&
+    target.pathname === window.location.pathname &&
+    target.search !== window.location.search &&
+    target.hash !== ""
+  ) {
+    // Match Next.js's same-page query+hash behavior: the visible Link does not
+    // issue its query RSC request during viewport prefetch. The click remains
+    // authoritative and fetches the changed search state before scrolling.
+    return;
+  }
 
   const runPrefetch = () => {
     void (async () => {
@@ -1186,7 +1199,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const pagesAsHref = asHref ?? dynamicRouteHref?.as;
   const unresolvedHref = pagesAsHref ?? hrefStr;
   const rawResolvedHref =
-    typeof unresolvedHref === "string" && unresolvedHref.startsWith("#")
+    typeof unresolvedHref === "string" &&
+    unresolvedHref.startsWith("#") &&
+    !getNavigationRuntime()?.functions.navigate
       ? resolvePagesQueryOnlyHref(unresolvedHref)
       : unresolvedHref;
   const concreteRouteHref = HAS_PAGES_ROUTER

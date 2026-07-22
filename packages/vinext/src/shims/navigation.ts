@@ -58,12 +58,13 @@ import {
   resolveDirectHybridClientRouteOwner,
   type HybridClientOwner,
 } from "./internal/hybrid-client-route-owner-direct.js";
-import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
+import { retryScrollTo, scrollToHashTarget, scrollToHashTargetOnNextFrame } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
   consumeAppRouterScrollIntent,
   getPendingAppRouterScrollIntent,
+  isLatestAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "./app-router-scroll-state.js";
 import {
@@ -1855,7 +1856,10 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
   }
 
   if (intent.hash !== null) {
-    scrollToHashTarget(intent.hash);
+    // Browsers can apply their own scroll restoration after the navigation's
+    // commit microtasks. Defer the fallback to the next frame so that native
+    // work cannot immediately reset the requested fragment scroll.
+    scrollToHashTargetOnNextFrame(intent.hash, () => isLatestAppRouterScrollIntent(intent));
     return;
   }
 

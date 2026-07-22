@@ -15205,6 +15205,80 @@ describe("app router scroll document-top fallback", () => {
     ],
   };
 
+  it("defers hash fallback scrolling and ignores a stale animation frame", async () => {
+    const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
+      await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+    const { applyAppRouterScrollFallback } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const scrollIntoView = vi.fn();
+    let frame: (() => void) | null = null;
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "requestAnimationFrame",
+    );
+
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        documentElement: { scrollTop: 0 },
+        getElementById: () => ({ scrollIntoView }),
+        getElementsByName: () => [],
+        head: { querySelectorAll: () => [] },
+      },
+    });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+    Object.defineProperty(globalThis, "requestAnimationFrame", {
+      configurable: true,
+      value: (callback: () => void) => {
+        frame = callback;
+        return 1;
+      },
+    });
+
+    try {
+      clearAppRouterScrollIntent();
+      const intent = beginAppRouterScrollIntent("#target");
+      applyAppRouterScrollFallback(intent);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(frame).not.toBeNull();
+      frame!();
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto" });
+
+      scrollIntoView.mockClear();
+      frame = null;
+      const staleIntent = beginAppRouterScrollIntent("#stale");
+      applyAppRouterScrollFallback(staleIntent);
+      expect(frame).not.toBeNull();
+      beginAppRouterScrollIntent("#new");
+      frame!();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      clearAppRouterScrollIntent();
+      frame = null;
+      const clearedIntent = beginAppRouterScrollIntent("#cleared");
+      applyAppRouterScrollFallback(clearedIntent);
+      expect(frame).not.toBeNull();
+      clearAppRouterScrollIntent();
+      frame!();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      for (const [key, descriptor] of [
+        ["document", originalDocument],
+        ["window", originalWindow],
+        ["requestAnimationFrame", originalRequestAnimationFrame],
+      ] as const) {
+        if (descriptor) {
+          Object.defineProperty(globalThis, key, descriptor);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+    }
+  });
+
   it("scrolls to the document top even when hoisted stylesheets exist in <head>", async () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
