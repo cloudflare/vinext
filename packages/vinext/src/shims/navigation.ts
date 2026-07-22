@@ -761,13 +761,36 @@ function attachPrefetchInvalidationCallback(
   }
 }
 
-export function invalidatePrefetchCache(): void {
+function invalidatePrefetchCacheEntries(
+  shouldInvalidate: (entry: PrefetchCacheEntry) => boolean,
+): void {
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
   for (const [cacheKey, entry] of cache) {
+    if (!shouldInvalidate(entry)) continue;
     deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, true);
   }
-  prefetched.clear();
+  if (!isServer) {
+    getNavigationRuntime()?.functions.pingVisibleLinks?.();
+  }
+}
+
+export function invalidatePrefetchCache(): void {
+  invalidatePrefetchCacheEntries(() => true);
+  getPrefetchedUrls().clear();
+}
+
+/**
+ * Stop snapshots published by completed navigations from being replayed as the
+ * authoritative response after history traversal. Retain them as optimistic
+ * route-template sources, and leave explicit Link/router prefetches consumable.
+ */
+export function disableNavigationResponsePrefetchCacheReuse(): void {
+  for (const entry of new Set(getPrefetchCache().values())) {
+    if (entry.prefetchKind === undefined) {
+      entry.cacheForNavigation = false;
+    }
+  }
   if (!isServer) {
     getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }

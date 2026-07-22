@@ -136,13 +136,16 @@ describe("navigationPlanner early navigation intent classification", () => {
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
-  it("does not treat an identical URL as a same-document scroll", () => {
+  it("refreshes an identical URL without replaying the current page response", () => {
     const decision = classify({
       currentHref: "https://example.com/docs?q=1",
       targetHref: "https://example.com/docs?q=1",
     });
 
-    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/docs?q=1",
+    });
   });
 
   it("treats hash removal as a flight navigation, not a same-document scroll", () => {

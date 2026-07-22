@@ -105,6 +105,10 @@ import {
 } from "../packages/vinext/src/server/app-browser-state.js";
 import { createInitialBfcacheMaps } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import {
+  createClientNavigationCacheGeneration,
+  invalidateClientNavigationCacheState,
+} from "../packages/vinext/src/server/app-client-navigation-cache-generation.js";
+import {
   HistoryStateSnapshotCache,
   RestorableClientStateController,
 } from "../packages/vinext/src/server/app-history-state.js";
@@ -570,8 +574,10 @@ type ApprovedTestCommitOptions = {
   operationLane?: OperationLane;
   previousNextUrl?: string | null;
   renderId?: number;
+  restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   rootLayoutTreePath: string | null;
   routeId: string;
+  reuseCurrentBfcacheIds?: boolean;
   slotBindings?: readonly AppElementsSlotBinding[];
   startedNavigationId?: number;
   targetHref?: string;
@@ -603,6 +609,8 @@ async function applyApprovedTestCommit(
     operationLane: options.operationLane ?? "navigation",
     previousNextUrl: options.previousNextUrl,
     renderId: options.renderId ?? 1,
+    restoredBfcacheIds: options.restoredBfcacheIds,
+    reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
     type: options.type ?? "navigate",
   });
   const activeNavigationId = options.activeNavigationId ?? 1;
@@ -796,6 +804,28 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("blocks late departed-navigation cache publication after snapshot restoration", async () => {
+    const generation = createClientNavigationCacheGeneration();
+    const departedNavigationGeneration = generation.capture();
+    const visitedResponses = new Map<string, string>();
+    let releasePublication!: () => void;
+    const publicationReady = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    const latePublication = publicationReady.then(() => {
+      if (!generation.isCurrent(departedNavigationGeneration)) return;
+      visitedResponses.set("/departed.rsc", "stale response");
+    });
+
+    invalidateClientNavigationCacheState(generation, () => {
+      visitedResponses.clear();
+    });
+    releasePublication();
+    await latePublication;
+
+    expect(visitedResponses.size).toBe(0);
+  });
+
   it("hard-navigates RSC responses when the response compatibility ID is missing or stale", () => {
     stubWindow("https://example.com/current");
 
@@ -5357,6 +5387,174 @@ describe("app browser entry previousNextUrl helpers", () => {
       "layout:/dashboard",
       "layout:/dashboard/settings",
     ]);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  it("reuses a server template seed while child navigation remounts its keyed slot", async () => {
+    const previousTemplate = React.createElement("h1", null, "template seed 1");
+    const nextTemplate = React.createElement("h1", null, "template seed 2");
+    const state = createState({
+      bfcacheIds: { "template:/template": "_b_1_" },
+      elements: createResolvedElements("route:/template/page", "/", null, {
+        "template:/template": previousTemplate,
+      }),
+      routeId: "route:/template/page",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "template:/template": nextTemplate,
+        "page:/template/other": React.createElement("main", null, "other"),
+      },
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/other",
+    });
+
+    expect(nextState.elements["template:/template"]).toBe(previousTemplate);
+  });
+
+  it("installs fresh template output when a dynamic sibling changes its BFCache identity", async () => {
+    const templateId = "template:/template/[section]";
+    const previousTemplate = React.createElement("h1", null, "alpha template");
+    const nextTemplate = React.createElement("h1", null, "beta template");
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/[section]", "/", null, {
+        [templateId]: previousTemplate,
+      }),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/template/alpha",
+        { section: "alpha" },
+      ),
+      routeId: "route:/template/[section]",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: { [templateId]: nextTemplate },
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/template/beta",
+        { section: "beta" },
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/[section]",
+      targetHref: "https://example.com/template/beta",
+    });
+
+    expect(nextState.bfcacheIds[templateId]).not.toBe("_b_1_");
+    expect(nextState.elements[templateId]).toBe(nextTemplate);
+  });
+
+  it("installs fresh template output when restored history identity does not match", async () => {
+    const templateId = "template:/template";
+    const previousTemplate = React.createElement("h1", null, "current template");
+    const restoredTemplate = React.createElement("h1", null, "restored template");
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/current", "/", null, {
+        [templateId]: previousTemplate,
+      }),
+      routeId: "route:/template/current",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: { [templateId]: restoredTemplate },
+      restoredBfcacheIds: { [templateId]: "_b_2_" },
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/restored",
+      type: "traverse",
+    });
+
+    expect(nextState.elements[templateId]).toBe(restoredTemplate);
+  });
+
+  it("installs fresh template output when current BFCache identities cannot be reused", async () => {
+    const templateId = "template:/template";
+    const previousTemplate = React.createElement("h1", null, "previous template");
+    const nextTemplate = React.createElement("h1", null, "next template");
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/page", "/", null, {
+        [templateId]: previousTemplate,
+      }),
+      routeId: "route:/template/page",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: { [templateId]: nextTemplate },
+      reuseCurrentBfcacheIds: false,
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/other",
+    });
+
+    expect(nextState.elements[templateId]).toBe(nextTemplate);
+  });
+
+  it("reuses a matching template seed for non-revalidating server actions", async () => {
+    const templateId = "template:/template";
+    const previousTemplate = React.createElement("h1", null, "previous template");
+    const actionTemplate = React.createElement("h1", null, "action template");
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/page", "/", null, {
+        [templateId]: previousTemplate,
+      }),
+      routeId: "route:/template/page",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: { [templateId]: actionTemplate },
+      operationLane: "server-action",
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/page",
+    });
+
+    expect(nextState.elements[templateId]).toBe(previousTemplate);
+  });
+
+  it("installs fresh server template output on refresh commits", async () => {
+    const previousTemplate = React.createElement("h1", null, "template seed 1");
+    const nextTemplate = React.createElement("h1", null, "template seed 2");
+    const state = createState({
+      elements: createResolvedElements("route:/template/page", "/", null, {
+        "template:/template": previousTemplate,
+      }),
+      routeId: "route:/template/page",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "template:/template": nextTemplate,
+        "page:/template/page": React.createElement("main", null, "page"),
+      },
+      operationLane: "refresh",
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/page",
+    });
+
+    expect(nextState.elements["template:/template"]).toBe(nextTemplate);
+  });
+
+  it("installs fresh server template output on HMR commits", async () => {
+    const templateId = "template:/template";
+    const previousTemplate = React.createElement("h1", null, "template seed 1");
+    const nextTemplate = React.createElement("h1", null, "template seed 2");
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/page", "/", null, {
+        [templateId]: previousTemplate,
+      }),
+      routeId: "route:/template/page",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: { [templateId]: nextTemplate },
+      operationLane: "hmr",
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/page",
+    });
+
+    expect(nextState.elements[templateId]).toBe(nextTemplate);
   });
 
   it("installs fresh same-layout output on refresh commits", async () => {

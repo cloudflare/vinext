@@ -661,6 +661,17 @@ function classifyEarlyNavigationIntent(
     };
   }
 
+  // A Link to the current URL is still a navigation. Next invalidates the
+  // current page segment and requests fresh Flight data instead of replaying
+  // the response that produced the page already on screen.
+  if (current.href === next.href) {
+    return {
+      bypassNavigationCache: true,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.samePageRefresh, facts),
+    };
+  }
+
   return {
     bypassNavigationCache: false,
     kind: "flightNavigation",

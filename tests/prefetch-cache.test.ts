@@ -31,6 +31,7 @@ let snapshotRscResponse: Navigation["snapshotRscResponse"];
 let restoreRscResponse: Navigation["restoreRscResponse"];
 let prefetchRscResponse: Navigation["prefetchRscResponse"];
 let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
+let disableNavigationResponsePrefetchCacheReuse: Navigation["disableNavigationResponsePrefetchCacheReuse"];
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
 let hasSearchAgnosticPrefetchShellForRoute: Navigation["hasSearchAgnosticPrefetchShellForRoute"];
 let peekPrefetchResponseForNavigation: Navigation["peekPrefetchResponseForNavigation"];
@@ -69,6 +70,7 @@ beforeEach(async () => {
   restoreRscResponse = nav.restoreRscResponse;
   prefetchRscResponse = nav.prefetchRscResponse;
   invalidatePrefetchCache = nav.invalidatePrefetchCache;
+  disableNavigationResponsePrefetchCacheReuse = nav.disableNavigationResponsePrefetchCacheReuse;
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
   hasSearchAgnosticPrefetchShellForRoute = nav.hasSearchAgnosticPrefetchShellForRoute;
   peekPrefetchResponseForNavigation = nav.peekPrefetchResponseForNavigation;
@@ -223,6 +225,42 @@ describe("prefetch cache eviction", () => {
 
     expect(firstInvalidate).toHaveBeenCalledTimes(1);
     expect(secondInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("demotes navigation snapshots without discarding explicit prefetches", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const navigationKey = "/departed.rsc";
+    const prefetchKey = "/prefetched-shell.rsc";
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: navigationKey,
+    };
+
+    cache.set(navigationKey, {
+      outcome: "cache-seeded",
+      snapshot,
+      timestamp: Date.now(),
+    });
+    cache.set(prefetchKey, {
+      outcome: "cache-seeded",
+      prefetchKind: "loading-shell",
+      snapshot: { ...snapshot, url: prefetchKey },
+      timestamp: Date.now(),
+    });
+    prefetched.add(navigationKey);
+    prefetched.add(prefetchKey);
+
+    disableNavigationResponsePrefetchCacheReuse();
+
+    expect(cache.get(navigationKey)?.cacheForNavigation).toBe(false);
+    expect(prefetched.has(navigationKey)).toBe(true);
+    expect(cache.has(prefetchKey)).toBe(true);
+    expect(cache.get(prefetchKey)?.cacheForNavigation).not.toBe(false);
+    expect(prefetched.has(prefetchKey)).toBe(true);
   });
 
   it("reuses a prefetched response only when mounted-slot context matches", () => {

@@ -27,6 +27,7 @@ import {
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
   deletePrefetchResponseSnapshot,
+  disableNavigationResponsePrefetchCacheReuse,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
@@ -153,6 +154,10 @@ import {
   createHydrationCachePublication,
   type HydrationCachePublication,
 } from "./app-hydration-cache-publication.js";
+import {
+  createClientNavigationCacheGeneration,
+  invalidateClientNavigationCacheState,
+} from "./app-client-navigation-cache-generation.js";
 import {
   clearAppNavigationFailureTarget,
   installAppNavigationFailureListeners,
@@ -325,7 +330,7 @@ function isRouterStatePromise(
 
 let latestClientParams: Record<string, string | string[]> = {};
 const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
-let clientNavigationCacheGeneration = 0;
+const clientNavigationCacheGeneration = createClientNavigationCacheGeneration();
 // Sticky bit: stays true once BrowserRoot has committed at least once. Used by
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
 // torn down by a render error" (full reload to recover).
@@ -379,6 +384,15 @@ function restoreHistoryStateSnapshot(
   });
   if (!restored) return false;
 
+  // History entries retain their own visible snapshots, but a later Link click
+  // is a new navigation and must not replay the response from the route we just
+  // left. Keep completed prefetches, which Next reuses after Back, while dropping
+  // visited responses and invalidating any late publication from the departed
+  // navigation.
+  invalidateClientNavigationCacheState(clientNavigationCacheGeneration, () => {
+    clearVisitedResponseCache();
+    disableNavigationResponsePrefetchCacheReuse();
+  });
   commitClientNavigationState(navId, { releaseSnapshot: false });
   return true;
 }
@@ -424,10 +438,15 @@ function clearPrefetchState(): void {
   optimisticRouteTemplateLearning.clear();
 }
 
+function clearReplayableClientNavigationCaches(): void {
+  invalidateClientNavigationCacheState(clientNavigationCacheGeneration, () => {
+    clearVisitedResponseCache();
+    clearPrefetchState();
+  });
+}
+
 function clearClientNavigationCaches(): void {
-  clientNavigationCacheGeneration += 1;
-  clearVisitedResponseCache();
-  clearPrefetchState();
+  clearReplayableClientNavigationCaches();
   historyController.invalidateRestorableClientState();
 }
 
@@ -1517,7 +1536,7 @@ function bootstrapHydration(
   initialRscBootstrap: NavigationRuntimeRscBootstrap | undefined,
 ): void {
   const hydrationCachePublication = createHydrationCachePublication();
-  const cacheGeneration = clientNavigationCacheGeneration;
+  const cacheGeneration = clientNavigationCacheGeneration.capture();
   const [reactBranch, cacheBranch] = rscStream.tee();
   const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(reactBranch));
   const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
@@ -1529,13 +1548,13 @@ function bootstrapHydration(
   const initialCacheBuffer = new Response(cacheBranch).arrayBuffer();
   void Promise.all([root, initialCacheBuffer])
     .then(async ([elements, buffer]) => {
-      if (cacheGeneration !== clientNavigationCacheGeneration) return;
+      if (!clientNavigationCacheGeneration.isCurrent(cacheGeneration)) return;
       const metadata = AppElementsWire.readMetadata(elements);
       if (!isCompleteAppPayloadMetadata(metadata)) return;
       const mountedSlotsHeader = getMountedSlotIdsHeader(elements);
       const headers = createRscRequestHeaders({ mountedSlotsHeader });
       const rscUrl = await createRscRequestUrl(initialPathAndSearch, headers);
-      if (cacheGeneration !== clientNavigationCacheGeneration) return;
+      if (!clientNavigationCacheGeneration.isCurrent(cacheGeneration)) return;
       const snapshot = {
         compatibilityIdHeader: CLIENT_RSC_COMPATIBILITY_ID,
         buffer,
@@ -1553,7 +1572,7 @@ function bootstrapHydration(
           ? PREFETCH_CACHE_TTL
           : DYNAMIC_NAVIGATION_CACHE_TTL;
       hydrationCachePublication.publish(() => {
-        if (cacheGeneration !== clientNavigationCacheGeneration) return () => {};
+        if (!clientNavigationCacheGeneration.isCurrent(cacheGeneration)) return () => {};
         if (isCacheRestorableAppPayloadMetadata(metadata)) {
           return storeVisitedResponseSnapshot(
             rscUrl,
@@ -1664,7 +1683,7 @@ function bootstrapHydration(
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
     const navId = browserNavigationController.beginNavigation();
-    const navigationCacheGeneration = clientNavigationCacheGeneration;
+    const navigationCacheGeneration = clientNavigationCacheGeneration.capture();
     discardedServerActionRefreshScheduler.markNavigationStart();
 
     // Loop variables for inline redirect following. On a redirect, these are
@@ -2211,10 +2230,10 @@ function bootstrapHydration(
         // guard below so refresh/action invalidations still win.
         try {
           const renderedElements = await rscPayload;
-          if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
+          if (!clientNavigationCacheGeneration.isCurrent(navigationCacheGeneration)) return;
           const metadata = AppElementsWire.readMetadata(renderedElements);
           const cacheBuffer = await cacheBufferPromise;
-          if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
+          if (!clientNavigationCacheGeneration.isCurrent(navigationCacheGeneration)) return;
           const responseSnapshot = createCachedRscResponseSnapshot(
             navResponse,
             cacheBuffer,
@@ -2243,7 +2262,7 @@ function bootstrapHydration(
             metadata.interceptionContext,
           );
           if (isCacheRestorableAppPayloadMetadata(metadata)) {
-            if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
+            if (!clientNavigationCacheGeneration.isCurrent(navigationCacheGeneration)) return;
             storeVisitedResponseSnapshot(
               rscUrl,
               interceptionContext,
@@ -2265,7 +2284,7 @@ function bootstrapHydration(
             // parallel-slot state. Skip-pruned wire payloads without a committed
             // tree stay on the fallback path below and are not replayed as full
             // visited responses.
-            if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
+            if (!clientNavigationCacheGeneration.isCurrent(navigationCacheGeneration)) return;
             storeVisitedResponseSnapshot(
               rscUrl,
               interceptionContext,
@@ -2276,7 +2295,7 @@ function bootstrapHydration(
               committedElements,
             );
           } else {
-            if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
+            if (!clientNavigationCacheGeneration.isCurrent(navigationCacheGeneration)) return;
             seedPrefetchResponseSnapshot(
               rscUrl,
               snapshot,

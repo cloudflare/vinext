@@ -28,6 +28,9 @@ test.describe("template navigation", () => {
     await page.goto(`${BASE}/nextjs-compat/template-server/alpha`);
     await waitForAppRouterHydration(page);
 
+    const renderId = await page.getByTestId("server-template-render-id").textContent();
+    expect(renderId).toBeTruthy();
+
     await page.getByTestId("server-template-identity-increment").click();
     await expect(page.getByTestId("server-template-identity")).toHaveText("1");
 
@@ -38,6 +41,7 @@ test.describe("template navigation", () => {
     await page.getByTestId("server-template-child-link").click();
     await expect(page.getByTestId("server-template-child-page")).toHaveText("Child alpha");
     await expect(page.getByTestId("server-template-identity")).toHaveText("1");
+    await expect(page.getByTestId("server-template-render-id")).toHaveText(renderId!);
 
     await page.getByTestId("server-template-param-link").click();
     await expect(page.getByTestId("server-template-section-page")).toHaveText("Section beta");

@@ -2,6 +2,7 @@ import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import { mergeElements } from "vinext/shims/slot";
 import {
+  AppElementsWire,
   normalizeAppElementsSlotBindings,
   type AppElements,
   type AppElementsSlotBinding,
@@ -199,10 +200,31 @@ function reduceApprovedVisibleCommitState(
         action.operation.lane === "hmr"
           ? hmrUniquePreserveElementIds
           : bfcacheCompatiblePreserveElementIds;
+      // Next stores a segment's template seed on the persistent layout router.
+      // The segment state key remounts that seed for each child navigation, so
+      // client templates reset while server template output remains stable.
+      // Refresh/HMR lanes and identity changes still install fresh output.
+      const preserveTemplateIds =
+        action.reuseCurrentBfcacheIds &&
+        (action.operation.lane === "navigation" ||
+          action.operation.lane === "traverse" ||
+          action.operation.lane === "server-action")
+          ? Object.keys(state.elements).filter(
+              (id) =>
+                AppElementsWire.parseElementKey(id)?.kind === "template" &&
+                Object.hasOwn(action.elements, id) &&
+                state.bfcacheIds[id] !== undefined &&
+                action.bfcacheIds[id] === state.bfcacheIds[id],
+            )
+          : [];
+      const mergedPreserveElementIds =
+        preserveTemplateIds.length === 0
+          ? preserveElementIds
+          : [...new Set([...preserveElementIds, ...preserveTemplateIds])];
       const mergedElements = mergeElements(state.elements, action.elements, {
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
-        preserveElementIds,
+        preserveElementIds: mergedPreserveElementIds,
         preservePreviousSlotIds,
       });
       return commitVisibleRouterState(
