@@ -3,12 +3,13 @@ name: Deploy Examples
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request: # run on PRs against any base branch, not just main
 
 concurrency:
   group: deploy-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions: {}
 
 jobs:
   deploy:
@@ -25,69 +26,109 @@ jobs:
         example:
           - name: app-router-cloudflare
             project: app-router-cloudflare
+            working_directory: examples/app-router-cloudflare
             wrangler_config: dist/server/wrangler.json
           - name: pages-router-cloudflare
             project: pages-router-cloudflare
+            working_directory: examples/pages-router-cloudflare
             wrangler_config: dist/pages_router_cloudflare/wrangler.json
           - name: app-router-playground
             project: app-router-playground
+            working_directory: examples/app-router-playground
             wrangler_config: dist/server/wrangler.json
           - name: realworld-api-rest
             project: realworld-api-rest
+            working_directory: examples/realworld-api-rest
             wrangler_config: dist/realworld_api_rest/wrangler.json
           - name: nextra-docs-template
             project: nextra-docs-template
+            working_directory: examples/nextra-docs-template
             wrangler_config: dist/server/wrangler.json
           - name: benchmarks
             project: benchmarks
+            working_directory: examples/benchmarks
             wrangler_config: dist/server/wrangler.json
           - name: hackernews
             project: hackernews
+            working_directory: examples/hackernews
             wrangler_config: dist/server/wrangler.json
+          - name: workers-cache
+            project: workers-cache
+            working_directory: examples/workers-cache
+            wrangler_config: dist/server/wrangler.json
+            warm_cdn_cache: true
+          - name: web
+            project: vinext-web
+            working_directory: apps/web
+            wrangler_config: dist/server/wrangler.json
+            warm_cdn_cache: true
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
 
       - name: Build vinext plugin
         run: vp run build
 
       - name: Build example
         run: vp build
-        working-directory: examples/${{ matrix.example.name }}
+        working-directory: ${{ matrix.example.working_directory }}
 
       - name: Apply D1 migrations (benchmarks only)
         if: matrix.example.name == 'benchmarks' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: examples/benchmarks
           command: d1 migrations apply vinext-benchmarks --remote
 
-      - name: Deploy to Cloudflare Workers (Production)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
+      - name: Apply D1 migrations (web only)
+        if: matrix.example.name == 'web' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: examples/${{ matrix.example.name }}
+          workingDirectory: apps/web
+          command: d1 migrations apply vinext-metrics --remote
+
+      - name: Deploy to Cloudflare Workers (Production)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ matrix.example.working_directory }}
           command: deploy --config ${{ matrix.example.wrangler_config }}
+
+      - name: Deploy to Cloudflare Workers with CDN warmup (Production)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp exec vinext-cloudflare deploy --skip-build --config ${{ matrix.example.wrangler_config }} --experimental-warm-cdn-cache
 
       - name: Deploy Preview Version
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: examples/${{ matrix.example.name }}
+          workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
   smoke-test:
     name: Smoke Test Deployments
     runs-on: ubuntu-latest
     needs: deploy
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Smoke test (production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -106,7 +147,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Comment PR with preview URLs
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const prNumber = context.issue.number;
@@ -120,6 +161,8 @@ jobs:
               { name: 'nextra-docs-template', project: 'nextra-docs-template' },
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
+              { name: 'workers-cache', project: 'workers-cache' },
+              { name: 'web', project: 'vinext-web' },
             ];
 
             const { data: comments } = await github.rest.issues.listComments({

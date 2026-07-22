@@ -16,7 +16,9 @@ jobs:
     outputs:
       repos: ${{ steps.read.outputs.repos }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: read
         run: echo "repos=$(jq -c . .github/repos.json)" >> "$GITHUB_OUTPUT"
 
@@ -41,12 +43,14 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: ./.github/actions/setup
         with:
-          cache: "false"
+          cache: false
           run-install: false
 
       - name: Send failure notification

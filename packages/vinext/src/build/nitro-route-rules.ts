@@ -11,7 +11,7 @@ export type NitroRouteRuleConfig = Record<string, unknown> & {
   prerender?: boolean;
 };
 
-export type NitroRouteRules = Record<string, { swr: number }>;
+type NitroRouteRules = Record<string, { swr: number }>;
 
 /**
  * Scans the filesystem for route files and generates Nitro `routeRules` for ISR routes.

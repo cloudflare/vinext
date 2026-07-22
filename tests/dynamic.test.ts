@@ -9,6 +9,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
+import { renderToReadableStream } from "react-dom/server.edge";
 import dynamic, { flushPreloads } from "../packages/vinext/src/shims/dynamic.js";
 
 // ─── Test components ────────────────────────────────────────────────────
@@ -21,6 +22,12 @@ function LoadingSpinner({ isLoading, error }: { isLoading?: boolean; error?: Err
   if (error) return React.createElement("div", null, `Error: ${error.message}`);
   if (isLoading) return React.createElement("div", null, "Loading...");
   return null;
+}
+
+async function renderDynamicToHtml(component: React.ComponentType) {
+  const stream = await renderToReadableStream(React.createElement(component));
+  await stream.allReady;
+  return new Response(stream).text();
 }
 
 // ─── SSR rendering ──────────────────────────────────────────────────────
@@ -46,6 +53,24 @@ describe("next/dynamic SSR", () => {
     const DynamicComponent = dynamic(() => Promise.resolve(Hello as any));
     expect(DynamicComponent.displayName).toBe("DynamicServer");
   });
+
+  it("accepts a direct loader promise", async () => {
+    // Ported from Next.js: test/development/basic/next-dynamic/pages/dynamic/ssr.js
+    // https://github.com/vercel/next.js/blob/canary/test/development/basic/next-dynamic/pages/dynamic/ssr.js
+    const DynamicComponent = dynamic(Promise.resolve({ default: Hello }));
+
+    await expect(renderDynamicToHtml(DynamicComponent)).resolves.toContain("Hello from dynamic");
+  });
+
+  it("accepts an options object with loader", async () => {
+    // Ported from Next.js: test/development/basic/next-dynamic/pages/dynamic/head.js
+    // https://github.com/vercel/next.js/blob/canary/test/development/basic/next-dynamic/pages/dynamic/head.js
+    const DynamicComponent = dynamic({
+      loader: () => Promise.resolve({ default: Hello }),
+    });
+
+    await expect(renderDynamicToHtml(DynamicComponent)).resolves.toContain("Hello from dynamic");
+  });
 });
 
 // ─── SSR: false ─────────────────────────────────────────────────────────
@@ -60,6 +85,31 @@ describe("next/dynamic ssr: false", () => {
     const html = ReactDOMServer.renderToString(React.createElement(DynamicNoSSR));
     expect(html).toContain("Loading...");
     expect(html).not.toContain("Hello from dynamic");
+  });
+
+  it("renders the loading UI on the server with pastDelay:true so it matches the client first render (issue 1967)", () => {
+    // App Router always renders the loading fallback with pastDelay=true on BOTH
+    // server and client. A loading component that branches on pastDelay (the
+    // documented `if (!pastDelay) return null` pattern) must therefore render the
+    // same thing on the server as it does on the client's first/pre-mount render —
+    // otherwise hydration mismatches (issue 1967).
+    const LoadingAfterDelay = ({ pastDelay }: { pastDelay?: boolean }) =>
+      pastDelay ? React.createElement("div", null, "Delayed loading") : null;
+    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), {
+      ssr: false,
+      loading: LoadingAfterDelay,
+    });
+
+    const serverHtml = ReactDOMServer.renderToStaticMarkup(React.createElement(DynamicNoSSR));
+    // Canonical client first-render output: the loading component rendered with
+    // pastDelay:true, which is exactly what ClientSSRFalse emits pre-mount via
+    // createDynamicLoadingProps().
+    const clientFirstRenderHtml = ReactDOMServer.renderToStaticMarkup(
+      React.createElement(LoadingAfterDelay, { pastDelay: true }),
+    );
+
+    expect(serverHtml).toContain("Delayed loading");
+    expect(serverHtml).toBe(clientFirstRenderHtml);
   });
 
   it("renders nothing on server when ssr: false and no loading", () => {
@@ -78,7 +128,7 @@ describe("next/dynamic ssr: false", () => {
 // ─── Loading component ──────────────────────────────────────────────────
 
 describe("next/dynamic loading component", () => {
-  it("passes isLoading and pastDelay to loading component on SSR", () => {
+  it("passes the App Router loading props (pastDelay:true) to loading component on SSR", () => {
     let receivedProps: any = null;
     function TrackingLoader(props: any) {
       receivedProps = props;
@@ -92,10 +142,14 @@ describe("next/dynamic loading component", () => {
 
     ReactDOMServer.renderToString(React.createElement(DynamicWithTracking));
 
+    // pastDelay is true on the server to match the client's first render and the
+    // Next.js App Router contract (issue 1967).
     expect(receivedProps).toEqual({
       isLoading: true,
       pastDelay: true,
       error: null,
+      timedOut: false,
+      retry: expect.any(Function),
     });
   });
 });

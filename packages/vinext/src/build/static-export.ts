@@ -21,6 +21,7 @@ import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { prerenderPages, prerenderApp, type PrerenderRouteResult } from "./prerender.js";
+import { scanMetadataFiles } from "../server/metadata-routes.js";
 
 export type StaticExportOptions = {
   /**
@@ -54,7 +55,10 @@ export type StaticExportResult = {
 /**
  * Convert a `PrerenderResult` into the legacy `StaticExportResult` shape.
  */
-function toStaticExportResult(routes: PrerenderRouteResult[]): StaticExportResult {
+function toStaticExportResult(
+  routes: PrerenderRouteResult[],
+  extraOutputFiles: readonly string[] = [],
+): StaticExportResult {
   const result: StaticExportResult = {
     pageCount: 0,
     files: [],
@@ -69,7 +73,8 @@ function toStaticExportResult(routes: PrerenderRouteResult[]): StaticExportResul
       // would cause pageCount > files.length, but in practice every rendered
       // entry emits exactly one .html file, so they stay in sync.
       result.pageCount++;
-      // Only add .html files (not .json or .rsc) to the legacy files list
+      // Only add .html files (not .json or .rsc) from route entries.
+      // Static metadata files are route-adjacent assets and are appended below.
       result.files.push(...r.outputFiles.filter((f) => f.endsWith(".html")));
     } else if (r.status === "skipped") {
       if (r.reason === "api") {
@@ -81,6 +86,8 @@ function toStaticExportResult(routes: PrerenderRouteResult[]): StaticExportResul
       result.errors.push({ route: r.route, error: r.error });
     }
   }
+
+  result.files.push(...extraOutputFiles);
 
   return result;
 }
@@ -107,6 +114,11 @@ export type AppStaticExportOptions = {
   /** Discovered app routes */
   routes: AppRoute[];
   /**
+   * App directory path. When provided, static export scans it for file-based
+   * metadata assets such as icon.png and sitemap.xml.
+   */
+  appDir?: string;
+  /**
    * Absolute path to the pre-built RSC handler bundle
    * (e.g. `dist/server/index.js`).
    */
@@ -125,12 +137,15 @@ export type AppStaticExportOptions = {
 export async function staticExportApp(
   options: AppStaticExportOptions,
 ): Promise<StaticExportResult> {
+  const metadataRoutes = options.appDir ? scanMetadataFiles(options.appDir) : [];
+
   const result = await prerenderApp({
     mode: "export",
     rscBundlePath: options.rscBundlePath,
     routes: options.routes,
+    metadataRoutes,
     outDir: options.outDir,
     config: options.config,
   });
-  return toStaticExportResult(result.routes);
+  return toStaticExportResult(result.routes, result.outputFiles);
 }

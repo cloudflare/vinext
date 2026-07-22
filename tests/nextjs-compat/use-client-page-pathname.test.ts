@@ -26,6 +26,25 @@ let _server: ViteDevServer;
 let _baseUrl: string;
 
 const ROUTE = "/use-client-page-pathname";
+const RSC_BOOTSTRAP_PREFIX =
+  'Object.assign(((self[Symbol.for("vinext.navigationRuntime")]??={bootstrap:{routeManifest:null},functions:{}}).bootstrap.rsc??={rsc:[]}),{params:';
+
+function extractRscBootstrap(html: string): {
+  nav: { pathname: string; searchParams: [string, string][] };
+  params: Record<string, string | string[]>;
+} {
+  const start = html.indexOf(RSC_BOOTSTRAP_PREFIX);
+  expect(start, "navigation runtime RSC bootstrap script not found").toBeGreaterThan(-1);
+  const paramsStart = start + RSC_BOOTSTRAP_PREFIX.length;
+  const navSeparator = html.indexOf(",nav:", paramsStart);
+  expect(navSeparator, "navigation runtime nav payload not found").toBeGreaterThan(-1);
+  const end = html.indexOf("})</script>", navSeparator);
+  expect(end, "navigation runtime RSC bootstrap script was not closed").toBeGreaterThan(-1);
+  return {
+    params: JSON.parse(html.slice(paramsStart, navSeparator)),
+    nav: JSON.parse(html.slice(navSeparator + ",nav:".length, end)),
+  };
+}
 
 beforeAll(async () => {
   ({ server: _server, baseUrl: _baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, {
@@ -54,13 +73,11 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     expect(html).toContain(`<span id="client-page-pathname">${ROUTE}</span>`);
   });
 
-  it("__VINEXT_RSC_NAV__ pathname matches SSR-rendered usePathname()", async () => {
+  it("navigation runtime pathname matches SSR-rendered usePathname()", async () => {
     const res = await fetch(`${_baseUrl}${ROUTE}`);
     const html = await res.text();
 
-    const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
-    expect(match, "__VINEXT_RSC_NAV__ script tag not found").toBeTruthy();
-    const nav = JSON.parse(match![1]);
+    const { nav } = extractRscBootstrap(html);
 
     expect(nav.pathname).toBe(ROUTE);
   });
@@ -73,16 +90,70 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     expect(html).toContain('<span id="client-page-search-string">q=hello&amp;page=2</span>');
   });
 
-  it("__VINEXT_RSC_NAV__ searchParams matches query string", async () => {
+  it("navigation runtime searchParams matches query string", async () => {
     const res = await fetch(`${_baseUrl}${ROUTE}?q=test`);
     const html = await res.text();
 
-    const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
-    expect(match).toBeTruthy();
-    const nav = JSON.parse(match![1]);
+    const { nav } = extractRscBootstrap(html);
     const sp = new URLSearchParams(nav.searchParams);
 
     expect(sp.get("q")).toBe("test");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  it("adds CSP nonce to inline hydration and bootstrap scripts", async () => {
+    const res = await fetch(`${_baseUrl}${ROUTE}?csp-nonce=1`);
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+
+    expect(html).toContain(`<script nonce="vinext-test-nonce">${RSC_BOOTSTRAP_PREFIX}`);
+    expect(html).toContain(
+      '<script nonce="vinext-test-nonce">((self[Symbol.for("vinext.navigationRuntime")]',
+    );
+    expect(html).toContain(".rsc.push(");
+    expect(html).toContain(".done=true");
+    expect(html).toMatch(/<link rel="modulepreload" nonce="vinext-test-nonce" href="[^"]+"/);
+
+    const scriptTags = [...html.matchAll(/<script\b[^>]*>/g)].map((match) => match[0]);
+    expect(scriptTags.length).toBeGreaterThan(0);
+    for (const tag of scriptTags) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+    }
+
+    const preloadLikeTags = [
+      ...html.matchAll(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g),
+    ].map((match) => match[0]);
+    expect(preloadLikeTags.length).toBeGreaterThan(0);
+    for (const tag of preloadLikeTags) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+    }
+  });
+
+  // Ported from Next.js: test/production/app-dir/subresource-integrity/subresource-integrity.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/subresource-integrity/subresource-integrity.test.ts
+  it("reads nonce from the incoming Content-Security-Policy request header", async () => {
+    const res = await fetch(`${_baseUrl}${ROUTE}`, {
+      headers: {
+        "content-security-policy": "script-src 'nonce-request-header' 'strict-dynamic';",
+      },
+    });
+    const html = await res.text();
+
+    expect(html).toContain(`<script nonce="request-header">${RSC_BOOTSTRAP_PREFIX}`);
+  });
+
+  it("returns 500 when the nonce contains HTML escape characters", async () => {
+    const res = await fetch(`${_baseUrl}${ROUTE}`, {
+      headers: {
+        "content-security-policy": `script-src 'nonce-"><script></script>"'`,
+      },
+    });
+
+    expect(res.status).toBe(500);
   });
 });
 
@@ -106,24 +177,20 @@ describe('"use client" dynamic page: usePathname() + useParams() SSR', () => {
     expect(html).toContain('<span id="client-page-dynamic-slug">my-slug</span>');
   });
 
-  it("__VINEXT_RSC_PARAMS__ contains slug for dynamic route", async () => {
+  it("navigation runtime params contains slug for dynamic route", async () => {
     const res = await fetch(`${_baseUrl}${dynamicPath}`);
     const html = await res.text();
 
-    const match = html.match(/self\.__VINEXT_RSC_PARAMS__=(\{[^<]*\})/);
-    expect(match, "__VINEXT_RSC_PARAMS__ script tag not found").toBeTruthy();
-    const params = JSON.parse(match![1]);
+    const { params } = extractRscBootstrap(html);
 
     expect(params.slug).toBe("my-slug");
   });
 
-  it("__VINEXT_RSC_NAV__ pathname is correct for dynamic route", async () => {
+  it("navigation runtime pathname is correct for dynamic route", async () => {
     const res = await fetch(`${_baseUrl}${dynamicPath}`);
     const html = await res.text();
 
-    const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
-    expect(match).toBeTruthy();
-    const nav = JSON.parse(match![1]);
+    const { nav } = extractRscBootstrap(html);
 
     expect(nav.pathname).toBe(dynamicPath);
   });

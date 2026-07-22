@@ -87,6 +87,54 @@ describe("buildRouteTrie + trieMatch", () => {
     });
   });
 
+  describe("params key order", () => {
+    it("preserves key order for two dynamic segments", () => {
+      const routes = [r("/:category/:id")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["electronics", "123"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["category", "id"]);
+    });
+
+    it("preserves key order for three dynamic segments", () => {
+      const routes = [r("/:a/:b/:c")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["x", "y", "z"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["a", "b", "c"]);
+    });
+
+    it("preserves key order for mixed static+dynamic route", () => {
+      const routes = [r("/products/:category/:id")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["products", "electronics", "123"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["category", "id"]);
+    });
+
+    it("preserves key order after backtracking to catch-all", () => {
+      const routes = [r("/blog/:id/comments"), r("/blog/:path+")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["blog", "42", "photos"]);
+      expect(result).not.toBeNull();
+      expect(result!.route.pattern).toBe("/blog/:path+");
+      expect(Object.keys(result!.params)).toEqual(["path"]);
+    });
+
+    it("preserves key order for multiple dynamic segments with static intermediate", () => {
+      const routes = [r("/:a/b/:c")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["x", "b", "z"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["a", "c"]);
+    });
+  });
+
   describe("catch-all routes", () => {
     it("matches catch-all with one segment", () => {
       const routes = [r("/docs/:path+")];
@@ -115,13 +163,17 @@ describe("buildRouteTrie + trieMatch", () => {
   });
 
   describe("optional catch-all routes", () => {
-    it("matches optional catch-all with zero segments", () => {
+    it("matches optional catch-all with zero segments without materializing the param", () => {
+      // Next.js route-regex makes the optional catch-all capture group optional, and
+      // route-matcher only writes params for defined capture groups:
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-regex.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts
       const routes = [r("/docs/:path*")];
       const trie = buildRouteTrie(routes);
 
       const result = trieMatch(trie, ["docs"]);
       expect(result).not.toBeNull();
-      expect(result!.params).toEqual({ path: [] });
+      expect(result!.params).toEqual({});
     });
 
     it("matches optional catch-all with one segment", () => {
@@ -140,6 +192,16 @@ describe("buildRouteTrie + trieMatch", () => {
       const result = trieMatch(trie, ["docs", "api", "ref"]);
       expect(result).not.toBeNull();
       expect(result!.params).toEqual({ path: ["api", "ref"] });
+    });
+
+    it("matches root-level optional catch-all with zero segments without materializing the param", () => {
+      const routes = [r("/:path*")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, []);
+      expect(result).not.toBeNull();
+      expect(result!.route.pattern).toBe("/:path*");
+      expect(result!.params).toEqual({});
     });
   });
 
@@ -280,7 +342,10 @@ describe("buildRouteTrie + trieMatch", () => {
         if (pp.endsWith("*")) {
           if (i !== patternParts.length - 1) return null;
           const paramName = pp.slice(1, -1);
-          params[paramName] = urlParts.slice(i);
+          const remaining = urlParts.slice(i);
+          if (remaining.length > 0) {
+            params[paramName] = remaining;
+          }
           return params;
         }
         if (pp.startsWith(":")) {
@@ -428,6 +493,45 @@ describe("buildRouteTrie + trieMatch", () => {
 
       const result = trieMatch(trie, ["first"]);
       expect(result!.route).toBe(route1);
+    });
+  });
+
+  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts#L25-L27
+  // Also: test/production/pages-dir/production/test/index.test.ts "should handle failed param decoding"
+  // https://github.com/vercel/next.js/blob/canary/test/production/pages-dir/production/test/index.test.ts#L1082
+  describe("param decoding", () => {
+    it("decodes %2F, %23, %3F in dynamic segment params without splitting segments", () => {
+      // /files/[name] matching /files/a%2Fb → param "a/b" (not "a", "b")
+      const trie = buildRouteTrie([r("/files/:name")]);
+      expect(trieMatch(trie, ["files", "a%2Fb"])!.params).toEqual({ name: "a/b" });
+      expect(trieMatch(trie, ["files", "a%23b"])!.params).toEqual({ name: "a#b" });
+      expect(trieMatch(trie, ["files", "a%3Fb"])!.params).toEqual({ name: "a?b" });
+    });
+
+    it("decodes each element of catch-all and optional catch-all arrays individually", () => {
+      const catchAllTrie = buildRouteTrie([r("/docs/:rest+")]);
+      expect(trieMatch(catchAllTrie, ["docs", "a%2Fb", "c%23d"])!.params).toEqual({
+        rest: ["a/b", "c#d"],
+      });
+
+      const optionalTrie = buildRouteTrie([r("/docs/:rest*")]);
+      expect(trieMatch(optionalTrie, ["docs", "a%2Fb", "c%23d"])!.params).toEqual({
+        rest: ["a/b", "c#d"],
+      });
+    });
+
+    it("preserves malformed percent escapes without throwing", () => {
+      // Next.js throws DecodeError (400) on malformed, but vinext's
+      // normalization layer already validates percent-encoding. The matcher
+      // layer preserves un-decodable values rather than crashing.
+      const trie = buildRouteTrie([r("/files/:name")]);
+      expect(trieMatch(trie, ["files", "a%GGb"])!.params).toEqual({ name: "a%GGb" });
+    });
+
+    it("applies exactly one decodeURIComponent pass (double-encoded stays single-encoded)", () => {
+      const trie = buildRouteTrie([r("/files/:name")]);
+      expect(trieMatch(trie, ["files", "a%252Fb"])!.params).toEqual({ name: "a%2Fb" });
     });
   });
 });

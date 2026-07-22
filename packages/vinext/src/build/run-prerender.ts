@@ -1,6 +1,6 @@
 /**
  * Shared prerender runner used by both `vinext build` (cli.ts) and
- * `vinext deploy --prerender-all` (deploy.ts).
+ * `vinext-cloudflare deploy --prerender-all` (deploy.ts).
  *
  * `runPrerender` handles route scanning, dynamic imports, progress reporting,
  * and result summarisation.
@@ -18,7 +18,7 @@
  * `dist/server/vinext-prerender.json` manifest.
  */
 
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import type { Server as HttpServer } from "node:http";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
@@ -31,8 +31,10 @@ import {
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
-import { findDir } from "./report.js";
-import { startProdServer } from "../server/prod-server.js";
+import { scanMetadataFiles } from "../server/metadata-routes.js";
+import { findDir } from "../utils/project.js";
+import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
+import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -42,7 +44,7 @@ import { startProdServer } from "../server/prod-server.js";
  * Writes a single updating line to stderr using \r so it doesn't interleave
  * with Vite's stdout output. Automatically clears on finish().
  */
-export class PrerenderProgress {
+class PrerenderProgress {
   private isTTY = process.stderr.isTTY;
   private lastLineLen = 0;
 
@@ -70,17 +72,25 @@ export class PrerenderProgress {
   }
 }
 
+function readBuiltBuildId(serverDir: string): string | null {
+  try {
+    const buildId = fs.readFileSync(path.join(serverDir, "BUILD_ID"), "utf-8").trim();
+    return buildId.length > 0 ? buildId : null;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 // ─── Shared runner ────────────────────────────────────────────────────────────
 
-export type RunPrerenderOptions = {
+type RunPrerenderOptions = {
   /** Project root directory. */
   root: string;
-  /**
-   * Override next.config values. Merged on top of the config loaded from disk.
-   * Intended for tests that need to exercise a specific config (e.g. output: 'export')
-   * without writing a next.config file.
-   */
-  nextConfigOverride?: Partial<import("../config/next-config.js").ResolvedNextConfig>;
+  /** Fully resolved Next.js config. Loaded from disk when omitted. */
+  nextConfig?: import("../config/next-config.js").ResolvedNextConfig;
   /**
    * Override the path to the Pages Router server bundle.
    * Defaults to `<root>/dist/server/entry.js`.
@@ -93,6 +103,11 @@ export type RunPrerenderOptions = {
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
+  /**
+   * Maximum number of routes rendered in parallel.
+   * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
+   */
+  concurrency?: number;
 };
 
 /**
@@ -115,6 +130,28 @@ export type RunPrerenderOptions = {
  * If a required production bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.
  */
+/**
+ * Throw if any route is a `fatal` error (a thrown generateStaticParams /
+ * getStaticPaths). These fail the build in ALL modes — default included —
+ * matching `next build`, unlike intentionally-skipped dynamic/SSR routes and
+ * non-fatal errors (e.g. transport failures), which only fail under
+ * `output: 'export'`. Exported for direct unit testing. Refs cloudflare/vinext#1982
+ */
+export function assertNoFatalPrerenderRoutes(routes: readonly PrerenderRouteResult[]): void {
+  const fatalRoutes = routes.filter(
+    (r): r is Extract<PrerenderRouteResult, { status: "error" }> =>
+      r.status === "error" && r.fatal === true,
+  );
+  if (fatalRoutes.length === 0) return;
+  const fatalList = fatalRoutes.map((r) => `  ${r.route}: ${r.error}`).join("\n");
+  throw new Error(
+    `Prerender failed: ${fatalRoutes.length} route${fatalRoutes.length !== 1 ? "s" : ""} errored during static generation.\n${fatalList}`,
+  );
+}
+
+/**
+ * Statically generate routes and return the prerender result.
+ */
 export async function runPrerender(options: RunPrerenderOptions): Promise<PrerenderResult | null> {
   const { root } = options;
 
@@ -124,23 +161,43 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
-  // The manifest lands in dist/server/ alongside the server bundle so it's
-  // cleaned by Vite's emptyOutDir on rebuild and co-located with server artifacts.
-  const manifestDir = path.join(root, "dist", "server");
+  // Mark the entire prerender orchestration so the socket-error backstop
+  // re-throws peer-disconnect errors during user fetch() calls instead of
+  // silently absorbing them and producing corrupt output. prerender.ts
+  // sets and clears this var around its own render passes, but we widen
+  // the scope here to cover startProdServer / shared-server setup that
+  // happens before those phases run. See server/socket-error-backstop.ts.
+  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
+  process.env.VINEXT_PRERENDER = "1";
 
-  const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
-  const config = options.nextConfigOverride
-    ? { ...loadedConfig, ...options.nextConfigOverride }
-    : // Note: shallow merge — nested keys like `images` or `i18n` in
-      // nextConfigOverride replace the entire nested object from loadedConfig.
-      // This is intentional for test usage (top-level overrides only); a deep
-      // merge would be needed to support partial nested overrides in the future.
-      loadedConfig;
+  // The manifest lands in dist/server/ alongside the server bundle so it's
+  // cleaned with the rest of vinext's build output on rebuild and co-located
+  // with server artifacts.
+  const manifestDir = path.join(root, "dist", "server");
+  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
+  const serverDir = path.dirname(rscBundlePath);
+
+  const config = options.nextConfig
+    ? { ...options.nextConfig }
+    : { ...(await resolveNextConfig(await loadNextConfig(root), root)) };
+  // Prerender must reuse the exact BUILD_ID that `vinext build` wrote to disk
+  // rather than re-resolving a fresh one. `config.buildId` is consumed when
+  // computing prerendered-output identity (prerender.ts), so re-resolving here
+  // would produce artifacts keyed to a different buildId than the deployed
+  // bundle. Reading it back from the built `BUILD_ID` file keeps prerender
+  // output aligned with the bundle it was generated from. (Spreading
+  // `loadedConfig` above is required so this assignment does not mutate the
+  // shared loaded config.)
+  const builtBuildId = readBuiltBuildId(serverDir);
+  if (builtBuildId) {
+    config.buildId = builtBuildId;
+  }
   // Activate export mode when next.config.js sets `output: 'export'`.
   // In export mode, SSR routes and any dynamic routes without static params are
   // build errors rather than silently skipped.
   const mode = config.output === "export" ? "export" : "default";
   const allRoutes: PrerenderRouteResult[] = [];
+  const allOutputFiles: string[] = [];
 
   // Count total renderable URLs across both phases upfront so we can show a
   // single combined progress bar. We track completed ourselves and pass an
@@ -164,9 +221,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       ? path.join(root, "dist", "client")
       : path.join(root, "dist", "server", "prerendered-routes");
 
-  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
-  const serverDir = path.dirname(rscBundlePath);
-
   // For hybrid builds (both app/ and pages/ present), start a single shared
   // prod server and pass it to both phases. This avoids spinning up two servers
   // and ensures both phases render against the same built bundle.
@@ -183,6 +237,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         host: "127.0.0.1",
         outDir: path.dirname(serverDir),
         noCompression: true,
+        purpose: "prerender",
       });
 
       // Read the prerender secret from vinext-server.json so it can be passed
@@ -193,6 +248,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     // ── App Router phase ──────────────────────────────────────────────────────
     if (appDir) {
       const routes = await appRouter(appDir, config.pageExtensions);
+      const metadataRoutes = scanMetadataFiles(appDir);
 
       // We don't know the exact render-queue size until prerenderApp starts, so
       // use the progress callback's `total` to update our combined total on the
@@ -201,9 +257,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       const result = await prerenderApp({
         mode,
         routes,
+        metadataRoutes,
         outDir,
         skipManifest: true,
         config,
+        concurrency: options.concurrency,
         rscBundlePath,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
@@ -219,6 +277,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       });
 
       allRoutes.push(...result.routes);
+      if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
@@ -237,6 +296,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         outDir,
         skipManifest: true,
         config,
+        concurrency: options.concurrency,
         // For hybrid builds pass the shared prod server; for single-router builds
         // fall back to the pages bundle path so prerenderPages starts its own.
         ...(sharedProdServer
@@ -256,12 +316,15 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       });
 
       allRoutes.push(...result.routes);
+      if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
     }
   } finally {
     // Close the shared prod server if we started one.
     if (sharedProdServer) {
       await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
     }
+    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
+    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
   }
 
   if (allRoutes.length === 0) {
@@ -289,6 +352,12 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     progress.finish(rendered, skipped, errors);
   }
 
+  // A thrown generateStaticParams/getStaticPaths is a fatal build error in ANY
+  // mode (default included), matching Next.js — unlike intentionally-skipped
+  // dynamic/SSR routes. These are flagged `fatal` by prerenderApp/prerenderPages.
+  // Refs cloudflare/vinext#1982
+  assertNoFatalPrerenderRoutes(allRoutes);
+
   // In export mode, any error route means the build should fail — the app
   // contains dynamic functionality that cannot be statically exported.
   if (mode === "export" && errors > 0) {
@@ -303,5 +372,13 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  return { routes: allRoutes };
+  injectPregeneratedConcretePaths(root);
+  if (fs.existsSync(rscBundlePath)) {
+    rememberCurrentServerEntryImportMtime(rscBundlePath);
+  }
+
+  return {
+    routes: allRoutes,
+    ...(allOutputFiles.length > 0 ? { outputFiles: allOutputFiles } : {}),
+  };
 }

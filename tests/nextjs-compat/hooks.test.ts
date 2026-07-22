@@ -127,6 +127,26 @@ describe("Next.js compat: hooks", () => {
     expect(html).toContain("/nextjs-compat/hooks-search");
   });
 
+  // Next.js: 'should have the canonical url pathname on rewrite'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
+  // After a next.config.js (afterFiles) rewrite, usePathname() must return the
+  // CANONICAL (external) URL the user requested, not the internal rewrite target
+  // used for route matching.
+  it("usePathname returns the canonical URL after a config rewrite", async () => {
+    const { html } = await fetchHtml(baseUrl, "/rewritten-use-pathname");
+    expect(html).toContain('<p id="current-pathname">/rewritten-use-pathname</p>');
+    expect(html).not.toContain('<p id="current-pathname">/nextjs-compat/hooks-search</p>');
+  });
+
+  // Same canonical-URL behavior must hold for middleware rewrites: usePathname()
+  // should reflect what the user typed in the address bar, not the rewrite
+  // destination used for internal route matching.
+  it("usePathname returns the canonical URL after a middleware rewrite", async () => {
+    const { html } = await fetchHtml(baseUrl, "/middleware-rewritten-use-pathname");
+    expect(html).toContain('<p id="current-pathname">/middleware-rewritten-use-pathname</p>');
+    expect(html).not.toContain('<p id="current-pathname">/nextjs-compat/hooks-search</p>');
+  });
+
   // ── useRouter SSR ───────────────────────────────────────────
   // Next.js: 'should have the correct hooks at /adapter-hooks/1'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts

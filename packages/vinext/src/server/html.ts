@@ -26,3 +26,33 @@ export function safeJsonStringify(data: unknown): string {
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
 }
+
+export function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+const HTML_SPACE_RE = /[\t\n\f\r ]+/;
+
+export function htmlTokenListContains(value: string | null, token: string): boolean {
+  if (value === null) return false;
+
+  return value
+    .split(HTML_SPACE_RE)
+    .some((part) => part.length > 0 && part.toLowerCase() === token.toLowerCase());
+}
+
+export function createNonceAttribute(nonce?: string): string {
+  if (!nonce) {
+    return "";
+  }
+
+  return ` nonce="${escapeHtmlAttr(nonce)}"`;
+}
+
+export function createInlineScriptTag(content: string, nonce?: string): string {
+  return `<script${createNonceAttribute(nonce)}>${content}</script>`;
+}

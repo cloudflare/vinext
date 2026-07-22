@@ -6,14 +6,23 @@ import {
   pagesRouter,
   matchRoute,
   apiRouter,
+  invalidateRouteCache,
   type Route,
 } from "../packages/vinext/src/routing/pages-router.js";
 import {
+  appRouteGraph,
   appRouter,
+  computeRootParamNames,
   matchAppRoute,
   invalidateAppRouteCache,
   type AppRoute,
 } from "../packages/vinext/src/routing/app-router.js";
+import { toSlash } from "pathslash";
+
+/** Expected canonical (forward-slash) path for router-output assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
+}
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
@@ -43,14 +52,20 @@ function makeTestAppRoute(
     loadingPath: null,
     errorPath: null,
     layoutErrorPaths: [],
+    errorPaths: [],
+    errorTreePositions: [],
     notFoundPath: null,
     notFoundPaths: [],
+    forbiddenPaths: [],
     forbiddenPath: null,
+    unauthorizedPaths: [],
     unauthorizedPath: null,
     routeSegments: [],
     layoutTreePositions: [],
     isDynamic: pattern.includes(":"),
     params: [],
+    rootParamNames: [],
+    siblingIntercepts: [],
   };
 }
 
@@ -76,19 +91,15 @@ describe("pagesRouter - route discovery", () => {
     expect(dynamicRoute!.params).toEqual(["id"]);
   });
 
-  it("sorts static routes before dynamic routes", async () => {
+  it("sorts static routes before dynamic routes at the same depth", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
 
-    const staticRoutes = routes.filter((r) => !r.isDynamic);
-    const dynamicRoutes = routes.filter((r) => r.isDynamic);
+    const aboutIndex = routes.findIndex((route) => route.pattern === "/about");
+    const postIndex = routes.findIndex((route) => route.pattern === "/posts/:id");
 
-    // All static routes should come before dynamic routes
-    const lastStaticIndex = routes.findIndex((r) => r === staticRoutes[staticRoutes.length - 1]);
-    const firstDynamicIndex = routes.findIndex((r) => r === dynamicRoutes[0]);
-
-    if (staticRoutes.length > 0 && dynamicRoutes.length > 0) {
-      expect(lastStaticIndex).toBeLessThan(firstDynamicIndex);
-    }
+    expect(aboutIndex).not.toBe(-1);
+    expect(postIndex).not.toBe(-1);
+    expect(aboutIndex).toBeLessThan(postIndex);
   });
 
   it("ignores _app.tsx and _document.tsx", async () => {
@@ -98,6 +109,36 @@ describe("pagesRouter - route discovery", () => {
     expect(patterns).not.toContain("/_app");
     expect(patterns).not.toContain("/_document");
     expect(patterns).not.toContain("/_error");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/underscore-ignore-app-paths
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/underscore-ignore-app-paths/underscore-ignore-app-paths.test.ts
+  it("serves pages/_foo.tsx even when app/ also exists", async () => {
+    await withTempDir("vinext-pages-underscore-mixed-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(pagesDir, { recursive: true });
+      await mkdir(appDir, { recursive: true });
+      await writeFile(path.join(pagesDir, "_dashboard.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(pagesDir, "_hidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(pagesDir, "index.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      // Pages Router: underscore-prefixed pages SHOULD be discovered
+      expect(patterns).toContain("/_dashboard");
+      expect(patterns).toContain("/_hidden");
+      expect(patterns).toContain("/");
+
+      // App Router: underscore-prefixed folders should still be ignored
+      invalidateAppRouteCache();
+      const appRoutes = await appRouter(appDir);
+      const appPatterns = appRoutes.map((r) => r.pattern);
+      expect(appPatterns).toContain("/");
+    });
   });
 
   it("rejects non-terminal catch-all routes during discovery", async () => {
@@ -145,6 +186,15 @@ describe("matchRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/posts/:id");
     expect(result!.params).toEqual({ id: "42" });
+
+    expect(matchRoute("/posts/a%2561", routes)?.params).toEqual({ id: "a%61" });
+    expect(matchRoute("/posts/b%2Fc", routes)?.params).toEqual({ id: "b/c" });
+  });
+
+  it("does not decode static filesystem route identity", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    expect(matchRoute("/%61bout", routes)).toBeNull();
   });
 
   it("preserves encoded slashes within a single static segment", () => {
@@ -165,9 +215,7 @@ describe("matchRoute - URL matching", () => {
 
     expect(matchRoute("/a%2Fb", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a%2Fb");
     expect(matchRoute("/a/b", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a/b");
-    // Lowercase %2f should also match: normalizePathnameForRouteMatch decodes
-    // then re-encodes via encodeURIComponent, which always produces uppercase.
-    expect(matchRoute("/a%2fb", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a%2Fb");
+    expect(matchRoute("/a%2fb", [encodedRoute, nestedRoute])).toBeNull();
   });
 
   it("returns null for unmatched routes", async () => {
@@ -301,6 +349,58 @@ describe("apiRouter - route discovery", () => {
       expect(routes).toEqual([]);
     });
   });
+
+  // Regression for #1542: pages whose path *starts with* `/api-…` (e.g.
+  // `/api-docs/[...slug]`, `/api-info`) must be classified as PAGE routes,
+  // not API routes. Next.js only treats files under `pages/api/` (with the
+  // trailing slash) as API routes — substring matches against `api-` are a
+  // false positive. The upstream Next.js fixture at
+  // `.nextjs-ref/test/e2e/prerender/pages/api-docs/[...slug].js` is the
+  // canonical case.
+  it("does not treat pages/api-docs/* as API routes (issue #1542)", async () => {
+    await withTempDir("vinext-issue-1542-api-docs-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(path.join(pagesDir, "api-docs"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api-docs", "[...slug].tsx"), EMPTY_PAGE);
+      await mkdir(path.join(pagesDir, "api-info"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api-info", "index.tsx"), EMPTY_PAGE);
+      // A real API route co-exists so we also verify the positive case.
+      await mkdir(path.join(pagesDir, "api"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api", "hello.ts"), EMPTY_ROUTE);
+
+      invalidateRouteCache(pagesDir);
+
+      const pages = await pagesRouter(pagesDir);
+      const apis = await apiRouter(pagesDir);
+
+      const pagePatterns = pages.map((r) => r.pattern);
+      const apiPatterns = apis.map((r) => r.pattern);
+
+      // `/api-docs/[...slug]` and `/api-info` are pages, not API routes.
+      expect(pagePatterns).toContain("/api-docs/:slug+");
+      expect(pagePatterns).toContain("/api-info");
+      expect(apiPatterns).not.toContain("/api-docs/:slug+");
+      expect(apiPatterns).not.toContain("/api-info");
+
+      // The real API route is still discovered correctly.
+      expect(apiPatterns).toContain("/api/hello");
+      expect(pagePatterns).not.toContain("/api/hello");
+
+      // matchRoute against the page table resolves the `/api-…` URLs to
+      // their page files. A regression would either yield null (no match)
+      // or match against the API trie instead.
+      const matchedDocs = matchRoute("/api-docs/first", pages);
+      expect(matchedDocs).not.toBeNull();
+      expect(matchedDocs!.route.pattern).toBe("/api-docs/:slug+");
+      expect(matchedDocs!.route.filePath).toBe(
+        canonical(path.join(pagesDir, "api-docs", "[...slug].tsx")),
+      );
+
+      const matchedInfo = matchRoute("/api-info", pages);
+      expect(matchedInfo).not.toBeNull();
+      expect(matchedInfo!.route.pattern).toBe("/api-info");
+    });
+  });
 });
 
 // ---------------------------------------------------------------
@@ -328,6 +428,34 @@ describe("appRouter - route discovery", () => {
     expect(apiPatterns).toContain("/api/hello");
   });
 
+  it("caches the route manifest with the route list", async () => {
+    invalidateAppRouteCache();
+
+    const graph = await appRouteGraph(APP_FIXTURE_DIR);
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const cachedGraph = await appRouteGraph(APP_FIXTURE_DIR);
+
+    expect(routes).toBe(graph.routes);
+    expect(cachedGraph).toBe(graph);
+    expect(graph.routeManifest.segmentGraph.routes.size).toBeGreaterThan(0);
+  });
+
+  it("rejects page and route handler files at the same app route", async () => {
+    // Next.js docs forbid page.js and route.js at the same normalized route:
+    // https://github.com/vercel/next.js/blob/ae61573e062e900050b8e6b24626e450accc4570/docs/01-app/01-getting-started/15-route-handlers.mdx#L150-L163
+    await withTempDir("vinext-app-page-route-conflict-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "foo"), { recursive: true });
+      await writeFile(path.join(appDir, "foo", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "route.ts"), EMPTY_ROUTE);
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(
+        "Conflicting route and page at /foo: route at /foo/route and page at /foo/page",
+      );
+    });
+  });
+
   it("discovers layouts from root to leaf", async () => {
     const routes = await appRouter(APP_FIXTURE_DIR);
     const homeRoute = routes.find((r) => r.pattern === "/");
@@ -338,6 +466,66 @@ describe("appRouter - route discovery", () => {
     expect(homeRoute!.layouts[0]).toContain("layout.tsx");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  it("records loading boundaries at every segment, including segments without layouts", async () => {
+    await withTempDir("vinext-app-segment-loading-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "parent", "slow"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "slow", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "slow", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "slow", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((candidate) => candidate.pattern === "/parent/slow");
+
+      expect(route?.loadingPath).toBe(canonical(appDir, "parent/slow/loading.tsx"));
+      expect(route?.loadingPaths).toEqual([
+        canonical(appDir, "parent/loading.tsx"),
+        canonical(appDir, "parent/slow/loading.tsx"),
+      ]);
+      expect(route?.loadingTreePositions).toEqual([1, 2]);
+    });
+  });
+
+  it("records the owner position of a not-found boundary without a layout", async () => {
+    await withTempDir("vinext-app-not-found-owner-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[locale]", "posts", "[slug]"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "posts", "[slug]", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((candidate) => candidate.pattern === "/:locale/posts/:slug");
+
+      expect(route?.notFoundPath).toBe(canonical(appDir, "[locale]/not-found.tsx"));
+      expect(route?.notFoundTreePosition).toBe(1);
+    });
+  });
+
+  it("records auth boundary owner positions without co-located layouts", async () => {
+    await withTempDir("vinext-app-auth-owner-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[locale]", "posts", "[slug]"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "forbidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "unauthorized.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "posts", "[slug]", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((candidate) => candidate.pattern === "/:locale/posts/:slug");
+
+      expect(route?.forbiddenTreePosition).toBe(1);
+      expect(route?.unauthorizedTreePosition).toBe(1);
+    });
+  });
+
   it("detects dynamic segments", async () => {
     const routes = await appRouter(APP_FIXTURE_DIR);
     const blogRoute = routes.find((r) => r.pattern === "/blog/:slug");
@@ -345,6 +533,54 @@ describe("appRouter - route discovery", () => {
     expect(blogRoute).toBeDefined();
     expect(blogRoute!.isDynamic).toBe(true);
     expect(blogRoute!.params).toEqual(["slug"]);
+  });
+
+  it("discovers dynamic params captured by a nested root layout", async () => {
+    await withTempDir("vinext-app-root-params-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[lang]", "[locale]", "other", "[slug]"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "[lang]", "[locale]", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "[lang]", "[locale]", "other", "[slug]", "page.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((r) => r.pattern === "/:lang/:locale/other/:slug");
+
+      expect(route).toBeDefined();
+      expect(route!.params).toEqual(["lang", "locale", "slug"]);
+      expect(route!.rootParamNames).toEqual(["lang", "locale"]);
+    });
+  });
+
+  it("preserves root layout params on synthetic parallel slot routes", async () => {
+    await withTempDir("vinext-app-root-params-parallel-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[lang]", "@modal", "details"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "[lang]", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "@modal", "details", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((r) => r.pattern === "/:lang/details");
+
+      expect(route).toBeDefined();
+      expect(route!.rootParamNames).toEqual(["lang"]);
+    });
+  });
+
+  it("computes root layout params for dynamic and catch-all segments", () => {
+    expect(computeRootParamNames(["[lang]", "[...slug]", "page"], [2])).toEqual(["lang", "slug"]);
+    expect(computeRootParamNames(["[[...rest]]"], [1])).toEqual(["rest"]);
   });
 
   it("sorts static routes before dynamic routes at the same depth", async () => {
@@ -535,6 +771,39 @@ describe("appRouter - route discovery", () => {
     });
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  // https://github.com/vercel/next.js/tree/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  it("discovers a nested-only slot route for a layout-only parent", async () => {
+    await withTempDir("vinext-app-slot-nested-layout-only-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "inbox", "layout.tsx"),
+        "export default function Layout({ children, modal }) { return children ?? modal }",
+      );
+      await writeFile(path.join(appDir, "inbox", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const match = matchAppRoute("/inbox/profile", routes);
+
+      expect(match).toMatchObject({
+        route: {
+          pagePath: canonical(path.join(appDir, "inbox", "default.tsx")),
+          parallelSlots: [
+            expect.objectContaining({
+              name: "modal",
+              pagePath: canonical(path.join(appDir, "inbox", "@modal", "profile", "page.tsx")),
+            }),
+          ],
+        },
+        params: {},
+      });
+    });
+  });
+
   it("rejects non-terminal catch-all intercept targets", async () => {
     await withTempDir("vinext-app-intercept-nonterminal-catchall-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
@@ -607,6 +876,96 @@ describe("appRouter - route discovery", () => {
       expect(modalSlot!.interceptingRoutes).toHaveLength(1);
       expect(modalSlot!.interceptingRoutes[0].targetPattern).toBe("/photos/:slug+");
       expect(modalSlot!.interceptingRoutes[0].params).toEqual(["slug"]);
+    });
+  });
+
+  it("rejects (..) intercepting routes at the normalized root", async () => {
+    // Ported from Next.js:
+    // packages/next/src/shared/lib/router/utils/interception-routes.test.ts
+    // https://github.com/vercel/next.js/blob/ae61573e062e900050b8e6b24626e450accc4570/packages/next/src/shared/lib/router/utils/interception-routes.test.ts#L66-L75
+    await withTempDir("vinext-app-intercept-root-parent-marker-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "@modal", "(..)foo"), { recursive: true });
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(..)foo", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(
+        "Cannot use (..) marker at the root level, use (.) instead.",
+      );
+    });
+  });
+
+  it("rejects (..) intercepting routes at the root after route group normalization", async () => {
+    // Next.js validates the normalized intercepting route, so transparent
+    // route groups do not make an upward marker valid at the URL root.
+    // https://github.com/vercel/next.js/blob/ae61573e062e900050b8e6b24626e450accc4570/packages/next/src/shared/lib/router/utils/interception-routes.ts#L60-L95
+    await withTempDir("vinext-app-intercept-group-root-parent-marker-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "(group)", "@modal", "(..)foo"), { recursive: true });
+      await writeFile(path.join(appDir, "(group)", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "(group)", "@modal", "(..)foo", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(
+        "Cannot use (..) marker at the root level, use (.) instead.",
+      );
+    });
+  });
+
+  it("rejects (..)(..) intercepting routes at root or one visible level up", async () => {
+    // Ported from Next.js:
+    // packages/next/src/shared/lib/router/utils/interception-routes.test.ts
+    // https://github.com/vercel/next.js/blob/ae61573e062e900050b8e6b24626e450accc4570/packages/next/src/shared/lib/router/utils/interception-routes.test.ts#L66-L75
+    await withTempDir("vinext-app-intercept-two-up-marker-root-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "@modal", "(..)(..)foo"), { recursive: true });
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(..)(..)foo", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(
+        "Cannot use (..)(..) marker at the root level or one level up.",
+      );
+    });
+
+    await withTempDir("vinext-app-intercept-two-up-marker-one-level-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "feed", "@modal", "(..)(..)foo"), { recursive: true });
+      await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "feed", "@modal", "(..)(..)foo", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(
+        "Cannot use (..)(..) marker at the root level or one level up.",
+      );
+    });
+  });
+
+  it("allows (..) intercepting routes in route groups with one visible parent segment", async () => {
+    // Next.js validates the normalized intercepting route: /(group) is root,
+    // but /shop/(group) has one visible segment and can climb to /.
+    // https://github.com/vercel/next.js/blob/ae61573e062e900050b8e6b24626e450accc4570/packages/next/src/shared/lib/router/utils/interception-routes.ts#L60-L95
+    await withTempDir("vinext-app-intercept-group-with-visible-parent-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "shop", "(group)", "@modal", "(..)foo"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "shop", "(group)", "page.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "shop", "(group)", "@modal", "(..)foo", "page.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const shopRoute = routes.find((route) => route.pattern === "/shop");
+      expect(shopRoute).toBeDefined();
+
+      const modalSlot = shopRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      expect(modalSlot).toBeDefined();
+      expect(modalSlot!.interceptingRoutes).toHaveLength(1);
+      expect(modalSlot!.interceptingRoutes[0].targetPattern).toBe("/foo");
     });
   });
 
@@ -826,7 +1185,7 @@ describe("matchAppRoute - URL matching", () => {
     const result = matchAppRoute("/optional", routes);
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/optional/:path*");
-    expect(result!.params.path).toEqual([]);
+    expect(result!.params).not.toHaveProperty("path");
   });
 
   it("matches optional catch-all with multiple segments", async () => {
@@ -931,6 +1290,25 @@ describe("matchAppRoute - URL matching", () => {
     expect(analyticsSlot).toBeDefined();
     expect(analyticsSlot!.pagePath).not.toBeNull();
     expect(analyticsSlot!.defaultPath).not.toBeNull();
+  });
+
+  it("discovers slot-local not-found metadata conventions", async () => {
+    await withTempDir("vinext-app-slot-not-found-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "slot", "@foo"), { recursive: true });
+      await writeFile(path.join(appDir, "slot", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "slot", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "slot", "@foo", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "slot", "@foo", "not-found.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((candidate) => candidate.pattern === "/slot");
+      const slot = route?.parallelSlots.find((candidate) => candidate.name === "foo");
+
+      expect(slot?.notFoundPath).toBe(canonical(appDir, "slot/@foo/not-found.tsx"));
+      expect(slot?.notFoundTreePosition).toBe(0);
+    });
   });
 
   it("discovers layout.tsx inside parallel slot directories", async () => {
@@ -1076,6 +1454,293 @@ describe("matchAppRoute - URL matching", () => {
     expect(intercept.pagePath).toContain("(...)photos");
   });
 
+  it("discovers intercept not-found from its branch instead of the ordinary slot branch", async () => {
+    await withTempDir("vinext-app-intercept-not-found-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      const modalDir = path.join(appDir, "@modal");
+
+      await mkdir(path.join(modalDir, "feed"), { recursive: true });
+      await mkdir(path.join(modalDir, "(.)photo", "[id]"), { recursive: true });
+      await mkdir(path.join(appDir, "feed"), { recursive: true });
+      await mkdir(path.join(appDir, "photo", "[id]"), { recursive: true });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "photo", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "feed", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "feed", "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "(.)photo", "[id]", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const feedRoute = routes.find((route) => route.pattern === "/feed");
+      const modalSlot = feedRoute?.parallelSlots.find((slot) => slot.name === "modal");
+      const intercept = modalSlot?.interceptingRoutes.find(
+        (candidate) => candidate.targetPattern === "/photo/:id",
+      );
+
+      expect(modalSlot?.notFoundPath).toBe(canonical(path.join(modalDir, "feed", "not-found.tsx")));
+      expect(modalSlot?.notFoundTreePosition).toBe(1);
+      expect(intercept?.notFoundPath).toBe(canonical(path.join(modalDir, "not-found.tsx")));
+      expect(intercept?.notFoundBranchSegments).toEqual(["photo", "[id]"]);
+      expect(intercept?.notFoundTreePosition).toBe(0);
+    });
+  });
+
+  it("keeps slot-root not-found ancestry for nested intercept markers", async () => {
+    await withTempDir("vinext-app-nested-intercept-not-found-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      const modalDir = path.join(appDir, "@modal");
+
+      await mkdir(path.join(modalDir, "foo", "qux"), { recursive: true });
+      await mkdir(path.join(modalDir, "foo", "(.)photo", "[id]"), { recursive: true });
+      await mkdir(path.join(modalDir, "foo", "(.)video", "[id]"), { recursive: true });
+      await mkdir(path.join(appDir, "foo", "qux"), { recursive: true });
+      await mkdir(path.join(appDir, "foo", "photo", "[id]"), { recursive: true });
+      await mkdir(path.join(appDir, "foo", "video", "[id]"), { recursive: true });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "qux", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "photo", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "video", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "foo", "qux", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "foo", "qux", "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "foo", "(.)photo", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "foo", "(.)video", "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(modalDir, "foo", "(.)video", "[id]", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const sourceRoute = routes.find((route) => route.pattern === "/foo/qux");
+      const modalSlot = sourceRoute?.parallelSlots.find((slot) => slot.name === "modal");
+      const intercept = modalSlot?.interceptingRoutes.find(
+        (candidate) => candidate.targetPattern === "/foo/photo/:id",
+      );
+      const localIntercept = modalSlot?.interceptingRoutes.find(
+        (candidate) => candidate.targetPattern === "/foo/video/:id",
+      );
+
+      expect(modalSlot?.notFoundPath).toBe(
+        canonical(path.join(modalDir, "foo", "qux", "not-found.tsx")),
+      );
+      expect(modalSlot?.notFoundTreePosition).toBe(2);
+      expect(intercept?.notFoundPath).toBe(canonical(path.join(modalDir, "not-found.tsx")));
+      expect(intercept?.notFoundBranchSegments).toEqual(["foo", "photo", "[id]"]);
+      expect(intercept?.notFoundTreePosition).toBe(0);
+      expect(localIntercept?.notFoundPath).toBe(
+        canonical(path.join(modalDir, "foo", "(.)video", "not-found.tsx")),
+      );
+      expect(localIntercept?.notFoundBranchSegments).toEqual(["foo", "video", "[id]"]);
+      expect(localIntercept?.notFoundTreePosition).toBe(2);
+    });
+  });
+
+  it("keeps source-route not-found ownership for slot-less sibling intercepts", async () => {
+    await withTempDir("vinext-app-sibling-intercept-not-found-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      const sourceDir = path.join(appDir, "[locale]", "feed");
+
+      await mkdir(path.join(sourceDir, "(.)photo", "[id]"), { recursive: true });
+      await mkdir(path.join(sourceDir, "photo", "[id]"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(sourceDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(sourceDir, "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(sourceDir, "(.)photo", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(sourceDir, "photo", "[id]", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const sourceRoute = routes.find((route) => route.pattern === "/:locale/feed");
+      const intercept = sourceRoute?.siblingIntercepts.find(
+        (candidate) => candidate.targetPattern === "/:locale/feed/photo/:id",
+      );
+
+      expect(sourceRoute?.notFoundPath).toBe(canonical(path.join(sourceDir, "not-found.tsx")));
+      expect(sourceRoute?.notFoundTreePosition).toBe(2);
+      expect(intercept?.notFoundPath).toBeNull();
+      expect(intercept?.notFoundTreePosition).toBeNull();
+    });
+  });
+
+  it("discovers intercept layout chains inside parallel slots", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    await withTempDir("vinext-app-intercept-layout-chain-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "@modal", "(.)explicit-layout", "deeper"), {
+        recursive: true,
+      });
+      await mkdir(path.join(appDir, "explicit-layout", "deeper"), {
+        recursive: true,
+      });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "@modal", "(.)explicit-layout", "deeper", "page.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(path.join(appDir, "explicit-layout", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "explicit-layout", "deeper", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const homeRoute = routes.find((route) => route.pattern === "/");
+
+      expect(homeRoute).toBeDefined();
+
+      const modalSlot = homeRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      expect(modalSlot).toBeDefined();
+      expect(modalSlot!.interceptingRoutes).toHaveLength(1);
+      expect(modalSlot!.interceptingRoutes[0]).toMatchObject({
+        convention: ".",
+        targetPattern: "/explicit-layout/deeper",
+        layoutPaths: [canonical(path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx"))],
+      });
+    });
+  });
+
+  it("discovers nested intercept layout chains in outermost-to-innermost order", async () => {
+    await withTempDir("vinext-app-intercept-layout-depth-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "@modal", "(.)foo", "bar", "baz"), {
+        recursive: true,
+      });
+      await mkdir(path.join(appDir, "foo", "bar", "baz"), {
+        recursive: true,
+      });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "baz", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "bar", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "bar", "baz", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const homeRoute = routes.find((route) => route.pattern === "/");
+
+      expect(homeRoute).toBeDefined();
+
+      const modalSlot = homeRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      expect(modalSlot).toBeDefined();
+      expect(modalSlot!.interceptingRoutes).toHaveLength(1);
+      expect(modalSlot!.interceptingRoutes[0]?.layoutPaths).toEqual([
+        canonical(path.join(appDir, "@modal", "(.)foo", "layout.tsx")),
+        canonical(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx")),
+      ]);
+      expect(modalSlot!.interceptingRoutes[0]?.loadingPaths).toEqual([
+        canonical(path.join(appDir, "@modal", "(.)foo", "loading.tsx")),
+        canonical(path.join(appDir, "@modal", "(.)foo", "bar", "loading.tsx")),
+      ]);
+      expect(modalSlot!.interceptingRoutes[0]?.loadingTreePositions).toEqual([1, 2]);
+    });
+  });
+
+  it("includes loading boundaries on common slot ancestry before an intercept marker", async () => {
+    await withTempDir("vinext-app-intercept-common-loading-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "@modal", "gallery", "(.)photo"), { recursive: true });
+      await mkdir(path.join(appDir, "gallery", "photo"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "gallery", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "@modal", "gallery", "(.)photo", "loading.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(path.join(appDir, "@modal", "gallery", "(.)photo", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "gallery", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "gallery", "photo", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const galleryRoute = routes.find((route) => route.pattern === "/gallery");
+      const modalSlot = galleryRoute?.parallelSlots.find((slot) => slot.name === "modal");
+      const intercept = modalSlot?.interceptingRoutes[0];
+
+      expect(intercept?.loadingPaths).toEqual([
+        canonical(path.join(appDir, "@modal", "gallery", "loading.tsx")),
+        canonical(path.join(appDir, "@modal", "gallery", "(.)photo", "loading.tsx")),
+      ]);
+      expect(intercept?.loadingTreePositions).toEqual([1, 2]);
+      expect(intercept?.branchSegments).toEqual(["gallery", "photo"]);
+    });
+  });
+
+  it("allows inherited intercepting slots to reuse the same target pattern", async () => {
+    await withTempDir("vinext-app-intercept-inherited-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "intercepting-routes", "@modal", "(.)photo", "[id]"), {
+        recursive: true,
+      });
+      await mkdir(path.join(appDir, "intercepting-routes", "photo", "[id]"), {
+        recursive: true,
+      });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "intercepting-routes", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "intercepting-routes", "page.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "intercepting-routes", "photo", "[id]", "page.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "intercepting-routes", "@modal", "default.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "intercepting-routes", "@modal", "(.)photo", "[id]", "page.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+
+      const galleryRoute = routes.find((route) => route.pattern === "/intercepting-routes");
+      const detailRoute = routes.find(
+        (route) => route.pattern === "/intercepting-routes/photo/:id",
+      );
+
+      expect(galleryRoute).toBeDefined();
+      expect(detailRoute).toBeDefined();
+
+      const galleryModal = galleryRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      const detailModal = detailRoute!.parallelSlots.find((slot) => slot.name === "modal");
+
+      expect(galleryModal?.interceptingRoutes[0]?.targetPattern).toBe(
+        "/intercepting-routes/photo/:id",
+      );
+      expect(detailModal?.interceptingRoutes[0]?.targetPattern).toBe(
+        "/intercepting-routes/photo/:id",
+      );
+      expect(detailModal?.interceptingRoutes[0]?.pagePath).toBe(
+        galleryModal?.interceptingRoutes[0]?.pagePath,
+      );
+    });
+  });
+
   it("intercepting route pages are not standalone routes", async () => {
     invalidateAppRouteCache();
     const routes = await appRouter(APP_FIXTURE_DIR);
@@ -1171,6 +1836,92 @@ describe("matchAppRoute - URL matching", () => {
     expect(membersRoute!.layouts).toEqual(dashboardRoute!.layouts);
   });
 
+  it("discovers layout routes whose own content is parallel slot pages", async () => {
+    await withTempDir("vinext-app-layout-parallel-slot-route-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "users", "[username]", "@feed"), { recursive: true });
+      await mkdir(path.join(appDir, "users", "[username]", "@modal"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "users", "[username]", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "users", "[username]", "@feed", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "users", "[username]", "@feed", "default.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "users", "[username]", "@modal", "default.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((r) => r.pattern === "/users/:username");
+
+      expect(route).toBeDefined();
+      expect(route!.pagePath).toBeNull();
+      expect(route!.parallelSlots.map((slot) => slot.name).sort()).toEqual(["feed", "modal"]);
+      expect(route!.parallelSlots.find((slot) => slot.name === "feed")!.pagePath).toContain(
+        canonical(path.join("@feed", "page.tsx")),
+      );
+    });
+  });
+
+  it("discovers nested parallel slot sub-routes from layout-only parent", async () => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts (line 510)
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    // Next.js fixture: app/parallel-nested/home/layout.tsx + @parallelB/default.tsx + @parallelB/nested/page.tsx (no home/page.tsx)
+    await withTempDir("vinext-app-nested-parallel-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "parallel-nested", "home", "@parallelB", "nested"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "home", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "home", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "default.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "page.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "loading.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      // Parent layout-only route should exist
+      expect(patterns).toContain("/parallel-nested/home");
+      const parentRoute = routes.find((r) => r.pattern === "/parallel-nested/home")!;
+      expect(parentRoute.pagePath).toBeNull();
+      expect(parentRoute.loadingPath).toContain(canonical(path.join("home", "loading.tsx")));
+      expect(parentRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
+
+      // Nested slot sub-route should be discovered even though parent has no page.tsx
+      expect(patterns).toContain("/parallel-nested/home/nested");
+      const nestedRoute = routes.find((r) => r.pattern === "/parallel-nested/home/nested")!;
+      expect(nestedRoute.loadingPath).toBeNull();
+      expect(nestedRoute.loadingPaths).toEqual(parentRoute.loadingPaths);
+      expect(nestedRoute.loadingTreePositions).toEqual(parentRoute.loadingTreePositions);
+      expect(nestedRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
+      const parallelBSlot = nestedRoute.parallelSlots.find((slot) => slot.name === "parallelB")!;
+      expect(parallelBSlot.pagePath).toContain(
+        canonical(path.join("@parallelB", "nested", "page.tsx")),
+      );
+      expect(parallelBSlot.loadingPaths).toEqual([
+        canonical(
+          path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "loading.tsx"),
+        ),
+      ]);
+      expect(parallelBSlot.loadingTreePositions).toEqual([1]);
+    });
+  });
+
   // --- Hyphenated param names (issue #71) ---
 
   it("discovers optional catch-all with hyphenated param name [[...sign-in]]", async () => {
@@ -1199,7 +1950,7 @@ describe("matchAppRoute - URL matching", () => {
     const result = matchAppRoute("/sign-in", routes);
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/sign-in/:sign-in*");
-    expect(result!.params["sign-in"]).toEqual([]);
+    expect(result!.params).not.toHaveProperty("sign-in");
   });
 
   it("matches hyphenated optional catch-all with segments", async () => {
@@ -1231,9 +1982,57 @@ describe("matchAppRoute - URL matching", () => {
     expect(result!.params["auth-method"]).toBe("google");
   });
 
-  // --- Inherited parallel slot priority ---
+  // --- Inherited parallel slots ---
 
-  it("closest ancestor parallel slot wins over farthest when same name exists at multiple levels", async () => {
+  it("does not attach pre-root parallel slots when the root layout is below app", async () => {
+    // Next.js allows multiple root layouts when app/layout is omitted:
+    // https://github.com/vercel/next.js/blob/ae61573e062e900050b8e6b24626e450accc4570/docs/01-app/03-api-reference/03-file-conventions/layout.mdx#L140-L145
+    // Parallel route children above the selected root layout are not available to that root:
+    // https://github.com/vercel/next.js/blob/ae61573e062e900050b8e6b24626e450accc4570/packages/next/src/server/app-render/create-component-tree.tsx#L1273-L1290
+    await withTempDir("vinext-app-pre-root-parallel-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "@modal"), { recursive: true });
+      await mkdir(path.join(appDir, "(group)"), { recursive: true });
+      await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "(group)", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "(group)", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const homeRoute = routes.find((route) => route.pattern === "/");
+
+      expect(homeRoute).toBeDefined();
+      expect(homeRoute!.layouts).toEqual([canonical(path.join(appDir, "(group)", "layout.tsx"))]);
+      expect(homeRoute!.parallelSlots.find((slot) => slot.name === "modal")).toBeUndefined();
+    });
+  });
+
+  it("attaches parallel slots inside the selected root layout subtree", async () => {
+    await withTempDir("vinext-app-root-subtree-parallel-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "(group)", "@modal"), { recursive: true });
+      await writeFile(path.join(appDir, "(group)", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "(group)", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "(group)", "@modal", "default.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const homeRoute = routes.find((route) => route.pattern === "/");
+
+      expect(homeRoute).toBeDefined();
+      const modalSlot = homeRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      expect(modalSlot).toBeDefined();
+      expect(modalSlot!.ownerDir).toBe(canonical(path.join(appDir, "(group)", "@modal")));
+      expect(modalSlot!.layoutIndex).toBe(0);
+      expect(modalSlot!.defaultPath).toBe(
+        canonical(path.join(appDir, "(group)", "@modal", "default.tsx")),
+      );
+    });
+  });
+
+  it("preserves same-named parallel slots from multiple layout levels", async () => {
     await withTempDir("vinext-app-parallel-slot-priority-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
 
@@ -1258,12 +2057,16 @@ describe("matchAppRoute - URL matching", () => {
       const settingsRoute = routes.find((r) => r.pattern === "/dashboard/settings");
       expect(settingsRoute).toBeDefined();
 
-      const sidebarSlot = settingsRoute!.parallelSlots.find((s) => s.name === "sidebar");
-      expect(sidebarSlot).toBeDefined();
+      const sidebarSlots = settingsRoute!.parallelSlots.filter((s) => s.name === "sidebar");
+      expect(sidebarSlots).toHaveLength(2);
 
-      // The dashboard-level @sidebar (closest ancestor) should win
-      expect(sidebarSlot!.defaultPath).not.toBeNull();
-      expect(sidebarSlot!.defaultPath).toContain(path.join("dashboard", "@sidebar"));
+      const sidebarByOwner = new Map(
+        sidebarSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
+      );
+
+      expect([...sidebarByOwner.keys()].sort()).toEqual(["@sidebar", "dashboard/@sidebar"]);
+      expect(sidebarByOwner.get("@sidebar")!.layoutIndex).toBe(0);
+      expect(sidebarByOwner.get("dashboard/@sidebar")!.layoutIndex).toBe(1);
     });
   });
 });
@@ -1294,7 +2097,7 @@ describe("pagesRouter - hyphenated param names", () => {
     const result = matchRoute("/sign-up", routes);
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/sign-up/:sign-up*");
-    expect(result!.params["sign-up"]).toEqual([]);
+    expect(result!.params).not.toHaveProperty("sign-up");
   });
 
   it("matches hyphenated optional catch-all with segments", async () => {
@@ -1304,5 +2107,73 @@ describe("pagesRouter - hyphenated param names", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/sign-up/:sign-up*");
     expect(result!.params["sign-up"]).toEqual(["step", "2"]);
+  });
+});
+
+describe("pagesRouter - dotted/colon param names (Next.js parity)", () => {
+  it("discovers dynamic segments with dots and colons", async () => {
+    await withTempDir("vinext-pages-dotted-param-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(path.join(pagesDir, "products"), { recursive: true });
+      await mkdir(path.join(pagesDir, "repos"), { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "products", "[variant.id].tsx"),
+        "export default function Page() { return null; }",
+      );
+      await writeFile(
+        path.join(pagesDir, "repos", "[repo:name].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/products/:variant.id");
+      expect(patterns).toContain("/repos/:repo:name");
+      invalidateRouteCache(pagesDir);
+    });
+  });
+
+  it("extracts params correctly for dotted dynamic segments", async () => {
+    await withTempDir("vinext-pages-dotted-match-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "[variant.id].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const result = matchRoute("/abc", routes);
+
+      expect(result).not.toBeNull();
+      expect(result!.route.pattern).toBe("/:variant.id");
+      expect(result!.params["variant.id"]).toBe("abc");
+      invalidateRouteCache(pagesDir);
+    });
+  });
+
+  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
+    await withTempDir("vinext-pages-skip-plus-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "[id+].tsx"),
+        "export default function Page() { return null; }",
+      );
+      await writeFile(
+        path.join(pagesDir, "[id*].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+
+      // Skipped entirely to avoid ambiguity with internal :name+ / :name* modifiers
+      expect(routes).toHaveLength(0);
+      invalidateRouteCache(pagesDir);
+    });
   });
 });

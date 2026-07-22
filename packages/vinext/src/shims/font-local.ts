@@ -13,66 +13,19 @@
  *   const myFont = localFont({ src: './my-font.woff2' });
  *   // myFont.className -> unique CSS class
  *   // myFont.style -> { fontFamily: "'__local_font_0', sans-serif" }
- *   // myFont.variable -> generated class name (e.g. "__variable_local_0")
+ *   // myFont.variable -> generated class name when requested
  */
-
-/**
- * Escape a string for safe interpolation inside a CSS single-quoted string.
- *
- * Prevents CSS injection by escaping characters that could break out of
- * a `'...'` CSS string context: backslashes, single quotes, and newlines.
- */
-function escapeCSSString(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'")
-    .replace(/\n/g, "\\a ")
-    .replace(/\r/g, "\\d ");
-}
-
-/**
- * Validate a CSS custom property name (e.g. `--font-inter`).
- *
- * Custom properties must start with `--` and only contain alphanumeric
- * characters, hyphens, and underscores. Anything else could be used to
- * break out of the CSS declaration and inject arbitrary rules.
- *
- * Returns the name if valid, undefined otherwise.
- */
-function sanitizeCSSVarName(name: string): string | undefined {
-  if (/^--[a-zA-Z0-9_-]+$/.test(name)) return name;
-  return undefined;
-}
-
-/**
- * Sanitize a CSS font-family fallback name.
- *
- * Generic family names (sans-serif, serif, monospace, etc.) are used as-is.
- * Named families are wrapped in escaped quotes. This prevents injection via
- * crafted fallback values like `); } body { color: red; } .x {`.
- */
-function sanitizeFallback(name: string): string {
-  // CSS generic font families — safe to use unquoted
-  const generics = new Set([
-    "serif",
-    "sans-serif",
-    "monospace",
-    "cursive",
-    "fantasy",
-    "system-ui",
-    "ui-serif",
-    "ui-sans-serif",
-    "ui-monospace",
-    "ui-rounded",
-    "emoji",
-    "math",
-    "fangsong",
-  ]);
-  const trimmed = name.trim();
-  if (generics.has(trimmed)) return trimmed;
-  // Wrap in single quotes with escaping to prevent CSS injection
-  return `'${escapeCSSString(trimmed)}'`;
-}
+import { fnv1a64 } from "../utils/hash.js";
+import {
+  escapeCSSString,
+  formatFontClassRule,
+  getFontMimeType,
+  resolveSingleFaceStyle,
+  sanitizeCSSVarName,
+  sanitizeFallback,
+  sanitizeFontDescriptorValue,
+  type FontStyle,
+} from "./font-utils.js";
 
 /**
  * Validate a CSS property name for use in declarations.
@@ -86,19 +39,40 @@ function sanitizeCSSProperty(prop: string): string | undefined {
   return undefined;
 }
 
-/**
- * Sanitize a CSS property value for use in declarations.
- *
- * Rejects values containing characters that could break out of a CSS
- * declaration: `{`, `}`, `;`, and `</` (to prevent closing style tags).
- */
-function sanitizeCSSValue(value: string): string | undefined {
-  if (/[{}]|<\//.test(value)) return undefined;
-  return value;
+function sanitizeInternalFontFamily(name: unknown): string | undefined {
+  if (typeof name !== "string" || name.length === 0) return undefined;
+  if (/^[$_a-zA-Z][$_a-zA-Z0-9]*$/.test(name)) return name;
+  return undefined;
 }
 
-let classCounter = 0;
-const injectedFonts = new Set<string>();
+// Module-level state shared across all module instances via globalThis.
+// Vite's multi-environment dev mode can load this shim more than once
+// (e.g., once per environment, or via different resolved IDs), giving each
+// module copy its own freshly-initialized closure variables. The localFont
+// call site and the SSR getSSRFontStyles() reader can land on different
+// copies, so the reader sees an empty array even though the loader pushed.
+// Backing every piece of mutable state with a `Symbol.for` slot on
+// globalThis collapses the copies onto a single shared store.
+const _INJECTED_FONTS_KEY = Symbol.for("vinext.fontLocal.injectedFonts");
+const _INJECTED_CLASS_RULES_KEY = Symbol.for("vinext.fontLocal.injectedClassRules");
+const _INJECTED_VARIABLE_RULES_KEY = Symbol.for("vinext.fontLocal.injectedVariableRules");
+const _INJECTED_ROOT_VARIABLES_KEY = Symbol.for("vinext.fontLocal.injectedRootVariables");
+const _SSR_FONT_STYLES_KEY = Symbol.for("vinext.fontLocal.ssrFontStyles");
+const _SSR_FONT_PRELOADS_KEY = Symbol.for("vinext.fontLocal.ssrFontPreloads");
+const _SSR_FONT_PRELOAD_HREFS_KEY = Symbol.for("vinext.fontLocal.ssrFontPreloadHrefs");
+
+type _FontLocalGlobal = typeof globalThis & {
+  [_INJECTED_FONTS_KEY]?: Set<string>;
+  [_INJECTED_CLASS_RULES_KEY]?: Set<string>;
+  [_INJECTED_VARIABLE_RULES_KEY]?: Set<string>;
+  [_INJECTED_ROOT_VARIABLES_KEY]?: Set<string>;
+  [_SSR_FONT_STYLES_KEY]?: string[];
+  [_SSR_FONT_PRELOADS_KEY]?: Array<{ href: string; type: string }>;
+  [_SSR_FONT_PRELOAD_HREFS_KEY]?: Set<string>;
+};
+const _g = globalThis as _FontLocalGlobal;
+
+const injectedFonts = (_g[_INJECTED_FONTS_KEY] ??= new Set<string>());
 
 type LocalFontSrc = {
   path: string;
@@ -106,33 +80,45 @@ type LocalFontSrc = {
   style?: string;
 };
 
-type LocalFontOptions = {
+type CssVariable = `--${string}`;
+
+type LocalFontOptions<T extends CssVariable | undefined = CssVariable | undefined> = {
   src: string | LocalFontSrc | LocalFontSrc[];
   display?: string;
   weight?: string;
   style?: string;
   fallback?: string[];
   preload?: boolean;
-  variable?: string;
+  variable?: T;
   adjustFontFallback?: boolean | string;
   declarations?: Array<{ prop: string; value: string }>;
+  _vinext?: {
+    font?: {
+      family?: unknown;
+    };
+  };
 };
 
 type FontResult = {
   className: string;
-  style: { fontFamily: string };
+  style: FontStyle;
   variable?: string;
 };
 
-function generateFontFaceCSS(family: string, options: LocalFontOptions): string {
-  const sources = normalizeSources(options);
+type NextFont = Omit<FontResult, "variable"> & { variable?: undefined };
+type NextFontWithVariable = Omit<NextFont, "variable"> & { variable: string };
 
+function generateFontFaceCSS(
+  family: string,
+  options: LocalFontOptions,
+  sources: LocalFontSrc[],
+): string {
   const display = options.display ?? "swap";
   const rules: string[] = [];
 
   for (const src of sources) {
-    const weight = src.weight ?? options.weight ?? "400";
-    const style = src.style ?? options.style ?? "normal";
+    const weight = sanitizeFontDescriptorValue(src.weight ?? options.weight ?? "400") ?? "400";
+    const style = sanitizeFontDescriptorValue(src.style ?? options.style ?? "normal") ?? "normal";
     const format = src.path.endsWith(".woff2")
       ? "woff2"
       : src.path.endsWith(".woff")
@@ -156,7 +142,7 @@ function generateFontFaceCSS(family: string, options: LocalFontOptions): string 
   if (options.declarations) {
     for (const decl of options.declarations) {
       const safeProp = sanitizeCSSProperty(decl.prop);
-      const safeValue = sanitizeCSSValue(decl.value);
+      const safeValue = sanitizeFontDescriptorValue(decl.value);
       if (safeProp && safeValue) {
         rules.push(
           `@font-face { font-family: '${escapeCSSString(family)}'; ${safeProp}: ${safeValue}; }`,
@@ -169,11 +155,11 @@ function generateFontFaceCSS(family: string, options: LocalFontOptions): string 
 }
 
 // SSR: collect font styles for injection in <head>
-const ssrFontStyles: string[] = [];
+const ssrFontStyles = (_g[_SSR_FONT_STYLES_KEY] ??= []);
 
 // SSR: collect font file URLs for <link rel="preload"> injection
-const ssrFontPreloads: Array<{ href: string; type: string }> = [];
-const ssrFontPreloadHrefs = new Set<string>();
+const ssrFontPreloads = (_g[_SSR_FONT_PRELOADS_KEY] ??= []);
+const ssrFontPreloadHrefs = (_g[_SSR_FONT_PRELOAD_HREFS_KEY] ??= new Set<string>());
 
 /**
  * Get collected SSR font styles (used by the renderer).
@@ -210,21 +196,21 @@ function injectFontFaceCSS(css: string, id: string): void {
 }
 
 /** Track which className CSS rules have been injected. */
-const injectedClassRules = new Set<string>();
+const injectedClassRules = (_g[_INJECTED_CLASS_RULES_KEY] ??= new Set<string>());
 
 /**
- * Inject a CSS rule that maps a className to a font-family.
+ * Inject a CSS rule that maps a className to the exported font style.
  *
  * This is what makes `<div className={font.className}>` apply the font.
  *
- * In Next.js, the .className class ONLY sets font-family — it does NOT
- * set CSS variables. CSS variables are handled separately by the .variable class.
+ * In Next.js, the .className class sets font-family and any single
+ * font-weight/font-style. CSS variables are handled separately by .variable.
  */
-function injectClassNameRule(className: string, fontFamily: string): void {
+function injectClassNameRule(className: string, fontStyle: FontStyle): void {
   if (injectedClassRules.has(className)) return;
   injectedClassRules.add(className);
 
-  const css = `.${className} { font-family: ${fontFamily}; }\n`;
+  const css = formatFontClassRule(className, fontStyle);
 
   // On server, store the CSS for SSR injection
   if (typeof document === "undefined") {
@@ -240,10 +226,10 @@ function injectClassNameRule(className: string, fontFamily: string): void {
 }
 
 /** Track which variable class CSS rules have been injected. */
-const injectedVariableRules = new Set<string>();
+const injectedVariableRules = (_g[_INJECTED_VARIABLE_RULES_KEY] ??= new Set<string>());
 
 /** Track which :root CSS variable rules have been injected. */
-const injectedRootVariables = new Set<string>();
+const injectedRootVariables = (_g[_INJECTED_ROOT_VARIABLES_KEY] ??= new Set<string>());
 
 /**
  * Inject a CSS rule that sets a CSS variable on an element.
@@ -300,26 +286,36 @@ function normalizeSources(options: LocalFontOptions): LocalFontSrc[] {
 }
 
 /**
- * Determine the MIME type for a font file based on its extension.
- * Uses endsWith() only — matching the approach in generateFontFaceCSS —
- * to avoid false positives from substring matches (e.g. ".woff" matching ".woff2").
+ * Derive a stable class identity from the inputs that affect the generated
+ * font CSS. Next.js hashes the generated font CSS for the same reason: class
+ * names must match across the RSC, SSR, and browser module graphs regardless
+ * of which graph evaluates a font call first.
  */
-function getFontMimeType(pathOrUrl: string): string {
-  if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
-  if (pathOrUrl.endsWith(".woff")) return "font/woff";
-  if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
-  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
-  return "font/woff2";
+function createLocalFontIdentity(
+  options: LocalFontOptions,
+  sources: LocalFontSrc[],
+  internalFamily: string | undefined,
+): string {
+  return fnv1a64(
+    JSON.stringify([
+      internalFamily ?? "",
+      sources.map((source) => [source.path, source.weight ?? "", source.style ?? ""]),
+      options.display ?? "swap",
+      options.weight ?? "",
+      options.style ?? "",
+      options.fallback ?? ["sans-serif"],
+      options.variable ?? "",
+      options.declarations?.map((declaration) => [declaration.prop, declaration.value]) ?? [],
+    ]),
+  );
 }
 
 /**
  * Collect font source URLs for preload link generation.
  * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
  */
-function collectFontPreloads(options: LocalFontOptions): void {
+function collectFontPreloads(sources: LocalFontSrc[]): void {
   if (typeof document !== "undefined") return; // client-side, skip
-
-  const sources = normalizeSources(options);
 
   for (const src of sources) {
     const href = src.path;
@@ -333,9 +329,15 @@ function collectFontPreloads(options: LocalFontOptions): void {
   }
 }
 
-export default function localFont(options: LocalFontOptions): FontResult {
-  const id = classCounter++;
-  const family = `__local_font_${id}`;
+function localFont<T extends CssVariable | undefined = undefined>(
+  options: LocalFontOptions<T>,
+): T extends undefined ? NextFont : NextFontWithVariable;
+function localFont(options: LocalFontOptions): FontResult {
+  const sources = normalizeSources(options);
+  const internalFamily = sanitizeInternalFontFamily(options._vinext?.font?.family);
+  const id = createLocalFontIdentity(options, sources, internalFamily);
+  const singleSource = sources.length === 1 ? sources[0] : undefined;
+  const family = internalFamily ?? `__local_font_${id}`;
   const className = `__font_local_${id}`;
   const fallback = options.fallback ?? ["sans-serif"];
   // Sanitize each fallback name to prevent CSS injection via crafted values
@@ -345,16 +347,25 @@ export default function localFont(options: LocalFontOptions): FontResult {
   // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
   // Users apply this class to set the CSS variable on that element.
   const variableClassName = `__variable_local_${id}`;
+  const style = singleSource
+    ? resolveSingleFaceStyle({
+        fontFamily,
+        weight: singleSource.weight ?? options.weight,
+        style: singleSource.style ?? options.style,
+      })
+    : { fontFamily };
 
   // Collect font URLs for preload <link> tags (SSR only)
-  collectFontPreloads(options);
+  collectFontPreloads(sources);
 
   // Inject @font-face declarations
-  const css = generateFontFaceCSS(family, options);
-  injectFontFaceCSS(css, family);
+  const css = generateFontFaceCSS(family, options, sources);
+  // The exposed family can repeat across modules; the generated class stays
+  // unique for each localFont call and is the correct injection identity.
+  injectFontFaceCSS(css, className);
 
   // Inject the className -> font-family CSS rule
-  injectClassNameRule(className, fontFamily);
+  injectClassNameRule(className, style);
 
   // Inject a CSS rule for the variable class name if variable is specified.
   // This is what makes `<html className={font.variable}>` set the CSS variable.
@@ -364,7 +375,9 @@ export default function localFont(options: LocalFontOptions): FontResult {
 
   return {
     className,
-    style: { fontFamily },
+    style,
     ...(cssVarName ? { variable: variableClassName } : {}),
   };
 }
+
+export default localFont;

@@ -53,7 +53,7 @@ describe("loadDotenv", () => {
     writeFile(".env.local", "ORDER=local\nSECOND=local\n");
     writeFile(".env.development.local", "ORDER=mode-local\n");
 
-    const env: NodeJS.ProcessEnv = {
+    const env: Record<string, string | undefined> = {
       ORDER: "process",
       FROM_PROCESS: "yes",
     };
@@ -90,7 +90,7 @@ describe("loadDotenv", () => {
     writeFile(".env.local", "DB_HOST=from-local\nAPI_KEY=from-local\n");
     writeFile(".env.production.local", "DB_HOST=from-prod-local\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
 
     const result = loadDotenv({
       root: tmpDir,
@@ -118,7 +118,7 @@ describe("loadDotenv", () => {
     writeFile(".env.test", "TEST_VALUE=from-test\n");
     writeFile(".env", "TEST_VALUE=from-env\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     const result = loadDotenv({
       root: tmpDir,
       mode: "test",
@@ -134,7 +134,7 @@ describe("loadDotenv", () => {
   it("expands variables using $VAR syntax", () => {
     writeFile(".env", "BASE_URL=https://example.com\nAPI_URL=$BASE_URL/v1\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     const result = loadDotenv({
       root: tmpDir,
       mode: "development",
@@ -148,7 +148,7 @@ describe("loadDotenv", () => {
   it("expands variables using ${VAR} syntax", () => {
     writeFile(".env", "HOST=localhost\nPORT=3000\nURL=http://${HOST}:${PORT}\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
 
     expect(env.URL).toBe("http://localhost:3000");
@@ -160,7 +160,7 @@ describe("loadDotenv", () => {
       "BASE_URL=https://from-file.example.com\nAPI_URL=$BASE_URL/v1\n",
     );
 
-    const env: NodeJS.ProcessEnv = {
+    const env: Record<string, string | undefined> = {
       BASE_URL: "https://from-process.example.com",
     };
 
@@ -178,7 +178,7 @@ describe("loadDotenv", () => {
   it("handles escaped dollar signs", () => {
     writeFile(".env", "PRICE=\\$100\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
 
     expect(env.PRICE).toBe("$100");
@@ -187,7 +187,7 @@ describe("loadDotenv", () => {
   it("handles circular variable references without infinite loop", () => {
     writeFile(".env", "A=$B\nB=$A\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     // Should not hang — cycle detection breaks the loop
     loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
 
@@ -200,7 +200,7 @@ describe("loadDotenv", () => {
     // Only .env exists, others are missing
     writeFile(".env", "ONLY=here\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     const result = loadDotenv({
       root: tmpDir,
       mode: "development",
@@ -217,7 +217,7 @@ describe("loadDotenv", () => {
     writeFile(".env.development.local", "DB_HOST=localhost\n");
     writeFile(".env", "DB_URL=postgres://$DB_HOST/mydb\n");
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
 
     expect(env.DB_HOST).toBe("localhost");
@@ -227,7 +227,7 @@ describe("loadDotenv", () => {
   it("handles multi-line quoted values", () => {
     writeFile(".env", 'MULTI="line1\nline2\nline3"\nSINGLE=plain\n');
 
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
 
     expect(env.MULTI).toBe("line1\nline2\nline3");
@@ -235,7 +235,7 @@ describe("loadDotenv", () => {
   });
 
   it("returns empty result when no .env files exist", () => {
-    const env: NodeJS.ProcessEnv = {};
+    const env: Record<string, string | undefined> = {};
     const result = loadDotenv({
       root: tmpDir,
       mode: "development",

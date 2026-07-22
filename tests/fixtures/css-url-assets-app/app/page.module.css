@@ -1,0 +1,9 @@
+/*
+ * App Router counterpart of the Next.js scss/url-global fixture. Two url()
+ * dependencies pointing at byte-identical svg files; both dark.*.svg and
+ * dark2.*.svg must be emitted under /_next/static/media/ from the client build.
+ */
+.redText {
+  color: red;
+  background-image: url("./dark.svg"), url(dark2.svg);
+}

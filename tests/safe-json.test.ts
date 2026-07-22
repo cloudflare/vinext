@@ -349,13 +349,16 @@ describe("safeJsonStringify", () => {
       expect(closeTags).toHaveLength(1);
     });
 
-    it("produces safe output for RSC embed data", () => {
+    it("produces safe output for navigation runtime RSC bootstrap data", () => {
       const embedData = {
         rsc: ["chunk with </script> in it", "<script>alert(1)</script>"],
         params: { id: "123" },
       };
 
-      const scriptContent = `<script>self.__VINEXT_RSC__=${safeJsonStringify(embedData)}</script>`;
+      const scriptContent =
+        `<script>self[Symbol.for("vinext.navigationRuntime")]={bootstrap:{routeManifest:null,rsc:` +
+        safeJsonStringify(embedData) +
+        "},functions:{}}</script>";
 
       // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
       const openTags = scriptContent.match(/<script>/g);

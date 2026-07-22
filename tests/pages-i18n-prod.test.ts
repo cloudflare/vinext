@@ -11,6 +11,8 @@ import {
   requestNodeServerWithHost,
 } from "./helpers.js";
 
+const TEST_REVALIDATE_SECRET = "22".repeat(32);
+
 async function startProdFixture(
   fixtureDir: string,
   prefix: string,
@@ -21,31 +23,41 @@ async function startProdFixture(
 }> {
   const tmpDir = await createIsolatedFixture(fixtureDir, prefix);
   const outDir = path.join(tmpDir, "dist");
+  const previousRevalidateSecret = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+  process.env.__VINEXT_SHARED_REVALIDATE_SECRET = TEST_REVALIDATE_SECRET;
   // Pages Router only — no RSC pipeline, so separate build() calls work.
   // For App Router, use createBuilder().buildApp() instead.
-  await build({
-    root: tmpDir,
-    configFile: false,
-    plugins: [vinext()],
-    logLevel: "silent",
-    build: {
-      outDir: path.join(outDir, "server"),
-      ssr: "virtual:vinext-server-entry",
-      rollupOptions: { output: { entryFileNames: "entry.js" } },
-    },
-  });
-  await build({
-    root: tmpDir,
-    configFile: false,
-    plugins: [vinext()],
-    logLevel: "silent",
-    build: {
-      outDir: path.join(outDir, "client"),
-      manifest: true,
-      ssrManifest: true,
-      rollupOptions: { input: "virtual:vinext-client-entry" },
-    },
-  });
+  try {
+    await build({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext()],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "server"),
+        ssr: "virtual:vinext-server-entry",
+        rolldownOptions: { output: { entryFileNames: "entry.js" } },
+      },
+    });
+    await build({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext()],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "client"),
+        manifest: true,
+        ssrManifest: true,
+        rolldownOptions: { input: "virtual:vinext-client-entry" },
+      },
+    });
+  } finally {
+    if (previousRevalidateSecret === undefined) {
+      delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+    } else {
+      process.env.__VINEXT_SHARED_REVALIDATE_SECRET = previousRevalidateSecret;
+    }
+  }
 
   const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
   const { server } = await startProdServer({
@@ -144,6 +156,113 @@ describe("Pages i18n domain routing (production)", () => {
       '"domainLocales":[{"domain":"example.com","defaultLocale":"en"},{"domain":"example.fr","defaultLocale":"fr","http":true}]',
     );
   });
+
+  it("keys Pages ISR entries by i18n domain context", async () => {
+    const fr = await requestNodeServerWithHost(prodPort, "/isr-about", "example.fr");
+    expect(fr.status).toBe(200);
+    expect(fr.headers["x-vinext-cache"]).toBe("MISS");
+    expect(fr.body).toContain('<p id="locale">fr</p>');
+    expect(fr.body).toContain('<p id="defaultLocale">fr</p>');
+
+    const en = await requestNodeServerWithHost(prodPort, "/isr-about", "example.com");
+    expect(en.status).toBe(200);
+    expect(en.headers["x-vinext-cache"]).toBe("MISS");
+    expect(en.body).toContain('<p id="locale">en</p>');
+    expect(en.body).toContain('<p id="defaultLocale">en</p>');
+    expect(en.body).not.toContain('<p id="locale">fr</p>');
+
+    const enHit = await requestNodeServerWithHost(prodPort, "/isr-about", "example.com");
+    expect(enHit.status).toBe(200);
+    expect(enHit.headers["x-vinext-cache"]).toBe("HIT");
+    expect(enHit.body).toContain('<p id="locale">en</p>');
+  });
+
+  it("revalidates the ISR entry owned by the request domain", async () => {
+    const before = await requestNodeServerWithHost(prodPort, "/isr-about", "example.fr");
+    const beforeRenderedAt = before.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1];
+    const beforeEn = await requestNodeServerWithHost(prodPort, "/isr-about", "example.com");
+    const beforeEnRenderedAt = beforeEn.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1];
+
+    const revalidate = await requestNodeServerWithHost(
+      prodPort,
+      "/api/revalidate?path=%2Fisr-about",
+      "example.fr",
+    );
+    expect(revalidate.status).toBe(200);
+    expect(JSON.parse(revalidate.body)).toEqual({ revalidated: true });
+
+    const after = await requestNodeServerWithHost(prodPort, "/isr-about", "example.fr");
+    expect(after.body).toContain('<p id="locale">fr</p>');
+    expect(after.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1]).not.toBe(beforeRenderedAt);
+    const afterEn = await requestNodeServerWithHost(prodPort, "/isr-about", "example.com");
+    expect(afterEn.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1]).toBe(beforeEnRenderedAt);
+  });
+
+  it("authenticates and strips the logical-host side channel", async () => {
+    const forged = await requestNodeServerWithHost(
+      prodPort,
+      "/api/revalidation-headers",
+      "example.com",
+      {
+        "x-prerender-revalidate": "not-the-secret",
+        "x-vinext-revalidate-host": "example.fr",
+      },
+    );
+    expect(JSON.parse(forged.body)).toEqual({ host: "example.com", logicalHost: null });
+
+    const unconfigured = await requestNodeServerWithHost(
+      prodPort,
+      "/api/revalidation-headers",
+      "example.com",
+      {
+        "x-prerender-revalidate": TEST_REVALIDATE_SECRET,
+        "x-vinext-revalidate-host": "attacker.example",
+      },
+    );
+    expect(JSON.parse(unconfigured.body)).toEqual({ host: "example.com", logicalHost: null });
+
+    const trusted = await requestNodeServerWithHost(
+      prodPort,
+      "/api/revalidation-headers",
+      "127.0.0.1",
+      {
+        "x-prerender-revalidate": TEST_REVALIDATE_SECRET,
+        "x-vinext-revalidate-host": "example.fr",
+      },
+    );
+    expect(JSON.parse(trusted.body)).toEqual({ host: "example.fr", logicalHost: null });
+  });
+
+  // Issue #1336 item 3: locale prefix must be stripped before API route matching.
+  //
+  // Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts
+  // (the "should redirect to api route with locale" case, which exercises
+  // /fr/api/ok hitting pages/api/ok.js)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-redirects/test/index.test.ts
+  it("matches /api/ok without a locale prefix", async () => {
+    const res = await requestNodeServerWithHost(prodPort, "/api/ok", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
+
+  it("matches /fr/api/ok by stripping the locale prefix (issue #1336)", async () => {
+    const res = await requestNodeServerWithHost(prodPort, "/fr/api/ok", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
+
+  it("preserves query parameters when stripping the locale prefix from an API path", async () => {
+    const res = await requestNodeServerWithHost(
+      prodPort,
+      "/fr/api/ok?foo=bar&baz=qux",
+      "example.com",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
 });
 
 describe("Pages i18n domain routing with basePath (production)", () => {
@@ -185,5 +304,22 @@ describe("Pages i18n domain routing with basePath (production)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toContain('href="http://example.fr/app/about" id="switch-locale"');
+  });
+
+  it("preserves domain identity for only-generated revalidation with basePath", async () => {
+    const before = await requestNodeServerWithHost(prodPort, "/app/isr-about/", "example.fr");
+    const beforeRenderedAt = before.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1];
+
+    const revalidate = await requestNodeServerWithHost(
+      prodPort,
+      "/app/api/revalidate/?path=%2Fapp%2Fisr-about%2F&onlyGenerated=1",
+      "example.fr",
+    );
+    expect(revalidate.status).toBe(200);
+    expect(JSON.parse(revalidate.body)).toEqual({ revalidated: true });
+
+    const after = await requestNodeServerWithHost(prodPort, "/app/isr-about/", "example.fr");
+    expect(after.body).toContain('<p id="locale">fr</p>');
+    expect(after.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1]).not.toBe(beforeRenderedAt);
   });
 });

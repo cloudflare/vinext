@@ -146,6 +146,28 @@ test.describe("Shallow routing (Pages Router)", () => {
     );
   });
 
+  test("dynamic route params update on shallow push across the same route template", async ({
+    page,
+  }) => {
+    // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+    await page.goto(`${BASE}/posts/42`);
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 42");
+    await waitForHydration(page);
+
+    await page.evaluate(() =>
+      (window as any).next.router.push("/posts/43", undefined, {
+        shallow: true,
+      }),
+    );
+
+    await expect(page).toHaveURL(`${BASE}/posts/43`);
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 42");
+    await expect(page.locator('[data-testid="query"]')).toHaveText("Query ID: 43");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("Pathname: /posts/[id]");
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("As Path: /posts/43");
+  });
+
   test("router.query preserves repeated search params and router.asPath preserves hash", async ({
     page,
   }) => {
@@ -162,6 +184,55 @@ test.describe("Shallow routing (Pages Router)", () => {
     await expect(page.locator('[data-testid="router-asPath"]')).toHaveText(
       "/shallow-test?tag=a&tag=b#frag",
     );
+  });
+
+  test("<Link shallow> click skips GSSP refetch (issue #1332 sub-problem 3)", async ({ page }) => {
+    // Mirrors Next.js test/e2e/middleware-trailing-slash 'allows shallow linking
+    // with middleware' — clicking <Link href="..." shallow> should update the
+    // URL and router.query without triggering a /_next/data fetch.
+    await page.goto(`${BASE}/shallow-test`);
+    await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
+    await waitForHydration(page);
+
+    const initialCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+
+    const dataRequests: string[] = [];
+    page.on("request", (req) => {
+      const url = req.url();
+      if (url.includes("/_next/data/")) dataRequests.push(url);
+    });
+
+    await page.click('[data-testid="shallow-link"]');
+
+    await expect(page).toHaveURL(`${BASE}/shallow-test?via=link`);
+
+    // GSSP call ID stays the same — server was not re-hit
+    const afterCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+    expect(afterCallId).toBe(initialCallId);
+
+    // router.query reflects the new query
+    const routerQuery = await page.locator('[data-testid="router-query"]').textContent();
+    expect(JSON.parse(routerQuery!)).toEqual({ via: "link" });
+
+    // No _next/data requests fired by the shallow click.
+    expect(dataRequests).toEqual([]);
+  });
+
+  test("<Link> without shallow click triggers GSSP refetch", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
+    await waitForHydration(page);
+
+    const initialCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+
+    await page.click('[data-testid="deep-link"]');
+
+    await expect(page).toHaveURL(`${BASE}/shallow-test?via=deep-link`);
+
+    await expect(async () => {
+      const afterCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+      expect(afterCallId).not.toBe(initialCallId);
+    }).toPass({ timeout: 5_000 });
   });
 
   test("router.query preserves catch-all route params as arrays", async ({ page }) => {

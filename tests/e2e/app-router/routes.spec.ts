@@ -1,16 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
-
-/**
- * Wait for the RSC browser entry to hydrate.
- */
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Catch-all routes", () => {
   test("renders with single segment", async ({ page }) => {
@@ -67,7 +58,7 @@ test.describe("Route groups", () => {
 
   test("route group page is accessible via client navigation", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate to features page — it's under (marketing) group
     await page.evaluate(() => {
@@ -102,7 +93,7 @@ test.describe("Nested dynamic routes", () => {
   test("navigating between categories via client navigation", async ({ page }) => {
     await page.goto(`${BASE}/shop/electronics`);
     await expect(page.locator("h1")).toHaveText("Category: electronics");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.evaluate(() => {
       (window as any).__NAV_MARKER__ = true;
@@ -131,6 +122,55 @@ test.describe("Server-side redirects", () => {
     // Should have followed the redirect to /about
     expect(page.url()).toBe(`${BASE}/about`);
     await expect(page.locator("h1")).toHaveText("About");
+  });
+
+  test("client navigation handles delayed redirect under loading boundary", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("delayed-protected-loading-link").click();
+
+    // The fixture page awaits 500ms before throwing redirect(); the route has
+    // its own loading.tsx, so the Suspense fallback must paint during that
+    // window. This covers the second half of the cross-route-loading fix —
+    // without the keyed Suspense, React's transition reconciliation would
+    // hold the previous page visible and skip the fallback entirely.
+    await expect(page.getByText("delayed protected loading...")).toBeVisible();
+
+    await expect(page).toHaveURL(`${BASE}/about`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(pageErrors.filter((message) => message.includes("NEXT_REDIRECT"))).toHaveLength(0);
+  });
+
+  test("client navigation handles a delayed generateMetadata redirect", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("metadata-redirect-link").click();
+
+    await expect(page).toHaveURL(`${BASE}/about`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(pageErrors.filter((message) => message.includes("NEXT_REDIRECT"))).toHaveLength(0);
+  });
+
+  test("client navigation renders not-found metadata from delayed generateMetadata", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("metadata-streaming-not-found-link").click();
+
+    await expect(page).toHaveURL(`${BASE}/metadata-streaming-not-found`);
+    await expect(page.getByTestId("metadata-streaming-not-found")).toBeVisible();
+    await expect(page).toHaveTitle("Streamed not-found metadata");
+    expect(pageErrors.filter((message) => message.includes("NEXT_HTTP_ERROR"))).toHaveLength(0);
   });
 });
 
@@ -175,7 +215,7 @@ test.describe('"use client" page component with usePathname (issue #688)', () =>
     page.on("pageerror", (err) => errors.push(err.message));
 
     await page.goto(`${BASE}/use-client-page-pathname`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#client-page-pathname")).toHaveText("/use-client-page-pathname");
     expect(errors.filter((e) => e.includes("Hydration"))).toHaveLength(0);
@@ -183,7 +223,7 @@ test.describe('"use client" page component with usePathname (issue #688)', () =>
 
   test("useSearchParams works on use client page with query string", async ({ page }) => {
     await page.goto(`${BASE}/use-client-page-pathname?q=test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#client-page-search-q")).toHaveText("test");
   });
@@ -193,7 +233,7 @@ test.describe('"use client" page component with usePathname (issue #688)', () =>
     page.on("pageerror", (err) => errors.push(err.message));
 
     await page.goto(`${BASE}/use-client-page-pathname/my-slug`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#client-page-dynamic-pathname")).toHaveText(
       "/use-client-page-pathname/my-slug",

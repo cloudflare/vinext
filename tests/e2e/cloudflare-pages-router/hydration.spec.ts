@@ -9,8 +9,11 @@ test.describe("Pages Router client hydration on Cloudflare Workers", () => {
   test("client JS bundle is loaded", async ({ page }) => {
     const response = await page.goto(BASE + "/");
     const html = await response!.text();
-    // The HTML should contain a script tag for the client entry
-    expect(html).toMatch(/script\s+type="module"\s+src="\/assets\/[^"]+\.js"/);
+    // The HTML should contain a script tag for the client entry. The
+    // `defer` attribute is emitted by default (Next.js optimized loading);
+    // allow optional whitespace-separated attributes between `type="module"`
+    // and `src="…"` so the regex remains stable as attributes shift.
+    expect(html).toMatch(/script\s+type="module"(?:\s+\w+)*\s+src="\/_next\/static\/[^"]+\.js"/);
   });
 
   test("counter becomes interactive after hydration", async ({ page }) => {

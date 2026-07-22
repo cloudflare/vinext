@@ -4,15 +4,18 @@ import {
   type RouteHandlerHttpMethod,
   type RouteHandlerModule,
 } from "./app-route-handler-runtime.js";
+import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
+export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 
 export type AppRouteHandlerModule = {
   dynamic?: string;
+  fetchCache?: unknown;
   revalidate?: unknown;
 } & RouteHandlerModule;
 
 type AppRouteHandlerFunction = (...args: unknown[]) => unknown;
 
-export type ResolvedAppRouteHandlerMethod = {
+type ResolvedAppRouteHandlerMethod = {
   allowHeaderForOptions: string;
   exportedMethods: RouteHandlerHttpMethod[];
   handlerFn: AppRouteHandlerFunction | undefined;
@@ -20,27 +23,29 @@ export type ResolvedAppRouteHandlerMethod = {
   shouldAutoRespondToOptions: boolean;
 };
 
-export type AppRouteHandlerCacheReadOptions = {
+type AppRouteHandlerCacheReadOptions = {
   dynamicConfig?: string;
   handlerFn: unknown;
   isAutoHead: boolean;
   isKnownDynamic: boolean;
+  isDraftMode?: boolean;
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
 };
 
-export type AppRouteHandlerResponseCacheOptions = {
+type AppRouteHandlerResponseCacheOptions = {
   dynamicConfig?: string;
   dynamicUsedInHandler: boolean;
   handlerSetCacheControl: boolean;
   isAutoHead: boolean;
+  isDraftMode?: boolean;
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
 };
 
-export type AppRouteHandlerSpecialError =
+type AppRouteHandlerSpecialError =
   | {
       kind: "redirect";
       location: string;
@@ -51,14 +56,23 @@ export type AppRouteHandlerSpecialError =
       statusCode: number;
     };
 
+type AppRouteHandlerSpecialErrorOptions = {
+  isAction: boolean;
+};
+
 export function getAppRouteHandlerRevalidateSeconds(
   handler: Pick<AppRouteHandlerModule, "revalidate">,
 ): number | null {
-  return typeof handler.revalidate === "number" &&
-    handler.revalidate > 0 &&
-    handler.revalidate !== Infinity
-    ? handler.revalidate
-    : null;
+  // 0 is a meaningful value ("never cache") and must be preserved so the
+  // header path can emit a no-store Cache-Control.
+  // revalidate = false means "cache indefinitely" (Next.js segment config
+  // parity) — return Infinity to signal the cache-later path.
+  const { revalidate } = handler;
+  if (revalidate === false) return Infinity;
+  if (typeof revalidate !== "number" || !Number.isFinite(revalidate) || revalidate < 0) {
+    return null;
+  }
+  return revalidate;
 }
 
 export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): boolean {
@@ -98,10 +112,16 @@ export function resolveAppRouteHandlerMethod(
 }
 
 export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheReadOptions): boolean {
+  // revalidateSeconds === 0 means "never cache" and must skip the ISR read.
+  // A previously written entry (e.g. from before the handler opted out)
+  // must never be replayed once the author set revalidate = 0.
   return (
     options.isProduction &&
     options.revalidateSeconds !== null &&
+    options.revalidateSeconds > 0 &&
+    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
+    !options.isDraftMode &&
     !options.isKnownDynamic &&
     (options.method === "GET" || options.isAutoHead) &&
     typeof options.handlerFn === "function"
@@ -111,8 +131,12 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
 export function shouldApplyAppRouteHandlerRevalidateHeader(
   options: Omit<AppRouteHandlerResponseCacheOptions, "dynamicConfig" | "isProduction">,
 ): boolean {
+  // Includes revalidateSeconds === 0. That case emits the no-store
+  // Cache-Control, which is exactly the header a never-cache handler
+  // needs to suppress heuristic caching.
   return (
     options.revalidateSeconds !== null &&
+    !options.isDraftMode &&
     !options.dynamicUsedInHandler &&
     (options.method === "GET" || options.isAutoHead) &&
     !options.handlerSetCacheControl
@@ -122,10 +146,15 @@ export function shouldApplyAppRouteHandlerRevalidateHeader(
 export function shouldWriteAppRouteHandlerCache(
   options: AppRouteHandlerResponseCacheOptions,
 ): boolean {
+  // Excludes revalidateSeconds === 0. A never-cache response must not be
+  // persisted to ISR, even though it still needs a Cache-Control header.
   return (
     options.isProduction &&
     options.revalidateSeconds !== null &&
+    options.revalidateSeconds > 0 &&
+    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
+    !options.isDraftMode &&
     shouldApplyAppRouteHandlerRevalidateHeader(options)
   );
 }
@@ -133,26 +162,27 @@ export function shouldWriteAppRouteHandlerCache(
 export function resolveAppRouteHandlerSpecialError(
   error: unknown,
   requestUrl: string,
+  options?: AppRouteHandlerSpecialErrorOptions,
 ): AppRouteHandlerSpecialError | null {
   if (!(error && typeof error === "object" && "digest" in error)) {
     return null;
   }
 
   const digest = String(error.digest);
-  if (digest.startsWith("NEXT_REDIRECT;")) {
-    const parts = digest.split(";");
-    const redirectUrl = decodeURIComponent(parts[2]);
+  const redirect = parseNextRedirectDigest(digest);
+  if (redirect) {
     return {
       kind: "redirect",
-      location: new URL(redirectUrl, requestUrl).toString(),
-      statusCode: parts[3] ? parseInt(parts[3], 10) : 307,
+      location: new URL(redirect.url, requestUrl).toString(),
+      statusCode: options?.isAction ? 303 : redirect.status,
     };
   }
 
-  if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+  const httpError = parseNextHttpErrorDigest(digest);
+  if (httpError) {
     return {
       kind: "status",
-      statusCode: digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10),
+      statusCode: httpError.status,
     };
   }
 

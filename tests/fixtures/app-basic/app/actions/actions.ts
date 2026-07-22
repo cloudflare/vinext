@@ -1,6 +1,6 @@
 "use server";
 
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 // Simple in-memory counter for testing server actions
 let likeCount = 0;
@@ -31,6 +31,17 @@ export async function redirectAction(): Promise<void> {
  */
 export async function errorAction(): Promise<string> {
   throw new Error("Action failed intentionally");
+}
+
+/**
+ * Server action that calls notFound() — should produce a 404 response
+ * with the rejected actionResult propagated to the client error boundary.
+ *
+ * Regression coverage for #1340: Next.js sets statusCode = 404 when an
+ * action throws via `notFound()`; vinext must match that contract.
+ */
+export async function notFoundAction(): Promise<void> {
+  notFound();
 }
 
 /**

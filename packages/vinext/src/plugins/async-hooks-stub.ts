@@ -1,6 +1,6 @@
 import type { Plugin } from "vite";
 
-export const ASYNC_HOOKS_STUB_ID = "\0vinext:async-hooks-stub";
+const ASYNC_HOOKS_STUB_ID = "\0vinext:async-hooks-stub";
 
 /**
  * Stubs node:async_hooks in client (browser) builds.

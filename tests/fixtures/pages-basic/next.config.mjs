@@ -1,8 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
   generateBuildId: () => "test-build-id",
   env: {
     CUSTOM_VAR: "hello-from-config",
+  },
+  experimental: {
+    allowedRevalidateHeaderKeys: ["x-revalidate-token"],
   },
   async redirects() {
     return [
@@ -39,6 +43,25 @@ const nextConfig = {
           source: "/repeat-rewrite/:id",
           destination: "/docs/:id/:id",
         },
+        {
+          source: "/rewrite-navigation/:id",
+          destination: "/rewrite-navigation/:id/destination",
+        },
+        // Ported from Next.js:
+        // test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+        // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+        {
+          source: "/rewrite-navigation-same/1",
+          destination: "/rewrite-navigation-same/001",
+        },
+        {
+          source: "/rewrite-navigation-same/2",
+          destination: "/rewrite-navigation-same/002",
+        },
+        {
+          source: "/rewrite-navigation-same/3",
+          destination: "/rewrite-navigation-same/003",
+        },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
         // when ?mw-auth is present. The beforeFiles rewrite should see this
@@ -52,6 +75,10 @@ const nextConfig = {
       afterFiles: [
         {
           source: "/after-rewrite",
+          destination: "/about",
+        },
+        {
+          source: "/nav-test",
           destination: "/about",
         },
         // Used by Vitest: pages-router.test.ts — afterFiles rewrite gated on
@@ -94,6 +121,10 @@ const nextConfig = {
         source: "/about",
         missing: [{ type: "cookie", key: "logged-in" }],
         headers: [{ key: "X-Guest-Only-Header", value: "1" }],
+      },
+      {
+        source: "/about",
+        headers: [{ key: "X-Page-Header", value: "about-page" }],
       },
       // Test that Vary headers from config are additive (append, not replace)
       {

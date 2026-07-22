@@ -4,21 +4,15 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: hooks (browser)", () => {
   // useParams – single dynamic param
   test("useParams returns correct value for single dynamic param", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params/test-value`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#param-id")).toHaveText("test-value");
   });
@@ -26,7 +20,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   // useParams – nested dynamic params
   test("useParams returns correct values for nested dynamic params", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params/parent/child`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#param-id")).toHaveText("parent");
     await expect(page.locator("#param-subid")).toHaveText("child");
@@ -35,7 +29,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   // useParams – catch-all params
   test("useParams returns correct catch-all params", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params/catchall/x/y/z`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#params-slug")).toContainText('["x","y","z"]');
   });
@@ -43,7 +37,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   // useSearchParams – reads query params
   test("useSearchParams reads query params in browser", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-search?q=browser-test&page=5`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#param-q")).toHaveText("browser-test");
     await expect(page.locator("#param-page")).toHaveText("5");
@@ -52,7 +46,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   // useSearchParams – reactive update on pushState
   test("useSearchParams updates reactively on pushState", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-search`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#push-search");
 
@@ -67,7 +61,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   // Source fixture: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/app/hooks/use-search-params/instanceof/page.js
   test("useSearchParams returns ReadonlyURLSearchParams on the client", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-search-readonly?foo=bar&foo=baz`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator('[data-testid="server-instance"]')).toHaveText(
       "PASS instanceof check",
@@ -79,7 +73,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
 
   test("useSearchParams mutation methods throw on the client", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-search-readonly?foo=bar&zap=zazzle`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator('[data-testid="server-mutation-status"]')).toHaveText(
       "PASS mutation blocked",
@@ -97,7 +91,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   // useRouter.push() – navigates to new page
   test("useRouter.push() navigates to new page", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-router`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#push-btn");
     await expect(page.locator("#result-page")).toHaveText("Result Page", {
@@ -111,7 +105,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
     // Start on a known page so we have a history entry before hooks-router
     await page.goto(`${BASE}/nextjs-compat/nav-redirect-result`);
     await page.goto(`${BASE}/nextjs-compat/hooks-router`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#replace-btn");
     await expect(page.locator("#result-page")).toHaveText("Result Page", {
@@ -130,7 +124,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
     await page.goto(`${BASE}/nextjs-compat/hooks-router`);
     await page.goto(`${BASE}/nextjs-compat/nav-redirect-result`);
     await page.goto(`${BASE}/nextjs-compat/hooks-router`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#back-btn");
 
@@ -145,7 +139,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
 
   test("useParams updates reactively on client-side navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params-nav/1`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Verify initial param
     await expect(page.locator("#current-id")).toHaveText("1");
@@ -160,7 +154,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
 
   test("useParams updates across multiple consecutive navigations", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params-nav/1`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#current-id")).toHaveText("1");
 
@@ -179,7 +173,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
 
   test("useParams updates on browser back/forward", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params-nav/1`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#current-id")).toHaveText("1");
 

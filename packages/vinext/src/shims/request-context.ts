@@ -21,7 +21,7 @@
  *   ctx?.waitUntil(somePromise);
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -33,13 +33,24 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal ExecutionContext interface matching the Cloudflare Workers runtime.
- * Using a structural interface so this file has no runtime dependency on
- * Cloudflare types packages.
+ * Minimal structural ExecutionContext interface, kept free of any host-runtime
+ * dependency.
  */
 export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
+  /**
+   * Optional host-provided cache handle that some runtimes expose on the
+   * execution context. Typed as `unknown` to keep this module runtime-agnostic;
+   * CDN cache adapters that know the concrete shape narrow it themselves.
+   */
+  cache?: unknown;
+  /** Server-owned origin for credential-bearing Pages revalidation loopbacks. */
+  trustedRevalidateOrigin?: string;
+  /** Worker-owned in-process dispatcher for authenticated Pages revalidation. */
+  dispatchPagesRevalidate?: (request: Request) => Promise<Response>;
+  /** Marks a request currently executing through the internal revalidation dispatcher. */
+  isInternalPagesRevalidation?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -47,10 +58,32 @@ export type ExecutionContextLike = {
 // share the same instance and see the same per-request context.
 // ---------------------------------------------------------------------------
 
-const _ALS_KEY = Symbol.for("vinext.requestContext.als");
-const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<ExecutionContextLike | null>()) as AsyncLocalStorage<ExecutionContextLike | null>;
+const _als = getOrCreateAls<ExecutionContextLike | null>("vinext.requestContext.als");
+const OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL = Symbol.for("__cloudflare-context__");
+let openNextCloudflareContextFallback: unknown;
+
+function installOpenNextCloudflareContextBridge(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL,
+  );
+  if (descriptor && !descriptor.configurable) return;
+  openNextCloudflareContextFallback =
+    descriptor && "value" in descriptor ? descriptor.value : descriptor?.get?.call(globalThis);
+
+  Object.defineProperty(globalThis, OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL, {
+    configurable: true,
+    get() {
+      const ctx = getRequestExecutionContext();
+      return ctx ? { ctx } : openNextCloudflareContextFallback;
+    },
+    set(value: unknown) {
+      openNextCloudflareContextFallback = value;
+    },
+  });
+}
+
+installOpenNextCloudflareContextBridge();
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -65,6 +98,14 @@ const _als = (_g[_ALS_KEY] ??=
  * delegation to vinext so the context propagates through the entire
  * request pipeline.
  */
+export function runWithExecutionContext<T>(
+  ctx: ExecutionContextLike,
+  fn: () => Promise<T>,
+): Promise<T>;
+export function runWithExecutionContext<T>(
+  ctx: ExecutionContextLike,
+  fn: () => T | Promise<T>,
+): T | Promise<T>;
 export function runWithExecutionContext<T>(
   ctx: ExecutionContextLike,
   fn: () => T | Promise<T>,

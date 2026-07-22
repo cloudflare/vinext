@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { createOgAssetsPlugin } from "../packages/vinext/src/plugins/og-assets.js";
 import type { Plugin } from "vite-plus";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -48,9 +49,9 @@ let fakeOgDistDir: string;
 
 beforeAll(async () => {
   tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "og-font-patch-test-"));
-  fakeOgDistDir = path.join(tmpDir, "node_modules/@vercel/og/dist");
+  fakeOgDistDir = path.posix.join(tmpDir, "node_modules/@vercel/og/dist");
   await fsp.mkdir(fakeOgDistDir, { recursive: true });
-  await fsp.writeFile(path.join(fakeOgDistDir, "resvg.wasm"), Buffer.from("fake-resvg-wasm"));
+  await fsp.writeFile(path.posix.join(fakeOgDistDir, "resvg.wasm"), Buffer.from("fake-resvg-wasm"));
 });
 
 afterAll(async () => {
@@ -91,7 +92,7 @@ describe("vinext:og-font-patch plugin", () => {
       const result = transform.call(
         plugin,
         fakeEdgeEntry(FAKE_YOGA_B64),
-        path.join(fakeOgDistDir, "index.edge.js"),
+        path.posix.join(fakeOgDistDir, "index.edge.js"),
       );
       if (!result) throw new Error("Expected transform to produce output, got null");
       code = result.code;
@@ -100,74 +101,57 @@ describe("vinext:og-font-patch plugin", () => {
     // ── Yoga WASM ────────────────────────────────────────────
 
     describe("yoga WASM", () => {
-      it("does NOT produce a static import of yoga.wasm?module", () => {
-        expect(code).not.toMatch(/^import\s+\w+\s+from\s+["'].*yoga\.wasm/m);
-      });
-
-      it("uses dynamic import with catch fallback", () => {
+      it("uses a dynamic import with a catch fallback (avoids load-time crash on Node)", () => {
         expect(code).toContain('import("./yoga.wasm?module")');
         expect(code).toContain(".catch(");
       });
 
-      it("includes inline base64 bytes as Node.js fallback", () => {
-        expect(code).toContain(FAKE_YOGA_B64);
+      it("reads yoga.wasm from disk on the Node.js fallback (no base64 inline)", () => {
+        // The Node.js fallback (where ?module imports fail) must read the .wasm
+        // file from disk and instantiate it — NOT inline a ~95 KiB base64 blob.
+        // This keeps exactly one physical copy of the WASM in the output.
+        expect(code).not.toContain(FAKE_YOGA_B64);
+        expect(code).toContain('new URL("./yoga.wasm", import.meta.url)');
+        expect(code).toContain("node:fs");
         expect(code).toContain("WebAssembly.instantiate");
       });
 
-      it("clears the emscripten data URL", () => {
+      it("does not reference new URL(yoga.wasm) at top level (workerd compat)", () => {
+        // In workerd, import.meta.url is "worker" — a top-level new URL(...) would
+        // throw TypeError at module load. The reference must live in the Node.js
+        // fallback branch only.
+        expect(code).not.toMatch(/^var\s+\w+\s*=\s*new URL\("\.\/yoga\.wasm"/m);
+      });
+
+      it("clears the inlined emscripten data URL (avoids loading bytes twice)", () => {
         expect(code).not.toContain("data:application/octet-stream;base64,");
-        expect(code).toContain('H = "";');
-      });
-
-      it("patches instantiateWasm with dual-path handler (module vs bytes)", () => {
-        expect(code).toContain("instantiateWasm");
-        // workerd path: instantiate from pre-compiled module → callback(inst)
-        expect(code).toMatch(/WebAssembly\.instantiate\(mod,\s*imports\)/);
-        // Node.js path: instantiate from bytes → callback(r.instance)
-        expect(code).toMatch(/WebAssembly\.instantiate\(b,\s*imports\)/);
-      });
-
-      it("uses Buffer.from directly (no atob — fallback only runs on Node.js)", () => {
-        // The catch path (mod === null) only executes on Node.js where Buffer is
-        // always available. No need for an atob/Uint8Array browser fallback.
-        expect(code).toContain("Buffer.from(__vi_yoga_b64");
-        expect(code).not.toContain("atob(");
       });
     });
 
     // ── Resvg WASM ───────────────────────────────────────────
 
     describe("resvg WASM", () => {
-      it("does NOT produce a static import of resvg.wasm?module", () => {
-        expect(code).not.toMatch(/^import\s+\w+\s+from\s+["'].*resvg\.wasm/m);
-      });
-
-      it("uses dynamic import with catch fallback", () => {
+      it("uses a dynamic import with a catch fallback", () => {
         expect(code).toContain('import("./resvg.wasm?module")');
         expect(code).toMatch(/resvg.*\.catch\(/s);
       });
 
-      it("uses new URL() inside catch handler, not at top level (workerd compat)", () => {
-        // In workerd, import.meta.url is "worker" (not a valid URL base), so
-        // top-level new URL() would throw TypeError at module load time.
-        expect(code).toContain('new URL("./resvg.wasm"');
+      it("does not use new URL() with import.meta.url at top level (workerd compat)", () => {
+        // In workerd, import.meta.url is "worker" — a top-level new URL(...,
+        // import.meta.url) would throw TypeError at module load time. Any
+        // resolution must happen lazily inside the catch handler.
         expect(code).not.toMatch(/^var\s+\w+\s*=\s*new URL\("\.\/resvg\.wasm"/m);
       });
 
-      it("reads resvg.wasm asynchronously via fs.promises", () => {
+      it("reads resvg.wasm asynchronously on the Node.js fallback path", () => {
         expect(code).toContain("node:fs");
         expect(code).toContain("promises.readFile");
-        expect(code).toContain("WebAssembly.compile");
-      });
-
-      it("preserves resvg_wasm variable name for downstream usage", () => {
-        expect(code).toContain("initWasm(resvg_wasm)");
       });
     });
 
     // ── Critical invariant ───────────────────────────────────
 
-    it("output contains zero static WASM module imports", () => {
+    it("emits zero static `?module` WASM imports (Node.js can't resolve them)", () => {
       const staticWasmImports = code.match(
         /^import\s+\w+\s+from\s+["'][^"']*\.wasm[^"']*["']\s*;?$/gm,
       );
@@ -180,15 +164,52 @@ describe("vinext:og-font-patch plugin", () => {
   // conflicting with the shared transform above.
 
   it("writes yoga.wasm to disk at transform time", () => {
-    const writeDistDir = path.join(tmpDir, "write-test/node_modules/@vercel/og/dist");
+    const writeDistDir = path.posix.join(tmpDir, "write-test/node_modules/@vercel/og/dist");
     fs.mkdirSync(writeDistDir, { recursive: true });
 
     const plugin = createOgFontPatchPlugin();
     const transform = unwrapHook(plugin.transform);
-    transform.call(plugin, fakeEdgeEntry(FAKE_YOGA_B64), path.join(writeDistDir, "index.edge.js"));
+    transform.call(
+      plugin,
+      fakeEdgeEntry(FAKE_YOGA_B64),
+      path.posix.join(writeDistDir, "index.edge.js"),
+    );
 
-    const yogaPath = path.join(writeDistDir, "yoga.wasm");
+    const yogaPath = path.posix.join(writeDistDir, "yoga.wasm");
     expect(fs.existsSync(yogaPath)).toBe(true);
     expect(fs.readFileSync(yogaPath)).toEqual(Buffer.from(FAKE_YOGA_B64, "base64"));
+  });
+});
+
+describe("vinext:og-assets plugin", () => {
+  it.each([
+    ["resvg.wasm", "resvg.Cjh1zH0p.wasm"],
+    ["yoga.wasm", "yoga.sbSbVeWy.wasm"],
+    ["resvg.wasm", "resvg-legacyhash.wasm"],
+  ])("rewrites the %s Node fallback to emitted asset %s", (baseName, emittedName) => {
+    const plugin = createOgAssetsPlugin();
+    const generateBundle = unwrapHook(plugin.generateBundle);
+    const chunk = {
+      type: "chunk",
+      fileName: "_next/static/index.edge.js",
+      code: `const wasm = import("./media/${emittedName}").catch(() => new URL("./${baseName}", import.meta.url));`,
+      map: null,
+    };
+    const emittedFileName = `_next/static/media/${emittedName}`;
+    const bundle = {
+      [chunk.fileName]: chunk,
+      [emittedFileName]: {
+        type: "asset",
+        fileName: emittedFileName,
+      },
+    };
+
+    generateBundle.call({ environment: { name: "rsc" } }, {}, bundle);
+
+    // Next.js verifies ImageResponse in the Node runtime and verifies copied
+    // WASM/assets in standalone output:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
+    expect(chunk.code).not.toContain(`new URL("./${baseName}", import.meta.url)`);
+    expect(chunk.code).toContain(`new URL("./media/${emittedName}", import.meta.url)`);
   });
 });

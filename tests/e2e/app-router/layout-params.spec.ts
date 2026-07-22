@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 /**
  * Regression: layout components receive correct `params` in renderHTTPAccessFallbackPage.
@@ -27,20 +28,13 @@ import { test, expect } from "@playwright/test";
 
 const BASE = "http://localhost:4174";
 
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
-
 test.describe("layout params in fallback render (renderHTTPAccessFallbackPage)", () => {
   /**
    * Baseline: valid slug — layout renders, page renders, params are correct.
    */
   test("valid slug: layout renders with correct data-slug", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/layout-params-notfound/hello`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#layout-params-notfound-wrapper")).toHaveAttribute(
       "data-slug",
@@ -95,7 +89,7 @@ test.describe("layout params in fallback render (renderHTTPAccessFallbackPage)",
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/layout-params-notfound/hello`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#layout-params-notfound-wrapper")).toHaveAttribute(
       "data-slug",

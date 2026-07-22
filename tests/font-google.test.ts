@@ -1,11 +1,15 @@
 import { describe, it, expect, afterEach } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs";
-import vinext, {
-  _parseStaticObjectLiteral as parseStaticObjectLiteral,
+import { http, HttpResponse } from "msw";
+import { server } from "./_msw/server.js";
+import vinext from "../packages/vinext/src/index.js";
+import {
+  parseStaticObjectLiteral,
   _findBalancedObject as findBalancedObject,
   _findCallEnd as findCallEnd,
-} from "../packages/vinext/src/index.js";
+  _rewriteCachedFontCssToServedUrls as rewriteCachedFontCssToServedUrls,
+} from "../packages/vinext/src/plugins/fonts.js";
 import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -13,6 +17,45 @@ import type { Plugin } from "vite-plus";
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
 function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
+}
+
+/**
+ * Install an MSW handler that returns the given body for any
+ * `fonts.googleapis.com` request, and records every URL it sees.
+ *
+ * Replaces the prior pattern of swapping `globalThis.fetch` inside a
+ * try/finally — handlers are reset between tests by the global
+ * `afterEach` in `tests/_msw/setup.ts`.
+ */
+function mockGoogleFontsCSS(
+  body: string,
+  opts: { status?: number; headers?: HeadersInit } = {},
+): { urls: string[]; count: () => number } {
+  const urls: string[] = [];
+  const headers = opts.headers ?? { "content-type": "text/css" };
+  server.use(
+    http.get("https://fonts.googleapis.com/*", ({ request }) => {
+      urls.push(request.url);
+      return new HttpResponse(body, { status: opts.status ?? 200, headers });
+    }),
+  );
+  return { urls, count: () => urls.length };
+}
+
+function mockGoogleFontFiles(body = new Uint8Array([0, 1, 2, 3])): { urls: string[] } {
+  const urls: string[] = [];
+  server.use(
+    http.get("https://fonts.gstatic.com/*", ({ request }) => {
+      urls.push(request.url);
+      return new HttpResponse(body, {
+        headers: {
+          "content-type": "font/woff2",
+          "cache-control": "public, max-age=31536000",
+        },
+      });
+    }),
+  );
+  return { urls };
 }
 
 /** Extract the vinext:google-fonts plugin from the plugin array */
@@ -41,14 +84,13 @@ describe("next/font/google shim", () => {
     expect(typeof Inter).toBe("function");
   });
 
-  it("createFontLoader returns className, style, variable", async () => {
+  it("createFontLoader returns className and style without variable unless requested", async () => {
     const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
     const Inter = createFontLoader("Inter");
     const result = Inter({ weight: ["400", "700"], subsets: ["latin"] });
-    expect(result.className).toMatch(/^__font_inter_\d+$/);
+    expect(result.className).toMatch(/^__font_inter_[a-z0-9]+$/);
     expect(result.style.fontFamily).toContain("Inter");
-    // variable returns a class name that sets the CSS variable, not the variable name itself
-    expect(result.variable).toMatch(/^__variable_inter_\d+$/);
+    expect(result.variable).toBeUndefined();
   });
 
   it("supports custom variable name", async () => {
@@ -56,7 +98,138 @@ describe("next/font/google shim", () => {
     const Inter = createFontLoader("Inter");
     const result = Inter({ weight: ["400"], variable: "--my-font" });
     // variable returns a class name that sets the CSS variable, not the variable name itself
-    expect(result.variable).toMatch(/^__variable_inter_\d+$/);
+    expect(result.variable).toMatch(/^__variable_inter_[a-z0-9]+$/);
+  });
+
+  it("matches Next.js style exports for single weight and style", async () => {
+    // Ported from Next.js: test/e2e/next-font/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/next-font/index.test.ts
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const Roboto = createFontLoader("Roboto");
+    const beforeStyles = getSSRFontStyles();
+    const result = Roboto({ weight: "100", style: "italic", subsets: ["latin"] });
+
+    expect(result.style).toMatchObject({
+      fontWeight: 100,
+      fontStyle: "italic",
+    });
+
+    const addedStyles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
+    expect(addedStyles).toContain(`.${result.className}`);
+    expect(addedStyles).toContain("font-weight: 100");
+    expect(addedStyles).toContain("font-style: italic");
+  });
+
+  it("uses transform-resolved Google style metadata for italic-only fonts", async () => {
+    // Ported from Next.js: packages/font/src/google/loader.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/font/src/google/loader.ts
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const Molle = createFontLoader("Molle");
+    const beforeStyles = getSSRFontStyles();
+    const result = Molle({
+      weight: "400",
+      subsets: ["latin"],
+      _vinext: { font: { fontWeight: 400, fontStyle: "italic" } },
+    } as any);
+
+    expect(result.style).toMatchObject({
+      fontWeight: 400,
+      fontStyle: "italic",
+    });
+
+    const addedStyles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
+    expect(addedStyles).toContain(`.${result.className}`);
+    expect(addedStyles).toContain("font-weight: 400");
+    expect(addedStyles).toContain("font-style: italic");
+  });
+
+  it("does not export Google fontStyle for ambiguous multi-style requests", async () => {
+    // Ported from Next.js: packages/font/src/google/loader.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/font/src/google/loader.ts
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const Inter = createFontLoader("Inter");
+    const beforeStyles = getSSRFontStyles();
+    const result = Inter({
+      weight: "400",
+      style: ["normal", "italic"],
+      subsets: ["latin"],
+    });
+
+    expect(result.style.fontStyle).toBeUndefined();
+
+    const addedStyles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
+    expect(addedStyles).toContain(`.${result.className}`);
+    expect(addedStyles).not.toContain("font-style: normal");
+    expect(addedStyles).not.toContain("font-style: italic");
+  });
+
+  it("rejects unsafe Google font-style values in class rules", async () => {
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const Roboto = createFontLoader("Roboto");
+    const beforeStyles = getSSRFontStyles();
+    const result = Roboto({
+      weight: "400",
+      style: "italic;}body{color:red",
+      subsets: ["latin"],
+    } as any);
+
+    expect(result.style.fontStyle).toBeUndefined();
+
+    const addedStyles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
+    expect(addedStyles).not.toContain("color:red");
+    expect(addedStyles).not.toContain("color: red");
+    expect(addedStyles).not.toContain("italic;}body");
+  });
+
+  it("uses adjusted Google font fallback metrics by default", async () => {
+    // Ported from Next.js: packages/font/src/google/loader.ts and
+    // packages/next/src/build/webpack/loaders/next-font-loader/postcss-next-font.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/font/src/google/loader.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-font-loader/postcss-next-font.ts
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const Inter = createFontLoader("Open Sans");
+    const beforeStyles = getSSRFontStyles();
+    const fallbackCSS = `@font-face {
+  font-family: 'Open Sans Fallback';
+  src: local("Arial");
+  ascent-override: 100.00%;
+  descent-override: 20.00%;
+  line-gap-override: 0.00%;
+  size-adjust: 90.00%;
+}\n`;
+    const result = Inter({
+      weight: "400",
+      subsets: ["latin"],
+      _vinext: { font: { adjustedFallbackCSS: fallbackCSS } },
+    } as any);
+
+    expect(result.style.fontFamily).toContain("'Open Sans Fallback'");
+
+    const addedStyles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
+    expect(addedStyles).toContain("font-family: 'Open Sans Fallback'");
+    expect(addedStyles).toContain('src: local("Arial")');
+    expect(addedStyles).toContain("ascent-override:");
+    expect(addedStyles).toContain("descent-override:");
+    expect(addedStyles).toContain("line-gap-override:");
+    expect(addedStyles).toContain("size-adjust:");
+  });
+
+  it("does not include adjusted Google fallback when disabled", async () => {
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const NoAdjust = createFontLoader("No Adjust");
+    const beforeStyles = getSSRFontStyles();
+    const result = NoAdjust({ weight: "400", adjustFontFallback: false });
+
+    expect(result.style.fontFamily).not.toContain("No Adjust Fallback");
+
+    const addedStyles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
+    expect(addedStyles).not.toContain("No Adjust Fallback");
   });
 
   it("supports custom fallback fonts", async () => {
@@ -79,7 +252,7 @@ describe("next/font/google shim", () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
     const fonts = mod.default as any;
     const roboto = fonts.Roboto({ weight: ["400"] });
-    expect(roboto.className).toMatch(/^__font_roboto_\d+$/);
+    expect(roboto.className).toMatch(/^__font_roboto_[a-z0-9]+$/);
     expect(roboto.style.fontFamily).toContain("Roboto");
   });
 
@@ -90,11 +263,11 @@ describe("next/font/google shim", () => {
     expect(rm.style.fontFamily).toContain("Roboto Mono");
   });
 
-  it("accepts _selfHostedCSS option for self-hosted mode", async () => {
+  it("accepts internal self-hosted CSS for self-hosted mode", async () => {
     const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
     const Inter = createFontLoader("Inter");
     const fakeCSS = "@font-face { font-family: 'Inter'; src: url(/fonts/inter.woff2); }";
-    const result = Inter({ weight: ["400"], _selfHostedCSS: fakeCSS } as any);
+    const result = Inter({ weight: ["400"], _vinext: { font: { selfHostedCSS: fakeCSS } } } as any);
     expect(result.className).toBeDefined();
     expect(result.style.fontFamily).toContain("Inter");
   });
@@ -134,6 +307,49 @@ describe("next/font/google shim", () => {
     expect(url).toMatch(/Roboto[+%].*Mono/);
   });
 
+  it("buildGoogleFontsUrl emits no axis segment for empty options (regression for #885)", async () => {
+    // Issue #885: `Sen({ subsets: ['latin'] })` used to emit
+    // `:wght@100..900` and Google returned HTTP 400 because Sen's wght
+    // axis is 400..800. The shim's dev fallback now emits no axis
+    // segment, so Google returns the default static face (200) regardless
+    // of the font's actual axis. The build plugin always pre-resolves the
+    // real axis range from metadata before this path is reached in
+    // production.
+    //
+    // URLSearchParams encodes `:` and `@`, so check the decoded URL.
+    const { buildGoogleFontsUrl } = await import("../packages/vinext/src/shims/font-google.js");
+    const url = buildGoogleFontsUrl("Sen", { subsets: ["latin"] });
+    const decoded = decodeURIComponent(url);
+    expect(decoded).not.toContain("wght@100..900");
+    expect(decoded).not.toContain("wght@");
+    expect(decoded).toContain("family=Sen");
+    expect(decoded).toContain("display=swap");
+  });
+
+  it("buildGoogleFontsUrl preserves italic-only style requests", async () => {
+    // Pre-port shim: outer guard on `weights.length > 0 || styles.length > 0`
+    // entered the block, but the inner branch only handled `weights.length > 0`.
+    // The result was `family=Inter&display=swap` with no ital axis, so Google
+    // served the regular (non-italic) face and the user's italic was silently
+    // dropped. Italic-only must now leave a visible ital axis in the URL.
+    const { buildGoogleFontsUrl } = await import("../packages/vinext/src/shims/font-google.js");
+    const url = buildGoogleFontsUrl("Inter", { style: ["italic"] });
+    const decoded = decodeURIComponent(url);
+    expect(decoded).toContain(":ital,wght@1,400");
+    expect(decoded).not.toContain("ital,wght@0,");
+  });
+
+  it("buildGoogleFontsUrl drops the unresolved variable sentinel in the dev fallback", async () => {
+    // The shim has no metadata, so it cannot resolve "variable" to the
+    // font's real min..max range. Production resolves this in the plugin;
+    // dev fallback should avoid emitting Google's invalid `wght@variable`.
+    const { buildGoogleFontsUrl } = await import("../packages/vinext/src/shims/font-google.js");
+    const url = buildGoogleFontsUrl("Inter", { weight: "variable" });
+    const decoded = decodeURIComponent(url);
+    expect(decoded).not.toContain("wght@variable");
+    expect(decoded).not.toContain("wght@");
+  });
+
   it("getSSRFontLinks returns collected URLs without clearing", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
     // Force a CDN-mode font load (SSR context: document is undefined)
@@ -165,8 +381,89 @@ describe("next/font/google shim", () => {
     const loader = mod.createFontLoader("Inter");
     expect(typeof loader).toBe("function");
     const result = loader({ weight: ["400"] });
-    expect(result.className).toMatch(/^__font_inter_\d+$/);
+    expect(result.className).toMatch(/^__font_inter_[a-z0-9]+$/);
     expect(result.style.fontFamily).toContain("Inter");
+  });
+
+  it("uses a stable class identity for equivalent font calls", async () => {
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const Inter = createFontLoader("Inter");
+    const first = Inter({ weight: ["400"], subsets: ["latin"], variable: "--font-primary" });
+    const second = Inter({ weight: ["400"], subsets: ["latin"], variable: "--font-primary" });
+
+    expect(second.className).toBe(first.className);
+    expect(second.variable).toBe(first.variable);
+  });
+
+  it("normalizes explicit display swap to the same identity as the default", async () => {
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const DisplayDefault = createFontLoader("Display Default");
+    const implicit = DisplayDefault({ weight: ["400"], subsets: ["latin"] });
+    const explicit = DisplayDefault({ weight: ["400"], subsets: ["latin"], display: "swap" });
+
+    expect(explicit.className).toBe(implicit.className);
+    expect(explicit.variable).toBe(implicit.variable);
+  });
+
+  it("normalizes identity inputs that emit equivalent Google font output", async () => {
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const CanonicalIdentity = createFontLoader("Canonical Identity");
+    const canonical = CanonicalIdentity({
+      weight: ["400", "700"],
+      subsets: ["latin", "latin-ext"],
+      fallback: ["Arial", "Helvetica"],
+    });
+    const equivalent = CanonicalIdentity({
+      weight: ["700", "400"],
+      style: ["normal"],
+      subsets: ["latin-ext", "latin"],
+      fallback: [" Arial ", "Helvetica"],
+    });
+
+    expect(equivalent.className).toBe(canonical.className);
+    expect(equivalent.variable).toBe(canonical.variable);
+  });
+
+  it("uses explicit fallback fonts as part of the class identity", async () => {
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const DefaultFallback = createFontLoader("Default Fallback");
+    const implicit = DefaultFallback({ weight: ["400"], subsets: ["latin"] });
+    const explicit = DefaultFallback({
+      weight: ["400"],
+      subsets: ["latin"],
+      fallback: ["sans-serif"],
+    });
+
+    expect(explicit.className).not.toBe(implicit.className);
+  });
+
+  it("does not emit Next-incompatible :root font variable rules", async () => {
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const beforeStyles = getSSRFontStyles();
+    const Sen = createFontLoader("Root Rule Sen");
+    const Outfit = createFontLoader("Root Rule Outfit");
+
+    Sen({ subsets: ["latin"], variable: "--font-primary" });
+    Outfit({ subsets: ["latin"], variable: "--font-primary" });
+
+    const styles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
+    expect(styles).not.toContain(":root");
+    expect(styles).toContain("--font-primary: 'Root Rule Sen'");
+    expect(styles).toContain("--font-primary: 'Root Rule Outfit'");
+  });
+
+  it("does not grow SSR style output for repeated equivalent font calls", async () => {
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const Inter = createFontLoader("Inter");
+
+    Inter({ weight: ["400"], subsets: ["latin"], variable: "--font-primary" });
+    const stylesAfterFirstCall = getSSRFontStyles();
+    Inter({ weight: ["400"], subsets: ["latin"], variable: "--font-primary" });
+    const stylesAfterSecondCall = getSSRFontStyles();
+
+    expect(stylesAfterSecondCall).toEqual(stylesAfterFirstCall);
   });
 
   it("proxy handles underscore-style names", async () => {
@@ -204,6 +501,20 @@ describe("next/font/google shim", () => {
     expect(result.style.fontFamily).toContain("\\'");
     // Should not contain an unescaped breakout sequence
     expect(result.style.fontFamily).not.toMatch(/[^\\]'; }/);
+  });
+
+  it("sanitizes generated class selectors for crafted font family names", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const fonts = mod.default as any;
+    const result = fonts["Evil']; } body { color: red; } .x { font-family: '"]({
+      weight: ["400"],
+      variable: "--evil-font",
+    });
+
+    expect(result.className).toMatch(/^__font_[a-z0-9_-]+_[a-z0-9]+$/);
+    expect(result.variable).toMatch(/^__variable_[a-z0-9_-]+_[a-z0-9]+$/);
+    expect(result.className).not.toMatch(/[;{}'"\s]/);
+    expect(result.variable).not.toMatch(/[;{}'"\s]/);
   });
 
   it("escapes backslashes in font family names", async () => {
@@ -256,18 +567,19 @@ describe("next/font/google shim", () => {
 
   it("accepts valid CSS variable names", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
-    const Inter = mod.createFontLoader("Inter");
-    const beforeStyles = mod.getSSRFontStyles().length;
-    const result = Inter({
+    const ValidVarTest = mod.createFontLoader("Valid Var Test");
+    const beforeStyles = mod.getSSRFontStyles();
+    const result = ValidVarTest({
       weight: ["400"],
-      variable: "--font-inter",
+      variable: "--font-valid-var-test",
     });
     expect(result.className).toBeDefined();
-    // Should use the provided variable name in the CSS
+    expect(result.variable).toBeDefined();
+
     const styles = mod.getSSRFontStyles();
-    const newStyles = styles.slice(beforeStyles);
-    const hasVar = newStyles.some((s: string) => s.includes("--font-inter"));
-    expect(hasVar).toBe(true);
+    const addedStyles = styles.slice(beforeStyles.length);
+    expect(addedStyles.some((s: string) => s.includes(`.${result.variable}`))).toBe(true);
+    expect(addedStyles.some((s: string) => s.includes("--font-valid-var-test"))).toBe(true);
   });
 });
 
@@ -281,14 +593,20 @@ describe("vinext:google-fonts plugin", () => {
   });
 
   it("rewrites named font imports in dev mode", async () => {
+    // Verifies the import-rewrite path runs in `command: "serve"` (it gates
+    // on the transform filter, not on the build mode). The constructor-call
+    // self-hosting branch also runs in dev now — covered separately by the
+    // Playwright spec under tests/e2e/font-google/ — so this unit test
+    // intentionally omits a constructor call to keep the assertion focused
+    // on the import shape and avoid coupling to a network fetch.
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
-    const code = `import { Inter } from 'next/font/google';\nconst inter = Inter({ weight: ['400'] });`;
+    const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("virtual:vinext-google-fonts?");
-    expect(result.code).not.toContain("_selfHostedCSS");
+    expect(result.code).not.toContain("selfHostedCSS");
   });
 
   it("returns null for files without next/font/google imports", async () => {
@@ -319,6 +637,63 @@ describe("vinext:google-fonts plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("rewrites the named import even when a preceding line lacks a semicolon", async () => {
+    // Repro: source files written without trailing semicolons (Prettier
+    // default, ASI). The lazy `[^;]+?` clause used to roll across `\n`
+    // and swallow the previous import, leaving the font import as a
+    // mangled half-clause — so the rewrite was silently skipped and
+    // rolldown later failed with MISSING_EXPORT against the shim.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "serve" });
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import type { Metadata } from 'next'`,
+      `import { Inter } from 'next/font/google'`,
+      `export { Inter }`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
+    expect(result).not.toBeNull();
+    expect(result.code).toContain("virtual:vinext-google-fonts?");
+    // The semicolon-less Metadata import must remain untouched (only the
+    // font import is rewritten).
+    expect(result.code).toContain(`import type { Metadata } from 'next'`);
+  });
+
+  it("rewrites multi-line bracket imports (Prettier wraps past printWidth)", async () => {
+    // Repro: `import { A, B, C, D } from 'next/font/google'` exceeds the
+    // default 80-char printWidth once 4+ fonts are imported, so Prettier
+    // wraps the named specifiers across multiple lines. The clause must
+    // tolerate `\n` inside the `{...}` block while still refusing to
+    // cross newlines outside it.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "serve" });
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import {`,
+      `  Inter,`,
+      `  Roboto,`,
+      `  Architects_Daughter,`,
+      `} from 'next/font/google'`,
+      `export { Inter, Roboto, Architects_Daughter }`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
+    expect(result).not.toBeNull();
+    expect(result.code).toContain("virtual:vinext-google-fonts?");
+  });
+
+  it("rewrites multi-line bracket re-exports", async () => {
+    // Same wrap logic applies to `export { ... } from 'next/font/google'`
+    // when the specifier list crosses printWidth. Less common in user code
+    // than the import case but kept for parity.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "build" });
+    const transform = unwrapHook(plugin.transform);
+    const code = [`export {`, `  Inter,`, `  Roboto,`, `} from 'next/font/google'`].join("\n");
+    const result = await transform.call(plugin, code, "/app/fonts.ts");
+    expect(result).not.toBeNull();
+    expect(result.code).toContain("virtual:vinext-google-fonts?");
+  });
+
   it("returns null for non-script files", async () => {
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "build" });
@@ -336,14 +711,17 @@ describe("vinext:google-fonts plugin", () => {
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("virtual:vinext-google-fonts?");
-    expect(result.code).not.toContain("_selfHostedCSS");
+    expect(result.code).not.toContain("selfHostedCSS");
   });
 
   it("rewrites namespace imports to the default proxy", async () => {
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
-    const code = `import * as fonts from 'next/font/google';\nconst inter = fonts.Inter({ weight: ['400'] });`;
+    // No constructor call here — the assertion is about the namespace
+    // rewrite, and the call-site rewrite path (which would fetch from
+    // Google) is exercised by the build/dev integration tests.
+    const code = `import * as fonts from 'next/font/google';\nexport const Inter = fonts.Inter;`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("__vinext_google_fonts_proxy_0");
@@ -360,10 +738,20 @@ describe("vinext:google-fonts plugin", () => {
     expect(result.code).toContain("virtual:vinext-google-fonts?");
   });
 
-  it("transforms font call to include _selfHostedCSS during build", async () => {
+  it("transforms font call to include the internal font payload during build", async () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root");
     initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS(
+      [
+        "@font-face {",
+        "  font-family: 'Inter';",
+        "  src: url(https://fonts.gstatic.com/s/inter/v19/inter-latin-400.woff2) format('woff2');",
+        "}",
+      ].join("\n"),
+    );
+    mockGoogleFontFiles();
 
     const transform = unwrapHook(plugin.transform);
     const code = [
@@ -374,7 +762,9 @@ describe("vinext:google-fonts plugin", () => {
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("virtual:vinext-google-fonts?");
-    expect(result.code).toContain("_selfHostedCSS");
+    expect(result.code).toContain("_vinext");
+    expect(result.code).toContain("selfHostedCSS");
+    expect(result.code).toContain("adjustedFallbackCSS");
     expect(result.code).toContain("@font-face");
     expect(result.code).toContain("Inter");
     expect(result.map).toBeDefined();
@@ -394,6 +784,79 @@ describe("vinext:google-fonts plugin", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }, 15000); // Network timeout
 
+  it("injects validated single-face metadata for italic-only Google fonts", async () => {
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-italic-only");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Molle'; font-style: italic; }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Molle } from 'next/font/google';`,
+        `const molle = Molle({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_vinext");
+      expect(result.code).toContain("selfHostedCSS");
+      expect(result.code).toContain("fontWeight: 400");
+      expect(result.code).toContain('fontStyle: "italic"');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inject single-face style metadata for multi-style Google fonts", async () => {
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-multi-style");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400', style: ['normal', 'italic'], subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_vinext");
+      expect(result.code).toContain("selfHostedCSS");
+      expect(result.code).toContain("fontWeight: 400");
+      expect(result.code).not.toContain("fontStyle:");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inject adjusted fallback CSS when adjustFontFallback is false", async () => {
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-no-adjust");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'], adjustFontFallback: false });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      expect(result.code).not.toContain("adjustedFallbackCSS");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses cached fonts on second call", async () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-2");
@@ -405,37 +868,27 @@ describe("vinext:google-fonts plugin", () => {
     // transform twice: first with a real fetch to populate the in-memory
     // cache, then again to verify the cache is used (no second fetch).
     // Simpler approach: mock fetch to return controlled CSS.
-    const originalFetch = globalThis.fetch;
-    const fetchCount = { value: 0 };
-    globalThis.fetch = async (_input: any, _init?: any) => {
-      fetchCount.value++;
-      // Return fake Google Fonts CSS
-      return new Response(fakeCSS, {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
-    };
+    const fonts = mockGoogleFontsCSS(fakeCSS);
 
     try {
       const transform = unwrapHook(plugin.transform);
       const code = [
         `import { Inter } from 'next/font/google';`,
-        `const inter = Inter({ weight: '400' });`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
       ].join("\n");
 
       // First call: fetches and caches
       const result1 = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result1).not.toBeNull();
       expect(result1.code).toContain("virtual:vinext-google-fonts?");
-      expect(result1.code).toContain("_selfHostedCSS");
-      const firstFetchCount = fetchCount.value;
+      expect(result1.code).toContain("selfHostedCSS");
+      const firstFetchCount = fonts.count();
 
       // Second call: should use in-memory cache (no additional fetch)
       const result2 = await transform.call(plugin, code, "/app/page.tsx");
       expect(result2).not.toBeNull();
-      expect(fetchCount.value).toBe(firstFetchCount);
+      expect(fonts.count()).toBe(firstFetchCount);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -445,38 +898,35 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-3");
     initPlugin(plugin, { command: "build", root });
 
-    // Mock fetch to return different CSS per font family
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (input: any) => {
-      const url = String(input);
-      if (url.includes("Inter")) {
-        return new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-          status: 200,
+    // Mock Google Fonts to return different CSS per font family.
+    server.use(
+      http.get("https://fonts.googleapis.com/*", ({ request }) => {
+        if (request.url.includes("Inter")) {
+          return HttpResponse.text("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+            headers: { "content-type": "text/css" },
+          });
+        }
+        return HttpResponse.text("@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }", {
           headers: { "content-type": "text/css" },
         });
-      }
-      return new Response("@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
-    };
+      }),
+    );
 
     try {
       const transform = unwrapHook(plugin.transform);
       const code = [
         `import { Inter, Roboto } from 'next/font/google';`,
-        `const inter = Inter({ weight: '400' });`,
-        `const roboto = Roboto({ weight: '400' });`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
+        `const roboto = Roboto({ weight: '400', subsets: ['latin'] });`,
       ].join("\n");
 
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
       expect(result.code).toContain("virtual:vinext-google-fonts?");
       // Both font calls should be transformed
-      const matches = result.code.match(/_selfHostedCSS/g);
+      const matches = result.code.match(/selfHostedCSS/g);
       expect(matches?.length).toBe(2);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -487,18 +937,13 @@ describe("vinext:google-fonts plugin", () => {
     initPlugin(plugin, { command: "build", root });
 
     // Mock fetch for Inter only
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; }");
 
     try {
       const transform = unwrapHook(plugin.transform);
       const code = [
         `import { Inter } from 'next/font/google';`,
-        `const inter = Inter({ weight: '400' });`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
         `const Roboto = (opts) => opts; // Not from import`,
         `const roboto = Roboto({ weight: '400' });`,
       ].join("\n");
@@ -507,10 +952,9 @@ describe("vinext:google-fonts plugin", () => {
       expect(result).not.toBeNull();
       expect(result.code).toContain("virtual:vinext-google-fonts?");
       // Only Inter should be transformed (1 match)
-      const matches = result.code.match(/_selfHostedCSS/g);
+      const matches = result.code.match(/selfHostedCSS/g);
       expect(matches?.length).toBe(1);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -518,17 +962,12 @@ describe("vinext:google-fonts plugin", () => {
   it("does not produce double-comma when font options have a trailing comma", async () => {
     // Regression test: Inter({ subsets: ["latin"], }) already has a trailing comma.
     // injectSelfHostedCss must not prepend another ", " making the object literal
-    // {subsets: ["latin"],, _selfHostedCSS: "..."} which is a syntax error.
+    // {subsets: ["latin"],, selfHostedCSS: "..."} which is a syntax error.
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-trailing-comma");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -542,13 +981,101 @@ describe("vinext:google-fonts plugin", () => {
 
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
-      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).toContain("selfHostedCSS");
       // Must not have a double-comma — that would be a JS syntax error
       expect(result.code).not.toMatch(/,\s*,/);
       // Verify the generated code is syntactically valid by checking structure
-      expect(result.code).toContain('_selfHostedCSS: "');
+      expect(result.code).toContain('selfHostedCSS: "');
     } finally {
-      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not produce double-comma when a trailing comma is hidden behind a block comment", async () => {
+    // Regression for #1973: `.trim()` strips whitespace but not comments, so a
+    // trailing comma followed by a block comment, e.g. Inter({ subsets: ["latin"], /* c */ }),
+    // was not detected and a second ", " was inserted → `, /* c */ , _vinext` (invalid JS).
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-block-comment");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  subsets: ["latin"], /* c */`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      // No comma must be inserted right after the block comment's close.
+      expect(result.code).not.toMatch(/\*\/\s*,/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not produce double-comma when a trailing comma is hidden behind a line comment", async () => {
+    // Regression for #1973: a trailing comma followed by a `// line comment`
+    // also escaped detection → a second comma was inserted on the next line.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-line-comment");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  subsets: ["latin"], // c`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      // No comma must be inserted on the line following the line comment.
+      expect(result.code).not.toMatch(/\/\/ c\n\s*,/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not produce double-comma when a string option value contains `//` before a trailing comma", async () => {
+    // Hardening for #1973: a whole-slice comment strip also deletes the `//`
+    // inside a string literal (e.g. Inter({ variable: "--font//x", })) and the
+    // rest of that line — swallowing the REAL trailing comma and injecting a
+    // second one (`, , selfHostedCSS` → invalid JS). The string-aware, end-only
+    // scan is not fooled by the in-string `//`.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-string-slashes");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  subsets: ["latin"],`,
+        `  variable: "--font//x",`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      // The real trailing comma must be detected → no double comma injected.
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -560,12 +1087,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-nested");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -573,19 +1095,18 @@ describe("vinext:google-fonts plugin", () => {
       // Named-import form with a nested axes object
       const code = [
         `import { Inter } from 'next/font/google';`,
-        `const inter = Inter({ subsets: ["latin"], axes: { wght: 400 } });`,
+        `const inter = Inter({ subsets: ["latin"], _placeholder: { wght: 400 } });`,
       ].join("\n");
 
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
       expect(result.code).toContain("virtual:vinext-google-fonts?");
-      // _selfHostedCSS must have been injected — without the fix this was absent
-      expect(result.code).toContain("_selfHostedCSS");
+      // selfHostedCSS must have been injected — without the fix this was absent
+      expect(result.code).toContain("selfHostedCSS");
       expect(result.code).toContain("@font-face");
       // Verify the injected object is syntactically valid (no double-comma)
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -596,27 +1117,21 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-nested-member");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
 
       const code = [
         `import fonts from 'next/font/google';`,
-        `const inter = fonts.Inter({ subsets: ["latin"], axes: { wght: 400 } });`,
+        `const inter = fonts.Inter({ subsets: ["latin"], _placeholder: { wght: 400 } });`,
       ].join("\n");
 
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
-      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).toContain("selfHostedCSS");
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -628,27 +1143,21 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-brace-string");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
       // String value contains '}' — old \{[^}]*\} regex would have stopped here.
       const code = [
         `import { Inter } from 'next/font/google';`,
-        `const inter = Inter({ display: "swap", label: "font {bold}" });`,
+        `const inter = Inter({ subsets: ["latin"], display: "swap", _label: "font {bold}" });`,
       ].join("\n");
 
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
-      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).toContain("selfHostedCSS");
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -658,25 +1167,172 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-alias");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
       const code = [
         `import { Inter as inter } from 'next/font/google';`,
-        `const body = inter({ weight: '400' });`,
+        `const body = inter({ weight: '400', subsets: ['latin'] });`,
       ].join("\n");
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
       expect(result.code).toContain("virtual:vinext-google-fonts?");
-      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).toContain("selfHostedCSS");
     } finally {
-      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves narrow-axis variable fonts to their real wght range (regression for #885)", async () => {
+    // Sen's wght axis is 400..800. Pre-port vinext built
+    // `:wght@100..900` and Google returned HTTP 400. The metadata-driven
+    // pipeline must now request the real axis range from Google.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-sen");
+    initPlugin(plugin, { command: "build", root });
+
+    const fonts = mockGoogleFontsCSS("@font-face { font-family: 'Sen'; src: url(/sen.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Sen } from 'next/font/google';`,
+        `const sen = Sen({ subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+
+      const cssFetch = fonts.urls.find((u) => u.includes("fonts.googleapis.com/css2"));
+      expect(cssFetch).toBeDefined();
+      const decoded = decodeURIComponent(cssFetch!);
+      expect(decoded).toContain("Sen:wght@400..800");
+      expect(decoded).not.toContain("wght@100..900");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("self-hosts variable font axes through the plugin pipeline", async () => {
+    // Covers the documented `axes` option end-to-end: static parsing,
+    // validation, metadata axis resolution, and URL assembly.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-axes");
+    initPlugin(plugin, { command: "build", root });
+
+    const fonts = mockGoogleFontsCSS(
+      "@font-face { font-family: 'Roboto Flex'; src: url(/flex.woff2); }",
+    );
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Roboto_Flex } from 'next/font/google';`,
+        `const flex = Roboto_Flex({ weight: 'variable', axes: ['opsz'], subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+
+      const cssFetch = fonts.urls.find((u) => u.includes("fonts.googleapis.com/css2"));
+      expect(cssFetch).toBeDefined();
+      const decoded = decodeURIComponent(cssFetch!);
+      expect(decoded).toContain("Roboto+Flex:opsz,wght@8..144,100..1000");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("throws a build error on unknown font families (regression for #885)", async () => {
+    // Pre-port vinext built a URL for any property name on the proxy and
+    // only discovered the family was unknown when Google returned 400.
+    // The validator now surfaces this at transform time with a message
+    // pointing at the file path.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "build", root: import.meta.dirname });
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import { NotARealFont } from 'next/font/google';`,
+      `const f = NotARealFont({ weight: '400', subsets: ['latin'] });`,
+    ].join("\n");
+    await expect(transform.call(plugin, code, "/app/layout.tsx")).rejects.toThrow(
+      /Unknown font `NotARealFont`/,
+    );
+  });
+
+  it("throws a build error when a static font is called without an explicit weight (regression for #885)", async () => {
+    // Anton has only weight '400' and no variable face, so calling it
+    // without weight should error at build time. Pre-port vinext silently
+    // emitted `:wght@100..900` which Google rejected with HTTP 400.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "build", root: import.meta.dirname });
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import { Anton } from 'next/font/google';`,
+      `const f = Anton({ subsets: ['latin'] });`,
+    ].join("\n");
+    await expect(transform.call(plugin, code, "/app/layout.tsx")).rejects.toThrow(
+      /Missing weight for font `Anton`/,
+    );
+  });
+
+  it("surfaces HTTP errors from Google Fonts as build errors with a bounded response body", async () => {
+    // If Google returns 4xx/5xx the plugin must not silently fall through
+    // to the runtime CDN path; the same broken URL would just 400 in the
+    // browser. Throw a build error containing the URL and Google's body
+    // so the user can see what went wrong.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-http-error");
+    initPlugin(plugin, { command: "build", root });
+    const longBody = `/* axis range out of bounds */${"x".repeat(600)}`;
+    const truncatedLength = longBody.length - 500;
+
+    mockGoogleFontsCSS(longBody, {
+      status: 400,
+      headers: { "content-type": "text/html" },
+    });
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+      await expect(transform.call(plugin, code, "/app/layout.tsx")).rejects.toThrowError(
+        new RegExp(
+          `Google Fonts returned HTTP 400[\\s\\S]*truncated ${truncatedLength} characters`,
+        ),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls through silently when fetch fails with a network error (offline dev)", async () => {
+    // A raw fetch rejection (DNS, ECONNREFUSED, AbortError) is treated as
+    // recoverable: the plugin skips self-hosting and the runtime CDN path
+    // takes over. Distinct from an HTTP non-2xx response, which is a hard
+    // build error.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-network-error");
+    initPlugin(plugin, { command: "build", root });
+
+    server.use(http.get("https://fonts.googleapis.com/*", () => HttpResponse.error()));
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      // Transform still returns; it just does not inject selfHostedCSS.
+      expect(result).not.toBeNull();
+      expect(result.code).not.toContain("selfHostedCSS");
+    } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -686,24 +1342,18 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-default");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Roboto Mono'; src: url(/roboto-mono.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Roboto Mono'; src: url(/roboto-mono.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
       const code = [
         `import fonts from 'next/font/google';`,
-        `const mono = fonts.Roboto_Mono({ weight: '400' });`,
+        `const mono = fonts.Roboto_Mono({ weight: '400', subsets: ['latin'] });`,
       ].join("\n");
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
-      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).toContain("selfHostedCSS");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -723,6 +1373,16 @@ describe("fetchAndCacheFont", () => {
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "build", root });
 
+    mockGoogleFontsCSS(
+      [
+        "@font-face {",
+        "  font-family: 'Inter';",
+        "  src: url(https://fonts.gstatic.com/s/inter/v19/inter-latin-400.woff2) format('woff2');",
+        "}",
+      ].join("\n"),
+    );
+    mockGoogleFontFiles();
+
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter } from 'next/font/google';`,
@@ -733,7 +1393,7 @@ describe("fetchAndCacheFont", () => {
     expect(result).not.toBeNull();
 
     // Verify the transformed code contains self-hosted CSS with @font-face
-    expect(result.code).toContain("_selfHostedCSS");
+    expect(result.code).toContain("selfHostedCSS");
     expect(result.code).toContain("@font-face");
     expect(result.code).toContain("Inter");
     // Should reference local file paths, not googleapis.com CDN
@@ -754,6 +1414,139 @@ describe("fetchAndCacheFont", () => {
     // but we verified the caching logic works via the plugin transform tests above
     expect(fs.existsSync(path.join(fontDir, "style.css"))).toBe(true);
     expect(fs.readFileSync(path.join(fontDir, "style.css"), "utf-8")).toBe(fakeCSS);
+  });
+});
+
+// ── Served URL rewrite for cached Google Fonts CSS ────────────
+
+describe("_rewriteCachedFontCssToServedUrls", () => {
+  // Regression for a bug where self-hosted next/font/google built by vinext
+  // emitted absolute dev-machine filesystem paths into every preload path
+  // — the <style data-vinext-fonts> @font-face src: url(), the HTML body's
+  // <link rel="preload"> tags, and the HTTP Link: response header — because
+  // `fetchAndCacheFont` wrote `path.join(cacheDir, ...)` into the cached
+  // CSS and nothing rewrote those paths before the CSS was embedded in the
+  // bundle as `selfHostedCSS`. Every downstream consumer then read the
+  // same leaked filesystem path. In production this caused high-priority
+  // 404s (`<origin>/home/user/project/.vinext/fonts/...`) on every request.
+  //
+  // The fix replaces the cache-dir prefix with the served URL namespace
+  // `/_next/static/_vinext_fonts` before the CSS string is handed off to
+  // the bundle. The plugin's writeBundle hook then copies the cached font
+  // files into the matching `dist/client/_next/static/_vinext_fonts/`
+  // location so the rewritten URLs actually resolve against the origin.
+
+  it("rewrites absolute cache-dir paths in url() references to served URLs", () => {
+    const cacheDir = "/home/user/project/.vinext/fonts";
+    const css = [
+      "@font-face {",
+      "  font-family: 'Geist';",
+      "  src: url(/home/user/project/.vinext/fonts/geist-4db05770f54f/geist-8e42e564.woff2) format('woff2');",
+      "}",
+      "@font-face {",
+      "  font-family: 'Geist';",
+      "  src: url(/home/user/project/.vinext/fonts/geist-4db05770f54f/geist-bd9fc9d8.woff2) format('woff2');",
+      "}",
+    ].join("\n");
+
+    const out = rewriteCachedFontCssToServedUrls(css, cacheDir);
+
+    expect(out).toContain(
+      "url(/_next/static/_vinext_fonts/geist-4db05770f54f/geist-8e42e564.woff2)",
+    );
+    expect(out).toContain(
+      "url(/_next/static/_vinext_fonts/geist-4db05770f54f/geist-bd9fc9d8.woff2)",
+    );
+    // The dev-machine filesystem prefix must not leak into the rewritten CSS.
+    expect(out).not.toContain("/home/user/project/.vinext/fonts");
+    // Unrelated @font-face metadata is preserved verbatim.
+    expect(out).toContain("font-family: 'Geist'");
+    expect(out).toContain("format('woff2')");
+  });
+
+  it("rewrites every occurrence when the same path appears multiple times", () => {
+    // The broken path can appear in the same cached CSS via the cyrillic /
+    // latin-ext / latin @font-face blocks Google Fonts returns per family,
+    // plus a duplicate in a `src: url(...) tech(variations)` fallback.
+    const cacheDir = "/root/.vinext/fonts";
+    const css = [
+      "src: url(/root/.vinext/fonts/geist/a.woff2);",
+      "src: url(/root/.vinext/fonts/geist/b.woff2);",
+      "src: url(/root/.vinext/fonts/geist/a.woff2);",
+    ].join("\n");
+
+    const out = rewriteCachedFontCssToServedUrls(css, cacheDir);
+
+    expect(out).not.toContain("/root/.vinext/fonts");
+    const aCount = (out.match(/\/_next\/static\/_vinext_fonts\/geist\/a\.woff2/g) ?? []).length;
+    const bCount = (out.match(/\/_next\/static\/_vinext_fonts\/geist\/b\.woff2/g) ?? []).length;
+    expect(aCount).toBe(2);
+    expect(bCount).toBe(1);
+  });
+
+  it("is a no-op when the CSS does not reference the cache directory", () => {
+    const cacheDir = "/home/user/project/.vinext/fonts";
+    const css = "@font-face { font-family: 'Inter'; src: url(/cached.woff2); }";
+    expect(rewriteCachedFontCssToServedUrls(css, cacheDir)).toBe(css);
+  });
+
+  it("handles cache directories containing regex metacharacters", () => {
+    // Using split/join instead of a constructed regex guarantees safety for
+    // any absolute path — including ones that happen to contain characters
+    // that would otherwise need escaping in a RegExp.
+    const cacheDir = "/tmp/build (1)/.vinext/fonts";
+    const css = "src: url(/tmp/build (1)/.vinext/fonts/inter-xyz/inter-abc.woff2) format('woff2');";
+
+    const out = rewriteCachedFontCssToServedUrls(css, cacheDir);
+
+    expect(out).toBe(
+      "src: url(/_next/static/_vinext_fonts/inter-xyz/inter-abc.woff2) format('woff2');",
+    );
+  });
+
+  it("is a no-op when cacheDir is empty", () => {
+    // Defensive guard: before Vite's configResolved hook runs, `cacheDir`
+    // is the empty string. A naive split/join on "" would insert the URL
+    // namespace between every character in the CSS.
+    const css = "src: url(/home/user/project/.vinext/fonts/geist/a.woff2);";
+    expect(rewriteCachedFontCssToServedUrls(css, "")).toBe(css);
+  });
+
+  it("uses a custom assetsDir when passed through from plugin state", () => {
+    // Regression for a bug where the helper hardcoded the default
+    // assets directory into the URL prefix while the `writeBundle`
+    // hook read the real `envConfig.build.assetsDir` from Vite — a user
+    // who customized `build.assetsDir` (e.g. to `"static"`) would see
+    // the embedded CSS point at `/_next/static/_vinext_fonts/...` while
+    // the physical files landed in `<outDir>/static/_vinext_fonts/...`,
+    // so every preload would 404 in production.
+    //
+    // The fix threads the resolved `assetsDir` through as a third
+    // argument from `injectSelfHostedCss` at the call site. This test
+    // exercises the threaded path and asserts the URL prefix tracks it.
+    const cacheDir = "/home/user/project/.vinext/fonts";
+    const css =
+      "src: url(/home/user/project/.vinext/fonts/geist-abc/geist-def.woff2) format('woff2');";
+
+    const out = rewriteCachedFontCssToServedUrls(css, cacheDir, "static");
+
+    expect(out).toBe("src: url(/static/_vinext_fonts/geist-abc/geist-def.woff2) format('woff2');");
+    expect(out).not.toContain("/_next/static/_vinext_fonts/");
+  });
+
+  it("falls back to the default assetsDir when an empty string is passed", () => {
+    // Guard against a misconfigured environment passing `""` — never
+    // construct a URL of the form `//`. The helper falls back to the
+    // default `_next/static` prefix so the URL always has a real
+    // directory segment between the root and the `_vinext_fonts`
+    // namespace.
+    const cacheDir = "/root/.vinext/fonts";
+    const css = "src: url(/root/.vinext/fonts/geist/a.woff2);";
+
+    const out = rewriteCachedFontCssToServedUrls(css, cacheDir, "");
+
+    expect(out).toBe("src: url(/_next/static/_vinext_fonts/geist/a.woff2);");
+    expect(out).not.toContain("//_vinext_fonts");
   });
 });
 

@@ -9,7 +9,14 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
-import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handler.js";
+import { KVCacheHandler } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
+import {
+  revalidatePath,
+  revalidateTag,
+  setCacheHandler,
+  MemoryCacheHandler,
+} from "../packages/vinext/src/shims/cache.js";
+import { buildAppPageCacheTags } from "../packages/vinext/src/server/app-page-cache.js";
 
 // ---------------------------------------------------------------------------
 // Mock KV namespace
@@ -132,6 +139,92 @@ describe("KVCacheHandler", () => {
     expect(result!.value).toBeNull();
   });
 
+  describe("KV key length guard", () => {
+    const pageValue = {
+      kind: "PAGES" as const,
+      html: "<html></html>",
+      pageData: {},
+      headers: undefined,
+      status: 200,
+    };
+
+    it("keeps short fully-prefixed entry keys unchanged", async () => {
+      const prefixedHandler = new KVCacheHandler(kv as any, { appPrefix: "docs" });
+
+      await prefixedHandler.set("short", pageValue);
+
+      expect(kv.put).toHaveBeenCalledWith(
+        "docs:cache:short",
+        expect.any(String),
+        expect.any(Object),
+      );
+    });
+
+    it("hashes a logical key when the complete prefixed entry key exceeds 512 bytes", async () => {
+      const prefixedHandler = new KVCacheHandler(kv as any, { appPrefix: "docs" });
+      // This mirrors buildUseCacheKey's former boundary bug: the readable
+      // scoped key consumed 480 bytes before a 24-byte args hash was appended.
+      const logicalKey = `use-cache:${"m".repeat(470)}:__hash:${"a".repeat(16)}`;
+
+      await prefixedHandler.set(logicalKey, pageValue);
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
+      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{16}$/);
+
+      kv.get.mockClear();
+      expect(await prefixedHandler.get(logicalKey)).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledWith(storedKey);
+    });
+
+    it("measures multibyte logical keys by UTF-8 byte length", async () => {
+      const logicalKey = "🔥".repeat(130);
+
+      await handler.set(logicalKey, pageValue);
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{16}$/);
+      expect(await handler.get(logicalKey)).not.toBeNull();
+    });
+
+    it("normalizes an oversized app prefix while preserving entry listing", async () => {
+      const prefixedHandler = new KVCacheHandler(kv as any, {
+        appPrefix: "🚀".repeat(130),
+      });
+
+      await prefixedHandler.set("short", pageValue);
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
+      expect(storedKey).toMatch(/^__app:[0-9a-f]{16}:cache:short$/);
+
+      await prefixedHandler.revalidateByPathPrefix!("/");
+      expect(kv.list).toHaveBeenCalledWith(
+        expect.objectContaining({ prefix: storedKey.slice(0, -"short".length) }),
+      );
+    });
+
+    it("uses the same bounded storage key for multibyte tag writes and reads", async () => {
+      const tag = "é".repeat(256);
+      await handler.revalidateTag(tag);
+
+      const tagKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(tagKey).length).toBeLessThanOrEqual(512);
+      expect(tagKey).toMatch(/^__tag:__hash:[0-9a-f]{16}$/);
+
+      store.set(
+        "cache:tagged-with-long-tag",
+        validEntry(pageValue, { tags: [tag], lastModified: Date.now() + 1_000 }),
+      );
+      const freshHandler = new KVCacheHandler(kv as any);
+      kv.get.mockClear();
+
+      expect(await freshHandler.get("tagged-with-long-tag")).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledWith(tagKey);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Schema validation (H12)
   // -------------------------------------------------------------------------
@@ -214,6 +307,22 @@ describe("KVCacheHandler", () => {
       const result = await handler.get("bad-reval");
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-reval");
+    });
+
+    it("rejects entry with invalid expireAt type", async () => {
+      store.set(
+        "cache:bad-expire",
+        JSON.stringify({
+          value: null,
+          tags: [],
+          lastModified: 123,
+          revalidateAt: null,
+          expireAt: "not-a-number",
+        }),
+      );
+      const result = await handler.get("bad-expire");
+      expect(result).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:bad-expire");
     });
 
     it("rejects entry with unknown value kind", async () => {
@@ -358,6 +467,10 @@ describe("KVCacheHandler", () => {
   // -------------------------------------------------------------------------
 
   describe("set and get round-trip", () => {
+    beforeEach(() => {
+      vi.useRealTimers();
+    });
+
     it("round-trips APP_ROUTE with ArrayBuffer body", async () => {
       const bodyBytes = new TextEncoder().encode("response body");
       await handler.set("rt-route", {
@@ -414,6 +527,57 @@ describe("KVCacheHandler", () => {
         "_N_T_/revalidate-tag-test",
         "test-data",
       ]);
+    });
+
+    it("serves stale within expire and returns a hard miss beyond expire", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+
+      await handler.set(
+        "expire-test",
+        {
+          kind: "PAGES",
+          html: "<html>cached</html>",
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: 1, expire: 3 } },
+      );
+
+      vi.setSystemTime(2_500);
+      const stale = await handler.get("expire-test");
+      expect(stale?.cacheState).toBe("stale");
+      expect(stale?.value?.kind).toBe("PAGES");
+
+      vi.setSystemTime(4_500);
+      await expect(handler.get("expire-test")).resolves.toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:expire-test");
+    });
+
+    it("serves stale when a shorter read-time revalidate has elapsed", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+
+      await handler.set(
+        "shorter-read-revalidate",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "cached", url: "https://example.com/data" },
+          tags: [],
+          revalidate: 60,
+        },
+        { revalidate: 60 },
+      );
+
+      vi.setSystemTime(3_500);
+      const stale = await handler.get("shorter-read-revalidate", { revalidate: 2 });
+
+      expect(stale?.cacheState).toBe("stale");
+      const value = stale?.value;
+      expect(value?.kind).toBe("FETCH");
+      if (value?.kind !== "FETCH") throw new Error("expected FETCH cache value");
+      expect(value.data.body).toBe("cached");
     });
   });
 
@@ -596,6 +760,62 @@ describe("KVCacheHandler", () => {
 
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:app-page");
+    });
+
+    it("softTags invalidate FETCH reads without deleting the shared entry", async () => {
+      store.set(
+        "cache:fetch-entry",
+        JSON.stringify({
+          value: {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            revalidate: 3600,
+          },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:_N_T_/posts/hello", "2000");
+
+      const withoutSoftTags = await handler.get("fetch-entry", { kind: "FETCH", tags: [] });
+      const withSoftTags = await handler.get("fetch-entry", {
+        kind: "FETCH",
+        tags: [],
+        softTags: ["_N_T_/posts/hello"],
+      });
+
+      expect(withoutSoftTags).not.toBeNull();
+      expect(withSoftTags).toBeNull();
+      expect(kv.delete).not.toHaveBeenCalledWith("cache:fetch-entry");
+    });
+
+    it("validates and dedupes softTags before reading KV tag markers", async () => {
+      store.set(
+        "cache:fetch-entry",
+        JSON.stringify({
+          value: {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            revalidate: 3600,
+          },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+
+      const result = await handler.get("fetch-entry", {
+        kind: "FETCH",
+        softTags: ["_N_T_/posts/hello", "_N_T_/posts/hello", "bad:tag", ""],
+      });
+
+      expect(result).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledWith("cache:fetch-entry");
+      expect(kv.get).toHaveBeenCalledWith("__tag:_N_T_/posts/hello");
+      expect(kv.get).not.toHaveBeenCalledWith("__tag:bad:tag");
+      expect(kv.get).not.toHaveBeenCalledWith("__tag:");
+      expect(kv.get).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1296,4 +1516,174 @@ describe("KVCacheHandler", () => {
       expect(await handler.get("/big-tags")).toBeNull();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // revalidatePath() — end-to-end via the active handler
+  //
+  // Regression coverage for issue #1486: ensure a server-action style
+  // `revalidatePath()` call invalidates the cached HTML/RSC entry stored in
+  // KV under the full set of tags produced by buildAppPageCacheTags.
+  // -------------------------------------------------------------------------
+  describe("revalidatePath via active handler (#1486)", () => {
+    beforeEach(() => {
+      // Wire KVCacheHandler in as the active handler so the public
+      // `revalidatePath` API exercised by user code routes through KV.
+      setCacheHandler(handler);
+    });
+
+    /** Helper: seed an APP_PAGE entry using the same tag set the dispatcher uses. */
+    async function seedAppPage(pathname: string, html: string): Promise<void> {
+      const tags = buildAppPageCacheTags(pathname, []);
+      await handler.set(
+        pathname,
+        {
+          kind: "APP_PAGE",
+          html,
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidate: 60, tags },
+      );
+    }
+
+    it("invalidates the cached page after revalidatePath('/foo')", async () => {
+      await seedAppPage("/foo", "<html>foo</html>");
+
+      // Sanity: entry is present before invalidation.
+      handler.resetRequestCache();
+      const beforeHit = await handler.get("/foo");
+      expect(beforeHit).not.toBeNull();
+      expect((beforeHit!.value as any).html).toBe("<html>foo</html>");
+
+      // Public revalidatePath API call (no type → bare _N_T_/foo tag).
+      await Promise.resolve(revalidatePath("/foo"));
+
+      // The cached entry must now be a hard miss.
+      handler.resetRequestCache();
+      expect(await handler.get("/foo")).toBeNull();
+    });
+
+    it("invalidates a deep nested page after revalidatePath('/blog/hello')", async () => {
+      await seedAppPage("/blog/hello", "<html>hello</html>");
+      await seedAppPage("/blog/world", "<html>world</html>");
+
+      await Promise.resolve(revalidatePath("/blog/hello"));
+
+      handler.resetRequestCache();
+      expect(await handler.get("/blog/hello")).toBeNull();
+      // Sibling entry must remain — bare path tag is exact.
+      expect(await handler.get("/blog/world")).not.toBeNull();
+    });
+
+    it("invalidates the root page after revalidatePath('/')", async () => {
+      await seedAppPage("/", "<html>home</html>");
+
+      await Promise.resolve(revalidatePath("/"));
+
+      handler.resetRequestCache();
+      expect(await handler.get("/")).toBeNull();
+    });
+
+    it("type='layout' invalidates the page (carries the layout tag)", async () => {
+      await seedAppPage("/dashboard/settings", "<html>settings</html>");
+
+      // /dashboard/layout tag is included in the page's cache tags by
+      // buildAppPageCacheTags. revalidatePath('/dashboard', 'layout') should
+      // therefore invalidate this nested entry.
+      await Promise.resolve(revalidatePath("/dashboard", "layout"));
+
+      handler.resetRequestCache();
+      expect(await handler.get("/dashboard/settings")).toBeNull();
+    });
+
+    it("type='page' invalidates only the exact route's /page tag", async () => {
+      await seedAppPage("/about", "<html>about</html>");
+      await seedAppPage("/about/team", "<html>team</html>");
+
+      await Promise.resolve(revalidatePath("/about", "page"));
+
+      handler.resetRequestCache();
+      expect(await handler.get("/about")).toBeNull();
+      // /about/team has tag _N_T_/about/team/page, not _N_T_/about/page.
+      expect(await handler.get("/about/team")).not.toBeNull();
+    });
+
+    // -------------------------------------------------------------------------
+    // Regression: prerender-seeded entries must carry path tags so
+    // revalidatePath() can invalidate them. Pre-#1486 fix, `isrSetPrerenderedAppPage`
+    // (and TPR uploads) wrote entries with `tags: []`, so revalidatePath would
+    // mark `__tag:_N_T_/foo` but the cached entry had no matching tag — leaving
+    // the stale entry served forever (until natural revalidateAt expiry).
+    // -------------------------------------------------------------------------
+    it("invalidates a prerender-seeded entry via revalidatePath when tags are passed", async () => {
+      const { isrSetPrerenderedAppPage } =
+        await import("../packages/vinext/src/server/isr-cache.js");
+
+      // Simulate the build-time prerender seed for a page at /seeded.
+      // The seeder must attach the path's implicit tags so that a later
+      // revalidatePath('/seeded') call can invalidate this entry. See #1486.
+      const tags = buildAppPageCacheTags("/seeded", []);
+
+      await isrSetPrerenderedAppPage(
+        "/seeded",
+        {
+          kind: "APP_PAGE",
+          html: "<html>seeded</html>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidateSeconds: 60, tags },
+      );
+
+      handler.resetRequestCache();
+      const beforeHit = await handler.get("/seeded");
+      expect(beforeHit).not.toBeNull();
+
+      await Promise.resolve(revalidatePath("/seeded"));
+
+      handler.resetRequestCache();
+      expect(await handler.get("/seeded")).toBeNull();
+    });
+
+    it("prerender-seeded entry without tags is NOT invalidated (legacy behavior — regression guard)", async () => {
+      const { isrSetPrerenderedAppPage } =
+        await import("../packages/vinext/src/server/isr-cache.js");
+
+      // Pre-#1486 callers passed no tags. Document the legacy behavior so
+      // future refactors notice the contract: the seeder controls whether
+      // tag-based invalidation works.
+      await isrSetPrerenderedAppPage(
+        "/legacy-seeded",
+        {
+          kind: "APP_PAGE",
+          html: "<html>legacy</html>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidateSeconds: 60 },
+      );
+
+      await Promise.resolve(revalidatePath("/legacy-seeded"));
+
+      handler.resetRequestCache();
+      // Entry remains because it has no tags to match against the
+      // revalidatePath tag marker.
+      expect(await handler.get("/legacy-seeded")).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reset to a clean MemoryCacheHandler between top-level test files.
+  // -------------------------------------------------------------------------
 });
+
+// Ensure the active handler is restored after this file runs, so other test
+// files relying on the default MemoryCacheHandler are not affected.
+setCacheHandler(new MemoryCacheHandler());
+void revalidateTag;

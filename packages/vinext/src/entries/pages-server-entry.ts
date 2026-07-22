@@ -7,30 +7,33 @@
  *
  * Extracted from index.ts.
  */
+import { readFile } from "node:fs/promises";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
-import {
-  generateSafeRegExpCode,
-  generateMiddlewareMatcherCode,
-  generateNormalizePathCode,
-  generateRouteMatchNormalizationCode,
-} from "../server/middleware-codegen.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { hasExportedName } from "../build/report.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
+const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
 const _routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
 const _pagesI18nPath = resolveEntryPath("../server/pages-i18n.js", import.meta.url);
-const _pagesPageResponsePath = resolveEntryPath(
-  "../server/pages-page-response.js",
-  import.meta.url,
-);
-const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
-const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
+const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
+const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
+const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
+const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
+const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
+
+async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
+  const source = await readFile(filePath, "utf8");
+  if (hasExportedName(source, "getStaticProps")) return "static";
+  if (hasExportedName(source, "getServerSideProps")) return "server";
+  return "none";
+}
 
 /**
  * Generate the virtual SSR server entry module.
@@ -48,39 +51,52 @@ export async function generateServerEntry(
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
-  const pageImports = pageRoutes.map((r: Route, i: number) => {
-    const absPath = r.filePath.replace(/\\/g, "/");
-    return `import * as page_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const pageImports = pageRoutes.map(
+    (r: Route, i: number) => `import * as page_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
-  const apiImports = apiRoutes.map((r: Route, i: number) => {
-    const absPath = r.filePath.replace(/\\/g, "/");
-    return `import * as api_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const apiImports = apiRoutes.map(
+    (r: Route, i: number) => `import * as api_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
   // Build the route table — include filePath for SSR manifest lookup
-  const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-    const absPath = r.filePath.replace(/\\/g, "/");
-    return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
-  });
+  const pageRouteEntries = await Promise.all(
+    pageRoutes.map(async (r: Route, i: number) => {
+      const dataKind = await getPagesDataKind(r.filePath);
+      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
+    }),
+  );
 
   const apiRouteEntries = apiRoutes.map(
     (r: Route, i: number) =>
       `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`,
   );
 
-  // Check for _app and _document
+  // Check for _app, _document, and _error.
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
+  // Embed the resolved _app path (or null) so the runtime can look it up
+  // in the SSR manifest and include any CSS/JS chunks `_app` brings in
+  // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's
+  // own assets. Without this, `_app`-imported CSS is emitted by Vite but
+  // never `<link>`ed from the rendered HTML — see LHF-5 cluster.
+  const appAssetPathJson = appFilePath !== null ? JSON.stringify(appFilePath) : "null";
   const appImportCode =
     appFilePath !== null
-      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath.replace(/\\/g, "/"))};`
+      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath)};`
       : `const AppComponent = null;`;
 
   const docImportCode =
     docFilePath !== null
-      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath.replace(/\\/g, "/"))};`
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath)};`
       : `const DocumentComponent = null;`;
+
+  const errorAssetPathJson = errorFilePath !== null ? JSON.stringify(errorFilePath) : "null";
+  const errorImportCode =
+    errorFilePath !== null
+      ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
+      : `import * as ErrorPageModule from "next/error";`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -100,15 +116,27 @@ export async function generateServerEntry(
   // so prod-server.ts can apply them without loading next.config.js at runtime.
   const vinextConfigJson = JSON.stringify({
     basePath: nextConfig?.basePath ?? "",
+    assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
+    expireTime: nextConfig?.expireTime,
+    allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys ?? [],
+    cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
+    htmlLimitedBots: nextConfig?.htmlLimitedBots,
     i18n: nextConfig?.i18n ?? null,
+    // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
+    // (the default), page scripts are emitted with `defer` in <head>. See
+    // `.nextjs-ref/packages/next/src/pages/_document.tsx` getScripts().
+    disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
+    clientTraceMetadata: nextConfig?.clientTraceMetadata,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
+      qualities: nextConfig?.images?.qualities,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+      dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,
       contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
     },
@@ -124,7 +152,7 @@ export async function generateServerEntry(
   // The onRequestError handler is stored on globalThis so it is visible across
   // all code within the Worker (same global scope).
   const instrumentationImportCode = instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};`
+    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};`
     : "";
 
   const instrumentationInitCode = instrumentationPath
@@ -143,188 +171,119 @@ if (typeof _instrumentation.onRequestError === "function") {
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
-import { NextRequest, NextFetchEvent } from "next/server";`
+    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
     : "";
 
-  // The matcher config is read from the middleware module at import time.
-  // We inline the matching + execution logic so the prod server can call it.
+  // The matcher config is read from the middleware module at request time.
+  // The generated entry only wires the user module into the shared runtime
+  // helper; matcher, execution, waitUntil, and result shaping live in normal
+  // TypeScript modules so dev/prod paths cannot drift.
   const middlewareExportCode = middlewarePath
     ? `
-// --- Middleware support (generated from middleware-codegen.ts) ---
-${generateNormalizePathCode("es5")}
-${generateRouteMatchNormalizationCode("es5")}
-${generateSafeRegExpCode("es5")}
-${generateMiddlewareMatcherCode("es5")}
-
-export async function runMiddleware(request, ctx) {
-  if (ctx) return _runWithExecutionContext(ctx, () => _runMiddleware(request));
-  return _runMiddleware(request);
-}
-
-async function _runMiddleware(request) {
-  var isProxy = ${middlewarePath ? JSON.stringify(isProxyFile(middlewarePath)) : "false"};
-  var middlewareFn = isProxy
-    ? (middlewareModule.proxy ?? middlewareModule.default)
-    : (middlewareModule.middleware ?? middlewareModule.default);
-  if (typeof middlewareFn !== "function") {
-    var fileType = isProxy ? "Proxy" : "Middleware";
-    var expectedExport = isProxy ? "proxy" : "middleware";
-    throw new Error("The " + fileType + " file must export a function named \`" + expectedExport + "\` or a \`default\` function.");
-  }
-
-  var config = middlewareModule.config;
-  var matcher = config && config.matcher;
-  var url = new URL(request.url);
-
-  // Normalize pathname before matching to prevent path-confusion bypasses
-  // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
-  var decodedPathname;
-  try { decodedPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
-    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
-  }
-  var normalizedPathname = __normalizePath(decodedPathname);
-
-  if (!matchesMiddleware(normalizedPathname, matcher, request, i18nConfig)) return { continue: true };
-
-   // Construct a new Request with the decoded + normalized pathname so middleware
-   // always sees the same canonical path that the router uses.
-  var mwRequest = request;
-  if (normalizedPathname !== url.pathname) {
-    var mwUrl = new URL(url);
-    mwUrl.pathname = normalizedPathname;
-    mwRequest = new Request(mwUrl, request);
-  }
-  var __mwNextConfig = (vinextConfig.basePath || i18nConfig) ? { basePath: vinextConfig.basePath, i18n: i18nConfig || undefined } : undefined;
-  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
-  var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
-  var response;
-  try { response = await middlewareFn(nextRequest, fetchEvent); }
-  catch (e) {
-    console.error("[vinext] Middleware error:", e);
-    var _mwCtxErr = _getRequestExecutionContext();
-    if (_mwCtxErr && typeof _mwCtxErr.waitUntil === "function") { _mwCtxErr.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
-    return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
-  }
-  var _mwCtx = _getRequestExecutionContext();
-  if (_mwCtx && typeof _mwCtx.waitUntil === "function") { _mwCtx.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
-
-  if (!response) return { continue: true };
-
-  if (response.headers.get("x-middleware-next") === "1") {
-    var rHeaders = new Headers();
-    for (var [key, value] of response.headers) {
-      // Keep x-middleware-request-* headers so the production server can
-      // apply middleware-request header overrides before stripping internals
-      // from the final client response.
-      if (
-        !key.startsWith("x-middleware-") ||
-        key === "x-middleware-override-headers" ||
-        key.startsWith("x-middleware-request-")
-      ) rHeaders.append(key, value);
-    }
-    return { continue: true, responseHeaders: rHeaders };
-  }
-
-  if (response.status >= 300 && response.status < 400) {
-    var location = response.headers.get("Location") || response.headers.get("location");
-    if (location) {
-      var rdHeaders = new Headers();
-      for (var [rk, rv] of response.headers) {
-        if (!rk.startsWith("x-middleware-") && rk.toLowerCase() !== "location") rdHeaders.append(rk, rv);
-      }
-      return { continue: false, redirectUrl: location, redirectStatus: response.status, responseHeaders: rdHeaders };
-    }
-  }
-
-  var rewriteUrl = response.headers.get("x-middleware-rewrite");
-  if (rewriteUrl) {
-    var rwHeaders = new Headers();
-    for (var [k, v] of response.headers) {
-      if (!k.startsWith("x-middleware-") || k === "x-middleware-override-headers" || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
-    }
-    var rewritePath;
-    try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
-    catch { rewritePath = rewriteUrl; }
-    return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders };
-  }
-
-  return { continue: false, response: response };
+export async function runMiddleware(request, ctx, options) {
+  return __runGeneratedMiddleware({
+    basePath: vinextConfig.basePath,
+    ctx,
+    filePath: ${JSON.stringify(middlewarePath)},
+    i18nConfig,
+    isDataRequest: options?.isDataRequest === true,
+    isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
+    module: middlewareModule,
+    request,
+    trailingSlash: vinextConfig.trailingSlash,
+  });
 }
 `
     : `
-export async function runMiddleware() { return { continue: true }; }
+export async function runMiddleware(request) {
+  return { continue: true };
+}
 `;
 
   // The server entry is a self-contained module that uses Web-standard APIs
   // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
   return `
+import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
-import { resetSSRHead, getSSRHeadHTML } from "next/head";
+import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
-import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { _runWithCacheState } from "next/cache";
+import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
+import { _runWithCacheState } from "vinext/shims/cache-request-state";
+import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
+import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
-import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import "vinext/router-state";
 import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
 import { runWithHeadState } from "vinext/head-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
+import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from ${JSON.stringify(_queryUtilsPath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
-import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
+import { runWithExecutionContext as _runWithExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
+import { runGeneratedMiddleware as __runGeneratedMiddleware } from ${JSON.stringify(_middlewareRuntimePath)};
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
-import { createPagesReqRes as __createPagesReqRes } from ${JSON.stringify(_pagesNodeCompatPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
-import {
-  isrGet as __sharedIsrGet,
-  isrSet as __sharedIsrSet,
-  isrCacheKey as __sharedIsrCacheKey,
-  triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration,
-} from ${JSON.stringify(_isrCachePath)};
-import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
-import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
+import { normalizePagesDataRequest as __normalizePagesDataRequest, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
+import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
+import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
+import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_isrCachePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
 ${instrumentationInitCode}
 
+// The outer Node production pipeline runs outside this generated bundle, so
+// it cannot safely validate against its own development fallback secret. Give
+// it a verifier closed over this entry's build-time-baked secret instead.
+export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
+
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};
 
-// Build ID (embedded at build time)
-const buildId = ${buildIdJson};
+// Build ID (embedded at build time). Exported so the production server can
+// match _next/data requests against the embedded buildId without needing
+// to load next.config.js at runtime.
+export const buildId = ${buildIdJson};
+export function normalizeDataRequest(request) {
+  return __normalizePagesDataRequest(
+    request,
+    buildId,
+    vinextConfig.basePath,
+    hasMiddleware && vinextConfig.trailingSlash,
+  );
+}
+export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
 
-function isrGet(key) {
-  return __sharedIsrGet(key);
-}
-function isrSet(key, data, revalidateSeconds, tags) {
-  return __sharedIsrSet(key, data, revalidateSeconds, tags);
-}
-function triggerBackgroundRegeneration(key, renderFn) {
-  return __sharedTriggerBackgroundRegeneration(key, renderFn);
-}
-function isrCacheKey(router, pathname) {
-  return __sharedIsrCacheKey(router, pathname, buildId || undefined);
-}
+// Default to the in-memory data cache; a configured cache.data/cache.cdn adapter
+// overrides it on the first request via registerConfiguredCacheAdapters (called
+// from renderPage/handleApiRoute below, and with env from the worker entry on
+// Cloudflare). The registration self-guards, so the first call wins.
+__configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
-async function renderToStringAsync(element) {
+// Path to the user's pages/_app file (or null). Used to look up the
+// _app's CSS/JS chunks in the SSR manifest so any global styles imported
+// by _app are included in every page's <link rel="stylesheet"> set.
+const _appAssetPath = ${appAssetPathJson};
+
+async function _renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
 }
 
-async function renderIsrPassToStringAsync(element) {
+async function _renderIsrPassToStringAsync(element) {
   // The cache-fill render is a second render pass for the same request.
   // Reset render-scoped state so it cannot leak from the streamed response
   // render or affect async work that is still draining from that stream.
@@ -333,7 +292,7 @@ async function renderIsrPassToStringAsync(element) {
   return await runWithServerInsertedHTMLState(() =>
     runWithHeadState(() =>
       _runWithCacheState(() =>
-        runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+        runWithPrivateCache(() => runWithFetchCache(async () => _renderToStringAsync(element))),
       ),
     ),
   );
@@ -344,11 +303,20 @@ ${apiImports.join("\n")}
 
 ${appImportCode}
 ${docImportCode}
+${errorImportCode}
 
 export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
+const _errorPageRoute = {
+  pattern: "/_error",
+  patternParts: ["_error"],
+  isDynamic: false,
+  params: [],
+  module: ErrorPageModule,
+  filePath: ${errorAssetPathJson},
+};
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
@@ -358,197 +326,15 @@ const _apiRouteTrie = _buildRouteTrie(apiRoutes);
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
-  // the entry point. Decoding again would create a double-decode vector.
+  // Static route selection uses raw encoded identity (/%61bout must not
+  // select /about). _trieMatch decodes dynamic captures exactly once.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
   const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
   return _trieMatch(trie, urlParts);
 }
 
-function parseQuery(url) {
-  const qs = url.split("?")[1];
-  if (!qs) return {};
-  const p = new URLSearchParams(qs);
-  const q = {};
-  for (const [k, v] of p) {
-    if (k in q) {
-      q[k] = Array.isArray(q[k]) ? q[k].concat(v) : [q[k], v];
-    } else {
-      q[k] = v;
-    }
-  }
-  return q;
-}
-
-function patternToNextFormat(pattern) {
-  return pattern
-    .replace(/:([\\w]+)\\*/g, "[[...$1]]")
-    .replace(/:([\\w]+)\\+/g, "[...$1]")
-    .replace(/:([\\w]+)/g, "[$1]");
-}
-
-function collectAssetTags(manifest, moduleIds) {
-  // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
-  const m = (manifest && Object.keys(manifest).length > 0)
-    ? manifest
-    : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
-  const tags = [];
-  const seen = new Set();
-
-  // Load the set of lazy chunk filenames (only reachable via dynamic imports).
-  // These should NOT get <link rel="modulepreload"> or <script type="module">
-  // tags — they are fetched on demand when the dynamic import() executes (e.g.
-  // chunks behind React.lazy() or next/dynamic boundaries).
-  var lazyChunks = (typeof globalThis !== "undefined" && globalThis.__VINEXT_LAZY_CHUNKS__) || null;
-  var lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
-
-  // Inject the client entry script if embedded by vinext:cloudflare-build
-  if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
-    const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
-    seen.add(entry);
-    tags.push('<link rel="modulepreload" href="/' + entry + '" />');
-    tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
-  }
-  if (m) {
-    // Always inject shared chunks (framework, vinext runtime, entry) and
-    // page-specific chunks. The manifest maps module file paths to their
-    // associated JS/CSS assets.
-    //
-    // For page-specific injection, the module IDs may be absolute paths
-    // while the manifest uses relative paths. Try both the original ID
-    // and a suffix match to find the correct manifest entry.
-    var allFiles = [];
-
-    if (moduleIds && moduleIds.length > 0) {
-      // Collect assets for the requested page modules
-      for (var mi = 0; mi < moduleIds.length; mi++) {
-        var id = moduleIds[mi];
-        var files = m[id];
-        if (!files) {
-          // Absolute path didn't match — try matching by suffix.
-          // Manifest keys are relative (e.g. "pages/about.tsx") while
-          // moduleIds may be absolute (e.g. "/home/.../pages/about.tsx").
-          for (var mk in m) {
-            if (id.endsWith("/" + mk) || id === mk) {
-              files = m[mk];
-              break;
-            }
-          }
-        }
-        if (files) {
-          for (var fi = 0; fi < files.length; fi++) allFiles.push(files[fi]);
-        }
-      }
-
-      // Also inject shared chunks that every page needs: framework,
-      // vinext runtime, and the entry bootstrap. These are identified
-      // by scanning all manifest values for chunk filenames containing
-      // known prefixes.
-      for (var key in m) {
-        var vals = m[key];
-        if (!vals) continue;
-        for (var vi = 0; vi < vals.length; vi++) {
-          var file = vals[vi];
-          var basename = file.split("/").pop() || "";
-          if (
-            basename.startsWith("framework-") ||
-            basename.startsWith("vinext-") ||
-            basename.includes("vinext-client-entry") ||
-            basename.includes("vinext-app-browser-entry")
-          ) {
-            allFiles.push(file);
-          }
-        }
-      }
-    } else {
-      // No specific modules — include all assets from manifest
-      for (var akey in m) {
-        var avals = m[akey];
-        if (avals) {
-          for (var ai = 0; ai < avals.length; ai++) allFiles.push(avals[ai]);
-        }
-      }
-    }
-
-    for (var ti = 0; ti < allFiles.length; ti++) {
-      var tf = allFiles[ti];
-      // Normalize: Vite's SSR manifest values include a leading '/'
-      // (from base path), but we prepend '/' ourselves when building
-      // href/src attributes. Strip any existing leading slash to avoid
-      // producing protocol-relative URLs like "//assets/chunk.js".
-      // This also ensures consistent keys for the seen-set dedup and
-      // lazySet.has() checks (which use values without leading slash).
-      if (tf.charAt(0) === '/') tf = tf.slice(1);
-      if (seen.has(tf)) continue;
-      seen.add(tf);
-      if (tf.endsWith(".css")) {
-        tags.push('<link rel="stylesheet" href="/' + tf + '" />');
-      } else if (tf.endsWith(".js")) {
-        // Skip lazy chunks — they are behind dynamic import() boundaries
-        // (React.lazy, next/dynamic) and should only be fetched on demand.
-        if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload" href="/' + tf + '" />');
-        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
-      }
-    }
-  }
-  return tags.join("\\n  ");
-}
-
-// i18n helpers
-function extractLocale(url) {
-  if (!i18nConfig) return { locale: undefined, url, hadPrefix: false };
-  const pathname = url.split("?")[0];
-  const parts = pathname.split("/").filter(Boolean);
-  const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
-    const locale = parts[0];
-    const rest = "/" + parts.slice(1).join("/");
-    return { locale, url: (rest || "/") + query, hadPrefix: true };
-  }
-  return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
-}
-
-function detectLocaleFromHeaders(headers) {
-  if (!i18nConfig) return null;
-  const acceptLang = headers.get("accept-language");
-  if (!acceptLang) return null;
-  const langs = acceptLang.split(",").map(function(part) {
-    const pieces = part.trim().split(";");
-    const q = pieces[1] ? parseFloat(pieces[1].replace("q=", "")) : 1;
-    return { lang: pieces[0].trim().toLowerCase(), q: q };
-  }).sort(function(a, b) { return b.q - a.q; });
-  for (let k = 0; k < langs.length; k++) {
-    const lang = langs[k].lang;
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      if (i18nConfig.locales[j].toLowerCase() === lang) return i18nConfig.locales[j];
-    }
-    const prefix = lang.split("-")[0];
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      const loc = i18nConfig.locales[j].toLowerCase();
-      if (loc === prefix || loc.startsWith(prefix + "-")) return i18nConfig.locales[j];
-    }
-  }
-  return null;
-}
-
-function parseCookieLocaleFromHeader(cookieHeader) {
-  if (!i18nConfig || !cookieHeader) return null;
-  const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
-  if (!match) return null;
-  var value;
-  try { value = decodeURIComponent(match[1].trim()); } catch (e) { return null; }
-  if (i18nConfig.locales.indexOf(value) !== -1) return value;
-  return null;
-}
-
-export async function renderPage(request, url, manifest, ctx) {
-  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest));
-  return _renderPage(request, url, manifest);
-}
-
-async function _renderPage(request, url, manifest) {
-  const localeInfo = i18nConfig
+export function matchPageRoute(url, request) {
+  const routeUrl = i18nConfig && request
     ? resolvePagesI18nRequest(
         url,
         i18nConfig,
@@ -556,226 +342,140 @@ async function _renderPage(request, url, manifest) {
         new URL(request.url).hostname,
         vinextConfig.basePath,
         vinextConfig.trailingSlash,
-      )
-    : { locale: undefined, url, hadPrefix: false, domainLocale: undefined, redirectUrl: undefined };
-  const locale = localeInfo.locale;
-  const routeUrl = localeInfo.url;
-  const currentDefaultLocale = i18nConfig
-    ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
-    : undefined;
-  const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
-
-  if (localeInfo.redirectUrl) {
-    return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
-  }
-
-  const match = matchRoute(routeUrl, pageRoutes);
-  if (!match) {
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-      { status: 404, headers: { "Content-Type": "text/html" } });
-  }
-
-	  const { route, params } = match;
-	  const __uCtx = _createUnifiedCtx({
-	    executionContext: _getRequestExecutionContext(),
-	  });
-	  return _runWithUnifiedCtx(__uCtx, async () => {
-	    ensureFetchPatch();
-	    try {
-	    const routePattern = patternToNextFormat(route.pattern);
-	    if (typeof setSSRContext === "function") {
-	      setSSRContext({
-	        pathname: routePattern,
-	        query: { ...params, ...parseQuery(routeUrl) },
-	        asPath: routeUrl,
-	        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: currentDefaultLocale,
-        domainLocales: domainLocales,
-      });
-    }
-
-    if (i18nConfig) {
-      setI18nContext({
-        locale: locale,
-        locales: i18nConfig.locales,
-        defaultLocale: currentDefaultLocale,
-        domainLocales: domainLocales,
-        hostname: new URL(request.url).hostname,
-      });
-    }
-
-    const pageModule = route.module;
-    const PageComponent = pageModule.default;
-	    if (!PageComponent) {
-	      return new Response("Page has no default export", { status: 500 });
-	    }
-	    // Build font Link header early so it's available for ISR cached responses too.
-	    // Font preloads are module-level state populated at import time and persist across requests.
-	    var _fontLinkHeader = "";
-	    var _allFp = [];
-    try {
-      var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
-      var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
-      _allFp = _fpGoogle.concat(_fpLocal);
-	      if (_allFp.length > 0) {
-	        _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
-	      }
-	    } catch (e) { /* font preloads not available */ }
-	    const query = parseQuery(routeUrl);
-	    const pageDataResult = await __resolvePagesPageData({
-	      applyRequestContexts() {
-	        if (typeof setSSRContext === "function") {
-	          setSSRContext({
-	            pathname: routePattern,
-	            query: { ...params, ...query },
-	            asPath: routeUrl,
-	            locale: locale,
-	            locales: i18nConfig ? i18nConfig.locales : undefined,
-	            defaultLocale: currentDefaultLocale,
-	            domainLocales: domainLocales,
-	          });
-	        }
-	        if (i18nConfig) {
-	          setI18nContext({
-	            locale: locale,
-	            locales: i18nConfig.locales,
-	            defaultLocale: currentDefaultLocale,
-	            domainLocales: domainLocales,
-	            hostname: new URL(request.url).hostname,
-	          });
-	        }
-	      },
-	      buildId,
-	      createGsspReqRes() {
-	        return __createPagesReqRes({ body: undefined, query, request, url: routeUrl });
-	      },
-	      createPageElement(currentPageProps) {
-	        var currentElement = AppComponent
-	          ? React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps })
-	          : React.createElement(PageComponent, currentPageProps);
-	        return wrapWithRouterContext(currentElement);
-	      },
-	      fontLinkHeader: _fontLinkHeader,
-	      i18n: {
-	        locale: locale,
-	        locales: i18nConfig ? i18nConfig.locales : undefined,
-	        defaultLocale: currentDefaultLocale,
-	        domainLocales: domainLocales,
-	      },
-	      isrCacheKey,
-	      isrGet,
-	      isrSet,
-	      pageModule,
-	      params,
-	      query,
-	      renderIsrPassToStringAsync,
-	      route: {
-	        isDynamic: route.isDynamic,
-	      },
-	      routePattern,
-	      routeUrl,
-	      runInFreshUnifiedContext(callback) {
-	        var revalCtx = _createUnifiedCtx({
-	          executionContext: _getRequestExecutionContext(),
-	        });
-	        return _runWithUnifiedCtx(revalCtx, async () => {
-	          ensureFetchPatch();
-	          return callback();
-	        });
-	      },
-	      safeJsonStringify,
-	      sanitizeDestination: sanitizeDestinationLocal,
-	      triggerBackgroundRegeneration,
-	    });
-	    if (pageDataResult.kind === "response") {
-	      return pageDataResult.response;
-	    }
-	    let pageProps = pageDataResult.pageProps;
-	    var gsspRes = pageDataResult.gsspRes;
-	    let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
-
-	    const pageModuleIds = route.filePath ? [route.filePath] : [];
-	    const assetTags = collectAssetTags(manifest, pageModuleIds);
-
-    return __renderPagesPageResponse({
-      assetTags,
-      buildId,
-      clearSsrContext() {
-        if (typeof setSSRContext === "function") setSSRContext(null);
-      },
-      createPageElement(currentPageProps) {
-        var currentElement;
-        if (AppComponent) {
-          currentElement = React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps });
-        } else {
-          currentElement = React.createElement(PageComponent, currentPageProps);
-        }
-        return wrapWithRouterContext(currentElement);
-      },
-      DocumentComponent,
-      flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
-      fontLinkHeader: _fontLinkHeader,
-      fontPreloads: _allFp,
-      getFontLinks() {
-        try {
-          return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
-        } catch (e) {
-          return [];
-        }
-      },
-      getFontStyles() {
-        try {
-          var allFontStyles = [];
-          if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
-          if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
-          return allFontStyles;
-        } catch (e) {
-          return [];
-        }
-      },
-	      getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
-	      gsspRes,
-      isrCacheKey,
-      isrRevalidateSeconds,
-      isrSet,
-      i18n: {
-        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: currentDefaultLocale,
-        domainLocales: domainLocales,
-      },
-      pageProps,
-      params,
-      renderDocumentToString(element) {
-        return renderToStringAsync(element);
-      },
-      renderIsrPassToStringAsync,
-      renderToReadableStream(element) {
-        return renderToReadableStream(element);
-      },
-      resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
-	      routePattern,
-      routeUrl,
-      safeJsonStringify,
-    });
-    } catch (e) {
-    console.error("[vinext] SSR error:", e);
-    _reportRequestError(
-      e instanceof Error ? e : new Error(String(e)),
-      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-      { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
-    ).catch(() => { /* ignore reporting errors */ });
-    return new Response("Internal Server Error", { status: 500 });
-    }
-  });
+      ).url
+    : url;
+  return matchRoute(routeUrl, pageRoutes);
 }
 
-export async function handleApiRoute(request, url) {
+export function matchApiRoute(url, request) {
+  const routeUrl = i18nConfig && request
+    ? resolvePagesI18nRequest(
+        url,
+        i18nConfig,
+        request.headers,
+        new URL(request.url).hostname,
+        vinextConfig.basePath,
+        vinextConfig.trailingSlash,
+      ).url
+    : url;
+  return matchRoute(routeUrl, apiRoutes);
+}
+
+// ── Pages render orchestrator — delegates to server/pages-page-handler.ts ──
+//
+// All next/*-derived values are passed as closures so the handler module
+// stays importable in test environments (the root vite.config.ts only
+// aliases vinext/shims/*, not next/*).
+__setPagesClientAssets(__pagesClientAssets);
+const _renderPage = __createPagesPageHandler({
+  pageRoutes,
+  errorPageRoute: _errorPageRoute,
+  matchRoute: (url) => matchRoute(url, pageRoutes),
+  i18nConfig,
+  vinextConfig: {
+    basePath: vinextConfig.basePath,
+    assetPrefix: vinextConfig.assetPrefix,
+    trailingSlash: vinextConfig.trailingSlash,
+    expireTime: vinextConfig.expireTime,
+    htmlLimitedBots: vinextConfig.htmlLimitedBots,
+    clientTraceMetadata: vinextConfig.clientTraceMetadata,
+    disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
+  },
+  buildId,
+  hasMiddleware,
+  appAssetPath: _appAssetPath,
+  hasRewrites:
+    vinextConfig.rewrites.beforeFiles.length > 0 ||
+    vinextConfig.rewrites.afterFiles.length > 0 ||
+    vinextConfig.rewrites.fallback.length > 0,
+
+  // next/*-derived closures
+  setSSRContext: typeof setSSRContext === "function" ? setSSRContext : null,
+  getPagesNavigationIsReadyFromSerializedState:
+    typeof getPagesNavigationIsReadyFromSerializedState === "function"
+      ? getPagesNavigationIsReadyFromSerializedState
+      : null,
+  setI18nContext: typeof setI18nContext === "function" ? setI18nContext : null,
+  wrapWithRouterContext: typeof wrapWithRouterContext === "function" ? wrapWithRouterContext : null,
+  router: Router,
+  resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+  getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+  setDocumentInitialHead: typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
+  flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+  getFontLinks() {
+    try { return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : []; } catch { return []; }
+  },
+  getFontStyles() {
+    try {
+      const styles = [];
+      if (typeof _getSSRFontStylesGoogle === "function") styles.push(..._getSSRFontStylesGoogle());
+      if (typeof _getSSRFontStylesLocal === "function") styles.push(..._getSSRFontStylesLocal());
+      return styles;
+    } catch { return []; }
+  },
+  getFontPreloads() {
+    try {
+      const preloads = [];
+      if (typeof _getSSRFontPreloadsGoogle === "function") preloads.push(..._getSSRFontPreloadsGoogle());
+      if (typeof _getSSRFontPreloadsLocal === "function") preloads.push(..._getSSRFontPreloadsLocal());
+      return preloads;
+    } catch { return []; }
+  },
+  renderToReadableStream,
+  renderIsrPassToStringAsync: _renderIsrPassToStringAsync,
+  safeJsonStringify,
+  sanitizeDestination: sanitizeDestinationLocal,
+  createPageElement(PageComponent, AppComponent, props) {
+    const rawPageProps = props?.pageProps;
+    const pageProps = rawPageProps && typeof rawPageProps === "object"
+      ? props.pageProps
+      : {};
+    return AppComponent
+      ? React.createElement(AppComponent, {
+          ...props,
+          Component: PageComponent,
+          router: Router,
+        })
+      : React.createElement(PageComponent, pageProps);
+  },
+  enhancePageElement(PageComponent, AppComponent, props, opts) {
+    const rawPageProps = props?.pageProps;
+    const pageProps = rawPageProps && typeof rawPageProps === "object"
+      ? props.pageProps
+      : {};
+    let FinalApp = AppComponent;
+    let FinalComp = PageComponent;
+    if (opts && typeof opts.enhanceApp === "function" && FinalApp) FinalApp = opts.enhanceApp(FinalApp);
+    if (opts && typeof opts.enhanceComponent === "function") FinalComp = opts.enhanceComponent(FinalComp);
+    return FinalApp
+      ? React.createElement(FinalApp, {
+          ...props,
+          Component: FinalComp,
+          router: Router,
+        })
+      : React.createElement(FinalComp, pageProps);
+  },
+  AppComponent,
+  DocumentComponent,
+});
+
+export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
+  __registerConfiguredCacheAdapters();
+  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
+  return _renderPage(request, url, manifest, middlewareHeaders, options);
+}
+
+
+
+export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin) {
+  __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
+    ctx,
     match,
+    nextConfig: vinextConfig,
     request,
+    trustedRevalidateOrigin,
     url,
     reportRequestError(error, routePattern) {
       console.error("[vinext] API error:", error);

@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
+  bufferAppPageBinaryStream,
   probeAppPageComponent,
   probeAppPageLayouts,
-  readAppPageTextStream,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
+import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
+import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -20,6 +22,18 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function createMiddlewareContext() {
+  const headers = new Headers();
+  headers.set("x-middleware-security", "present");
+  headers.append("set-cookie", "session=rotated; Path=/; HttpOnly");
+  headers.set("vary", "x-auth-state");
+
+  return {
+    headers,
+    status: 299,
+  };
+}
+
 describe("app page execution helpers", () => {
   it("parses redirect and access-fallback digests", () => {
     expect(
@@ -30,6 +44,7 @@ describe("app page execution helpers", () => {
       kind: "redirect",
       location: "/redirected",
       statusCode: 308,
+      type: "replace",
     });
 
     expect(
@@ -49,26 +64,39 @@ describe("app page execution helpers", () => {
 
     const redirectResponse = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
-      requestUrl: "https://example.com/start",
+      isRscRequest: false,
+      middlewareContext: createMiddlewareContext(),
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(redirectResponse.status).toBe(307);
-    expect(redirectResponse.headers.get("location")).toBe("https://example.com/redirected");
+    expect(redirectResponse.headers.get("location")).toBe("/redirected");
+    expect(redirectResponse.headers.get("x-middleware-security")).toBe("present");
+    expect(redirectResponse.headers.get("vary")).toBe("x-auth-state");
+    expect(redirectResponse.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
 
     clearRequestContext.mockClear();
 
     const fallbackResponse = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
+      middlewareContext: createMiddlewareContext(),
       renderFallbackPage(statusCode) {
-        return Promise.resolve(new Response(`fallback:${statusCode}`, { status: statusCode }));
+        return Promise.resolve(
+          new Response(`fallback:${statusCode}`, {
+            headers: { Vary: "RSC, Accept" },
+            status: statusCode,
+          }),
+        );
       },
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "http-access-fallback",
         statusCode: 404,
@@ -76,8 +104,268 @@ describe("app page execution helpers", () => {
     });
 
     expect(fallbackResponse.status).toBe(404);
+    expect(fallbackResponse.headers.get("x-middleware-security")).toBe("present");
+    expect(fallbackResponse.headers.get("vary")).toBe("RSC, Accept, x-auth-state");
+    expect(fallbackResponse.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
+    expect(
+      fallbackResponse.headers
+        .getSetCookie()
+        .filter((cookie) => cookie === "session=rotated; Path=/; HttpOnly"),
+    ).toHaveLength(1);
     await expect(fallbackResponse.text()).resolves.toBe("fallback:404");
     expect(clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("prefixes redirect Location with basePath for app-internal paths", async () => {
+    // Mirrors Next.js's `addPathPrefix(getURLFromRedirectError(err), basePath)`.
+    // `redirect("/about")` from a page mounted under basePath "/blog" should
+    // produce `Location: https://example.com/blog/about`, not the raw "/about".
+    const clearRequestContext = vi.fn();
+
+    const internalRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/about",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(internalRedirect.headers.get("location")).toBe("/blog/about");
+
+    // External redirects (different origin) must NOT be prefixed — they're
+    // outside the app's basePath scope.
+    const externalRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "https://other.example/foo",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(externalRedirect.headers.get("location")).toBe("https://other.example/foo");
+
+    const sameOriginAbsoluteRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "https://example.com/outside",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(sameOriginAbsoluteRedirect.headers.get("location")).toBe("https://example.com/outside");
+
+    const relativeRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "next",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(relativeRedirect.headers.get("location")).toBe("next");
+
+    const protocolRelativeRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "//other.example/foo",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(protocolRelativeRedirect.headers.get("location")).toBe("/blog//other.example/foo");
+
+    // Next.js's addPathPrefix unconditionally prepends basePath to every raw
+    // slash-prefixed target, even if the caller already included it.
+    const alreadyPrefixed = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/blog/about",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(alreadyPrefixed.headers.get("location")).toBe("/blog/blog/about");
+
+    const alreadyPrefixedRootWithQuery = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/blog?from=checkout",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(alreadyPrefixedRootWithQuery.headers.get("location")).toBe("/blog/blog?from=checkout");
+
+    const alreadyPrefixedRootWithHash = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/blog#top",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(alreadyPrefixedRootWithHash.headers.get("location")).toBe("/blog/blog#top");
+
+    // No basePath configured → behavior unchanged (resolves against the
+    // request URL as before).
+    const unconfigured = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/about",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(unconfigured.headers.get("location")).toBe("/about");
+
+    // Raw prefixing preserves the original root slash.
+    const rootRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(rootRedirect.headers.get("location")).toBe("/blog/");
+  });
+
+  it("buffers a binary stream once and replays its original chunks", async () => {
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) controller.enqueue(new TextEncoder().encode("first"));
+        else if (pullCount === 2) controller.enqueue(new TextEncoder().encode("second"));
+        else controller.close();
+      },
+    });
+
+    const replay = await bufferAppPageBinaryStream(source);
+
+    expect(pullCount).toBe(3);
+    await expect(readStreamAsText(replay)).resolves.toBe("firstsecond");
+    expect(pullCount).toBe(3);
+  });
+
+  it("appends pending cookies (cookies().set during render) to redirect responses", async () => {
+    // Mirrors Next.js's `appendMutableCookies(headers, requestStore.mutableCookies)`
+    // in app-render.tsx. An auth flow that does
+    //   cookies().set("session", "...");
+    //   redirect("/dashboard");
+    // must keep the Set-Cookie on the 307 — otherwise the redirected
+    // request lands without the just-issued session and the user bounces
+    // back to login.
+    const clearRequestContext = vi.fn();
+    const getAndClearPendingCookies = vi.fn(() => [
+      "session=fresh; Path=/; HttpOnly",
+      "csrf=abc; Path=/",
+    ]);
+
+    const redirectWithCookies = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/login"),
+      specialError: {
+        kind: "redirect",
+        location: "/dashboard",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(redirectWithCookies.status).toBe(307);
+    expect(redirectWithCookies.headers.get("location")).toBe("/dashboard");
+    const setCookies = redirectWithCookies.headers.getSetCookie();
+    expect(setCookies).toContain("session=fresh; Path=/; HttpOnly");
+    expect(setCookies).toContain("csrf=abc; Path=/");
+    expect(getAndClearPendingCookies).toHaveBeenCalledTimes(1);
+
+    // No accumulated cookies → no Set-Cookie header (and the accumulator
+    // is still consulted exactly once).
+    getAndClearPendingCookies.mockReturnValue([]);
+    const redirectWithoutCookies = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/login"),
+      specialError: {
+        kind: "redirect",
+        location: "/dashboard",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(redirectWithoutCookies.headers.getSetCookie()).toEqual([]);
+
+    // Pending cookies must NOT bleed onto http-access-fallback responses —
+    // those cookies belong to the rendered boundary, not the bare 401/403/404.
+    // Matches Next.js, which only calls appendMutableCookies in the redirect
+    // branch.
+    getAndClearPendingCookies.mockReturnValue(["should-not-appear=1; Path=/"]);
+    const fallbackResponse = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/protected"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 401,
+      },
+    });
+
+    expect(fallbackResponse.headers.getSetCookie()).toEqual([]);
   });
 
   it("falls back to a plain status response when no fallback page is available", async () => {
@@ -85,10 +373,12 @@ describe("app page execution helpers", () => {
 
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
+      middlewareContext: createMiddlewareContext(),
       renderFallbackPage() {
         return Promise.resolve(null);
       },
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "http-access-fallback",
         statusCode: 401,
@@ -96,14 +386,467 @@ describe("app page execution helpers", () => {
     });
 
     expect(response.status).toBe(401);
+    expect(response.headers.get("x-middleware-security")).toBe("present");
+    expect(response.headers.get("vary")).toBe("x-auth-state");
+    expect(response.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
     await expect(response.text()).resolves.toBe("Unauthorized");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("encodes redirect digest in flight payload + 200 when buildRscRedirectFlightStream is provided (RSC request)", async () => {
+    // Mirrors Next.js's `generateDynamicFlightRenderResult` path: when a
+    // server component throws redirect() during RSC rendering, the redirect
+    // digest is serialized into the flight stream and the response stays
+    // 200. The status line never carries the redirect.
+    //
+    // See: https://github.com/cloudflare/vinext/issues/1347
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${options.digest}`));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/^text\/x-component/);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("x-vinext-rsc-redirect")).toBe("/redirected");
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("replace");
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;replace;/redirected;307;",
+    });
+    await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
+  });
+
+  it("preserves explicit push semantics in RSC redirect flights", async () => {
+    const buildRscRedirectFlightStream = vi.fn(
+      ({ digest }: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(digest));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "push",
+      },
+    });
+
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("push");
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;push;/redirected;307;",
+    });
+  });
+
+  it("keeps framework redirect side-channel headers authoritative over middleware", async () => {
+    const middlewareHeaders = new Headers({
+      "X-Vinext-Rsc-Redirect": "/middleware-target",
+      "X-Vinext-Rsc-Redirect-Type": "push",
+    });
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      middlewareContext: { headers: middlewareHeaders },
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/actual-target",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(response.headers.get("x-vinext-rsc-redirect")).toBe("/actual-target");
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("replace");
+  });
+
+  it("preserves semicolons through encoded redirect parsing and raw Flight re-emission", async () => {
+    const specialError = resolveAppPageSpecialError({
+      digest: "NEXT_REDIRECT;;%2Fdocs%3Bpart;307",
+    });
+    expect(specialError).toEqual({
+      kind: "redirect",
+      location: "/docs;part",
+      statusCode: 307,
+      type: "replace",
+    });
+
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(options.digest));
+            controller.close();
+          },
+        }),
+    );
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: specialError!,
+    });
+    const emittedDigest = await response.text();
+
+    expect(emittedDigest).toBe("NEXT_REDIRECT;replace;/docs;part;307;");
+    expect(parseNextRedirectDigest(emittedDigest)).toEqual({
+      status: 307,
+      type: "replace",
+      url: "/docs;part",
+    });
+  });
+
+  it("keeps metadata-originated RSC redirects on the Flight digest path", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should trigger redirection when call redirect"
+    //
+    // Document requests and RSC navigation requests intentionally diverge:
+    // the document path streams a refresh meta tag, while the client router
+    // still consumes the redirect digest from the Flight stream.
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${options.digest}`));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "replace",
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/^text\/x-component/);
+    expect(response.headers.get("location")).toBeNull();
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;replace;/redirected;307;",
+    });
+    await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
+  });
+
+  it("renders a metadata-originated document redirect as an HTML refresh when metadata streams", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should trigger redirection when call redirect"
+    //
+    // Next.js captures redirect() thrown by generateMetadata() as a streamed
+    // server error and injects the canonical refresh meta tag through
+    // make-get-server-inserted-html.tsx. The document status stays 200, but it
+    // must remain an HTML document so a browser direct visit can follow it.
+    const buildRscRedirectFlightStream = vi.fn(
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-payload"));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/start"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "replace",
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(buildRscRedirectFlightStream).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/redirected"/>',
+    );
+  });
+
+  it("uses an HTTP redirect for metadata-originated redirects when metadata streaming is disabled", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should render blocking 307 response status when html limited bots access redirect"
+    const buildRscRedirectFlightStream = vi.fn(
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-payload"));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/start"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "replace",
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/redirected");
+    expect(buildRscRedirectFlightStream).not.toHaveBeenCalled();
+  });
+
+  it("preserves the 307/308 status code in the encoded digest (permanentRedirect)", async () => {
+    const captured: { digest: string }[] = [];
+    const buildRscRedirectFlightStream = (opts: { digest: string }) => {
+      captured.push(opts);
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.close();
+        },
+      });
+    };
+
+    await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/permanent-target",
+        statusCode: 308,
+        type: "replace",
+      },
+    });
+
+    expect(captured).toEqual([{ digest: "NEXT_REDIRECT;replace;/permanent-target;308;" }]);
+  });
+
+  it("falls back to 307 when buildRscRedirectFlightStream is absent (backward compat)", async () => {
+    // Callers that don't yet plumb the flight-stream builder keep the legacy
+    // behavior: HTTP 307 with a Location header. Keeps non-app-router callers
+    // (and any test helpers) working without changes.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toMatch(/redirected\?_rsc/);
+  });
+
+  it("canonicalizes same-origin RSC redirect locations to Next-style RSC URLs", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc", {
+        headers: {
+          Accept: "text/x-component",
+          RSC: "1",
+          "Next-Router-State-Tree": "tree",
+        },
+      }),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected?tab=1",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toMatch(
+      /^https:\/\/example\.com\/redirected\?tab=1&_rsc=/,
+    );
+  });
+
+  it("returns HTTP 200 when notFound() is thrown from generateMetadata (fromMetadata)", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
+    //   "should support notFound in generateMetadata"
+    //
+    // When notFound() / forbidden() / unauthorized() is thrown from
+    // generateMetadata(), Next.js treats the error as a suspended metadata
+    // result — the React not-found boundary handles the UI client-side while
+    // the HTTP response stays 200. The rendered fallback response (status 404
+    // from renderAppPageHttpAccessFallback) must be overridden to 200.
+    const fallbackBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not-found-boundary-html"));
+        controller.close();
+      },
+    });
+    const fallbackResponse = new Response(fallbackBody, {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("returns HTTP 200 for metadata notFound when no fallback page is available", async () => {
+    // When there is no renderFallbackPage (e.g. no not-found.tsx exists), the
+    // plain text fallback should also be 200 for fromMetadata errors.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/async/not-found"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, with fallback)", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should render blocking 404 response status when html limited bots access notFound"
+    //
+    // When serveStreamingMetadata === false (html-limited bots), metadata blocks
+    // the render synchronously. Next.js sets the real HTTP error status in this
+    // path (app-render.tsx ~2845). Mirror the redirect-from-metadata path, which
+    // is already gated on serveStreamingMetadata !== false.
+    const fallbackBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not-found-boundary-html"));
+        controller.close();
+      },
+    });
+    const fallbackResponse = new Response(fallbackBody, {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, no fallback)", async () => {
+    // Same bot scenario but with no renderFallbackPage (no not-found.tsx).
+    // The plain text fallback must also use the real error status.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  it("returns the original status for non-metadata http-access-fallback errors", async () => {
+    // Page-level notFound() calls (fromMetadata absent/false) must still return
+    // the original 404 status — only metadata-originated errors get the 200
+    // override.
+    const fallbackResponse = new Response("page-level-not-found", { status: 404 });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/page"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+      },
+    });
+
+    expect(response.status).toBe(404);
   });
 
   it("probes layouts from inner to outer and stops on a handled special response", async () => {
     const probedLayouts: number[] = [];
 
-    const response = await probeAppPageLayouts({
+    const result = await probeAppPageLayouts({
       layoutCount: 3,
       async onLayoutError(error, layoutIndex) {
         expect(error).toBeInstanceOf(Error);
@@ -122,8 +865,8 @@ describe("app page execution helpers", () => {
     });
 
     expect(probedLayouts).toEqual([2, 1]);
-    expect(response?.status).toBe(404);
-    await expect(response?.text()).resolves.toBe("layout-fallback");
+    expect(result.response?.status).toBe(404);
+    await expect(result.response?.text()).resolves.toBe("layout-fallback");
   });
 
   it("does not await async page probes when a loading boundary is present", async () => {
@@ -144,14 +887,508 @@ describe("app page execution helpers", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("reads streamed text and captures RSC bytes when teeing the response stream", async () => {
+  it("produces fused ssrStream + sideStream when capturing (#981)", async () => {
     const capture = teeAppPageRscStreamForCapture(createStream(["flight-", "chunk"]), true);
 
-    await expect(readAppPageTextStream(capture.responseStream)).resolves.toBe("flight-chunk");
-    const captured = await capture.capturedRscDataPromise;
-    expect(new TextDecoder().decode(captured ? new Uint8Array(captured) : undefined)).toBe(
-      "flight-chunk",
-    );
+    // ssrStream is for createFromReadableStream (SSR)
+    expect(capture.ssrStream).toBeInstanceOf(ReadableStream);
+    // sideStream is for embed+capture
+    expect(capture.sideStream).toBeInstanceOf(ReadableStream);
+
+    // Both streams should contain identical data (teed from same source)
+    const ssrText = await readStreamAsText(capture.ssrStream);
+    const sideText = await readStreamAsText(capture.sideStream!);
+    expect(ssrText).toBe("flight-chunk");
+    expect(sideText).toBe("flight-chunk");
+  });
+
+  it("bypasses tee when not capturing (#981)", async () => {
+    const stream = createStream(["no-capture"]);
+    const capture = teeAppPageRscStreamForCapture(stream, false);
+
+    // When not capturing, no tee — the original stream is returned as ssrStream
+    expect(capture.ssrStream).toBe(stream);
+    expect(capture.sideStream).toBeUndefined();
+  });
+
+  it("tracks per-layout dynamic usage when classification options are provided", async () => {
+    const result = await probeAppPageLayouts({
+      layoutCount: 3,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [2, "dynamic"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/blog", "layout:/blog/post"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    // Layout 0 is build-time static, layout 2 is build-time dynamic
+    // Layout 1 has no build-time classification, probed with no dynamic detected
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/blog": "s",
+      "layout:/blog/post": "d",
+    });
+  });
+
+  it("detects dynamic usage per-layout through isolated scope", async () => {
+    let probeCallCount = 0;
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          probeCallCount++;
+          const result = await fn();
+          // Simulate: second probe call (layout 0, since we iterate inner-to-outer)
+          // detects dynamic usage
+          return {
+            result,
+            dynamicDetected: probeCallCount === 2,
+          };
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "d",
+      "layout:/dashboard": "s",
+    });
+  });
+
+  it("returns empty layoutFlags when classification options are absent (backward compat)", async () => {
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(result.response).toBeNull();
+    expect(result.layoutFlags).toEqual({});
+  });
+
+  it("defaults to dynamic flag when probe throws a non-special error", async () => {
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        // Non-special error — return null (don't short-circuit)
+        return Promise.resolve(null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) throw new Error("use() outside render");
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          // Re-throw so the catch path in probeAppPageLayouts fires
+          return Promise.resolve(fn()).then((result) => ({ result, dynamicDetected: false }));
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    // Layout 1 threw → conservatively flagged as dynamic
+    expect(result.layoutFlags["layout:/dashboard"]).toBe("d");
+    // Layout 0 probed successfully
+    expect(result.layoutFlags["layout:/"]).toBe("s");
+  });
+
+  it("isolates dynamic usage across throwing layout probes", async () => {
+    let dynamicUsageDetected = false;
+
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) {
+          dynamicUsageDetected = true;
+          throw new Error("layout failed after headers()");
+        }
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          const priorDynamic = dynamicUsageDetected;
+          dynamicUsageDetected = false;
+          try {
+            const result = await fn();
+            const detectedInScope = dynamicUsageDetected;
+            dynamicUsageDetected = false;
+            return { result, dynamicDetected: detectedInScope };
+          } finally {
+            dynamicUsageDetected = false;
+            if (priorDynamic) dynamicUsageDetected = true;
+          }
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/dashboard": "d",
+    });
+  });
+
+  it("skips probe for build-time classified layouts", async () => {
+    let probeCalls = 0;
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          probeCalls++;
+          return { result: await fn(), dynamicDetected: false };
+        },
+      },
+    });
+
+    expect(probeCalls).toBe(0);
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/admin": "d",
+    });
+  });
+
+  it("returns special error response when build-time classified layout throws during error probe", async () => {
+    const layoutError = new Error("layout failed");
+    const specialResponse = new Response("layout-fallback", { status: 404 });
+
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError(error) {
+        return Promise.resolve(error === layoutError ? specialResponse : null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) throw layoutError;
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "static"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope() {
+          throw new Error("isolated scope must not run for build-time classified layouts");
+        },
+      },
+    });
+
+    // The special-error response from the throwing layout short-circuits the
+    // loop. The flag for layout 1 is still recorded (set before the error
+    // probe runs), and layout 0 is never reached.
+    expect(result.response).toBe(specialResponse);
+    expect(result.layoutFlags).toEqual({ "layout:/admin": "s" });
+  });
+
+  it("does not read build-time reasons when debugClassification is absent", async () => {
+    const throwingReasons = {
+      get() {
+        throw new Error("build-time reasons should stay dormant when debug is disabled");
+      },
+    } as unknown as ReadonlyMap<number, { layer: "segment-config"; key: "dynamic"; value: string }>;
+
+    await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+        ]),
+        buildTimeReasons: throwingReasons,
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
+        },
+      },
+    });
+  });
+
+  it("emits a debug reason per layout when debugClassification is provided with build-time reasons", async () => {
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+
+    await probeAppPageLayouts({
+      layoutCount: 3,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+          [2, "static"],
+        ]),
+        buildTimeReasons: new Map([
+          [0, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+          [1, { layer: "segment-config", key: "dynamic", value: "force-dynamic" }],
+          [2, { layer: "module-graph", result: "static" }],
+        ]),
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin", "layout:/admin/posts"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
+        },
+      },
+    });
+
+    expect(calls).toHaveLength(3);
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/"]).toEqual({
+      layer: "segment-config",
+      key: "dynamic",
+      value: "force-static",
+    });
+    expect(byId["layout:/admin"]).toEqual({
+      layer: "segment-config",
+      key: "dynamic",
+      value: "force-dynamic",
+    });
+    expect(byId["layout:/admin/posts"]).toEqual({
+      layer: "module-graph",
+      result: "static",
+    });
+  });
+
+  it("emits runtime-probe reason for layouts resolved by the Layer 3 probe", async () => {
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+    let probeCalls = 0;
+
+    await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        // No buildTimeClassifications → every layout takes the runtime path.
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          probeCalls++;
+          // probeAppPageLayouts iterates inner-to-outer:
+          // first call → layout 1 (dashboard) → dynamic
+          // second call → layout 0 (root) → static
+          return { result: await fn(), dynamicDetected: probeCalls === 1 };
+        },
+      },
+    });
+
+    expect(calls).toHaveLength(2);
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/dashboard"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "dynamic",
+    });
+    expect(byId["layout:/"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "static",
+    });
+  });
+
+  it("flips a build-time static layout to dynamic when a runtime observation is unsafe for static reuse", async () => {
+    // Parity guard for the observation override: a layout the build classified
+    // `static` is downgraded to `"d"` at request time when
+    // `isLayoutObservationDynamic` reports the observed render is unsafe for
+    // static reuse (finite revalidate, cache tags, request APIs, param scope,
+    // etc.). The emitted debug reason switches from the stale build-time reason
+    // to `runtime-probe`/`dynamic` so the flag and reason stay in agreement.
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "static"],
+        ]),
+        buildTimeReasons: new Map([
+          [0, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+          [1, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+        ]),
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        // Only the dashboard layout's observation is unsafe for static reuse.
+        isLayoutObservationDynamic(layoutId) {
+          return layoutId === "layout:/dashboard";
+        },
+        runWithIsolatedDynamicScope() {
+          throw new Error("isolated scope must not run for build-time classified layouts");
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    // dashboard: build-time static, but the observation flips it to dynamic.
+    // root: build-time static with a safe observation stays static.
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/dashboard": "d",
+    });
+
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/dashboard"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "dynamic",
+    });
+    // The unflipped layout keeps reporting its build-time reason.
+    expect(byId["layout:/"]).toEqual({
+      layer: "segment-config",
+      key: "dynamic",
+      value: "force-static",
+    });
+  });
+
+  it("emits runtime-probe reason with the error message when the probe throws", async () => {
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+
+    await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) throw new Error("headers() outside render");
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          return Promise.resolve(fn()).then((result) => ({ result, dynamicDetected: false }));
+        },
+      },
+    });
+
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/dashboard"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "dynamic",
+      error: "headers() outside render",
+    });
+    expect(byId["layout:/"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "static",
+    });
   });
 
   it("builds Link headers for preloaded app-page fonts", () => {
@@ -163,5 +1400,44 @@ describe("app page execution helpers", () => {
     ).toBe(
       "</font-a.woff2>; rel=preload; as=font; type=font/woff2; crossorigin, </font-b.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on RSC redirect flight responses for edge-runtime routes", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${digest}`));
+            controller.close();
+          },
+        }),
+      clearRequestContext: vi.fn(),
+      isEdgeRuntime: true,
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on RSC redirect flight responses for nodejs-runtime routes", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${digest}`));
+            controller.close();
+          },
+        }),
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
   });
 });

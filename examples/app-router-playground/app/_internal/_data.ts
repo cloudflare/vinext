@@ -126,6 +126,12 @@ const demos = [
         name: 'Parallel Routes',
         description: 'Render multiple pages in the same layout',
       },
+      {
+        slug: 'intercepting-routes',
+        name: 'Intercepting Routes',
+        description:
+          'Open a detail route as a modal during navigation while preserving the shareable URL',
+      },
     ],
   },
   {

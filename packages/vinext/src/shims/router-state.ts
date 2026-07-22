@@ -8,8 +8,9 @@
  * be bundled for the browser.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerRouterStateAccessors } from "./router.js";
+import { registerRoutePatternForWarningAccessor } from "./internal/route-pattern-for-warning.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -24,20 +25,21 @@ export type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
+  navigationIsReady?: boolean;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
+  isPreview?: boolean;
+  isFallback?: boolean;
 };
 
 export type RouterState = {
   ssrContext: SSRContext | null;
 };
 
-const _ALS_KEY = Symbol.for("vinext.router.als");
 const _FALLBACK_KEY = Symbol.for("vinext.router.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
+const _als = getOrCreateAls<RouterState>("vinext.router.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrContext: null,
@@ -55,6 +57,8 @@ function _getState(): RouterState {
  * Ensures per-request isolation for Pages Router SSR context
  * on concurrent runtimes.
  */
+export function runWithRouterState<T>(fn: () => Promise<T>): Promise<T>;
+export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T>;
 export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
@@ -81,3 +85,9 @@ _registerRouterStateAccessors({
     _getState().ssrContext = ctx;
   },
 });
+
+// Publish the Pages Router SSR route pattern (e.g. `/my/path/[name]`) so the
+// Link shim's repeated-slash warning can report Next.js's `router.pathname`
+// in its "in page: '...'" message without importing router.ts (which would
+// pull a browser-only `installWindowNext()` side effect into the Link bundle).
+registerRoutePatternForWarningAccessor(() => _getState().ssrContext?.pathname ?? null);

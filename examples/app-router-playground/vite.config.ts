@@ -1,6 +1,7 @@
 import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import mdx from "@mdx-js/rollup";
 import { remarkCodeHike, recmaCodeHike, type CodeHikeConfig } from "codehike/mdx";
 import path from "node:path";
@@ -73,7 +74,7 @@ export default defineConfig({
 
     // vinext plugin (provides all next/* shims, routing, SSR, RSC).
     // @vitejs/plugin-rsc is auto-registered when app/ is detected.
-    vinext(),
+    vinext({ images: { optimizer: imagesOptimizer() } }),
 
     // Cloudflare Workers plugin — builds for workerd runtime.
     // The worker entry runs in the RSC environment, with SSR as a child.
@@ -83,29 +84,6 @@ export default defineConfig({
         childEnvironments: ["ssr"],
       },
     }),
-
-    // Vite 8 (rolldown) warns on rollup-only keys injected by vinext.
-    // Strip those keys from the resolved client build config.
-    {
-      name: "strip-rolldown-incompatible-rollup-options",
-      configResolved(config) {
-        const clientRollupOptions = (config as any).environments?.client?.build?.rollupOptions;
-        if (!clientRollupOptions) return;
-
-        if (
-          clientRollupOptions.treeshake &&
-          typeof clientRollupOptions.treeshake === "object" &&
-          !Array.isArray(clientRollupOptions.treeshake)
-        ) {
-          delete clientRollupOptions.treeshake.preset;
-        }
-
-        const output = clientRollupOptions.output;
-        if (output && typeof output === "object" && !Array.isArray(output)) {
-          delete output.experimentalMinChunkSize;
-        }
-      },
-    },
   ],
 
   resolve: {

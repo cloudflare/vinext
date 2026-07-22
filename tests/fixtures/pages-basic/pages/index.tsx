@@ -10,6 +10,9 @@ export default function Home() {
       <h1>Hello, vinext!</h1>
       <p>This is a Pages Router app running on Vite.</p>
       <Link href="/about">Go to About</Link>
+      <Link href="/catchall-optional/[[...slug]]" as="/catchall-optional" id="optional-root">
+        Go to optional catch-all root
+      </Link>
     </div>
   );
 }

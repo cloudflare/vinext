@@ -1,9 +1,20 @@
 {
   "lsp": {
+    "oxlint": {
+      "initialization_options": {
+        "settings": {
+          "run": "onType",
+          "fixKind": "safe_fix",
+          "typeAware": true,
+          "unusedDisableDirectives": "deny"
+        }
+      }
+    },
     "oxfmt": {
       "initialization_options": {
         "settings": {
-          "fmt.configPath": ".oxfmtrc.json"
+          "configPath": "./vite.config.ts",
+          "run": "onSave"
         }
       }
     }

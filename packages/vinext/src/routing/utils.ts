@@ -15,13 +15,16 @@
  * The static-prefix reduction uses a small value (-50 per segment) so that:
  *   - It beats the per-dynamic-segment penalty (100), placing prefix routes
  *     above their no-prefix equivalents.
- *   - It never goes negative, so purely-static routes (score 0) always win.
  *   - It is small enough that infix-static bonuses (-500) and catch-all
  *     penalties (1000+) are not swamped, preserving their relative ordering.
  *     E.g. /:locale/blog/:path+ (with infix "blog") correctly beats /:locale/:path+
  *     even when both share the same "locale-test" static prefix.
+ *   - Note: dynamic routes CAN score negative (e.g. /a/:b/c/:d = -346), but
+ *     this is harmless because the trie matcher (route-trie.ts) checks static
+ *     children before dynamic children at each node, so purely-static routes
+ *     still win at request time regardless of sort-order score.
  */
-export function routePrecedence(pattern: string): number {
+function routePrecedence(pattern: string): number {
   const parts = pattern.split("/").filter(Boolean);
   let score = 0;
 
@@ -69,14 +72,93 @@ export function routePrecedence(pattern: string): number {
 }
 
 /**
- * Sort comparator for routes — lower precedence score sorts first (higher priority).
- * Lexicographic tiebreaker on pattern for determinism.
+ * Sort routes by precedence — lower score sorts first (higher priority), with a
+ * lexicographic tiebreaker on the pattern for determinism. Sorts in place and
+ * returns the same array (mirrors `Array.prototype.sort`).
  *
- * Usage: routes.sort(compareRoutes)
+ * `routePrecedence` is a pure function of the pattern, so each pattern's score
+ * is computed exactly once up front (decorate-sort) instead of ~2·log n times
+ * by a comparator that re-parses on every comparison. The `localeCompare`
+ * tiebreaker already guarantees a total order, so the result is byte-identical
+ * to comparing precedence inline.
+ *
+ * Usage: sortRoutes(routes)
  */
-export function compareRoutes<T extends { pattern: string }>(a: T, b: T): number {
-  const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-  return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+export function sortRoutes<T extends { pattern: string }>(routes: T[]): T[] {
+  const scores = new Map<string, number>();
+  for (const route of routes) {
+    if (!scores.has(route.pattern)) {
+      scores.set(route.pattern, routePrecedence(route.pattern));
+    }
+  }
+  return routes.sort((a, b) => {
+    const diff = (scores.get(a.pattern) ?? 0) - (scores.get(b.pattern) ?? 0);
+    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+  });
+}
+
+/**
+ * Single source of truth for hybrid App/Pages route ownership.
+ *
+ * Mirrors Next.js's DefaultRouteMatcherManager ordering: Pages providers
+ * are registered before App providers, then merged dynamic matchers sort
+ * together. Returns the router that should own a request/navigation to
+ * a URL that matched BOTH routers.
+ *
+ * Centralised so the server's request handling and the client's link /
+ * prefetch / programmatic-navigation paths all reach the same owner for
+ * the same (pages pattern, app pattern) pair. This intentionally implements
+ * Next.js's segment-tree ordering directly instead of vinext's broader
+ * `sortRoutes()` score heuristic. It only arbitrates two routes that already
+ * matched the same URL; each router's own trie ordering remains unchanged.
+ *
+ * Usage:
+ *   compareHybridRoutePatterns("/:slug", true, "/:slug", true)  // → "pages"
+ *   compareHybridRoutePatterns("/_sites/:slug*", true, "/:slug*", true)  // → "pages"
+ *   compareHybridRoutePatterns("/:path+", true, "/dashboard", false)  // → "app"
+ *   compareHybridRoutePatterns("/", false, "/", false)  // → "app"
+ */
+export function compareHybridRoutePatterns(
+  pagesPattern: string,
+  pagesIsDynamic: boolean,
+  appPattern: string,
+  appIsDynamic: boolean,
+): "app" | "pages" {
+  if (pagesPattern === appPattern) {
+    throw new Error(`Conflicting app and page routes found for "${pagesPattern}"`);
+  }
+
+  // Static-only paths: if Pages is static and App is also static, both have
+  // a literal route, but the App's catch-all is irrelevant — App still owns
+  // the literal hit (Next.js registers App providers after Pages but a
+  // static App segment always beats a static Pages segment when both match
+  // the same URL). If App is dynamic, Pages wins because Pages has the
+  // literal and App only has a catch-all.
+  if (!pagesIsDynamic) return appIsDynamic ? "pages" : "app";
+  // Pages is dynamic, App is static: App's literal always wins.
+  if (!appIsDynamic) return "app";
+  const pagesSegments = pagesPattern.split("/").filter(Boolean);
+  const appSegments = appPattern.split("/").filter(Boolean);
+  const segmentRank = (segment: string): number => {
+    if (!segment.startsWith(":")) return 0;
+    if (segment.endsWith("*")) return 3;
+    if (segment.endsWith("+")) return 2;
+    return 1;
+  };
+
+  for (let index = 0; index < Math.min(pagesSegments.length, appSegments.length); index++) {
+    const pagesRank = segmentRank(pagesSegments[index]);
+    const appRank = segmentRank(appSegments[index]);
+    if (pagesRank !== appRank) return pagesRank < appRank ? "pages" : "app";
+  }
+
+  if (pagesSegments.length !== appSegments.length) {
+    return pagesSegments.length < appSegments.length ? "pages" : "app";
+  }
+
+  // Matching dynamic routes with the same structural specificity retain
+  // provider order. Next.js registers Pages providers before App providers.
+  return "pages";
 }
 
 // Matches literal delimiter characters and their percent-encoded equivalents.
@@ -105,7 +187,7 @@ export function decodeRouteSegment(segment: string): string {
 /**
  * Strict variant for request pipelines that should reject malformed percent-encoding.
  */
-export function decodeRouteSegmentStrict(segment: string): string {
+function decodeRouteSegmentStrict(segment: string): string {
   return encodePathDelimiters(decodeURIComponent(segment));
 }
 
@@ -120,6 +202,10 @@ export function normalizePathnameForRouteMatch(pathname: string): string {
     .join("/");
 }
 
+export function splitPathnameForRouteMatch(pathname: string): string[] {
+  return normalizePathnameForRouteMatch(pathname).split("/").filter(Boolean);
+}
+
 /**
  * Strict pathname normalization for live request handling.
  * Throws on malformed percent-encoding so callers can return 400.
@@ -129,4 +215,122 @@ export function normalizePathnameForRouteMatchStrict(pathname: string): string {
     .split("/")
     .map((segment) => decodeRouteSegmentStrict(segment))
     .join("/");
+}
+
+function decodeMatchedParam(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Build a params object from ordered entries, preserving insertion order.
+ *
+ * Used by trie matchers to reconstruct the params Record after collecting
+ * entries in declaration order via DFS backtracking. Object.create(null)
+ * avoids prototype pollution.
+ *
+ * @param entries - Ordered [paramName, value] tuples from forward traversal
+ */
+export function buildParams(
+  entries: Array<[string, string | string[]]>,
+): Record<string, string | string[]> {
+  const params = Object.create(null);
+  for (const [key, value] of entries) {
+    params[key] = value;
+  }
+  return params;
+}
+
+/**
+ * Decode captured route params with `decodeURIComponent`, mirroring Next.js
+ * route-matcher.ts:25-27. Mutates the params object in place. Catch-all
+ * arrays are decoded element-wise. Malformed escapes are preserved (the
+ * strict normalization layer rejects them at the request boundary).
+ */
+export function decodeMatchedParams(params: Record<string, string | string[]>): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    if (Array.isArray(value)) {
+      params[key] = value.map(decodeMatchedParam);
+    } else {
+      params[key] = decodeMatchedParam(value);
+    }
+  }
+}
+
+/**
+ * Check whether a path segment is invisible in the URL (route groups, parallel
+ * slots, "."). Single source of truth shared by the route graph (Node) and
+ * browser-side bfcache identity logic. Lives in this browser-safe utils module
+ * so importing it does not drag node:path/node:fs into the client bundle.
+ */
+export function isInvisibleSegment(segment: string): boolean {
+  if (segment === ".") return true;
+  if (segment.startsWith("(") && segment.endsWith(")")) return true;
+  if (segment.startsWith("@")) return true;
+  return false;
+}
+
+/** Split a pathname into its non-empty segments without decoding. */
+export function splitPathSegments(pathname: string): string[] {
+  return pathname.split("/").filter(Boolean);
+}
+
+/**
+ * Catch-all filesystem segment, e.g. `[...slug]`. Browser-safe predicate shared
+ * with the route graph's segment parsing (dynamicParamNameFromSegment) so the
+ * bracket conventions live in one place. The length guard rejects empty names
+ * (`[...]`).
+ */
+export function isCatchAllSegment(segment: string): boolean {
+  return segment.startsWith("[...") && segment.endsWith("]") && segment.length > 5;
+}
+
+/**
+ * Optional-catch-all filesystem segment, e.g. `[[...slug]]`. Unlike a catch-all,
+ * this matches zero or more URL segments.
+ */
+export function isOptionalCatchAllSegment(segment: string): boolean {
+  return segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7;
+}
+
+/**
+ * Count how many pathname segments a tree path's *visible* segments consume,
+ * given the total number of pathname segments available.
+ *
+ * This is the minimal pure slice of the canonical filesystem-segment →
+ * URL-segment mapping in `app-route-graph.ts` (`convertSegmentsToRouteParts`),
+ * extracted here so browser-side bfcache identity logic can share it without
+ * importing the Node-bound route graph module. `convertSegmentsToRouteParts`
+ * remains the source of truth for how each segment kind maps to a URL part.
+ *
+ * Each ordinary visible segment (static or `[x]`) consumes exactly one pathname
+ * segment. A catch-all (`[...x]`) is terminal and consumes every remaining
+ * pathname segment. An optional-catch-all (`[[...x]]`) is also terminal but may
+ * match zero segments, so it consumes only the remaining pathname segments
+ * (which is zero once preceding segments have already consumed the pathname) —
+ * never more than are actually present.
+ *
+ * @param visibleTreePathSegments URL-visible tree-path segments (callers must
+ *   pre-filter invisible segments via `isInvisibleSegment`).
+ * @param pathnameSegmentCount Total number of pathname segments available.
+ */
+export function countConsumedPathnameSegments(
+  visibleTreePathSegments: readonly string[],
+  pathnameSegmentCount: number,
+): number {
+  let consumed = 0;
+  for (const segment of visibleTreePathSegments) {
+    if (isCatchAllSegment(segment) || isOptionalCatchAllSegment(segment)) {
+      // Terminal: a (possibly optional) catch-all swallows whatever pathname
+      // segments remain. Clamping to the available count keeps an optional
+      // catch-all that matches zero URL segments from over-counting.
+      return Math.max(consumed, pathnameSegmentCount);
+    }
+    consumed += 1;
+  }
+  return consumed;
 }

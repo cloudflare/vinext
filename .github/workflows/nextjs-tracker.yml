@@ -30,17 +30,19 @@ jobs:
       issues: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+      - uses: ./.github/actions/setup
 
       - name: Fetch recent Next.js canary commits
         id: commits
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE_HOURS: ${{ github.event.inputs.since_hours || '24' }}
         run: |
-          HOURS="${{ github.event.inputs.since_hours || '24' }}"
+          HOURS="$SINCE_HOURS"
           SINCE=$(date -u -d "${HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
 
           echo "Fetching Next.js canary commits since $SINCE"
@@ -70,8 +72,10 @@ jobs:
       - name: Build tracker prompt
         id: build_prompt
         if: steps.commits.outputs.has_commits == 'true'
+        env:
+          DRY_RUN_INPUT: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
-          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          DRY_RUN="$DRY_RUN_INPUT"
           COMMITS=$(cat /tmp/nextjs-commits.json)
 
           if [ "$DRY_RUN" = "true" ]; then
@@ -119,14 +123,14 @@ jobs:
 
       - name: Run Next.js Tracker
         if: steps.commits.outputs.has_commits == 'true'
-        uses: ask-bonk/ask-bonk/github@main
+        uses: ask-bonk/ask-bonk/github@8c7a8314f4f4865e2e41e5718dfabc4ab7a2274b # main
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-6"
+          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-7"
           permissions: write
           opencode_dev: false
           agent: nextjs-tracker
@@ -134,4 +138,6 @@ jobs:
 
       - name: Skip (no commits)
         if: steps.commits.outputs.has_commits == 'false'
-        run: echo "No Next.js canary commits in the last ${{ github.event.inputs.since_hours || '24' }} hours. Nothing to do."
+        env:
+          SINCE_HOURS: ${{ github.event.inputs.since_hours || '24' }}
+        run: echo "No Next.js canary commits in the last $SINCE_HOURS hours. Nothing to do."

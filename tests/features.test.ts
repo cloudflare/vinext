@@ -23,7 +23,9 @@ import {
   requestNodeServerWithHost,
   startFixtureServer,
 } from "./helpers.js";
+import { withEnvVar } from "./env-test-helpers.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import { toSlash } from "pathslash";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -574,6 +576,16 @@ describe("ISR (Pages Router)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
 
+  function readGeneration(html: string): number {
+    return Number(html.match(/data-testid="generation">(\d+)</)?.[1]);
+  }
+
+  function expectDevCacheHeaders(response: Response): void {
+    expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+  }
+
   beforeAll(async () => {
     ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR));
   });
@@ -582,112 +594,72 @@ describe("ISR (Pages Router)", () => {
     await server?.close();
   });
 
-  it("renders ISR page on first request (cache MISS)", async () => {
+  it("renders a GSP page with the Next.js development cache boundary", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("ISR Page");
     expect(html).toContain("Hello from ISR");
-    // First request should be a cache miss
-    expect(res.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+    expect(readGeneration(html)).toBeGreaterThan(0);
+    expectDevCacheHeaders(res);
   });
 
-  it("serves cached ISR page on second request (cache HIT)", async () => {
-    // First request populates the cache
+  it("reruns getStaticProps on immediate repeated requests", async () => {
     const res1 = await fetch(`${baseUrl}/isr-test`);
     expect(res1.status).toBe(200);
     const html1 = await res1.text();
-    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp1Match).toBeTruthy();
-    const timestamp1 = timestamp1Match![1];
+    const generation1 = readGeneration(html1);
+    expect(generation1).toBeGreaterThan(0);
 
-    // Second request should be a cache hit with same timestamp
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
     const html2 = await res2.text();
-    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
-    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp2Match).toBeTruthy();
-    expect(timestamp2Match![1]).toBe(timestamp1);
+    expect(readGeneration(html2)).toBeGreaterThan(generation1);
+    expectDevCacheHeaders(res1);
+    expectDevCacheHeaders(res2);
   });
 
-  it("serves stale content after TTL expires then regenerates", async () => {
-    // First request populates cache
+  it("continues rerunning after the configured revalidate interval", async () => {
     const res1 = await fetch(`${baseUrl}/isr-test`);
     const html1 = await res1.text();
-    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
-    const timestamp1 = timestamp1Match![1];
+    const generation1 = readGeneration(html1);
+    expect(generation1).toBeGreaterThan(0);
 
-    // Wait for TTL to expire (revalidate: 1 second)
+    // The delay crosses the configured one-second interval, but dev still has
+    // no response-cache boundary: this is another independent GSP render.
     await new Promise((r) => setTimeout(r, 1200));
 
-    // Request after TTL should get STALE content
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
-    expect(res2.headers.get("x-vinext-cache")).toBe("STALE");
-    // Stale content should have the same timestamp as original
     const html2 = await res2.text();
-    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp2Match![1]).toBe(timestamp1);
-
-    // Wait a moment for background regeneration to complete
-    await new Promise((r) => setTimeout(r, 200));
-
-    // Next request should be a HIT — background regen re-ran getStaticProps
-    // and cached the fresh result.
-    const res3 = await fetch(`${baseUrl}/isr-test`);
-    expect(res3.status).toBe(200);
-    expect(res3.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(readGeneration(html2)).toBeGreaterThan(generation1);
+    expectDevCacheHeaders(res1);
+    expectDevCacheHeaders(res2);
   });
 
-  it("background regeneration re-renders HTML with fresh props", async () => {
-    // Ensure cache is populated (may already be from prior tests)
-    await fetch(`${baseUrl}/isr-test`);
+  it("keeps each fresh GSP HTML render and hydration data in sync", async () => {
+    const res = await fetch(`${baseUrl}/isr-test`);
+    expectDevCacheHeaders(res);
+    const html = await res.text();
+    const htmlGeneration = readGeneration(html);
+    const htmlTimestamp = Number(html.match(/data-testid="timestamp">(\d+)</)?.[1]);
+    expect(htmlGeneration).toBeGreaterThan(0);
+    expect(htmlTimestamp).toBeGreaterThan(0);
 
-    // Wait for TTL to expire (revalidate: 1 second)
-    await new Promise((r) => setTimeout(r, 1200));
-
-    // Trigger background regeneration via STALE request and capture old HTML
-    const staleRes = await fetch(`${baseUrl}/isr-test`);
-    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
-    const staleHtml = await staleRes.text();
-    const staleTimestamp = staleHtml.match(/data-testid="timestamp">(\d+)</);
-    expect(staleTimestamp).toBeTruthy();
-    const oldTimestamp = Number(staleTimestamp![1]);
-
-    // Wait for background regeneration to complete
-    await new Promise((r) => setTimeout(r, 500));
-
-    // The regenerated HIT should have DIFFERENT HTML — the page must have been
-    // re-rendered with fresh getStaticProps data, not just the old HTML cached
-    // again with new pageData.
-    const hitRes = await fetch(`${baseUrl}/isr-test`);
-    expect(hitRes.headers.get("x-vinext-cache")).toBe("HIT");
-    const hitHtml = await hitRes.text();
-    const hitTimestamp = hitHtml.match(/data-testid="timestamp">(\d+)</);
-    expect(hitTimestamp).toBeTruthy();
-    const newTimestamp = Number(hitTimestamp![1]);
-
-    // The HTML timestamp must have changed — proves the page was re-rendered,
-    // not just getStaticProps re-run with old HTML cached again.
-    expect(newTimestamp).toBeGreaterThan(oldTimestamp);
-
-    // __NEXT_DATA__ must also contain the fresh timestamp, proving both the
+    // __NEXT_DATA__ must contain the same props as the HTML, proving both the
     // server-rendered HTML and the hydration data are in sync.
-    const nextDataMatch = hitHtml.match(
-      /window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})(?:;|<\/script>)/,
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
     );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]);
-    expect(nextData.props.pageProps.timestamp).toBe(newTimestamp);
+    expect(nextData.props.pageProps.generation).toBe(htmlGeneration);
+    expect(nextData.props.pageProps.timestamp).toBe(htmlTimestamp);
   });
 
-  it("sets Cache-Control header for ISR pages", async () => {
+  it("uses the exact development Cache-Control header even when revalidate is configured", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
-    const cacheControl = res.headers.get("cache-control");
-    expect(cacheControl).toContain("s-maxage=1");
-    expect(cacheControl).toContain("stale-while-revalidate");
+    expectDevCacheHeaders(res);
   });
 
   it("does not set ISR headers for non-ISR pages", async () => {
@@ -911,6 +883,106 @@ describe("i18n config parsing", () => {
     expect(config.i18n!.localeDetection).toBe(true);
   });
 
+  it("places the default locale first without mutating the input", async () => {
+    // Ported from Next.js: test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const locales = ["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"];
+    const config = await resolveNextConfig({
+      i18n: {
+        locales,
+        defaultLocale: "en-US",
+      },
+    });
+
+    expect(config.i18n!.locales).toEqual(["en-US", "nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en"]);
+    expect(locales).toEqual(["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"]);
+  });
+
+  it("rejects a default locale that is not included in locales", async () => {
+    // Ported from Next.js: packages/next/src/server/config.ts
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/packages/next/src/server/config.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+  });
+
+  it("validates i18n before invoking config callbacks", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const redirects = vi.fn(() => []);
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+        redirects,
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+    expect(redirects).not.toHaveBeenCalled();
+  });
+
+  it("reports invalid locales before checking default locale membership", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: [42],
+          defaultLocale: "en",
+        },
+      } as never),
+    ).rejects.toThrow(
+      'Specified i18n.locales contains invalid values (42), locales must be valid locale tags provided as strings e.g. "en-US".',
+    );
+  });
+
+  it("rejects overlapping domain locales exposed by a malformed includes value", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.com", defaultLocale: "en", locales: ["fr"] },
+            { domain: "example.fr", defaultLocale: "fr", locales: "fr" },
+          ],
+        },
+      } as never),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
+  it("rejects duplicate domain default locales", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.fr", defaultLocale: "fr" },
+            { domain: "french.example.com", defaultLocale: "fr" },
+          ],
+        },
+      }),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
     const config = await resolveNextConfig({});
@@ -1031,12 +1103,12 @@ describe("detectLocaleFromHeaders", () => {
     expect(detectLocaleFromHeaders(fakeReq("de;q=0.9,fr;q=0.8"), i18nConfig)).toBe("de");
   });
 
-  it("detects locale via prefix match (en-US -> en)", () => {
-    expect(detectLocaleFromHeaders(fakeReq("en-US"), i18nConfig)).toBe("en");
+  it("does not truncate an unconfigured regional locale", () => {
+    expect(detectLocaleFromHeaders(fakeReq("en-US"), i18nConfig)).toBeNull();
   });
 
-  it("detects locale via prefix match (fr-FR -> fr)", () => {
-    expect(detectLocaleFromHeaders(fakeReq("fr-FR,en;q=0.5"), i18nConfig)).toBe("fr");
+  it("falls through an unconfigured regional locale to the next preference", () => {
+    expect(detectLocaleFromHeaders(fakeReq("fr-FR,en;q=0.5"), i18nConfig)).toBe("en");
   });
 
   it("returns null for unrecognized language", () => {
@@ -1095,16 +1167,19 @@ describe("i18n routing (Pages Router)", () => {
     // About page — uses getServerSideProps to expose locale
     await fsp.writeFile(
       path.join(i18nTmpDir, "pages", "about.tsx"),
-      `export function getServerSideProps({ locale, locales, defaultLocale }) {
+      `import { useRouter } from "next/router";
+export function getServerSideProps({ locale, locales, defaultLocale }) {
   return { props: { locale: locale || null, locales: locales || [], defaultLocale: defaultLocale || null } };
 }
 export default function About({ locale, locales, defaultLocale }) {
+  const router = useRouter();
   return (
     <div>
       <h1>About</h1>
       <p id="locale">{locale}</p>
       <p id="locales">{locales.join(",")}</p>
       <p id="defaultLocale">{defaultLocale}</p>
+      <p id="asPath">{router.asPath}</p>
     </div>
   );
 }`,
@@ -1199,6 +1274,16 @@ export default function About({ locale, locales, defaultLocale }) {
     expect(html).toMatch(/<p id="locale">.*fr.*<\/p>/);
   });
 
+  it("strips the locale prefix from router.asPath in dev SSR", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    const res = await fetch(`${i18nBaseUrl}/fr/about?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/<p id="asPath">.*\/about\?hello=world.*<\/p>/);
+  });
+
   it("passes correct locale to getServerSideProps for /de/about", async () => {
     const res = await fetch(`${i18nBaseUrl}/de/about`);
     expect(res.status).toBe(200);
@@ -1212,7 +1297,9 @@ export default function About({ locale, locales, defaultLocale }) {
     const res = await fetch(`${i18nBaseUrl}/fr/about`);
     const html = await res.text();
     // Extract the JSON object from __NEXT_DATA__ (handles nested braces)
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     expect(data.locale).toBe("fr");
@@ -1223,7 +1310,9 @@ export default function About({ locale, locales, defaultLocale }) {
   it("includes locale info in __NEXT_DATA__ for default locale", async () => {
     const res = await fetch(`${i18nBaseUrl}/about`);
     const html = await res.text();
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     expect(data.locale).toBe("en");
@@ -1401,6 +1490,124 @@ describe("i18n domain routing (Pages Router)", () => {
     expect(res.body).toContain(
       '"domainLocales":[{"domain":"example.com","defaultLocale":"en"},{"domain":"example.fr","defaultLocale":"fr","http":true}]',
     );
+  });
+
+  it("revalidates with the request domain locale without persisting a dev response", async () => {
+    const before = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    const beforeGeneration = Number(before.body.match(/<p id="generation">(\d+)<\/p>/)?.[1]);
+    expect(beforeGeneration).toBeGreaterThan(0);
+    expect(before.body).toContain('<p id="reason">stale</p>');
+
+    const revalidate = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidate?path=%2Fisr-about&includeState=1",
+      "example.fr",
+    );
+    expect(revalidate.status).toBe(200);
+    const revalidateResult = JSON.parse(revalidate.body);
+    expect(revalidateResult).toEqual({
+      revalidated: true,
+      state: {
+        defaultLocale: "fr",
+        generation: expect.any(Number),
+        locale: "fr",
+        reason: "on-demand",
+      },
+    });
+    expect(revalidateResult.state.generation).toBeGreaterThan(beforeGeneration);
+
+    const after = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    expect(after.body).toContain('<p id="locale">fr</p>');
+    expect(after.body).toContain('<p id="defaultLocale">fr</p>');
+    expect(after.body).toContain('<p id="reason">stale</p>');
+    expect(Number(after.body.match(/<p id="generation">(\d+)<\/p>/)?.[1])).toBeGreaterThan(
+      revalidateResult.state.generation,
+    );
+  });
+
+  it("does not trust or expose a forged logical revalidation hostname", async () => {
+    const response = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidation-headers",
+      "example.com",
+      {
+        "x-prerender-revalidate": "not-the-secret",
+        "x-vinext-revalidate-host": "example.fr",
+      },
+    );
+
+    expect(JSON.parse(response.body)).toEqual({ host: "example.com", logicalHost: null });
+  });
+
+  it("uses the dynamic route pattern for locale-prefixed data responses in dev", async () => {
+    const res = await requestNodeServerWithHost(
+      domainPort,
+      "/_next/data/test-build-id/fr/posts/first.json",
+      "example.com",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["x-nextjs-matched-path"]).toBe("/fr/posts/[id]");
+    expect(JSON.parse(res.body)).toEqual({ pageProps: { id: "first" }, __N_SSP: true });
+  });
+
+  it("preserves the locale-prefixed matched path for data misses in dev", async () => {
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts
+    const res = await requestNodeServerWithHost(
+      domainPort,
+      "/_next/data/test-build-id/fr/missing.json",
+      "example.com",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["x-nextjs-matched-path"]).toBe("/fr/missing");
+    expect(JSON.parse(res.body)).toEqual({});
+  });
+
+  it("prefixes the default locale on unprefixed data misses in dev", async () => {
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts
+    const res = await requestNodeServerWithHost(
+      domainPort,
+      "/_next/data/test-build-id/missing.json",
+      "example.com",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["x-nextjs-matched-path"]).toBe("/en/missing");
+    expect(JSON.parse(res.body)).toEqual({});
+  });
+
+  // Issue #1336 item 3: locale prefix must be stripped before API route matching.
+  //
+  // Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts
+  // (the "should redirect to api route with locale" case, which exercises
+  // /fr/api/ok hitting pages/api/ok.js)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-redirects/test/index.test.ts
+  it("matches /api/ok without a locale prefix (dev)", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/api/ok", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
+
+  it("matches /fr/api/ok by stripping the locale prefix in dev (issue #1336)", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/fr/api/ok", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
+
+  it("preserves query parameters when stripping the locale prefix from an API path (dev)", async () => {
+    const res = await requestNodeServerWithHost(
+      domainPort,
+      "/fr/api/ok?foo=bar&baz=qux",
+      "example.com",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
   });
 });
 
@@ -1667,6 +1874,39 @@ describe("i18n localeDetection: false", () => {
 });
 
 describe("basePath support (Pages Router)", () => {
+  it("resolveNextConfig correctly resolves basePath", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    // Default: empty basePath
+    const defaultConfig = await resolveNextConfig({});
+    expect(defaultConfig.basePath).toBe("");
+
+    // With basePath configured
+    const withBasePath = await resolveNextConfig({ basePath: "/app" });
+    expect(withBasePath.basePath).toBe("/app");
+
+    // basePath must start with / (Next.js requirement)
+    const withSlash = await resolveNextConfig({ basePath: "/docs" });
+    expect(withSlash.basePath).toBe("/docs");
+  });
+
+  it("resolveNextConfig correctly resolves trailingSlash", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    // Default: trailingSlash is false
+    const defaultConfig = await resolveNextConfig({});
+    expect(defaultConfig.trailingSlash).toBe(false);
+
+    // With trailingSlash: true
+    const withTrailing = await resolveNextConfig({ trailingSlash: true });
+    expect(withTrailing.trailingSlash).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// build-time defines exposed to client code
+
+describe("build-time defines (Pages Router)", () => {
   let server: ViteDevServer;
 
   beforeAll(async () => {
@@ -1686,41 +1926,23 @@ describe("basePath support (Pages Router)", () => {
     await server?.close();
   });
 
-  it("resolveNextConfig correctly resolves basePath", async () => {
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-
-    // Default: empty basePath
-    const defaultConfig = await resolveNextConfig({});
-    expect(defaultConfig.basePath).toBe("");
-
-    // With basePath configured
-    const withBasePath = await resolveNextConfig({ basePath: "/app" });
-    expect(withBasePath.basePath).toBe("/app");
-
-    // basePath must start with / (Next.js requirement)
-    const withSlash = await resolveNextConfig({ basePath: "/docs" });
-    expect(withSlash.basePath).toBe("/docs");
-  });
-
   it("basePath define is injected into client code", async () => {
-    // The plugin should set process.env.__NEXT_ROUTER_BASEPATH as a define.
-    // We test this by checking the resolved config of the current server.
-    const config = server.config;
     // Default fixture has no basePath, so it should be ""
     const defineKey = "process.env.__NEXT_ROUTER_BASEPATH";
-    expect(config.define?.[defineKey]).toBe(JSON.stringify(""));
+    expect(server.config.define?.[defineKey]).toBe(JSON.stringify(""));
   });
 
-  it("resolveNextConfig correctly resolves trailingSlash", async () => {
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+  it("App Shells define is always false", async () => {
+    // Plumbing-only upstream; vinext always reports false so client gating
+    // code never trips. See issue #1405.
+    const defineKey = "process.env.__NEXT_APP_SHELLS";
+    expect(server.config.define?.[defineKey]).toBe(JSON.stringify(false));
+  });
 
-    // Default: trailingSlash is false
-    const defaultConfig = await resolveNextConfig({});
-    expect(defaultConfig.trailingSlash).toBe(false);
-
-    // With trailingSlash: true
-    const withTrailing = await resolveNextConfig({ trailingSlash: true });
-    expect(withTrailing.trailingSlash).toBe(true);
+  it("App navigation failure handling defaults to false", () => {
+    expect(server.config.define?.["process.env.__NEXT_APP_NAV_FAIL_HANDLING"]).toBe(
+      JSON.stringify(false),
+    );
   });
 });
 
@@ -2065,6 +2287,14 @@ describe("basePath + trailingSlash interaction", () => {
 }`,
     );
 
+    await fsp.mkdir(path.join(tmpDir, "pages", "catch-all"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "catch-all", "[...slug].tsx"),
+      `export default function CatchAll() {
+  return <h1>TrailingSlash CatchAll</h1>;
+}`,
+    );
+
     const plugins: any[] = [vinext()];
     tsServer = await createServer({
       root: tmpDir,
@@ -2105,14 +2335,24 @@ describe("basePath + trailingSlash interaction", () => {
     const html = await res.text();
     expect(html).toContain("TrailingSlash About");
   });
+
+  it("GET /app/catch-all/hello.world/ redirects to the file-looking canonical path", async () => {
+    const res = await fetch(`${tsBaseUrl}/app/catch-all/hello.world/`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/app/catch-all/hello.world");
+  });
 });
 
 describe("metadata title templates", () => {
   let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
+  let mergeMetadataEntries: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadataEntries;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/metadata.js");
     mergeMetadata = mod.mergeMetadata;
+    mergeMetadataEntries = mod.mergeMetadataEntries;
   });
 
   it("applies layout template to child page string title", () => {
@@ -2129,6 +2369,21 @@ describe("metadata title templates", () => {
       { description: "No title here" },
     ]);
     expect(result.title).toBe("My Site");
+  });
+
+  it("applies ancestor title template to child layout default title", () => {
+    // Next.js resolveTitle() applies the stashed ancestor template to title.default:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-title.ts
+    const result = mergeMetadataEntries([
+      {
+        metadata: { title: { template: "%s | Site", default: "Site" } },
+      },
+      {
+        metadata: { title: { default: "Blog" } },
+      },
+    ]);
+
+    expect(result.title).toBe("Blog | Site");
   });
 
   it("title.absolute skips all templates", () => {
@@ -2148,16 +2403,19 @@ describe("metadata title templates", () => {
     expect(result.title).toBe("Hello World - Blog");
   });
 
-  it("page template has no effect (page is terminal)", () => {
-    // If the page defines a template, it should be ignored
-    // Only layouts define templates, and page is always the last entry
+  it("applies ancestor template to page default while ignoring page template", () => {
     const result = mergeMetadata([
       { title: { template: "%s | Site", default: "Site" } },
       { title: { template: "%s - Page Template", default: "Page Default" } },
     ]);
-    // The page's template should be ignored; the page's default is used
-    // because the page has a title object (not a string), so we use its default
-    expect(result.title).toBe("Page Default");
+
+    expect(result.title).toBe("Page Default | Site");
+  });
+
+  it("does not apply a page template to the page's own default title", () => {
+    const result = mergeMetadata([{ title: { template: "%s | Page", default: "Page" } }]);
+
+    expect(result.title).toBe("Page");
   });
 
   it("preserves non-title metadata during merge", () => {
@@ -2176,8 +2434,10 @@ describe("metadata title templates", () => {
       { description: "From page" },
     ]);
     expect(result.description).toBe("From page");
-    // openGraph from layout should be inherited if page doesn't override it
-    expect(result.openGraph).toEqual({ title: "OG Layout" });
+    // openGraph from layout should be inherited if page doesn't override it.
+    // Next.js postProcessMetadata also fills openGraph.description from
+    // metadata.description when absent.
+    expect(result.openGraph).toEqual({ title: "OG Layout", description: "From page" });
   });
 
   it("simple string title without template passes through", () => {
@@ -2189,6 +2449,269 @@ describe("metadata title templates", () => {
     const result = mergeMetadata([]);
     expect(result).toEqual({});
   });
+
+  it("uses explicit page markers instead of assuming the last entry is the page", () => {
+    const result = mergeMetadataEntries([
+      {
+        metadata: { title: { default: "Root", template: "%s | Root" } },
+      },
+      {
+        isPage: true,
+        metadata: { description: "Page", title: { default: "Page", template: "%s | Page" } },
+      },
+      {
+        contributesTitle: false,
+        metadata: {
+          openGraph: { title: "Slot OG title" },
+          title: { default: "Slot", template: "%s | Slot" },
+        },
+      },
+    ]);
+
+    // mergeMetadataEntries does raw segment merging only; post-processing is
+    // applied separately by postProcessMetadata (called by mergeMetadata and by
+    // resolveAppPageHead after file-based metadata is applied).
+    expect(result).toEqual({
+      description: "Page",
+      openGraph: { title: "Slot OG title" },
+      title: "Page | Root",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Metadata segment merge tests
+// Ported from Next.js behavior:
+// - docs: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#merging
+// - source: packages/next/src/lib/metadata/resolve-metadata.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+
+describe("metadata segment merge", () => {
+  let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/metadata.js");
+    mergeMetadata = mod.mergeMetadata;
+  });
+
+  it("replaces openGraph instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { openGraph: { siteName: "My Site", images: ["/og-root.png"], locale: "en-US" } },
+      { openGraph: { title: "Child Page" } },
+    ]);
+    expect(result.openGraph).toEqual({
+      title: "Child Page",
+    });
+    expect(result.twitter?.images).toBeUndefined();
+  });
+
+  it("replaces twitter instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { twitter: { card: "summary", site: "@site" } },
+      { twitter: { title: "Tweet Title" } },
+    ]);
+    expect(result.twitter).toEqual({
+      title: "Tweet Title",
+      card: "summary",
+    });
+  });
+
+  it("replaces alternates instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { alternates: { canonical: "https://example.com", languages: { "en-US": "/en" } } },
+      { alternates: { media: { print: "/print" } } },
+    ]);
+    expect(result.alternates).toEqual({
+      media: { print: "/print" },
+    });
+  });
+
+  it("replaces robots instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { robots: { index: true, follow: true, googleBot: { index: true } } },
+      { robots: { follow: false } },
+    ]);
+    expect(result.robots).toEqual({
+      follow: false,
+    });
+  });
+
+  it("replaces robots string with object outright", () => {
+    const result = mergeMetadata([{ robots: "index, follow" }, { robots: { index: false } }]);
+    expect(result.robots).toEqual({ index: false });
+  });
+
+  it("replaces icons instead of deep-merging map objects", () => {
+    const result = mergeMetadata([
+      { icons: { icon: "/favicon.ico", apple: "/apple.png" } },
+      { icons: { shortcut: "/shortcut.png" } },
+    ]);
+    expect(result.icons).toEqual({
+      shortcut: "/shortcut.png",
+    });
+  });
+
+  it("replaces shorthand icon string with map object", () => {
+    const result = mergeMetadata([{ icons: "/favicon.ico" }, { icons: { apple: "/apple.png" } }]);
+    expect(result.icons).toEqual({ apple: "/apple.png" });
+  });
+
+  it("merges other custom meta tags", () => {
+    const result = mergeMetadata([
+      { other: { foo: "bar", baz: "qux" } },
+      { other: { baz: "override", new: "value" } },
+    ]);
+    expect(result.other).toEqual({
+      foo: "bar",
+      baz: "override",
+      new: "value",
+    });
+  });
+
+  it("preserves root openGraph when page does not override it", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "OG Layout", siteName: "Site" } },
+      { keywords: ["page"] },
+    ]);
+    expect(result.openGraph).toEqual({ title: "OG Layout", siteName: "Site" });
+  });
+
+  it("inherits openGraph.description from metadata.description when missing", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "OG Layout" } },
+      { description: "Page desc" },
+    ]);
+    expect(result.openGraph).toEqual({
+      title: "OG Layout",
+      description: "Page desc",
+    });
+  });
+
+  it("child openGraph replaces the whole parent openGraph object", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "Root", images: ["/og.png"] } },
+      { openGraph: { images: undefined } },
+    ]);
+    expect(result.openGraph?.title).toBeUndefined();
+    expect(result.openGraph?.images).toBeUndefined();
+    expect(result.twitter?.images).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Metadata OG/Twitter inheritance tests
+// Ported from Next.js behavior: packages/next/src/lib/metadata/resolve-metadata.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+
+describe("metadata OG/Twitter inheritance", () => {
+  let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
+  let MetadataHead: typeof import("../packages/vinext/src/shims/metadata.js").MetadataHead;
+  let React: typeof import("react");
+  let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/metadata.js");
+    mergeMetadata = mod.mergeMetadata;
+    MetadataHead = mod.MetadataHead;
+    React = await import("react");
+    renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
+  });
+
+  it("auto-fills twitter:title from openGraph:title", () => {
+    const result = mergeMetadata([{ openGraph: { title: "OG Title" } }]);
+    expect(result.twitter?.title).toBe("OG Title");
+  });
+
+  it("auto-fills twitter:description from openGraph:description", () => {
+    const result = mergeMetadata([{ openGraph: { description: "OG Desc" } }]);
+    expect(result.twitter?.description).toBe("OG Desc");
+  });
+
+  it("auto-fills twitter:images from openGraph:images", () => {
+    const result = mergeMetadata([{ openGraph: { images: ["/og.png"] } }]);
+    expect(result.twitter?.images).toEqual(["/og.png"]);
+  });
+
+  it("auto-fills twitter:title from metadata.title when openGraph.title is absent", () => {
+    const result = mergeMetadata([{ title: "Page Title", openGraph: {} }]);
+    expect(result.twitter?.title).toBe("Page Title");
+  });
+
+  it("auto-fills twitter:description from metadata.description when openGraph.description is absent", () => {
+    const result = mergeMetadata([{ description: "Page Desc", openGraph: {} }]);
+    expect(result.twitter?.description).toBe("Page Desc");
+  });
+
+  it("does not create twitter fields from metadata when openGraph is absent entirely", () => {
+    const result = mergeMetadata([{ title: "Page Title", description: "Page Desc" }]);
+    expect(result.twitter).toBeUndefined();
+  });
+
+  it("fills existing twitter title and description from metadata when openGraph is absent", () => {
+    const result = mergeMetadata([{ title: "Page Title", description: "Page Desc", twitter: {} }]);
+    expect(result.twitter?.title).toBe("Page Title");
+    expect(result.twitter?.description).toBe("Page Desc");
+    expect(result.twitter?.card).toBe("summary");
+  });
+
+  it("does not overwrite explicitly set twitter fields", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "OG Title", description: "OG Desc", images: ["/og.png"] } },
+      { twitter: { title: "Custom Twitter Title", description: "Custom Twitter Desc" } },
+    ]);
+    expect(result.twitter?.title).toBe("Custom Twitter Title");
+    expect(result.twitter?.description).toBe("Custom Twitter Desc");
+  });
+
+  it("does not auto-fill twitter:images when twitter.images is explicitly set to empty array", () => {
+    const result = mergeMetadata([
+      { openGraph: { images: ["/og.png"] } },
+      { twitter: { images: [] } },
+    ]);
+    expect(result.twitter?.images).toEqual([]);
+  });
+
+  it("auto-fills openGraph:title from metadata.title", () => {
+    const result = mergeMetadata([{ title: "Page Title", openGraph: {} }]);
+    expect(result.openGraph?.title).toBe("Page Title");
+  });
+
+  it("auto-fills openGraph:description from metadata.description", () => {
+    const result = mergeMetadata([{ description: "Page Desc", openGraph: {} }]);
+    expect(result.openGraph?.description).toBe("Page Desc");
+  });
+
+  it("renders twitter card tags when only openGraph is configured", () => {
+    const metadata = mergeMetadata([
+      {
+        openGraph: {
+          title: "My custom title",
+          description: "My custom description",
+          url: "https://example.com",
+          siteName: "My custom site name",
+          images: [{ url: "https://example.com/image.png", width: 800, height: 600 }],
+          locale: "en-US",
+          type: "website",
+        },
+      },
+    ]);
+    const html = renderToStaticMarkup(React.createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card"');
+    expect(html).toContain('content="summary_large_image"');
+    expect(html).toContain('name="twitter:title"');
+    expect(html).toContain('content="My custom title"');
+    expect(html).toContain('name="twitter:description"');
+    expect(html).toContain('content="My custom description"');
+    expect(html).toContain('name="twitter:image"');
+    expect(html).toContain('content="https://example.com/image.png"');
+  });
+
+  it("renders twitter:card summary when no images are present", () => {
+    const metadata = mergeMetadata([{ openGraph: { title: "No Images" } }]);
+    const html = renderToStaticMarkup(React.createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card"');
+    expect(html).toContain('content="summary"');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2196,15 +2719,39 @@ describe("metadata title templates", () => {
 
 describe("MetadataHead rendering", () => {
   let MetadataHead: typeof import("../packages/vinext/src/shims/metadata.js").MetadataHead;
+  let renderMetadataToHtml: typeof import("../packages/vinext/src/shims/metadata.js").renderMetadataToHtml;
   let React: typeof import("react");
   let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/metadata.js");
     MetadataHead = mod.MetadataHead;
+    renderMetadataToHtml = mod.renderMetadataToHtml;
     React = await import("react");
     renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
   });
+
+  function metadataRouteImage(url: string): { url: string } {
+    const image = { url };
+    Object.defineProperty(image, "metadataRoute", { value: true });
+    return image;
+  }
+
+  function renderStaticSocialImagesMetadata(metadataBase: URL | null): string {
+    return renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase,
+          openGraph: {
+            images: [metadataRouteImage("/metadata-base/unset/opengraph-image2/100")],
+          },
+          twitter: {
+            images: metadataRouteImage("/metadata-base/unset/twitter-image.png"),
+          },
+        },
+      }),
+    );
+  }
 
   it("renders generator meta tag", () => {
     const html = renderToStaticMarkup(
@@ -2297,6 +2844,148 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('rel="shortcut icon"');
   });
 
+  // Regression for #1492: Next.js accepts icons.other as a single descriptor
+  // or an array; vinext previously iterated it directly and crashed when
+  // given a non-array. Matches resolveAsArrayOrUndefined in
+  // .nextjs-ref/packages/next/src/lib/metadata/resolvers/resolve-icons.ts.
+  it("renders icons.other as a single descriptor (not just an array)", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          icons: {
+            other: {
+              rel: "apple-touch-icon-precomposed",
+              url: "/apple-touch-icon-precomposed.png",
+            },
+          },
+        },
+      }),
+    );
+    expect(html).toContain('rel="apple-touch-icon-precomposed"');
+    expect(html).toContain('href="/apple-touch-icon-precomposed.png"');
+  });
+
+  it("renders icons.other as an array of descriptors", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          icons: {
+            other: [
+              { rel: "mask-icon", url: "/mask.svg", type: "image/svg+xml" },
+              { rel: "apple-touch-icon-precomposed", url: "/apple.png" },
+            ],
+          },
+        },
+      }),
+    );
+    expect(html).toContain('rel="mask-icon"');
+    expect(html).toContain('href="/mask.svg"');
+    expect(html).toContain('type="image/svg+xml"');
+    expect(html).toContain('rel="apple-touch-icon-precomposed"');
+    expect(html).toContain('href="/apple.png"');
+  });
+
+  it("serializes rich metadata for the streaming body outlet", () => {
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("https://example.com"),
+        title: "Generated <Title>",
+        description: 'Description with "quotes"',
+        alternates: {
+          canonical: "/products",
+          languages: { "en-US": "/products/en" },
+        },
+        openGraph: {
+          images: [{ url: "/og.png", width: 1200, height: 630, type: "image/png" }],
+        },
+        icons: {
+          icon: [
+            {
+              url: "/icon.png",
+              sizes: "32x32",
+              type: "image/png",
+              media: "(prefers-color-scheme: dark)",
+            },
+          ],
+        },
+      },
+      "/products",
+    );
+
+    expect(html).toContain("<title>Generated &lt;Title&gt;</title>");
+    expect(html).toContain('name="description"');
+    expect(html).toContain('content="Description with &quot;quotes&quot;"');
+    expect(html).toContain('rel="canonical"');
+    expect(html).toContain('href="https://example.com/products"');
+    expect(html).toContain('property="og:image"');
+    expect(html).toContain('content="https://example.com/og.png"');
+    expect(html).toContain('property="og:image:width"');
+    expect(html).toContain('content="1200"');
+    expect(html).toContain('property="og:image:height"');
+    expect(html).toContain('content="630"');
+    expect(html).toContain('property="og:image:type"');
+    expect(html).toContain('content="image/png"');
+    expect(html).toContain('rel="alternate"');
+    expect(html).toContain('hreflang="en-US"');
+    expect(html).toContain('href="https://example.com/products/en"');
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/icon.png"');
+    expect(html).toContain('sizes="32x32"');
+    expect(html).toContain('type="image/png"');
+    expect(html).toContain('media="(prefers-color-scheme: dark)"');
+  });
+
+  it("renders single descriptor icon objects", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          icons: {
+            apple: { url: "/apple-icon.png", sizes: "180x180", type: "image/png" },
+            icon: { url: "/icon.png", sizes: "96x96", type: "image/png" },
+          },
+        },
+      }),
+    );
+
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/icon.png"');
+    expect(html).toContain('sizes="96x96"');
+    expect(html).toContain('rel="apple-touch-icon"');
+    expect(html).toContain('href="/apple-icon.png"');
+    expect(html).toContain('sizes="180x180"');
+  });
+
+  it("renders top-level icon shorthand metadata", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: { icons: "/manual-icon.png" },
+      }),
+    );
+
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/manual-icon.png"');
+  });
+
+  it("keeps icon metadata hrefs relative when metadataBase is configured", () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase: new URL("https://mydomain.com"),
+          icons: {
+            icon: [{ url: "/dynamic/big/icon-ahg52g/small", sizes: "48x48", type: "image/png" }],
+            apple: [{ url: "/dynamic/big/apple-icon-ahg52g/0", sizes: "48x48", type: "image/png" }],
+          },
+        },
+      }),
+    );
+
+    expect(html).toContain('href="/dynamic/big/icon-ahg52g/small"');
+    expect(html).toContain('href="/dynamic/big/apple-icon-ahg52g/0"');
+    expect(html).not.toContain("https://mydomain.com/dynamic/big");
+  });
+
   it("renders alternate hreflang links", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
@@ -2363,6 +3052,116 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('content="https://acme.com/og.png"');
   });
 
+  it("normalizes root canonical metadataBase URLs without a trailing slash", () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase: new URL("https://mydomain.com"),
+          alternates: { canonical: "./" },
+        },
+        pathname: "/",
+      }),
+    );
+
+    expect(html).toContain('rel="canonical"');
+    expect(html).toContain('href="https://mydomain.com"');
+  });
+
+  it("keeps manifest metadata routes relative when metadataBase is configured", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase: new URL("https://mydomain.com"),
+          manifest: "/manifest.webmanifest",
+        },
+      }),
+    );
+
+    expect(html).toContain('rel="manifest"');
+    expect(html).toContain('href="/manifest.webmanifest"');
+  });
+
+  it("uses social image fallback metadataBase for static metadata route images", () => {
+    withEnvVar("NODE_ENV", "production", () => {
+      withEnvVar("PORT", "4567", () => {
+        withEnvVar("VERCEL_PROJECT_PRODUCTION_URL", undefined, () => {
+          const html = renderStaticSocialImagesMetadata(null);
+
+          expect(html).toContain(
+            'content="http://localhost:4567/metadata-base/unset/opengraph-image2/100"',
+          );
+          expect(html).toContain(
+            'content="http://localhost:4567/metadata-base/unset/twitter-image.png"',
+          );
+        });
+      });
+    });
+  });
+
+  it("lets configured metadataBase win over non-preview deployment urls for static metadata route images", () => {
+    withEnvVar("NODE_ENV", "production", () => {
+      withEnvVar("VERCEL_URL", "my-deployment.vercel.app", () => {
+        withEnvVar("VERCEL_ENV", "production", () => {
+          const html = renderStaticSocialImagesMetadata(new URL("https://mydomain.com"));
+
+          expect(html).toContain(
+            'content="https://mydomain.com/metadata-base/unset/opengraph-image2/100"',
+          );
+          expect(html).not.toContain("my-deployment.vercel.app");
+        });
+      });
+    });
+  });
+
+  it("lets configured metadataBase win over deployment urls when VERCEL_ENV is unset", () => {
+    withEnvVar("NODE_ENV", "production", () => {
+      withEnvVar("VERCEL_URL", "my-deployment.vercel.app", () => {
+        withEnvVar("VERCEL_ENV", undefined, () => {
+          const html = renderStaticSocialImagesMetadata(new URL("https://mydomain.com"));
+
+          expect(html).toContain(
+            'content="https://mydomain.com/metadata-base/unset/opengraph-image2/100"',
+          );
+          expect(html).not.toContain("my-deployment.vercel.app");
+        });
+      });
+    });
+  });
+
+  it("uses preview deployment urls for static metadata route images in Vercel preview", () => {
+    withEnvVar("NODE_ENV", "production", () => {
+      withEnvVar("VERCEL_BRANCH_URL", "branch-preview.vercel.app", () => {
+        withEnvVar("VERCEL_ENV", "preview", () => {
+          const html = renderStaticSocialImagesMetadata(new URL("https://mydomain.com"));
+
+          expect(html).toContain(
+            'content="https://branch-preview.vercel.app/metadata-base/unset/opengraph-image2/100"',
+          );
+          expect(html).not.toContain("https://mydomain.com/metadata-base/unset");
+        });
+      });
+    });
+  });
+
+  it("uses production deployment urls as fallback when metadataBase is unset", () => {
+    withEnvVar("NODE_ENV", "production", () => {
+      withEnvVar("VERCEL_PROJECT_PRODUCTION_URL", "project-production.vercel.app", () => {
+        withEnvVar("VERCEL_URL", "my-deployment.vercel.app", () => {
+          withEnvVar("VERCEL_ENV", "production", () => {
+            const html = renderStaticSocialImagesMetadata(null);
+
+            expect(html).toContain(
+              'content="https://project-production.vercel.app/metadata-base/unset/opengraph-image2/100"',
+            );
+            expect(html).not.toContain("my-deployment.vercel.app");
+          });
+        });
+      });
+    });
+  });
+
   it("accepts URL objects for canonical and openGraph.url", () => {
     // Next.js allows string | URL for URL fields; passing a URL object must not throw
     const html = renderToStaticMarkup(
@@ -2413,6 +3212,237 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('content="val1"');
     expect(html).toContain('content="val2"');
   });
+
+  // trailingSlash canonical URL tests
+  // Ported from Next.js app-dir trailing-slash e2e: "should contain trailing slash to canonical url"
+  // see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/trailingslash/trailingslash.test.ts#L31
+
+  it("trailingSlash:true appends slash to root canonical '/'", () => {
+    // metadataBase='http://trailingslash.com', canonical='/', pathname='/'
+    // → href='http://trailingslash.com/'
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "/" },
+      },
+      "/",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://trailingslash.com/"');
+  });
+
+  it("trailingSlash:true appends slash to relative canonical './' at pathname '/a'", () => {
+    // metadataBase='http://trailingslash.com', canonical='./', pathname='/a'
+    // → href='http://trailingslash.com/a/'
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "./" },
+      },
+      "/a",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://trailingslash.com/a/"');
+  });
+
+  it("trailingSlash:true does not append slash before query string", () => {
+    // canonical='/q?x=1' → href='http://trailingslash.com/q?x=1' (no slash before '?')
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "/q?x=1" },
+      },
+      "/q",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://trailingslash.com/q?x=1"');
+    expect(html).not.toContain('href="http://trailingslash.com/q/?x=1"');
+  });
+
+  it("trailingSlash:true leaves external canonical unchanged", () => {
+    // canonical='http://other.com/a' → href='http://other.com/a' (external host)
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "http://other.com/a" },
+      },
+      "/a",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://other.com/a"');
+    expect(html).not.toContain('href="http://other.com/a/"');
+  });
+
+  it("trailingSlash:false preserves a user-provided trailing slash on canonical", () => {
+    // Match Next.js: trailingSlash:false (the default) does NOT strip a
+    // user-provided slash; canonical='/a/' renders verbatim.
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "/a/" },
+      },
+      "/a",
+      { trailingSlash: false },
+    );
+    expect(html).toContain('href="http://trailingslash.com/a/"');
+  });
+
+  it("trailingSlash:true is idempotent when canonical already ends with slash", () => {
+    // canonical='http://trailingslash.com/a/' → href='http://trailingslash.com/a/' (unchanged)
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "http://trailingslash.com/a/" },
+      },
+      "/a",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://trailingslash.com/a/"');
+  });
+
+  it("trailingSlash:true appends slash to same-origin absolute canonical urls", () => {
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "http://trailingslash.com/a" },
+      },
+      "/a",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://trailingslash.com/a/"');
+  });
+
+  it("trailingSlash:true does not append slash to file-like canonical urls", () => {
+    // canonical='/sitemap.xml' → href='http://trailingslash.com/sitemap.xml'
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "/sitemap.xml" },
+      },
+      "/",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://trailingslash.com/sitemap.xml"');
+    expect(html).not.toContain("sitemap.xml/");
+  });
+
+  it("trailingSlash:true appends slash to .well-known canonical urls", () => {
+    // Ported from Next.js: packages/next/src/lib/metadata/resolvers/resolve-url.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-url.test.ts
+    // .well-known is excluded from the file regex, so it is treated as a normal path.
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "/.well-known/apple-app-site-association" },
+      },
+      "/",
+      { trailingSlash: true },
+    );
+    expect(html).toContain(
+      'href="http://trailingslash.com/.well-known/apple-app-site-association/"',
+    );
+    expect(html).not.toContain('"http://trailingslash.com/.well-known/apple-app-site-association"');
+  });
+
+  it("trailingSlash:true appends slash to openGraph.url and alternate urls", () => {
+    // Ported from the resolver call sites in Next.js:
+    // packages/next/src/lib/metadata/resolvers/resolve-opengraph.ts and resolve-basics.ts
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        openGraph: { url: "/og" },
+        alternates: {
+          languages: { en: "/en" },
+          media: { print: "/print" },
+          types: { "application/rss+xml": "/feed" },
+        },
+      },
+      "/",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('property="og:url" content="http://trailingslash.com/og/"');
+    expect(html).toContain('href="http://trailingslash.com/en/" hreflang="en"');
+    expect(html).toContain('href="http://trailingslash.com/print/" media="print"');
+    expect(html).toContain('href="http://trailingslash.com/feed/" type="application/rss+xml"');
+  });
+
+  it("resolves URL-object alternates as bases for the current pathname", () => {
+    // Ported from Next.js: packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    // URL-object alternates are bases for pathname resolution and retain their query params.
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: {
+          languages: { en: new URL("http://trailingslash.com/base") },
+          media: { print: new URL("http://trailingslash.com/base?source=print") },
+        },
+      },
+      "/docs",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('href="http://trailingslash.com/docs/" hreflang="en"');
+    expect(html).toContain('href="http://trailingslash.com/docs?source=print" media="print"');
+  });
+});
+
+describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
+  let createAppPageRouteBodyMetadata: typeof import("../packages/vinext/src/server/app-page-route-wiring.js").createAppPageRouteBodyMetadata;
+  let _React: typeof import("react");
+  let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
+
+  beforeAll(async () => {
+    ({ createAppPageRouteBodyMetadata } =
+      await import("../packages/vinext/src/server/app-page-route-wiring.js"));
+    _React = await import("react");
+    ({ renderToStaticMarkup } = await import("react-dom/server"));
+  });
+
+  it("body placement: applies trailingSlash to canonical href in the streamed body branch", () => {
+    const node = createAppPageRouteBodyMetadata(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "/a" },
+      },
+      "/a",
+      "body",
+      true, // trailingSlash
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+    // Body branch wraps the metadata HTML in a hidden div (htmlLimitedBots
+    // / streamed-body path used when metadata can't be flushed into <head>
+    // before the first shell chunk).
+    expect(html).toContain("<div hidden");
+    expect(html).toContain('href="http://trailingslash.com/a/"');
+  });
+
+  it("body placement: no slash inserted before query string", () => {
+    const node = createAppPageRouteBodyMetadata(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        alternates: { canonical: "/q?x=1" },
+      },
+      "/q",
+      "body",
+      true,
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+    expect(html).toContain('href="http://trailingslash.com/q?x=1"');
+    expect(html).not.toContain("/q/?");
+  });
+
+  it("body placement: returns null when placement is 'head' (no double-render)", () => {
+    const node = createAppPageRouteBodyMetadata(
+      { metadataBase: new URL("http://trailingslash.com"), alternates: { canonical: "/a" } },
+      "/a",
+      "head",
+      true,
+    );
+    expect(node).toBeNull();
+  });
+
+  it("body placement: returns null when metadata is null", () => {
+    expect(createAppPageRouteBodyMetadata(null, "/a", "body", true)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2435,7 +3465,7 @@ describe("ViewportHead rendering", () => {
   it("renders default viewport with width=device-width and initial-scale=1", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: { width: "device-width", initialScale: 1 },
+        viewport: mergeViewport([{ width: "device-width", initialScale: 1 }]),
       }),
     );
     expect(html).toContain('name="viewport"');
@@ -2444,41 +3474,65 @@ describe("ViewportHead rendering", () => {
   });
 
   it("renders custom viewport with all options", () => {
+    // Ported from Next.js: packages/next/src/lib/metadata/resolve-metadata.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.test.ts
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: {
-          width: "device-width",
-          initialScale: 1,
-          maximumScale: 1,
-          userScalable: false,
-        },
+        viewport: mergeViewport([
+          {
+            width: "device-width",
+            height: "device-height",
+            initialScale: 1,
+            minimumScale: 0.5,
+            maximumScale: 1,
+            userScalable: false,
+            viewportFit: "cover",
+            interactiveWidget: "overlays-content",
+          },
+        ]),
       }),
     );
-    expect(html).toContain("width=device-width");
-    expect(html).toContain("initial-scale=1");
-    expect(html).toContain("maximum-scale=1");
-    expect(html).toContain("user-scalable=no");
+    expect(html).toContain(
+      'content="width=device-width, height=device-height, initial-scale=1, minimum-scale=0.5, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content"',
+    );
   });
 
   it("renders theme-color meta tag", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: { themeColor: "#000000" },
+        viewport: mergeViewport([{ themeColor: "#000000" }]),
       }),
     );
     expect(html).toContain('name="theme-color"');
     expect(html).toContain('content="#000000"');
   });
 
+  it("renders a single theme-color descriptor with its media query", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, {
+        viewport: mergeViewport([
+          {
+            themeColor: { media: "(prefers-color-scheme: dark)", color: "#000000" },
+          },
+        ]),
+      }),
+    );
+    expect(html).toContain('name="theme-color"');
+    expect(html).toContain('content="#000000"');
+    expect(html).toContain('media="(prefers-color-scheme: dark)"');
+  });
+
   it("renders multiple theme-color entries with media queries", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: {
-          themeColor: [
-            { media: "(prefers-color-scheme: light)", color: "#fff" },
-            { media: "(prefers-color-scheme: dark)", color: "#000" },
-          ],
-        },
+        viewport: mergeViewport([
+          {
+            themeColor: [
+              { media: "(prefers-color-scheme: light)", color: "#fff" },
+              { media: "(prefers-color-scheme: dark)", color: "#000" },
+            ],
+          },
+        ]),
       }),
     );
     expect(html).toContain('content="#fff"');
@@ -2490,7 +3544,7 @@ describe("ViewportHead rendering", () => {
   it("renders color-scheme meta tag", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: { colorScheme: "dark" },
+        viewport: mergeViewport([{ colorScheme: "dark" }]),
       }),
     );
     expect(html).toContain('name="color-scheme"');
@@ -2502,7 +3556,7 @@ describe("ViewportHead rendering", () => {
     const result = mergeViewport([{ themeColor: "#000" }]);
     expect(result.width).toBe("device-width");
     expect(result.initialScale).toBe(1);
-    expect(result.themeColor).toBe("#000");
+    expect(result.themeColor).toEqual([{ color: "#000" }]);
   });
 
   it("mergeViewport allows overriding defaults", () => {
@@ -2521,7 +3575,14 @@ describe("ViewportHead rendering", () => {
     const result = mergeViewport([{ width: 800 }, { width: 1024, themeColor: "#fff" }]);
     expect(result.width).toBe(1024);
     expect(result.initialScale).toBe(1);
-    expect(result.themeColor).toBe("#fff");
+    expect(result.themeColor).toEqual([{ color: "#fff" }]);
+  });
+
+  it("preserves an undefined media field on a theme-color descriptor", () => {
+    // Next.js's resolveThemeColor copies the descriptor fields explicitly:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    const result = mergeViewport([{ themeColor: { color: "#000" } }]);
+    expect(result.themeColor).toEqual([{ color: "#000", media: undefined }]);
   });
 
   it("renders viewport meta even when only themeColor is provided (defaults injected)", () => {
@@ -2569,11 +3630,11 @@ describe("fetch cache (extended fetch with next options)", () => {
     expect(typeof mod.getCollectedFetchTags).toBe("function");
   });
 
-  it("passes through fetch without next options unchanged", async () => {
+  it("passes through fetch without next options to persistent cache but dedupes within a render", async () => {
     const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
 
     fetchCallCount = 0;
-    const cleanup = withFetchCache();
+    let cleanup = withFetchCache();
     try {
       const resp1 = await fetch(`${mockServerUrl}/plain`);
       const data1 = await resp1.json();
@@ -2581,7 +3642,13 @@ describe("fetch cache (extended fetch with next options)", () => {
 
       const resp2 = await fetch(`${mockServerUrl}/plain`);
       const data2 = await resp2.json();
-      expect(data2.count).toBe(2); // NOT cached — no next options
+      expect(data2.count).toBe(1); // Same render fetch is deduped
+
+      cleanup();
+      cleanup = withFetchCache();
+      const resp3 = await fetch(`${mockServerUrl}/plain`);
+      const data3 = await resp3.json();
+      expect(data3.count).toBe(2); // New render still bypasses persistent cache
     } finally {
       cleanup();
     }
@@ -2707,7 +3774,7 @@ describe("fetch cache (extended fetch with next options)", () => {
     }
   });
 
-  it("cache: 'no-store' bypasses cache", async () => {
+  it("cache: 'no-store' bypasses persistent cache but dedupes within a render", async () => {
     const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -2715,7 +3782,7 @@ describe("fetch cache (extended fetch with next options)", () => {
     setCacheHandler(new MemoryCacheHandler());
     fetchCallCount = 0;
 
-    const cleanup = withFetchCache();
+    let cleanup = withFetchCache();
     try {
       const resp1 = await fetch(`${mockServerUrl}/no-store`, {
         cache: "no-store",
@@ -2727,14 +3794,22 @@ describe("fetch cache (extended fetch with next options)", () => {
         cache: "no-store",
       });
       const data2 = await resp2.json();
-      expect(data2.count).toBe(2); // NOT cached
+      expect(data2.count).toBe(1); // Same render fetch is deduped
+
+      cleanup();
+      cleanup = withFetchCache();
+      const resp3 = await fetch(`${mockServerUrl}/no-store`, {
+        cache: "no-store",
+      });
+      const data3 = await resp3.json();
+      expect(data3.count).toBe(2); // New render still bypasses persistent cache
     } finally {
       cleanup();
       setCacheHandler(new MemoryCacheHandler());
     }
   });
 
-  it("next.revalidate: false bypasses cache", async () => {
+  it("next.revalidate: false caches indefinitely across render scopes", async () => {
     const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -2742,18 +3817,23 @@ describe("fetch cache (extended fetch with next options)", () => {
     setCacheHandler(new MemoryCacheHandler());
     fetchCallCount = 0;
 
-    const cleanup = withFetchCache();
+    let cleanup = withFetchCache();
     try {
       await fetch(`${mockServerUrl}/no-rev`, { next: { revalidate: false } });
       await fetch(`${mockServerUrl}/no-rev`, { next: { revalidate: false } });
-      expect(fetchCallCount).toBe(2); // Both hit the network
+      expect(fetchCallCount).toBe(1);
+
+      cleanup();
+      cleanup = withFetchCache();
+      await fetch(`${mockServerUrl}/no-rev`, { next: { revalidate: false } });
+      expect(fetchCallCount).toBe(1); // Still cached across render scopes
     } finally {
       cleanup();
       setCacheHandler(new MemoryCacheHandler());
     }
   });
 
-  it("next.revalidate: 0 bypasses cache", async () => {
+  it("next.revalidate: 0 bypasses persistent cache but dedupes within a render", async () => {
     const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -2761,9 +3841,14 @@ describe("fetch cache (extended fetch with next options)", () => {
     setCacheHandler(new MemoryCacheHandler());
     fetchCallCount = 0;
 
-    const cleanup = withFetchCache();
+    let cleanup = withFetchCache();
     try {
       await fetch(`${mockServerUrl}/zero`, { next: { revalidate: 0 } });
+      await fetch(`${mockServerUrl}/zero`, { next: { revalidate: 0 } });
+      expect(fetchCallCount).toBe(1);
+
+      cleanup();
+      cleanup = withFetchCache();
       await fetch(`${mockServerUrl}/zero`, { next: { revalidate: 0 } });
       expect(fetchCallCount).toBe(2);
     } finally {
@@ -2780,7 +3865,7 @@ describe("fetch cache (extended fetch with next options)", () => {
     setCacheHandler(new MemoryCacheHandler());
     fetchCallCount = 0;
 
-    const cleanup = withFetchCache();
+    let cleanup = withFetchCache();
     try {
       // First fetch — cache miss, hits network
       const resp1 = await fetch(`${mockServerUrl}/tagged`, {
@@ -2799,9 +3884,12 @@ describe("fetch cache (extended fetch with next options)", () => {
       expect(fetchCallCount).toBe(1);
 
       // Invalidate the tag
-      await revalidateTag("posts");
+      await Promise.resolve(revalidateTag("posts"));
 
-      // Third fetch — cache miss after tag invalidation
+      cleanup();
+      cleanup = withFetchCache();
+
+      // Third fetch — cache miss after tag invalidation in a later render
       const resp3 = await fetch(`${mockServerUrl}/tagged`, {
         next: { revalidate: 3600, tags: ["posts"] },
       });
@@ -2963,15 +4051,17 @@ describe("instrumentation.ts support", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    // Create a temp directory with an instrumentation.ts file
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-"));
+    // Create a temp directory with an instrumentation.ts file. Production
+    // always passes a forward-slash root (the config hook normalizes it), so
+    // mirror that — findInstrumentationFile returns forward-slash paths.
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.writeFileSync(
       path.join(tmpDir, "instrumentation.ts"),
       'export function register() { console.log("registered"); }',
     );
 
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
-    expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "instrumentation.ts"));
 
     // Cleanup
     fs.rmSync(tmpDir, { recursive: true });
@@ -2984,7 +4074,7 @@ describe("instrumentation.ts support", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-"));
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(
       path.join(tmpDir, "src", "instrumentation.ts"),
@@ -2992,7 +4082,7 @@ describe("instrumentation.ts support", () => {
     );
 
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
-    expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "src", "instrumentation.ts"));
 
     fs.rmSync(tmpDir, { recursive: true });
   });
@@ -3115,10 +4205,10 @@ describe("production server compression", () => {
     expect(negotiateEncoding(req as any)).toBe("gzip");
   });
 
-  it("negotiateEncoding returns null when no encoding header", async () => {
+  it("negotiateEncoding returns identity when no encoding header", async () => {
     const { negotiateEncoding } = await import("../packages/vinext/src/server/prod-server.js");
     const req = { headers: {} };
-    expect(negotiateEncoding(req as any)).toBeNull();
+    expect(negotiateEncoding(req as any)).toBe("identity");
   });
 
   it("COMPRESSIBLE_TYPES includes expected content types", async () => {
@@ -3208,6 +4298,58 @@ describe("production server compression", () => {
     expect(writtenBody).toBeTruthy();
   });
 
+  it("sendCompressed keeps the size threshold even when identity is refused", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const req = { headers: { "accept-encoding": "gzip;q=1, identity;q=0" } };
+    const chunks: Buffer[] = [];
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+      },
+    };
+
+    sendCompressed(req as any, res as any, "tiny", "text/plain", 200, {}, true);
+
+    expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
+    expect(Buffer.concat(chunks).toString()).toBe("tiny");
+  });
+
+  it("sendCompressed does not vary non-compressible responses", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const req = { headers: { "accept-encoding": "gzip" } };
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      end: () => {},
+    };
+
+    sendCompressed(req as any, res as any, Buffer.from([1, 2, 3]), "image/png", 200, {}, true);
+
+    expect(writtenHeaders.Vary).toBeUndefined();
+  });
+
+  it("sendCompressed replaces an empty Vary header", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const req = { headers: { "accept-encoding": "gzip" } };
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      end: () => {},
+    };
+
+    sendCompressed(req as any, res as any, "tiny", "text/plain", 200, { Vary: "" }, true);
+
+    expect(writtenHeaders.Vary).toBe("Accept-Encoding");
+  });
+
   it("sendCompressed does not compress small bodies", async () => {
     const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
 
@@ -3247,6 +4389,98 @@ describe("production server compression", () => {
 
     // PNG should not be compressed
     expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
+    expect(writtenHeaders["Vary"]).toBeUndefined();
+  });
+
+  it("sendCompressed omits the body for HEAD on a compressible response", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const body = "<html>" + "x".repeat(2000) + "</html>";
+    const req = { method: "HEAD", headers: { "accept-encoding": "gzip" } };
+
+    const chunks: Buffer[] = [];
+    let writtenStatus = 0;
+    let writtenHeaders: Record<string, string> = {};
+    let ended = false;
+    const res = {
+      writeHead: (status: number, headers: Record<string, string>) => {
+        writtenStatus = status;
+        writtenHeaders = headers;
+      },
+      write: (chunk: Buffer) => {
+        chunks.push(chunk);
+        return true;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+        ended = true;
+      },
+      on: () => {},
+      once: () => {},
+      emit: () => false,
+      removeListener: () => {},
+    };
+
+    sendCompressed(req as any, res as any, body, "text/html", 200, {}, true);
+
+    expect(writtenStatus).toBe(200);
+    // Headers match what a GET would send (negotiated compression announced)…
+    expect(writtenHeaders["Content-Encoding"]).toBe("gzip");
+    expect(writtenHeaders["Vary"]).toBe("Accept-Encoding");
+    // …but no body is written and the compressor is never spun up.
+    expect(ended).toBe(true);
+    expect(chunks).toEqual([]);
+  });
+
+  it("sendCompressed omits the body for HEAD but keeps Content-Length (uncompressed)", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const body = "<html>" + "x".repeat(2000) + "</html>";
+    const req = { method: "HEAD", headers: {} };
+
+    const chunks: Buffer[] = [];
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      write: (chunk: Buffer) => {
+        chunks.push(chunk);
+        return true;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+      },
+    };
+
+    // compress=false → uncompressed branch; HEAD → no body.
+    sendCompressed(req as any, res as any, body, "text/html", 200, {}, false);
+
+    // Content-Length still reflects the full GET body size (RFC 9110)…
+    expect(writtenHeaders["Content-Length"]).toBe(String(Buffer.byteLength(body)));
+    // …but the body itself is not sent.
+    expect(chunks).toEqual([]);
+  });
+
+  it("sendCompressed writes the full body for non-HEAD requests", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const body = '{"ok":true}';
+    const req = { method: "GET", headers: {} };
+
+    const chunks: Buffer[] = [];
+    const res = {
+      writeHead: () => {},
+      write: (chunk: Buffer) => {
+        chunks.push(chunk);
+        return true;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+      },
+    };
+
+    // The HEAD guard must not over-trigger: a GET still gets the full body.
+    sendCompressed(req as any, res as any, body, "application/octet-stream", 200, {}, false);
+
+    expect(Buffer.concat(chunks).toString()).toBe(body);
   });
 });
 
@@ -3510,6 +4744,53 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(ended).toBe(true);
     expect(chunks).toEqual([]);
     expect(canceled).toBe(true);
+  });
+
+  it("sendWebResponse preserves an existing upstream encoding", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    const response = new Response("encoded", {
+      headers: {
+        "content-encoding": "br",
+        "content-type": "text/html; charset=utf-8",
+      },
+    });
+    const req = {
+      method: "GET",
+      headers: { "accept-encoding": "gzip, br;q=0, identity;q=0" },
+    };
+    const res = new CapturingNodeResponse();
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await finished(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["Vary"]).toBeUndefined();
+    expect(Buffer.concat(chunks).toString()).toBe("encoded");
+  });
+
+  it("sendWebResponse varies identity responses by Accept-Encoding", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    const response = new Response("small", {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        vary: "RSC",
+      },
+    });
+    const req = {
+      method: "GET",
+      headers: { "accept-encoding": "br;q=0.5" },
+    };
+    const res = new CapturingNodeResponse();
+    res.resume();
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await finished(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["Content-Encoding"]).toBe("br");
+    expect(res.headers.vary).toBe("RSC, Accept-Encoding");
   });
 
   it("sendWebResponse cancels compressed streams on client disconnect", async () => {
@@ -3836,7 +5117,9 @@ describe("Next.js edge cases", () => {
     expect(html).toMatch(/Article ID:.*1/);
     // Query params should NOT affect the rendered page content (they may appear in Vite module URLs)
     // Check the __NEXT_DATA__ doesn't leak query params into getStaticProps
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     expect(data.props.pageProps.id).toBe("1");
@@ -3849,7 +5132,9 @@ describe("Next.js edge cases", () => {
   it("__NEXT_DATA__ query contains dynamic params for static pages", async () => {
     const res = await fetch(`${edgeBaseUrl}/articles/2?extra=value`);
     const html = await res.text();
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     // query should contain the dynamic segment
@@ -4445,12 +5730,15 @@ describe("chained middleware → config rewrites", () => {
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     await fsp.symlink(rootNodeModules, path.join(chainTmpDir, "node_modules"), "junction");
 
-    // Config with afterFiles rewrite: /intermediate → /final
+    // Config with afterFiles rewrites:
+    // - /rewrite-source lacks a page file, so afterFiles can rewrite it to /final.
+    // - /intermediate owns a page file, so it wins before afterFiles.
     await fsp.writeFile(
       path.join(chainTmpDir, "next.config.mjs"),
       `export default {
   async rewrites() {
     return [
+      { source: "/rewrite-source", destination: "/final" },
       { source: "/intermediate", destination: "/final" },
     ];
   },
@@ -4459,14 +5747,14 @@ describe("chained middleware → config rewrites", () => {
 
     await fsp.mkdir(path.join(chainTmpDir, "pages"), { recursive: true });
 
-    // Middleware: rewrites /original → /intermediate
+    // Middleware: rewrites /original → /rewrite-source
     await fsp.writeFile(
       path.join(chainTmpDir, "middleware.ts"),
       `import { NextResponse } from "next/server";
 export function middleware(request) {
   const url = new URL(request.url);
   if (url.pathname === "/original") {
-    return NextResponse.rewrite(new URL("/intermediate", request.url));
+    return NextResponse.rewrite(new URL("/rewrite-source", request.url));
   }
   return NextResponse.next();
 }`,
@@ -4478,7 +5766,7 @@ export function middleware(request) {
       `export default function Original() { return <h1>ORIGINAL PAGE</h1>; }`,
     );
 
-    // /intermediate — middleware rewrites to here, then config rewrites to /final
+    // /intermediate — concrete page files win before afterFiles rewrites.
     await fsp.writeFile(
       path.join(chainTmpDir, "pages", "intermediate.tsx"),
       `export default function Intermediate() { return <h1>INTERMEDIATE PAGE</h1>; }`,
@@ -4490,7 +5778,6 @@ export function middleware(request) {
       `export default function Final() { return <h1>FINAL PAGE</h1>; }`,
     );
 
-    // /direct-intermediate — tests that config rewrite works independently
     await fsp.writeFile(
       path.join(chainTmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
@@ -4527,23 +5814,29 @@ export function middleware(request) {
     await fsp.rm(chainTmpDir, { recursive: true, force: true }).catch(() => {});
   }, 15000);
 
-  it("middleware rewrite alone works: /original renders /intermediate content", async () => {
-    // Middleware rewrites /original → /intermediate
-    // Without chaining, we'd see INTERMEDIATE PAGE content
+  it("chains middleware rewrites into afterFiles rewrites when no page file wins", async () => {
+    // Middleware rewrites /original to /rewrite-source. There is no page file at
+    // /rewrite-source, so the afterFiles rewrite can continue to /final.
     const res = await fetch(`${chainBaseUrl}/original`);
     const html = await res.text();
-    // The middleware first rewrites to /intermediate, then the config rewrite
-    // rewrites /intermediate → /final. So we expect FINAL PAGE.
     expect(html).toContain("FINAL PAGE");
+    expect(html).not.toContain("ORIGINAL PAGE");
   });
 
-  it("config rewrite alone works: /intermediate renders /final content", async () => {
-    const res = await fetch(`${chainBaseUrl}/intermediate`);
+  it("applies afterFiles rewrites for paths with no page file", async () => {
+    const res = await fetch(`${chainBaseUrl}/rewrite-source`);
     const html = await res.text();
     expect(html).toContain("FINAL PAGE");
   });
 
-  it("chained: /original → middleware → /intermediate → config → /final", async () => {
+  it("does not let afterFiles rewrites override concrete page files", async () => {
+    const res = await fetch(`${chainBaseUrl}/intermediate`);
+    const html = await res.text();
+    expect(html).toContain("INTERMEDIATE PAGE");
+    expect(html).not.toContain("FINAL PAGE");
+  });
+
+  it("chained: /original → middleware → /rewrite-source → config → /final", async () => {
     const res = await fetch(`${chainBaseUrl}/original`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -4589,6 +5882,9 @@ export function middleware(request) {
   if (url.pathname === "/blocked") {
     return NextResponse.rewrite(new URL("/allowed", request.url), { status: 403 });
   }
+  if (url.pathname === "/next-status") {
+    return NextResponse.next({ status: 404 });
+  }
   return NextResponse.next();
 }`,
     );
@@ -4601,6 +5897,11 @@ export function middleware(request) {
     await fsp.writeFile(
       path.join(statusTmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    await fsp.writeFile(
+      path.join(statusTmpDir, "pages", "next-status.tsx"),
+      `export default function NextStatus() { return <h1>NEXT STATUS PAGE</h1>; }`,
     );
 
     const vinext = (await import("../packages/vinext/src/index.js")).default;
@@ -4640,6 +5941,13 @@ export function middleware(request) {
     expect(html).toContain("ALLOWED PAGE");
     // Status code should be 403 from the middleware rewrite
     expect(res.status).toBe(403);
+  });
+
+  it("middleware next with custom status returns that status code", async () => {
+    const res = await fetch(`${statusBaseUrl}/next-status`);
+    const html = await res.text();
+    expect(html).toContain("NEXT STATUS PAGE");
+    expect(res.status).toBe(404);
   });
 
   it("normal requests without rewrite status return 200", async () => {
@@ -4843,7 +6151,9 @@ export default function NestedProps({ user }) {
     const res = await fetch(`${edgeBaseUrl}/nested-props`);
     const html = await res.text();
     // __NEXT_DATA__ is injected as: <script>window.__NEXT_DATA__ = {...}</script>
-    const match = html.match(/window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})(?:;|<)/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).not.toBeNull();
     const data = JSON.parse(match![1]);
     expect(data.props.pageProps.user.name).toBe("Alice");

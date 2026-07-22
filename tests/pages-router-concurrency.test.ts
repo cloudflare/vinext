@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import { build, type ViteDevServer } from "vite";
 import path from "node:path";
 import http from "node:http";
@@ -75,7 +75,9 @@ describe("Pages Router dev concurrency isolation", () => {
       expect(ssrPathname, `response ${i} ssr-pathname`).toBe("/concurrent-router");
       expect(routerPathname, `response ${i} router-pathname`).toBe("/concurrent-router");
 
-      const nextData = htmlResults[i].match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+      const nextData = htmlResults[i].match(
+        /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+      );
       if (!nextData) throw new Error(`no __NEXT_DATA__ found in response ${i}`);
       const data = JSON.parse(nextData[1]);
       expect(data.props.pageProps.ssrQuery.id, `response ${i} ssrQuery.id`).toBe(String(i));
@@ -102,10 +104,18 @@ describe("Pages Router prod concurrency isolation", () => {
       configFile: false,
       plugins: [vinext()],
       logLevel: "silent",
+      // This isolated build deliberately skips the workspace Vite config;
+      // retain its source alias so fixture imports of exported vinext internals
+      // resolve without requiring a prebuilt package.
+      resolve: {
+        alias: {
+          "vinext/internal": path.resolve(import.meta.dirname, "../packages/vinext/src"),
+        },
+      },
       build: {
         outDir: path.join(outDir, "server"),
         ssr: "virtual:vinext-server-entry",
-        rollupOptions: { output: { entryFileNames: "entry.js" } },
+        rolldownOptions: { output: { entryFileNames: "entry.js" } },
       },
     });
 
@@ -118,7 +128,7 @@ describe("Pages Router prod concurrency isolation", () => {
         outDir: path.join(outDir, "client"),
         manifest: true,
         ssrManifest: true,
-        rollupOptions: { input: "virtual:vinext-client-entry" },
+        rolldownOptions: { input: "virtual:vinext-client-entry" },
       },
     });
 
@@ -156,7 +166,9 @@ describe("Pages Router prod concurrency isolation", () => {
       const bodyReqId = extractTestId(htmlResults[i], "req-id");
       expect(bodyReqId, `response ${i} should contain its own req-id`).toBe(String(i));
 
-      const nextData = htmlResults[i].match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+      const nextData = htmlResults[i].match(
+        /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+      );
       if (!nextData) throw new Error(`no __NEXT_DATA__ found in response ${i}`);
       const data = JSON.parse(nextData[1]);
       expect(data.props.pageProps.reqId, `response ${i} pageProps.reqId`).toBe(String(i));
@@ -171,7 +183,9 @@ describe("Pages Router prod concurrency isolation", () => {
       const ssrPathname = extractTestId(htmlResults[i], "ssr-pathname");
       expect(ssrPathname, `response ${i} ssr-pathname`).toBe("/concurrent-router");
 
-      const nextData = htmlResults[i].match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+      const nextData = htmlResults[i].match(
+        /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+      );
       if (!nextData) throw new Error(`no __NEXT_DATA__ found in response ${i}`);
       const data = JSON.parse(nextData[1]);
       expect(data.props.pageProps.ssrQuery.id, `response ${i} ssrQuery.id`).toBe(String(i));

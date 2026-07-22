@@ -7,15 +7,16 @@ export async function generateSitemaps() {
 export default async function sitemap({
   id,
 }: {
-  id: number | string;
+  id: Promise<string | undefined>;
 }): Promise<MetadataRoute.Sitemap> {
+  const sitemapId = await id;
   return [
     {
-      url: `https://example.com/products/batch-${id}/item-1`,
+      url: `https://example.com/products/batch-${sitemapId}/item-1`,
       lastModified: new Date("2025-03-01"),
     },
     {
-      url: `https://example.com/products/batch-${id}/item-2`,
+      url: `https://example.com/products/batch-${sitemapId}/item-2`,
       lastModified: new Date("2025-03-01"),
     },
   ];

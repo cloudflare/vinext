@@ -63,6 +63,39 @@ describe("Next.js compat: set-cookies", () => {
     expect(setCookies.some((c) => c.includes("theme=dark"))).toBe(true);
   });
 
+  it("route handler cookies().set() overrides preserve per-cookie attributes", async () => {
+    // Issue #1484 — mirrors Next.js's app/handler/route.js test fixture used by
+    // test/e2e/app-dir/actions/app-action.test.ts ("should support setting
+    // cookies in route handlers with the correct overrides").
+    //
+    // Each Set-Cookie line must carry its own attribute set; mutable cookies
+    // overridden by the returned Response's headers must still receive a
+    // `Path=/` default (matching Next.js's `appendMutableCookies`).
+    // https://github.com/cloudflare/vinext/issues/1484
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/handler-cookie-overrides`);
+    const setCookieHeader = res.headers.get("set-cookie") ?? "";
+    expect(setCookieHeader).toContain("bar=bar2; Path=/");
+    expect(setCookieHeader).toContain("baz=baz2; Path=/");
+    expect(setCookieHeader).toContain("foo=foo1; Path=/");
+    expect(setCookieHeader).toContain("test1=value1; Path=/; Secure");
+    expect(setCookieHeader).toContain("test2=value2; Path=/handler; HttpOnly");
+  });
+
+  it("returned response cookies take precedence over mutable cookies with the same name", async () => {
+    // Next.js app route handlers merge mutable cookies as fallbacks before
+    // reapplying returned response cookies as the final values.
+    // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/request-cookies.ts
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/cookie-precedence`);
+    const setCookies = res.headers.getSetCookie();
+
+    expect(setCookies).toHaveLength(3);
+    expect(setCookies.some((c) => c.startsWith("session=returned;"))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith("response-only=1;"))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith("mutable-only=final;"))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith("session=mutable;"))).toBe(false);
+    expect(setCookies.some((c) => c.startsWith("mutable-only=first;"))).toBe(false);
+  });
+
   // ── cookies().delete() ──────────────────────────────────────
   // Next.js: deleting a cookie produces Set-Cookie with Max-Age=0
 

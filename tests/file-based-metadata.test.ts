@@ -1,0 +1,927 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
+import { MetadataHead, type Metadata } from "../packages/vinext/src/shims/metadata.js";
+import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+
+const ogHeadData = {
+  kind: "openGraph",
+  href: "/blog/opengraph-image.png?hash",
+  type: "image/png",
+  width: 1200,
+  height: 630,
+} as const;
+
+describe("applyFileBasedMetadata", () => {
+  it("preserves URL metadata values while injecting file metadata", async () => {
+    const metadata: Metadata = {
+      metadataBase: new URL("https://example.com"),
+    };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: false,
+        filePath: "/tmp/app/icon.png",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/icon.png",
+        contentType: "image/png",
+        headData: {
+          kind: "icon",
+          href: "/icon.png?hash",
+          type: "image/png",
+          sizes: "32x32",
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(metadata, "/", {}, routes, {
+      routeSegments: [],
+      metadataSources: [{ routeSegments: [], metadata }],
+    });
+
+    expect(result?.metadataBase).toBe(metadata.metadataBase);
+    expect(result?.icons).toEqual({
+      icon: [{ url: "/icon.png?hash", sizes: "32x32", type: "image/png" }],
+    });
+  });
+
+  it("keeps explicit icon and apple metadata ahead of file icon routes", async () => {
+    const metadata: Metadata = {
+      icons: {
+        apple: "/manual-apple.png",
+        icon: "/manual-icon.png",
+      },
+    };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: false,
+        filePath: "/tmp/app/icon.png",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/icon.png",
+        contentType: "image/png",
+        headData: {
+          kind: "icon",
+          href: "/icon.png?hash",
+          type: "image/png",
+          sizes: "32x32",
+        },
+      },
+      {
+        type: "apple-icon",
+        isDynamic: false,
+        filePath: "/tmp/app/apple-icon.png",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/apple-icon.png",
+        contentType: "image/png",
+        headData: {
+          kind: "apple",
+          href: "/apple-icon.png?hash",
+          type: "image/png",
+          sizes: "180x180",
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(metadata, "/", {}, routes, {
+      routeSegments: [],
+      metadataSources: [{ routeSegments: [], metadata }],
+    });
+
+    expect(result?.icons).toEqual({
+      apple: "/manual-apple.png",
+      icon: "/manual-icon.png",
+    });
+  });
+
+  it("keeps explicit shorthand icon metadata ahead of file icon routes", async () => {
+    const metadata: Metadata = { icons: "/manual-icon.png" };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: false,
+        filePath: "/tmp/app/icon.png",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/icon.png",
+        contentType: "image/png",
+        headData: {
+          kind: "icon",
+          href: "/icon.png?hash",
+          type: "image/png",
+          sizes: "32x32",
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(metadata, "/", {}, routes, {
+      routeSegments: [],
+      metadataSources: [{ routeSegments: [], metadata }],
+    });
+
+    expect(result?.icons).toBe("/manual-icon.png");
+  });
+
+  it("keeps inherited explicit icon metadata ahead of leaf file icon routes", async () => {
+    const parentMetadata: Metadata = { icons: "/parent-icon.png" };
+    const leafMetadata: Metadata = { title: "Leaf" };
+    const mergedMetadata: Metadata = { icons: "/parent-icon.png", title: "Leaf" };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: false,
+        filePath: "/tmp/app/blog/icon.png",
+        routePrefix: "/blog",
+        routeSegments: ["blog"],
+        servedUrl: "/blog/icon.png",
+        contentType: "image/png",
+        headData: {
+          kind: "icon",
+          href: "/blog/icon.png?hash",
+          type: "image/png",
+          sizes: "32x32",
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(mergedMetadata, "/blog", {}, routes, {
+      routeSegments: ["blog"],
+      metadataSources: [
+        { routeSegments: [], metadata: parentMetadata },
+        { routeSegments: ["blog"], metadata: leafMetadata },
+      ],
+    });
+
+    expect(result?.icons).toBe("/parent-icon.png");
+  });
+
+  it("preserves explicit shorthand icon metadata when prepending a favicon", async () => {
+    const metadata: Metadata = { icons: "/manual-icon.png" };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "favicon",
+        isDynamic: false,
+        filePath: "/tmp/app/favicon.ico",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/favicon.ico",
+        contentType: "image/x-icon",
+        headData: {
+          kind: "favicon",
+          href: "/favicon.ico?hash",
+          type: "image/x-icon",
+          sizes: "32x32",
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(metadata, "/", {}, routes, {
+      routeSegments: [],
+      metadataSources: [{ routeSegments: [], metadata }],
+    });
+
+    expect(result?.icons).toEqual({
+      icon: [
+        { url: "/favicon.ico?hash", sizes: "32x32", type: "image/x-icon" },
+        { url: "/manual-icon.png" },
+      ],
+    });
+  });
+
+  it("preserves explicit descriptor icon metadata when prepending a favicon", async () => {
+    const metadata: Metadata = {
+      icons: { url: "/manual-icon.png", sizes: "64x64", type: "image/png" },
+    };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "favicon",
+        isDynamic: false,
+        filePath: "/tmp/app/favicon.ico",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/favicon.ico",
+        contentType: "image/x-icon",
+        headData: {
+          kind: "favicon",
+          href: "/favicon.ico?hash",
+          type: "image/x-icon",
+          sizes: "32x32",
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(metadata, "/", {}, routes, {
+      routeSegments: [],
+      metadataSources: [{ routeSegments: [], metadata }],
+    });
+
+    expect(result?.icons).toEqual({
+      icon: [
+        { url: "/favicon.ico?hash", sizes: "32x32", type: "image/x-icon" },
+        { url: "/manual-icon.png", sizes: "64x64", type: "image/png" },
+      ],
+    });
+  });
+
+  it("lets a leaf file image replace inherited parent Open Graph images", async () => {
+    const parentMetadata: Metadata = {
+      openGraph: {
+        description: "Parent description",
+        images: ["/parent-og.png"],
+        siteName: "Parent site",
+        title: "Parent title",
+        type: "article",
+      },
+    };
+    const leafMetadata: Metadata = { title: "Blog" };
+    const mergedMetadata: Metadata = {
+      title: "Blog",
+      openGraph: {
+        description: "Parent description",
+        images: ["/parent-og.png"],
+        siteName: "Parent site",
+        title: "Parent title",
+        type: "article",
+      },
+    };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: false,
+        filePath: "/tmp/app/blog/opengraph-image.png",
+        routePrefix: "/blog",
+        routeSegments: ["blog"],
+        servedUrl: "/blog/opengraph-image.png",
+        contentType: "image/png",
+        headData: ogHeadData,
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(mergedMetadata, "/blog", {}, routes, {
+      routeSegments: ["blog"],
+      metadataSources: [
+        { routeSegments: [], metadata: parentMetadata },
+        { routeSegments: ["blog"], metadata: leafMetadata },
+      ],
+    });
+
+    expect(result?.openGraph?.images).toEqual([
+      { url: "/blog/opengraph-image.png?hash", type: "image/png", width: 1200, height: 630 },
+    ]);
+    expect(result?.openGraph?.description).toBe("Parent description");
+    expect(result?.openGraph?.siteName).toBe("Parent site");
+    expect(result?.openGraph?.title).toBe("Parent title");
+    expect(result?.openGraph?.type).toBe("article");
+  });
+
+  it("keeps same-segment explicit Open Graph images ahead of file images", async () => {
+    const leafMetadata: Metadata = { openGraph: { images: ["/manual-og.png"] } };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: false,
+        filePath: "/tmp/app/blog/opengraph-image.png",
+        routePrefix: "/blog",
+        routeSegments: ["blog"],
+        servedUrl: "/blog/opengraph-image.png",
+        contentType: "image/png",
+        headData: ogHeadData,
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(leafMetadata, "/blog", {}, routes, {
+      routeSegments: ["blog"],
+      metadataSources: [
+        { routeSegments: ["blog"], metadata: { title: "Blog layout" } },
+        { routeSegments: ["blog"], metadata: leafMetadata },
+      ],
+    });
+
+    expect(result?.openGraph?.images).toEqual(["/manual-og.png"]);
+  });
+
+  it("lets a leaf Twitter file image replace inherited parent Twitter images", async () => {
+    const parentMetadata: Metadata = {
+      twitter: {
+        card: "summary_large_image",
+        images: ["/parent-twitter.png"],
+      },
+    };
+    const leafMetadata: Metadata = { title: "Blog" };
+    const mergedMetadata: Metadata = {
+      title: "Blog",
+      twitter: {
+        card: "summary_large_image",
+        images: ["/parent-twitter.png"],
+      },
+    };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "twitter-image",
+        isDynamic: false,
+        filePath: "/tmp/app/blog/twitter-image.png",
+        routePrefix: "/blog",
+        routeSegments: ["blog"],
+        servedUrl: "/blog/twitter-image.png",
+        contentType: "image/png",
+        headData: {
+          kind: "twitter",
+          href: "/blog/twitter-image.png?hash",
+          type: "image/png",
+          width: 1200,
+          height: 630,
+          alt: "Twitter alt",
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(mergedMetadata, "/blog", {}, routes, {
+      routeSegments: ["blog"],
+      metadataSources: [
+        { routeSegments: [], metadata: parentMetadata },
+        { routeSegments: ["blog"], metadata: leafMetadata },
+      ],
+    });
+
+    expect(result?.twitter?.card).toBe("summary_large_image");
+    expect(result?.twitter?.images).toEqual([
+      {
+        alt: "Twitter alt",
+        height: 630,
+        type: "image/png",
+        url: "/blog/twitter-image.png?hash",
+        width: 1200,
+      },
+    ]);
+  });
+
+  it("applies file manifest metadata over config manifest metadata", async () => {
+    const metadata: Metadata = { manifest: "/manual.webmanifest" };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "manifest",
+        isDynamic: false,
+        filePath: "/tmp/app/manifest.webmanifest",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/manifest.webmanifest",
+        contentType: "application/manifest+json",
+        headData: { kind: "manifest", href: "/manifest.webmanifest" },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(metadata, "/", {}, routes, {
+      routeSegments: [],
+      metadataSources: [{ routeSegments: [], metadata }],
+    });
+
+    expect(result?.manifest).toBe("/manifest.webmanifest");
+  });
+
+  it("uses raw route segments so same-prefix route groups select their own file metadata", async () => {
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: false,
+        filePath: "/tmp/app/(marketing)/opengraph-image.png",
+        routePrefix: "",
+        routeSegments: ["(marketing)"],
+        servedUrl: "/opengraph-image-marketing.png",
+        contentType: "image/png",
+        headData: { ...ogHeadData, href: "/opengraph-image-marketing.png?hash" },
+      },
+      {
+        type: "opengraph-image",
+        isDynamic: false,
+        filePath: "/tmp/app/(shop)/opengraph-image.png",
+        routePrefix: "",
+        routeSegments: ["(shop)"],
+        servedUrl: "/opengraph-image-shop.png",
+        contentType: "image/png",
+        headData: { ...ogHeadData, href: "/opengraph-image-shop.png?hash" },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(null, "/", {}, routes, {
+      routeSegments: ["(marketing)"],
+      metadataSources: [{ routeSegments: ["(marketing)"], metadata: null }],
+    });
+
+    expect(result?.openGraph?.images).toEqual([
+      { url: "/opengraph-image-marketing.png?hash", type: "image/png", width: 1200, height: 630 },
+    ]);
+  });
+
+  it("applies metadata from an active parallel slot page", async () => {
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: false,
+        filePath: "/tmp/app/parallel/@parallel/opengraph-image.png",
+        routePrefix: "/parallel",
+        routeSegments: ["parallel", "@parallel"],
+        servedUrl: "/parallel/opengraph-image-slot.png",
+        contentType: "image/png",
+        headData: { ...ogHeadData, href: "/parallel/opengraph-image-slot.png?hash" },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(null, "/parallel", {}, routes, {
+      routeSegments: ["parallel"],
+      metadataSources: [{ routeSegments: ["parallel"], metadata: null }],
+    });
+
+    expect(result?.openGraph?.images).toEqual([
+      {
+        url: "/parallel/opengraph-image-slot.png?hash",
+        type: "image/png",
+        width: 1200,
+        height: 630,
+      },
+    ]);
+  });
+
+  it("drops generateImageMetadata ids that are not path-segment safe", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/app/opengraph-image.tsx",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/opengraph-image",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async () => [{ id: "a/b" }],
+        },
+      },
+    ];
+
+    try {
+      const result = await applyFileBasedMetadata(null, "/", {}, routes, {
+        routeSegments: [],
+        metadataSources: [{ routeSegments: [], metadata: null }],
+      });
+
+      expect(result).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        '[vinext] Skipping metadata route /opengraph-image image id "a/b" because metadata image ids must match /^[a-zA-Z0-9-_.]+$/.',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("drops generateImageMetadata entries without ids", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/app/opengraph-image.tsx",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/opengraph-image",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async () => [{ alt: "missing id" }],
+        },
+      },
+    ];
+
+    try {
+      const result = await applyFileBasedMetadata(null, "/", {}, routes, {
+        routeSegments: [],
+        metadataSources: [{ routeSegments: [], metadata: null }],
+      });
+
+      expect(result).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        "[vinext] Skipping metadata route /opengraph-image image metadata entry because generateImageMetadata entries must include an id.",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("uses dynamic metadata module exports when generateImageMetadata is absent", async () => {
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/app/blog/[slug]/opengraph-image.tsx",
+        routePrefix: "/blog/[slug]",
+        routeSegments: ["blog", "[slug]"],
+        servedUrl: "/blog/[slug]/opengraph-image",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          alt: "Dynamic alt",
+          contentType: "image/jpeg",
+          size: { width: 640, height: 360 },
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(null, "/blog/post", { slug: "post" }, routes, {
+      routeSegments: ["blog", "[slug]"],
+      metadataSources: [{ routeSegments: ["blog", "[slug]"], metadata: null }],
+    });
+
+    expect(result?.openGraph?.images).toEqual([
+      {
+        alt: "Dynamic alt",
+        height: 360,
+        type: "image/jpeg",
+        url: "/blog/post/opengraph-image?hash",
+        width: 640,
+      },
+    ]);
+  });
+
+  it("passes thenable params with sync properties to generateImageMetadata", async () => {
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/app/blog/[slug]/opengraph-image.tsx",
+        routePrefix: "/blog/[slug]",
+        routeSegments: ["blog", "[slug]"],
+        servedUrl: "/blog/[slug]/opengraph-image",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async (props: {
+            params: Promise<{ slug: string }> & { slug?: string };
+          }) => [{ id: props.params.slug }],
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(null, "/blog/post", { slug: "post" }, routes, {
+      routeSegments: ["blog", "[slug]"],
+      metadataSources: [{ routeSegments: ["blog", "[slug]"], metadata: null }],
+    });
+
+    expect(result?.openGraph?.images).toEqual([
+      {
+        type: "image/png",
+        url: "/blog/post/opengraph-image/post?hash",
+      },
+    ]);
+  });
+
+  it("injects multiple generateImageMetadata entries", async () => {
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/app/opengraph-image.tsx",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/opengraph-image",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async () => [
+            {
+              id: "small",
+              alt: "Small image",
+              contentType: "image/jpeg",
+              size: { width: 640, height: 360 },
+            },
+            {
+              id: "large",
+              alt: "Large image",
+              contentType: "image/png",
+              size: { width: 1200, height: 630 },
+            },
+          ],
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(null, "/", {}, routes, {
+      routeSegments: [],
+      metadataSources: [{ routeSegments: [], metadata: null }],
+    });
+
+    expect(result?.openGraph?.images).toEqual([
+      {
+        alt: "Small image",
+        height: 360,
+        type: "image/jpeg",
+        url: "/opengraph-image/small?hash",
+        width: 640,
+      },
+      {
+        alt: "Large image",
+        height: 630,
+        type: "image/png",
+        url: "/opengraph-image/large?hash",
+        width: 1200,
+      },
+    ]);
+  });
+
+  it("drops dynamic metadata head URLs when params cannot fill servedUrl segments", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/blog/[slug]/icon.tsx",
+        routePrefix: "/blog/[slug]",
+        routeSegments: ["blog", "[slug]"],
+        servedUrl: "/blog/[slug]/icon",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async () => [{ id: "small" }],
+        },
+      },
+    ];
+
+    try {
+      const result = await applyFileBasedMetadata(null, "/blog/[slug]", {}, routes, {
+        routeSegments: ["blog", "[slug]"],
+        metadataSources: [{ routeSegments: ["blog", "[slug]"], metadata: null }],
+      });
+
+      expect(result).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        "[vinext] Skipping metadata route /blog/[slug]/icon because params did not fill all dynamic segments.",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("drops dynamic metadata head URLs when single segments receive multi-value params", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/blog/[slug]/icon.tsx",
+        routePrefix: "/blog/[slug]",
+        routeSegments: ["blog", "[slug]"],
+        servedUrl: "/blog/[slug]/icon",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async () => [{ id: "small" }],
+        },
+      },
+    ];
+
+    try {
+      const result = await applyFileBasedMetadata(
+        null,
+        "/blog/[slug]",
+        { slug: ["a", "b"] },
+        routes,
+        {
+          routeSegments: ["blog", "[slug]"],
+          metadataSources: [{ routeSegments: ["blog", "[slug]"], metadata: null }],
+        },
+      );
+
+      expect(result).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        "[vinext] Skipping metadata route /blog/[slug]/icon because params did not fill all dynamic segments.",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("drops required catch-all metadata head URLs when params contain no segments", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/docs/[...slug]/icon.tsx",
+        routePrefix: "/docs/[...slug]",
+        routeSegments: ["docs", "[...slug]"],
+        servedUrl: "/docs/[...slug]/icon",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async () => [{ id: "small" }],
+        },
+      },
+    ];
+
+    try {
+      const result = await applyFileBasedMetadata(null, "/docs/[...slug]", { slug: [] }, routes, {
+        routeSegments: ["docs", "[...slug]"],
+        metadataSources: [{ routeSegments: ["docs", "[...slug]"], metadata: null }],
+      });
+
+      expect(result).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        "[vinext] Skipping metadata route /docs/[...slug]/icon because params did not fill all dynamic segments.",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("skips empty optional catch-all metadata params instead of emitting empty URL segments", async () => {
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/docs/[[...slug]]/icon.tsx",
+        routePrefix: "/docs/[[...slug]]",
+        routeSegments: ["docs", "[[...slug]]"],
+        servedUrl: "/docs/[[...slug]]/icon",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata: async () => [{ id: "small" }],
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(null, "/docs", { slug: "" }, routes, {
+      metadataSources: [{ routeSegments: ["docs"], metadata: null }],
+    });
+
+    expect(result?.icons).toEqual({
+      icon: [{ type: "image/png", url: "/docs/icon/small?hash" }],
+    });
+  });
+
+  // Regression for cloudflare/vinext#1493 — covers the full pipeline (file-based
+  // metadata + MetadataHead) for the Next.js metadata-dynamic-routes test
+  // `should support generate multi images with generateImageMetadata`. With
+  // `metadataBase` configured on a parent layout, hrefs for dynamic icon and
+  // apple-icon image routes produced by `generateImageMetadata` must stay
+  // relative (matching Next.js behavior).
+  // Ported from .nextjs-ref/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+  it("keeps generateImageMetadata icon hrefs relative when metadataBase is configured (#1493)", async () => {
+    const layoutMetadata: Metadata = {
+      metadataBase: new URL("https://mydomain.com"),
+      title: "Next.js App",
+    };
+    const mergedMetadata: Metadata = {
+      metadataBase: layoutMetadata.metadataBase,
+      title: "index page",
+    };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/(group)/dynamic/[size]/icon.tsx",
+        routePrefix: "/dynamic/[size]",
+        routeSegments: ["(group)", "dynamic", "[size]"],
+        servedUrl: "/dynamic/[size]/icon-ahg52g",
+        contentType: "image/png",
+        module: {
+          generateImageMetadata: async () => [
+            { id: "small", contentType: "image/png", size: { width: 48, height: 48 } },
+            { id: "medium", contentType: "image/png", size: { width: 72, height: 72 } },
+          ],
+        },
+      },
+      {
+        type: "apple-icon",
+        isDynamic: true,
+        filePath: "/tmp/app/(group)/dynamic/[size]/apple-icon.tsx",
+        routePrefix: "/dynamic/[size]",
+        routeSegments: ["(group)", "dynamic", "[size]"],
+        servedUrl: "/dynamic/[size]/apple-icon-ahg52g",
+        contentType: "image/png",
+        module: {
+          generateImageMetadata: async () => [
+            { id: 0, contentType: "image/png", size: { width: 48, height: 48 } },
+            { id: 1, contentType: "image/png", size: { width: 64, height: 64 } },
+          ],
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(
+      mergedMetadata,
+      "/dynamic/big",
+      { size: "big" },
+      routes,
+      {
+        routeSegments: ["(group)", "dynamic", "[size]"],
+        metadataSources: [
+          { routeSegments: [], metadata: layoutMetadata },
+          { routeSegments: ["(group)", "dynamic", "[size]"], metadata: { title: "index page" } },
+        ],
+      },
+    );
+
+    expect(result?.icons).toEqual({
+      icon: [
+        { url: "/dynamic/big/icon-ahg52g/small", sizes: "48x48", type: "image/png" },
+        { url: "/dynamic/big/icon-ahg52g/medium", sizes: "72x72", type: "image/png" },
+      ],
+      apple: [
+        { url: "/dynamic/big/apple-icon-ahg52g/0", sizes: "48x48", type: "image/png" },
+        { url: "/dynamic/big/apple-icon-ahg52g/1", sizes: "64x64", type: "image/png" },
+      ],
+    });
+
+    expect(result).not.toBeNull();
+    const html = renderToStaticMarkup(
+      createElement(MetadataHead, { metadata: result as Metadata }),
+    );
+    expect(html).toContain('href="/dynamic/big/icon-ahg52g/small"');
+    expect(html).toContain('href="/dynamic/big/icon-ahg52g/medium"');
+    expect(html).toContain('href="/dynamic/big/apple-icon-ahg52g/0"');
+    expect(html).toContain('href="/dynamic/big/apple-icon-ahg52g/1"');
+    expect(html).not.toContain("https://mydomain.com/dynamic/big");
+  });
+});
+
+// Regression for cloudflare/vinext#1968 — twitter:app:* tags must only be
+// emitted when the resolved card type is exactly "app", and individual id/url
+// tags must use truthy (not !== undefined) checks so falsy ids/urls (0, "")
+// are skipped.
+// Ported from Next.js: packages/next/src/lib/metadata/metadata.tsx
+describe("twitter app card gating (#1968)", () => {
+  it("does not emit twitter:app:* tags when card type is not 'app'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        // No `card` set -> not an app card, so no app:* tags.
+        app: {
+          name: "My App",
+          id: { iphone: "id123", ipad: "id123", googleplay: "com.example.app" },
+          url: {
+            iphone: "https://example.com/iphone",
+            ipad: "https://example.com/ipad",
+            googleplay: "https://example.com/android",
+          },
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).not.toContain("twitter:app:name");
+    expect(html).not.toContain("twitter:app:id");
+    expect(html).not.toContain("twitter:app:url");
+  });
+
+  it("skips falsy app ids but emits truthy ones when card is 'app'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        card: "app",
+        app: {
+          name: "My App",
+          id: { iphone: 0, ipad: "", googleplay: "999" },
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card" content="app"');
+    expect(html).not.toContain("twitter:app:id:iphone");
+    expect(html).not.toContain("twitter:app:id:ipad");
+    expect(html).toContain('name="twitter:app:id:googleplay" content="999"');
+  });
+
+  it("does not emit twitter:player:* tags when card type is not 'player'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        // No `card` set -> not a player card, so no player:* tags.
+        players: {
+          playerUrl: "https://example.com/player",
+          streamUrl: "https://example.com/stream",
+          width: 640,
+          height: 480,
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).not.toContain("twitter:player");
+  });
+
+  it("emits twitter:player:* tags when card is 'player'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        card: "player",
+        players: {
+          playerUrl: "https://example.com/player",
+          streamUrl: "https://example.com/stream",
+          width: 640,
+          height: 480,
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card" content="player"');
+    expect(html).toContain("twitter:player:stream");
+  });
+});

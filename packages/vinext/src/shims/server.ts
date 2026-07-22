@@ -9,9 +9,28 @@
  * rather than bug-for-bug parity with Next.js internals.
  */
 
-import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
-import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import {
+  MIDDLEWARE_NEXT_HEADER,
+  MIDDLEWARE_REWRITE_HEADER,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+} from "../server/headers.js";
+import { encodeMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
+import { validateCookieAttributeValue, validateCookieName } from "./internal/cookie-serialize.js";
+import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import {
+  bindRequestContextSnapshot,
+  getRequestContext,
+  isInsideUnifiedScope,
+  queueAfterCallback,
+} from "./unified-request-context.js";
+import { assertSafeNavigationUrl } from "./url-safety.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+
+/** @deprecated Import ImageResponse from `next/og` instead. */
+export function ImageResponse(): never {
+  throw new Error("ImageResponse has moved from next/server to next/og");
+}
 
 // ---------------------------------------------------------------------------
 // Inlined cache-scope guard for after()
@@ -32,22 +51,42 @@ const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 
+/**
+ * Record an invalid dynamic usage error on the request context so it survives
+ * user try/catch and can be forwarded to the dev overlay on client-side navigations.
+ */
+function _recordInvalidDynamicUsageError(error: Error): void {
+  try {
+    const _unifiedAls = _g[Symbol.for("vinext.unifiedRequestContext.als")] as
+      | { getStore(): unknown }
+      | undefined;
+    const ctx = _unifiedAls?.getStore() as Record<string, unknown> | undefined;
+    if (ctx) ctx.invalidDynamicUsageError = error;
+  } catch {
+    // Ignore — best-effort recording for dev diagnostics
+  }
+}
+
 function _throwIfInsideCacheScope(apiName: string): void {
   const cacheAls = _g[_USE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
   if (cacheAls?.getStore() != null) {
-    throw new Error(
+    const error = new Error(
       `\`${apiName}\` cannot be called inside "use cache". ` +
         `If you need this data inside a cached function, call \`${apiName}\` ` +
         "outside and pass the required data as an argument.",
     );
+    _recordInvalidDynamicUsageError(error);
+    throw error;
   }
   const unstableAls = _g[_UNSTABLE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
   if (unstableAls?.getStore() === true) {
-    throw new Error(
+    const error = new Error(
       `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
         `If you need this data inside a cached function, call \`${apiName}\` ` +
         "outside and pass the required data as an argument.",
     );
+    _recordInvalidDynamicUsageError(error);
+    throw error;
   }
 }
 
@@ -55,34 +94,56 @@ function _throwIfInsideCacheScope(apiName: string): void {
 // NextRequest
 // ---------------------------------------------------------------------------
 
+export type RequestInit = globalThis.RequestInit & {
+  nextConfig?: {
+    basePath?: string;
+    i18n?: {
+      locales: readonly string[];
+      defaultLocale: string;
+      domains?: ReadonlyArray<{
+        domain: string;
+        defaultLocale: string;
+        locales?: readonly string[];
+        http?: true;
+      }>;
+    } | null;
+    trailingSlash?: boolean;
+  };
+  signal?: AbortSignal;
+  duplex?: "half";
+};
+
 export class NextRequest extends Request {
   private _nextUrl: NextURL;
+  private _url: string;
   private _cookies: RequestCookies;
 
-  constructor(
-    input: URL | RequestInfo,
-    init?: RequestInit & {
-      nextConfig?: {
-        basePath?: string;
-        i18n?: { locales: string[]; defaultLocale: string };
-      };
-    },
-  ) {
+  constructor(input: URL | RequestInfo, init?: RequestInit) {
+    // Match Next.js: reject relative URLs with the canonical error before any
+    // fallback URL parsing kicks in. Next.js calls `validateURL(url)` at the
+    // top of its NextRequest constructor; we mirror that here so middleware
+    // tests asserting on the error message text get the documented string.
+    // Reuse the local `validateURL` helper so the message format stays in lockstep
+    // with NextResponse, and so `javascript:` / `data:` URIs are blocked too.
+    const rawUrl = typeof input !== "string" && "url" in input ? input.url : String(input);
+    validateURL(rawUrl);
     // Strip nextConfig before passing to super() — it's vinext-internal,
     // not a valid RequestInit property.
     const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
-    // Handle the case where input is a Request object - we need to extract URL and init
-    // to avoid Node.js undici issues with passing Request objects directly to super()
     if (input instanceof Request) {
-      const req = input;
-      super(req.url, {
-        method: req.method,
-        headers: req.headers,
-        body: req.body,
-        // @ts-expect-error - duplex is not in RequestInit type but needed for streams
-        duplex: req.body ? "half" : undefined,
-        ...requestInit,
-      });
+      // Keep caller-owned request bodies readable after wrapping. Middleware and
+      // route-handler plumbing may need the source Request after this wrapper runs.
+      const requestInput =
+        requestInit.body === undefined && input.body && !input.bodyUsed ? input.clone() : input;
+      super(requestInput, requestInit);
+      const cf = Reflect.get(input, "cf");
+      if (cf !== undefined) {
+        Object.defineProperty(this, "cf", {
+          value: cf,
+          enumerable: true,
+          configurable: true,
+        });
+      }
     } else {
       super(input, requestInit);
     }
@@ -92,10 +153,26 @@ export class NextRequest extends Request {
         : input instanceof URL
           ? input
           : new URL(input.url, "http://localhost");
+    const i18n = _nextConfig?.i18n
+      ? {
+          locales: [..._nextConfig.i18n.locales],
+          defaultLocale: _nextConfig.i18n.defaultLocale,
+          domains: _nextConfig.i18n.domains?.map((domain) => ({
+            ...domain,
+            locales: domain.locales ? [...domain.locales] : undefined,
+          })),
+        }
+      : undefined;
     const urlConfig: NextURLConfig | undefined = _nextConfig
-      ? { basePath: _nextConfig.basePath, nextConfig: { i18n: _nextConfig.i18n } }
+      ? {
+          basePath: _nextConfig.basePath,
+          nextConfig: { i18n, trailingSlash: _nextConfig.trailingSlash },
+        }
       : undefined;
     this._nextUrl = new NextURL(url, undefined, urlConfig);
+    this._url = process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE
+      ? url.toString()
+      : this._nextUrl.toString();
     this._cookies = new RequestCookies(this.headers);
   }
 
@@ -103,8 +180,20 @@ export class NextRequest extends Request {
     return this._nextUrl;
   }
 
+  get url(): string {
+    return this._url;
+  }
+
   get cookies(): RequestCookies {
     return this._cookies;
+  }
+
+  get page(): void {
+    throw new Error("NextRequest.page has been removed; use URLPattern instead");
+  }
+
+  get ua(): void {
+    throw new Error("NextRequest.ua has been removed; use userAgent() instead");
   }
 
   /**
@@ -161,12 +250,29 @@ export class NextRequest extends Request {
 // NextResponse
 // ---------------------------------------------------------------------------
 
+/** Valid HTTP redirect status codes, matching Next.js's REDIRECTS set. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function validateURL(url: string | URL | { toString(): string }): string {
+  assertSafeNavigationUrl(String(url));
+  try {
+    return String(new URL(String(url)));
+  } catch (error) {
+    throw new Error(
+      `URL is malformed "${String(
+        url,
+      )}". Please use only absolute URLs - https://nextjs.org/docs/messages/middleware-relative-urls`,
+      { cause: error },
+    );
+  }
+}
+
 export class NextResponse<_Body = unknown> extends Response {
   private _cookies: ResponseCookies;
 
   constructor(body?: BodyInit | null, init?: ResponseInit) {
     super(body, init);
-    this._cookies = new ResponseCookies(this.headers);
+    this._cookies = new MiddlewareResponseCookies(this.headers);
   }
 
   get cookies(): ResponseCookies {
@@ -177,24 +283,23 @@ export class NextResponse<_Body = unknown> extends Response {
    * Create a JSON response.
    */
   static json<JsonBody>(body: JsonBody, init?: ResponseInit): NextResponse<JsonBody> {
-    const headers = new Headers(init?.headers);
-    if (!headers.has("content-type")) {
-      headers.set("content-type", "application/json");
-    }
-    return new NextResponse(JSON.stringify(body), {
-      ...init,
-      headers,
-    }) as NextResponse<JsonBody>;
+    const response = Response.json(body, init);
+    return new NextResponse(response.body, response) as NextResponse<JsonBody>;
   }
 
   /**
    * Create a redirect response.
    */
-  static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
+  static redirect(
+    url: string | URL | { toString(): string },
+    init?: number | ResponseInit,
+  ): NextResponse {
     const status = typeof init === "number" ? init : (init?.status ?? 307);
-    const destination = typeof url === "string" ? url : url.toString();
+    if (!REDIRECT_STATUSES.has(status)) {
+      throw new RangeError(`Failed to execute "redirect" on "response": Invalid status code`);
+    }
     const headers = new Headers(typeof init === "object" ? init?.headers : undefined);
-    headers.set("Location", destination);
+    headers.set("Location", validateURL(url));
     return new NextResponse(null, { status, headers });
   }
 
@@ -202,10 +307,12 @@ export class NextResponse<_Body = unknown> extends Response {
    * Create a rewrite response (middleware pattern).
    * Sets the x-middleware-rewrite header.
    */
-  static rewrite(destination: string | URL, init?: MiddlewareResponseInit): NextResponse {
-    const url = typeof destination === "string" ? destination : destination.toString();
+  static rewrite(
+    destination: string | URL | { toString(): string },
+    init?: MiddlewareResponseInit,
+  ): NextResponse {
     const headers = new Headers(init?.headers);
-    headers.set("x-middleware-rewrite", url);
+    headers.set(MIDDLEWARE_REWRITE_HEADER, validateURL(destination));
     if (init?.request?.headers) {
       encodeMiddlewareRequestHeaders(headers, init.request.headers);
     }
@@ -218,7 +325,7 @@ export class NextResponse<_Body = unknown> extends Response {
    */
   static next(init?: MiddlewareResponseInit): NextResponse {
     const headers = new Headers(init?.headers);
-    headers.set("x-middleware-next", "1");
+    headers.set(MIDDLEWARE_NEXT_HEADER, "1");
     if (init?.request?.headers) {
       encodeMiddlewareRequestHeaders(headers, init.request.headers);
     }
@@ -236,65 +343,138 @@ export type NextURLConfig = {
     i18n?: {
       locales: string[];
       defaultLocale: string;
+      domains?: Array<{
+        domain: string;
+        defaultLocale: string;
+        locales?: string[];
+      }>;
     };
+    /**
+     * When true, `href`/`toString()` formats non-root, non-file-like pathnames
+     * with a trailing slash. Matches Next.js's `formatNextPathnameInfo` so that
+     * `NextResponse.redirect(request.nextUrl)` and `NextResponse.rewrite(url)`
+     * honour the user's `trailingSlash` config.
+     */
+    trailingSlash?: boolean;
   };
 };
 
 export class NextURL {
   /** Internal URL stores the pathname WITHOUT basePath or locale prefix. */
   private _url: URL;
+  /**
+   * The configured basePath (from nextConfig). May differ from the active
+   * `_basePath`: parsing only activates basePath when the URL's pathname
+   * actually carries the configured prefix.
+   */
+  private _configBasePath: string;
   private _basePath: string;
+  private _trailingSlash: boolean;
   private _locale: string | undefined;
+  private _configDefaultLocale: string | undefined;
   private _defaultLocale: string | undefined;
   private _locales: string[] | undefined;
+  private _domains: NonNullable<NonNullable<NextURLConfig["nextConfig"]>["i18n"]>["domains"];
+  private _domainLocale:
+    | NonNullable<NonNullable<NonNullable<NextURLConfig["nextConfig"]>["i18n"]>["domains"]>[number]
+    | undefined;
 
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
-    this._basePath = config?.basePath ?? "";
+    this._configBasePath = config?.basePath ?? "";
+    this._basePath = this._configBasePath;
+    this._trailingSlash = config?.nextConfig?.trailingSlash ?? false;
     this._stripBasePath();
     const i18n = config?.nextConfig?.i18n;
     if (i18n) {
       this._locales = [...i18n.locales];
-      this._defaultLocale = i18n.defaultLocale;
-      this._analyzeLocale(this._locales);
+      this._domains = i18n.domains?.map((domain) => ({
+        ...domain,
+        locales: domain.locales ? [...domain.locales] : undefined,
+      }));
+      this._configDefaultLocale = i18n.defaultLocale;
+      this._analyzeI18n();
     }
   }
 
-  /** Strip basePath prefix from the internal pathname. */
+  /** Strip basePath prefix from the internal pathname.
+   * Mirrors Next.js's getNextPathnameInfo (re-run by NextURL.analyze() on
+   * every parse, including `href` reassignment): basePath is only considered
+   * active when the URL's pathname actually starts with the configured
+   * basePath prefix. If the pathname is outside the basePath, the active
+   * basePath is cleared to "" so that request.nextUrl.basePath reflects the
+   * actual URL rather than the config value; if a later `href` assignment
+   * moves the URL back inside the basePath, it is re-activated from the
+   * configured value. This matches the Next.js behavior tested by
+   * middleware-base-path's "should execute from absolute paths" case.
+   */
   private _stripBasePath(): void {
-    if (!this._basePath) return;
-    const { pathname } = this._url;
-    if (pathname === this._basePath || pathname.startsWith(this._basePath + "/")) {
-      this._url.pathname = pathname.slice(this._basePath.length) || "/";
+    if (!this._configBasePath) return;
+    if (!hasBasePath(this._url.pathname, this._configBasePath)) {
+      this._basePath = "";
+      return;
     }
+    this._basePath = this._configBasePath;
+    this._url.pathname = stripBasePath(this._url.pathname, this._configBasePath);
   }
 
   /** Extract locale from pathname, stripping it from the internal URL. */
-  private _analyzeLocale(locales: string[]): void {
+  private _detectPathnameLocale(locales: string[]): string | undefined {
     const segments = this._url.pathname.split("/");
     const candidate = segments[1]?.toLowerCase();
     const match = locales.find((l) => l.toLowerCase() === candidate);
     if (match) {
-      this._locale = match;
       this._url.pathname = "/" + segments.slice(2).join("/");
-    } else {
-      this._locale = this._defaultLocale;
     }
+    return match;
+  }
+
+  private _analyzeI18n(): void {
+    if (!this._locales || !this._configDefaultLocale) return;
+    const detectedLocale = this._detectPathnameLocale(this._locales);
+    const detectedLocaleLower = detectedLocale?.toLowerCase();
+    const hostname = this._url.hostname.toLowerCase();
+    this._domainLocale = this._domains?.find(
+      (domain) =>
+        domain.domain.split(":", 1)[0].toLowerCase() === hostname ||
+        detectedLocaleLower === domain.defaultLocale.toLowerCase() ||
+        domain.locales?.some((locale) => locale.toLowerCase() === detectedLocaleLower),
+    );
+    this._defaultLocale = this._domainLocale?.defaultLocale ?? this._configDefaultLocale;
+    this._locale = detectedLocale ?? this._defaultLocale;
   }
 
   /**
-   * Reconstruct the full pathname with basePath + locale prefix.
-   * Mirrors Next.js's internal formatPathname().
+   * Reconstruct the full pathname with basePath + locale prefix and apply
+   * the configured trailingSlash policy.
+   * Mirrors Next.js's internal formatNextPathnameInfo().
    */
   private _formatPathname(): string {
     // Build prefix: basePath + locale (skip defaultLocale — Next.js omits it)
     let prefix = this._basePath;
-    if (this._locale && this._locale !== this._defaultLocale) {
+    const inner = this._url.pathname;
+    const innerLower = inner.toLowerCase();
+    const isApiPath = innerLower === "/api" || innerLower.startsWith("/api/");
+    if (!isApiPath && this._locale && this._locale !== this._defaultLocale) {
       prefix += "/" + this._locale;
     }
-    if (!prefix) return this._url.pathname;
-    const inner = this._url.pathname;
-    return inner === "/" ? prefix : prefix + inner;
+    const composed = !prefix ? inner : inner === "/" ? prefix : prefix + inner;
+    return this._applyTrailingSlash(composed);
+  }
+
+  /**
+   * Apply the configured trailingSlash policy to a composed pathname. Matches
+   * Next.js's `formatNextPathnameInfo`: when `trailingSlash` is true, add a
+   * trailing slash unless the path is empty/root; when false, strip a trailing
+   * slash unless the path is empty/root.
+   */
+  private _applyTrailingSlash(pathname: string): string {
+    // Never strip or add a slash to the root path.
+    if (pathname === "" || pathname === "/") return pathname;
+    if (this._trailingSlash) {
+      return pathname.endsWith("/") ? pathname : pathname + "/";
+    }
+    return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
   }
 
   get href(): string {
@@ -309,7 +489,7 @@ export class NextURL {
   set href(value: string) {
     this._url.href = value;
     this._stripBasePath();
-    if (this._locales) this._analyzeLocale(this._locales);
+    this._analyzeI18n();
   }
 
   get origin(): string {
@@ -413,16 +593,39 @@ export class NextURL {
     return this._defaultLocale;
   }
 
+  get domainLocale(): typeof this._domainLocale {
+    if (!this._domainLocale) return undefined;
+    return {
+      ...this._domainLocale,
+      locales: this._domainLocale.locales ? [...this._domainLocale.locales] : undefined,
+    };
+  }
+
   get locales(): string[] | undefined {
     return this._locales ? [...this._locales] : undefined;
   }
 
   clone(): NextURL {
+    const nextConfig: NonNullable<NextURLConfig["nextConfig"]> = {};
+    if (this._locales) {
+      nextConfig.i18n = {
+        locales: [...this._locales],
+        defaultLocale: this._configDefaultLocale!,
+        domains: this._domains?.map((domain) => ({
+          ...domain,
+          locales: domain.locales ? [...domain.locales] : undefined,
+        })),
+      };
+    }
+    if (this._trailingSlash) {
+      nextConfig.trailingSlash = true;
+    }
     const config: NextURLConfig = {
-      basePath: this._basePath,
-      nextConfig: this._locales
-        ? { i18n: { locales: [...this._locales], defaultLocale: this._defaultLocale! } }
-        : undefined,
+      // Preserve the configured basePath even when it is not active for the
+      // current pathname. Next.js retains the original constructor options in
+      // clone(), allowing a later href assignment to re-activate the prefix.
+      basePath: this._configBasePath,
+      nextConfig: Object.keys(nextConfig).length > 0 ? nextConfig : undefined,
     };
     // Pass the full href (with locale/basePath re-added) so the constructor
     // can re-analyze and extract locale correctly.
@@ -430,6 +633,10 @@ export class NextURL {
   }
 
   toString(): string {
+    return this.href;
+  }
+
+  toJSON(): string {
     return this.href;
   }
 
@@ -459,7 +666,7 @@ export class RequestCookies {
 
   constructor(headers: Headers) {
     this._headers = headers;
-    this._parsed = parseCookieHeader(headers.get("cookie") ?? "");
+    this._parsed = parseEdgeRequestCookieHeader(headers.get("cookie") ?? "");
   }
 
   get(name: string): CookieEntry | undefined {
@@ -488,6 +695,7 @@ export class RequestCookies {
       cookieName = nameOrOptions.name;
       cookieValue = nameOrOptions.value;
     }
+    validateCookieName(cookieName);
     this._parsed.set(cookieName, cookieValue);
     this._syncHeader();
     return this;
@@ -495,10 +703,14 @@ export class RequestCookies {
 
   delete(names: string | string[]): boolean | boolean[] {
     if (Array.isArray(names)) {
-      const results = names.map((name) => this._parsed.delete(name));
+      const results = names.map((name) => {
+        validateCookieName(name);
+        return this._parsed.delete(name);
+      });
       this._syncHeader();
       return results;
     }
+    validateCookieName(names);
     const result = this._parsed.delete(names);
     this._syncHeader();
     return result;
@@ -530,126 +742,180 @@ export class RequestCookies {
     }
   }
 
-  [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {
-    const entries = this.getAll().map((c) => [c.name, c] as [string, CookieEntry]);
-    return entries[Symbol.iterator]();
+  [Symbol.iterator](): MapIterator<[string, CookieEntry]> {
+    return new Map(this.getAll().map((cookie) => [cookie.name, cookie] as const)).entries();
   }
 }
 
-/**
- * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
- * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
- */
-const VALID_COOKIE_NAME_RE =
-  /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
+// Keep this error message in sync with headers.ts. This adapter backs
+// NextRequest cookies, while headers.ts owns the next/headers cookies object.
+class ReadonlyRequestCookiesError extends Error {
+  constructor() {
+    super(
+      "Cookies can only be modified in a Server Action or Route Handler. Read more: https://nextjs.org/docs/app/api-reference/functions/cookies#options",
+    );
+  }
 
-function validateCookieName(name: string): void {
-  if (!name || !VALID_COOKIE_NAME_RE.test(name)) {
-    throw new Error(`Invalid cookie name: ${JSON.stringify(name)}`);
+  static callable(this: void): never {
+    throw new ReadonlyRequestCookiesError();
   }
 }
 
-function validateCookieAttributeValue(value: string, attributeName: string): void {
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code <= 0x1f || code === 0x7f || value[i] === ";") {
-      throw new Error(`Invalid cookie ${attributeName} value: ${JSON.stringify(value)}`);
-    }
+const REQUEST_HEADERS_MUTATING_METHODS = new Set(["set", "delete", "append"]);
+
+// Keep this error message in sync with headers.ts. This adapter backs
+// NextRequest headers in force-static route handlers, while headers.ts owns the
+// next/headers object.
+class ReadonlyRequestHeadersError extends Error {
+  constructor() {
+    super(
+      "Headers cannot be modified. Read more: https://nextjs.org/docs/app/api-reference/functions/headers",
+    );
   }
+
+  static callable(this: void): never {
+    throw new ReadonlyRequestHeadersError();
+  }
+}
+
+export function sealRequestHeaders(headers: Headers): Headers {
+  return new Proxy<Headers>(headers, {
+    get(target, prop) {
+      if (typeof prop === "string" && REQUEST_HEADERS_MUTATING_METHODS.has(prop)) {
+        return ReadonlyRequestHeadersError.callable;
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+export function sealRequestCookies(cookies: RequestCookies): RequestCookies {
+  return new Proxy<RequestCookies>(cookies, {
+    get(target, prop) {
+      if (prop === "set" || prop === "delete" || prop === "clear") {
+        return ReadonlyRequestCookiesError.callable;
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 export class ResponseCookies {
   private _headers: Headers;
+  /** Internal map keyed by cookie name — single source of truth. */
+  private _parsed: Map<string, ResponseCookieEntry> = new Map();
 
   constructor(headers: Headers) {
     this._headers = headers;
+
+    const setCookie = headers.getSetCookie?.() ?? headers.get("set-cookie") ?? [];
+    const cookieStrings = Array.isArray(setCookie) ? setCookie : splitSetCookieString(setCookie);
+    for (const header of cookieStrings) {
+      const entry = parseSetCookieHeader(header);
+      if (entry) this._parsed.set(entry.name, entry);
+    }
   }
 
-  set(name: string, value: string, options?: CookieOptions): this {
+  set(
+    ...args:
+      | [name: string, value: string, options?: CookieOptions]
+      | [options: CookieOptions & { name: string; value: string }]
+  ): this {
+    const [name, value, opts] = parseCookieSetArgs(args);
     validateCookieName(name);
-    const parts = [`${name}=${encodeURIComponent(value)}`];
-    if (options?.path) {
-      validateCookieAttributeValue(options.path, "Path");
-      parts.push(`Path=${options.path}`);
-    }
-    if (options?.domain) {
-      validateCookieAttributeValue(options.domain, "Domain");
-      parts.push(`Domain=${options.domain}`);
-    }
-    if (options?.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
-    if (options?.expires) parts.push(`Expires=${options.expires.toUTCString()}`);
-    if (options?.httpOnly) parts.push("HttpOnly");
-    if (options?.secure) parts.push("Secure");
-    if (options?.sameSite) parts.push(`SameSite=${options.sameSite}`);
-    this._headers.append("Set-Cookie", parts.join("; "));
+
+    const entry = normalizeResponseCookie(name, value, opts);
+    validateResponseCookieAttributes(entry);
+    this._parsed.set(name, entry);
+    this._syncHeaders();
     return this;
   }
 
-  get(name: string): CookieEntry | undefined {
-    for (const header of this._headers.getSetCookie()) {
-      const eq = header.indexOf("=");
-      if (eq === -1) continue;
-      const cookieName = header.slice(0, eq);
-      if (cookieName === name) {
-        const semi = header.indexOf(";", eq);
-        const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
-        let value: string;
-        try {
-          value = decodeURIComponent(raw);
-        } catch {
-          value = raw;
-        }
-        return { name, value };
-      }
-    }
-    return undefined;
+  get(...args: [name: string] | [options: { name: string }]): ResponseCookieEntry | undefined {
+    const key = typeof args[0] === "string" ? args[0] : args[0].name;
+    return this._parsed.get(key);
   }
 
   has(name: string): boolean {
-    return this.get(name) !== undefined;
+    return this._parsed.has(name);
   }
 
-  getAll(): CookieEntry[] {
-    const entries: CookieEntry[] = [];
-    for (const header of this._headers.getSetCookie()) {
-      const eq = header.indexOf("=");
-      if (eq === -1) continue;
-      const cookieName = header.slice(0, eq);
-      const semi = header.indexOf(";", eq);
-      const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
-      let value: string;
-      try {
-        value = decodeURIComponent(raw);
-      } catch {
-        value = raw;
-      }
-      entries.push({ name: cookieName, value });
+  getAll(...args: [name: string] | [options: { name: string }] | []): ResponseCookieEntry[] {
+    const all = [...this._parsed.values()];
+    if (args.length === 0) return all;
+    const key = typeof args[0] === "string" ? args[0] : args[0].name;
+    return all.filter((c) => c.name === key);
+  }
+
+  delete(
+    ...args:
+      | [name: string]
+      | [options: Omit<CookieOptions & { name: string }, "maxAge" | "expires">]
+  ): this {
+    const [name, options] =
+      typeof args[0] === "string" ? [args[0], undefined] : [args[0].name, args[0]];
+    return this.set({ ...options, name, value: "", expires: new Date(0) });
+  }
+
+  [Symbol.iterator](): MapIterator<[string, ResponseCookieEntry]> {
+    return new Map(
+      [...this._parsed.values()].map((entry) => [entry.name, entry] as const),
+    ).entries();
+  }
+
+  toString(): string {
+    return [...this._parsed.values()].map(stringifyResponseCookie).join("; ");
+  }
+
+  /** Delete all Set-Cookie headers and re-append from the internal map. */
+  private _syncHeaders(): void {
+    this._headers.delete("Set-Cookie");
+    for (const entry of this._parsed.values()) {
+      this._headers.append("Set-Cookie", stringifyResponseCookie(entry));
     }
-    return entries;
+  }
+}
+
+class MiddlewareResponseCookies extends ResponseCookies {
+  private _responseHeaders: Headers;
+
+  constructor(headers: Headers) {
+    super(headers);
+    this._responseHeaders = headers;
   }
 
-  delete(name: string): this {
-    this.set(name, "", { maxAge: 0, path: "/" });
+  override set(
+    ...args:
+      | [name: string, value: string, options?: CookieOptions]
+      | [options: CookieOptions & { name: string; value: string }]
+  ): this {
+    super.set(...args);
+    this._syncMiddlewareCookieHeader();
     return this;
   }
 
-  [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {
-    const entries: [string, CookieEntry][] = [];
-    for (const header of this._headers.getSetCookie()) {
-      const eq = header.indexOf("=");
-      if (eq === -1) continue;
-      const cookieName = header.slice(0, eq);
-      const semi = header.indexOf(";", eq);
-      const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
-      let value: string;
-      try {
-        value = decodeURIComponent(raw);
-      } catch {
-        value = raw;
-      }
-      entries.push([cookieName, { name: cookieName, value }]);
+  override delete(
+    ...args:
+      | [name: string]
+      | [options: Omit<CookieOptions & { name: string }, "maxAge" | "expires">]
+  ): this {
+    super.delete(...args);
+    this._syncMiddlewareCookieHeader();
+    return this;
+  }
+
+  private _syncMiddlewareCookieHeader(): void {
+    const cookies = this._responseHeaders.getSetCookie();
+    if (cookies.length === 0) {
+      this._responseHeaders.delete(MIDDLEWARE_SET_COOKIE_HEADER);
+      return;
     }
-    return entries[Symbol.iterator]();
+
+    this._responseHeaders.set(MIDDLEWARE_SET_COOKIE_HEADER, cookies.join(","));
   }
 }
 
@@ -657,11 +923,184 @@ type CookieOptions = {
   path?: string;
   domain?: string;
   maxAge?: number;
-  expires?: Date;
+  expires?: Date | number;
   httpOnly?: boolean;
   secure?: boolean;
-  sameSite?: "Strict" | "Lax" | "None";
+  sameSite?: true | false | "strict" | "lax" | "none";
+  partitioned?: boolean;
+  priority?: "low" | "medium" | "high";
 };
+
+type ResponseCookieEntry = CookieEntry & CookieOptions;
+
+function normalizeResponseCookie(
+  name: string,
+  value: string,
+  options?: CookieOptions,
+): ResponseCookieEntry {
+  const cookie: ResponseCookieEntry = {
+    name,
+    value,
+    ...options,
+  };
+  if (typeof cookie.expires === "number") {
+    cookie.expires = new Date(cookie.expires);
+  }
+  if (cookie.maxAge) {
+    cookie.expires = new Date(Date.now() + cookie.maxAge * 1000);
+  }
+  if (cookie.path == null) {
+    cookie.path = "/";
+  }
+  return cookie;
+}
+
+function parseSetCookieHeader(header: string): ResponseCookieEntry | undefined {
+  if (!header) return undefined;
+
+  const [[name, value], ...attributes] = parseResponseCookiePairs(header);
+  const { domain, expires, httponly, maxage, path, samesite, secure, partitioned, priority } =
+    Object.fromEntries(
+      attributes.map(([key, attributeValue]) => [
+        key.toLowerCase().replaceAll("-", ""),
+        attributeValue,
+      ]),
+    );
+  const cookie = {
+    name,
+    value: decodeURIComponent(value),
+    domain,
+    ...(expires && { expires: new Date(expires) }),
+    ...(httponly && { httpOnly: true }),
+    ...(typeof maxage === "string" && { maxAge: Number(maxage) }),
+    path,
+    ...(samesite && { sameSite: parseResponseCookieSameSite(samesite) }),
+    ...(secure && { secure: true }),
+    ...(priority && { priority: parseResponseCookiePriority(priority) }),
+    ...(partitioned && { partitioned: true }),
+  };
+
+  return compactResponseCookie(cookie) as ResponseCookieEntry;
+}
+
+function parseResponseCookiePairs(cookie: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const pair of cookie.split(/; */)) {
+    if (!pair) continue;
+    const splitAt = pair.indexOf("=");
+    if (splitAt === -1) {
+      map.set(pair, "true");
+      continue;
+    }
+    const key = pair.slice(0, splitAt);
+    const value = pair.slice(splitAt + 1);
+    try {
+      map.set(key, decodeURIComponent(value ?? "true"));
+    } catch {
+      // Match @edge-runtime/cookies: ignore malformed encoded pairs.
+    }
+  }
+  return map;
+}
+
+function compactResponseCookie<T extends object>(cookie: T): T {
+  const compact = {} as T;
+  for (const key in cookie) {
+    if (cookie[key]) compact[key] = cookie[key];
+  }
+  return compact;
+}
+
+function parseResponseCookieSameSite(value: string): CookieOptions["sameSite"] {
+  const sameSite = value.toLowerCase();
+  return sameSite === "strict" || sameSite === "lax" || sameSite === "none" ? sameSite : undefined;
+}
+
+function parseResponseCookiePriority(value: string): CookieOptions["priority"] {
+  const priority = value.toLowerCase();
+  return priority === "low" || priority === "medium" || priority === "high" ? priority : undefined;
+}
+
+function validateResponseCookieAttributes(cookie: ResponseCookieEntry): void {
+  if (cookie.path) validateCookieAttributeValue(cookie.path, "Path");
+  if (cookie.domain) validateCookieAttributeValue(cookie.domain, "Domain");
+}
+
+function stringifyResponseCookie(cookie: ResponseCookieEntry): string {
+  const attributes = [
+    cookie.path && `Path=${cookie.path}`,
+    (cookie.expires || cookie.expires === 0) &&
+      `Expires=${(typeof cookie.expires === "number" ? new Date(cookie.expires) : cookie.expires).toUTCString()}`,
+    typeof cookie.maxAge === "number" && `Max-Age=${cookie.maxAge}`,
+    cookie.domain && `Domain=${cookie.domain}`,
+    cookie.secure && "Secure",
+    cookie.httpOnly && "HttpOnly",
+    cookie.sameSite && `SameSite=${cookie.sameSite}`,
+    cookie.partitioned && "Partitioned",
+    cookie.priority && `Priority=${cookie.priority}`,
+  ].filter(Boolean);
+  const stringified = `${cookie.name}=${encodeURIComponent(cookie.value ?? "")}`;
+  return attributes.length === 0 ? stringified : `${stringified}; ${attributes.join("; ")}`;
+}
+
+function splitSetCookieString(value: string): string[] {
+  const cookies: string[] = [];
+  let position = 0;
+  let start = 0;
+
+  const skipWhitespace = (): boolean => {
+    while (position < value.length && /\s/.test(value.charAt(position))) position++;
+    return position < value.length;
+  };
+
+  while (position < value.length) {
+    start = position;
+    let separatorFound = false;
+
+    while (skipWhitespace()) {
+      if (value.charAt(position) !== ",") {
+        position++;
+        continue;
+      }
+
+      const lastComma = position++;
+      skipWhitespace();
+      const nextStart = position;
+      while (position < value.length && !"=;,".includes(value.charAt(position))) position++;
+      if (position < value.length && value.charAt(position) === "=") {
+        separatorFound = true;
+        position = nextStart;
+        cookies.push(value.substring(start, lastComma));
+        start = position;
+      } else {
+        position = lastComma + 1;
+      }
+    }
+
+    if (!separatorFound || position >= value.length) {
+      cookies.push(value.substring(start));
+    }
+  }
+
+  return cookies;
+}
+
+/**
+ * Parse the overloaded arguments for ResponseCookies.set():
+ *   - (name, value, options?) — positional form
+ *   - ({ name, value, ...options }) — object form
+ */
+function parseCookieSetArgs(
+  args:
+    | [name: string, value: string, options?: CookieOptions]
+    | [options: CookieOptions & { name: string; value: string }],
+): [string, string, CookieOptions | undefined] {
+  if (typeof args[0] === "string") {
+    return [args[0], args[1] as string, args[2] as CookieOptions | undefined];
+  }
+  const { name, value, ...opts } = args[0];
+  return [name, value, opts as CookieOptions];
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -688,11 +1127,36 @@ export class NextFetchEvent {
   sourcePage: string;
   private _waitUntilPromises: Promise<unknown>[] = [];
 
-  constructor(params: { page: string }) {
+  constructor(params: {
+    request?: Request;
+    page: string;
+    context?: { waitUntil(promise: Promise<unknown>): void };
+  }) {
     this.sourcePage = params.page;
+    if (params.context) {
+      this._externalWaitUntil = params.context.waitUntil.bind(params.context);
+    }
   }
 
+  private _externalWaitUntil?: (promise: Promise<unknown>) => void;
+
+  get request(): void {
+    throw new Error(
+      `The middleware signature for ${this.sourcePage} no longer exposes event.request`,
+    );
+  }
+
+  respondWith(): void {
+    throw new Error(`The middleware signature for ${this.sourcePage} no longer uses respondWith()`);
+  }
+
+  passThroughOnException(): void {}
+
   waitUntil(promise: Promise<unknown>): void {
+    if (this._externalWaitUntil) {
+      this._externalWaitUntil(promise);
+      return;
+    }
     this._waitUntilPromises.push(promise);
   }
 
@@ -746,8 +1210,7 @@ export type UserAgent = {
  *
  * Uses the platform's `waitUntil` (via the per-request ExecutionContext) when
  * available so the task survives past the response on Cloudflare Workers.
- * Falls back to a fire-and-forget microtask on runtimes without an execution
- * context (e.g. Node.js dev server).
+ * Node.js dev drains callbacks from its response finish/close lifecycle.
  *
  * Throws when called inside a cached scope — request-specific
  * side-effects must not leak into cached results.
@@ -755,29 +1218,39 @@ export type UserAgent = {
 export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
   _throwIfInsideCacheScope("after()");
 
-  const promise = typeof task === "function" ? Promise.resolve().then(task) : task;
-  // NOTE: vinext runs function tasks concurrently with response streaming (next microtask),
-  // whereas Next.js queues them to run strictly after the response is sent via onClose.
-  // This is a known simplification — function tasks here are not guaranteed to run
-  // after the response completes, only after the current synchronous execution.
-  //
-  // `.catch()` is attached synchronously in the same tick as `promise` is created, so
-  // there is no window where a pre-rejected `task` promise could trigger an
-  // `unhandledrejection` event before the handler is in place.
-  const guarded = promise.catch((err) => {
-    console.error("[vinext] after() task failed:", err);
-  });
+  const requestContext = isInsideUnifiedScope() ? getRequestContext() : null;
 
-  // TODO: Next.js throws when after() is called outside a request context or when
-  // waitUntil is unavailable, preventing silent task loss. vinext falls back to
-  // fire-and-forget here, which is correct for the Node.js dev server (where
-  // getRequestExecutionContext() always returns null). On Workers, a misconfigured
-  // entry that omits runWithExecutionContext would silently drop tasks — consider
-  // a one-time console.warn on the fallback path, gated to production only (e.g.
-  // `process.env.NODE_ENV === 'production'` or `typeof caches !== 'undefined'` for
-  // a Workers runtime check) with a module-level `let _warned = false` guard so it
-  // fires at most once and doesn't spam the dev-server console.
-  getRequestExecutionContext()?.waitUntil(guarded);
+  if (!requestContext) {
+    const executionContext = getRequestExecutionContext();
+    if (executionContext) {
+      if (
+        typeof task !== "function" &&
+        (task == null || typeof (task as PromiseLike<T>).then !== "function")
+      ) {
+        throw new TypeError("`after()`: Argument must be a promise or a function");
+      }
+      const promise = typeof task === "function" ? Promise.resolve().then(task) : task;
+      const guarded = Promise.resolve(promise).catch((error) => {
+        console.error("[vinext] after() task failed:", error);
+      });
+      executionContext.waitUntil(guarded);
+      return;
+    }
+    throw new Error("`after()` was called outside a request scope");
+  }
+
+  if (typeof task !== "function") {
+    if (task == null || typeof (task as PromiseLike<T>).then !== "function") {
+      throw new TypeError("`after()`: Argument must be a promise or a function");
+    }
+    const guarded = Promise.resolve(task).catch((error) => {
+      console.error("[vinext] after() task failed:", error);
+    });
+    getRequestExecutionContext()?.waitUntil(guarded);
+    return;
+  }
+
+  queueAfterCallback(requestContext, bindRequestContextSnapshot(requestContext, task));
 }
 
 /**
@@ -786,9 +1259,23 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
  * and sets Cache-Control: no-store on the response.
  */
 export async function connection(): Promise<void> {
-  const { markDynamicUsage, throwIfInsideCacheScope } = await import("./headers.js");
+  const {
+    getHeadersContext,
+    markDynamicUsage,
+    markRenderRequestApiUsage,
+    suspendConnectionProbe,
+    throwIfInsideCacheScope,
+  } = await import("./headers.js");
+  if (getHeadersContext()?.forceStatic) {
+    return;
+  }
+  markRenderRequestApiUsage("connection");
   throwIfInsideCacheScope("connection()");
   markDynamicUsage();
+  const pendingProbe = suspendConnectionProbe();
+  if (pendingProbe) {
+    await pendingProbe;
+  }
 }
 
 /**

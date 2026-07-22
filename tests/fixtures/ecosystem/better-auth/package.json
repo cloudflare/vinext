@@ -5,6 +5,7 @@
   "dependencies": {
     "react": "catalog:",
     "react-dom": "catalog:",
+    "@opentelemetry/api": "^1.9.0",
     "better-auth": "catalog:",
     "better-sqlite3": "catalog:",
     "vinext": "workspace:*",

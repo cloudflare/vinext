@@ -1,0 +1,61 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vinext-web",
+  "compatibility_date": "2026-04-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "preview_urls": true,
+  "account_id": "d48e2eb599d9aa075d5e682deaecc518",
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS",
+    "directory": "dist/client",
+  },
+  "images": {
+    "binding": "IMAGES",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vinext-metrics",
+      "database_id": "63e7cd24-9d47-4f17-a41d-b5806babc406",
+      "migrations_dir": "./migrations",
+    },
+  ],
+  // KV namespace used as the backing store for vinext's ISR CacheHandler.
+  // Pages opt into ISR with `export const revalidate = <seconds>`, and the
+  // rendered output (RSC + HTML) is cached here keyed by route + searchParams.
+  // Created via: wrangler kv namespace create vinext-web-cache
+  "kv_namespaces": [
+    {
+      "binding": "VINEXT_KV_CACHE",
+      "id": "08075d24ec854a19a52c13f031723def",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "PERFORMANCE_PROFILES",
+      "bucket_name": "vinext-performance-profiles",
+    },
+  ],
+  "triggers": {
+    "crons": ["17 * * * *"],
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+    },
+    "traces": {
+      "enabled": true,
+    },
+  },
+  "secrets": {
+    "required": ["COMPAT_INGEST_SECRET"],
+  },
+  "cache": {
+    "enabled": true,
+  },
+}

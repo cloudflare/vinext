@@ -1,0 +1,268 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0b1020;
+  --panel: #111733;
+  --panel-2: #161c3d;
+  --text: #e7ecff;
+  --muted: #93a0c8;
+  --accent: #8b5cf6;
+  --accent-2: #22d3ee;
+  --good: #34d399;
+  --warn: #f59e0b;
+  --bad: #f43f5e;
+  --border: rgba(255, 255, 255, 0.08);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(1200px 600px at 80% -10%, rgba(139, 92, 246, 0.18), transparent),
+    radial-gradient(800px 400px at -10% 10%, rgba(34, 211, 238, 0.12), transparent), var(--bg);
+  color: var(--text);
+}
+
+a {
+  color: var(--accent-2);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+}
+
+h1 {
+  font-size: 2.25rem;
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  margin-top: 32px;
+  font-size: 1.25rem;
+  letter-spacing: -0.01em;
+}
+
+.tagline {
+  color: var(--muted);
+  margin: 0 0 32px;
+  max-width: 70ch;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.card {
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 140px;
+}
+
+.card h3 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.card p {
+  color: var(--muted);
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.card a {
+  margin-top: auto;
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  background: rgba(139, 92, 246, 0.2);
+  color: #d6c4ff;
+  margin-right: 6px;
+}
+
+.badge-hit {
+  background: rgba(52, 211, 153, 0.18);
+  color: #aaf3d4;
+}
+
+.badge-miss {
+  background: rgba(244, 63, 94, 0.18);
+  color: #ffb5c2;
+}
+
+.badge-stale {
+  background: rgba(245, 158, 11, 0.18);
+  color: #ffd692;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 12px 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.controls button,
+.controls a.button {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.05s ease, background 0.15s ease;
+}
+
+.controls button:hover,
+.controls a.button:hover {
+  background: rgba(139, 92, 246, 0.2);
+  text-decoration: none;
+}
+
+.controls button:active {
+  transform: scale(0.98);
+}
+
+.status {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 8px;
+  min-height: 1.2em;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  margin-top: 16px;
+}
+
+code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 0.85em;
+}
+
+.ssr-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  margin: 16px 0;
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+.ssr-banner::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 12px 0 0 12px;
+}
+
+.ssr-banner strong {
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+
+.ssr-banner span {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ssr-banner-ran {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.ssr-banner-ran::before {
+  background: var(--warn);
+}
+
+.ssr-banner-cached {
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.ssr-banner-cached::before {
+  background: var(--good);
+}
+
+.ssr-banner-unknown {
+  background: rgba(147, 160, 200, 0.06);
+}
+
+.ssr-banner-unknown::before {
+  background: var(--muted);
+}
+
+.timestamp {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1rem;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: inline-block;
+  margin-top: 6px;
+}
+
+nav.crumbs {
+  margin-bottom: 24px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+nav.crumbs a {
+  color: var(--muted);
+}

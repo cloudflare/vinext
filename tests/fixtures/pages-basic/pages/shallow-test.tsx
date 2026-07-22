@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { useRouter } from "next/router";
 
 interface ShallowTestProps {
@@ -49,6 +50,12 @@ export default function ShallowTestPage({ gsspCallId, serverQuery }: ShallowTest
       >
         Shallow Replace
       </button>
+      <Link href="/shallow-test?via=link" shallow prefetch={false} data-testid="shallow-link">
+        Shallow Link
+      </Link>
+      <Link href="/shallow-test?via=deep-link" prefetch={false} data-testid="deep-link">
+        Deep Link
+      </Link>
     </div>
   );
 }

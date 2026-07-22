@@ -11,8 +11,10 @@
  * ViteDevServer.
  */
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { PassThrough } from "node:stream";
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { handleApiRoute } from "../packages/vinext/src/server/api-handler.js";
 import {
   reportRequestError,
@@ -80,18 +82,20 @@ function mockReq(
  */
 function mockRes(): http.ServerResponse & {
   _body: string | Buffer;
-  _headers: Record<string, string>;
+  _headers: Record<string, string | string[]>;
   _statusCode: number;
   _ended: boolean;
+  _writes: Buffer[];
 } {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string | string[]> = {};
   const res = {
     statusCode: 200,
     _body: "",
     _headers: headers,
     _statusCode: 200,
     _ended: false,
-    setHeader(name: string, value: string) {
+    _writes: [] as Buffer[],
+    setHeader(name: string, value: string | string[]) {
       headers[name.toLowerCase()] = value;
     },
     getHeader(name: string) {
@@ -106,18 +110,38 @@ function mockRes(): http.ServerResponse & {
         }
       }
     },
+    write(data: string | Buffer | Uint8Array) {
+      const chunk =
+        typeof data === "string"
+          ? Buffer.from(data)
+          : Buffer.isBuffer(data)
+            ? data
+            : Buffer.from(data);
+      res._writes.push(chunk);
+      res._body = Buffer.isBuffer(res._body)
+        ? Buffer.concat([res._body, chunk])
+        : res._body
+          ? Buffer.concat([Buffer.from(res._body), chunk])
+          : chunk;
+      return true;
+    },
     end(data?: string | Buffer) {
       if (data !== undefined) {
-        res._body = data;
+        if (res._writes.length) {
+          res.write(data);
+        } else {
+          res._body = data;
+        }
       }
       res._ended = true;
       res._statusCode = res.statusCode;
     },
   } as unknown as http.ServerResponse & {
     _body: string | Buffer;
-    _headers: Record<string, string>;
+    _headers: Record<string, string | string[]>;
     _statusCode: number;
     _ended: boolean;
+    _writes: Buffer[];
   };
   return res;
 }
@@ -173,9 +197,180 @@ describe("handleApiRoute", () => {
     });
   });
 
+  describe("preview mode", () => {
+    it("supports setDraftMode and bypass-only draft requests in dev API routes", async () => {
+      const enableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setDraftMode({ enable: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft"),
+        enableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+      const cookies = enableResponse._headers["set-cookie"];
+      if (!Array.isArray(cookies)) throw new Error("expected draft cookie");
+      expect(cookies).toHaveLength(1);
+
+      const observed: Record<string, unknown> = {};
+      const disableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.setDraftMode({ enable: false });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft", undefined, { cookie: cookies[0].split(";", 1)[0] }),
+        disableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+
+      expect(observed).toEqual({ preview: true, draftMode: true, previewData: {} });
+      expect(disableResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      ]);
+    });
+
+    it("sets, reads, and clears preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies.map((value) => value.split(";", 1)[0]).join("; ");
+
+      const observed: Record<string, unknown> = {};
+      const clearResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        clearResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({
+        preview: true,
+        draftMode: true,
+        previewData: { draft: true },
+      });
+      expect(clearResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/docs;/),
+        expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/docs;/),
+      ]);
+    });
+
+    it("rejects and clears tampered preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies
+        .map((value) => value.split(";", 1)[0])
+        .join("; ")
+        .replace(
+          /(__next_preview_data=)([^;])([^;]*)/,
+          (_match, prefix: string, first: string, rest: string) =>
+            `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+        );
+
+      const observed: Record<string, unknown> = {};
+      const response = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.clearPreviewData();
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        response,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({
+        preview: undefined,
+        draftMode: undefined,
+        previewData: false,
+      });
+      expect(response._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+        expect.stringMatching(/^__next_preview_data=; Expires=/),
+      ]);
+    });
+  });
+
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {
+    it("does not expose process environment variables on the request", async () => {
+      const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+      process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+      let capturedRequest: any;
+      const handler = vi.fn((req: any) => {
+        capturedRequest = req;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/env");
+      const res = mockRes();
+
+      try {
+        await handleApiRoute(server, req, res, "/api/env", [route("/api/env")]);
+
+        expect(capturedRequest).not.toHaveProperty("env");
+        expect(capturedRequest.env).toBeUndefined();
+      } finally {
+        if (previousValue === undefined) {
+          delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+        } else {
+          process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+        }
+      }
+    });
+
     it("parses JSON body with application/json content-type", async () => {
       let capturedBody: unknown;
       const handler = vi.fn((req: any) => {
@@ -468,6 +663,54 @@ describe("handleApiRoute", () => {
       expect(capturedCookies).toEqual({ token: "abc=def=ghi" });
     });
 
+    // Next.js delegates Pages API cookies to its compiled `cookie` parser,
+    // which preserves the first duplicate value.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/get-cookie-parser.ts
+    it("preserves the first duplicate session cookie", async () => {
+      let capturedCookies: Record<string, string> = {};
+      const handler = vi.fn((req: any) => {
+        capturedCookies = req.cookies;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/account", undefined, {
+        cookie: "session=trusted; session=attacker",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/account", [route("/api/account")]);
+
+      expect(capturedCookies.session).toBe("trusted");
+    });
+
+    it("matches Next.js prototype-key and empty-name cookie semantics", async () => {
+      let capturedCookies: Record<string, string> = {};
+      const handler = vi.fn((req: any) => {
+        capturedCookies = req.cookies;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/account", undefined, {
+        cookie:
+          '=empty-name; __proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/account", [route("/api/account")]);
+
+      expect(Object.getPrototypeOf(capturedCookies)).toBe(Object.prototype);
+      expect(capturedCookies.hasOwnProperty("encoded")).toBe(true);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
+      expect(Object.prototype.toString.call(capturedCookies)).toBe("[object Object]");
+      expect(capturedCookies).toEqual({
+        "": "empty-name",
+        encoded: "hello world",
+        malformed: "%E0%A4%A",
+        quoted: "quoted value",
+      });
+      expect(Object.hasOwn(capturedCookies, "__proto__")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "constructor")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
+    });
+
     it("returns empty object when no Cookie header", async () => {
       let capturedCookies: Record<string, string> = {};
       const handler = vi.fn((req: any) => {
@@ -627,8 +870,9 @@ describe("handleApiRoute", () => {
 
   describe("res.redirect()", () => {
     it("redirects with default 307 when given only a URL", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect("/dashboard");
+        returnedResponse = res.redirect("/dashboard");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/login");
@@ -638,12 +882,16 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(307);
       expect(res._headers["location"]).toBe("/dashboard");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/dashboard");
       expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with custom status code", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect(301, "/new-location");
+        returnedResponse = res.redirect(301, "/new-location");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/old");
@@ -653,6 +901,10 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(301);
       expect(res._headers["location"]).toBe("/new-location");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/new-location");
+      expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with 302 status code", async () => {
@@ -667,6 +919,73 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(302);
       expect(res._headers["location"]).toBe("https://external.com");
+    });
+
+    it.each([
+      [null, undefined],
+      [307, undefined],
+      [true, "/destination"],
+    ])("rejects invalid redirect arguments %#", async (statusOrUrl, url) => {
+      const handler = vi.fn((_req: any, res: any) => {
+        res.redirect(statusOrUrl, url);
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/invalid-redirect");
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/invalid-redirect", [
+        route("/api/invalid-redirect"),
+      ]);
+
+      expect(reportRequestError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(res._statusCode).toBe(500);
+      expect(res._body).toBe("Internal Server Error");
+    });
+  });
+
+  describe("res.revalidate()", () => {
+    it("uses the trusted origin instead of the request Host header", async () => {
+      const originalFetch = globalThis.fetch;
+      let capturedUrl: URL | undefined;
+      globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+        capturedUrl =
+          typeof input === "string"
+            ? new URL(input)
+            : input instanceof URL
+              ? input
+              : new URL(input.url);
+        expect(input instanceof Request ? input.method : init?.method).toBe("HEAD");
+        return new Response(null, { status: 200 });
+      };
+
+      try {
+        const handler = vi.fn(async (_req: any, res: any) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        });
+        const server = mockServer({ default: handler });
+        const req = mockReq("GET", "/api/revalidate", undefined, {
+          host: "127.0.0.1:9999",
+        });
+        const res = mockRes();
+
+        await handleApiRoute(server, req, res, "/api/revalidate", [route("/api/revalidate")], {
+          trustedRevalidateOrigin: "http://app.local:3000",
+        });
+
+        expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+        expect(res._statusCode).toBe(200);
+        expect(res._body).toBe(JSON.stringify({ revalidated: true }));
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 
@@ -764,6 +1083,352 @@ describe("handleApiRoute", () => {
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedQuery).toEqual({});
+    });
+  });
+
+  // ── Edge runtime ───────────────────────────────────────────────────
+
+  describe("edge runtime", () => {
+    it("calls edge API route handlers with a Fetch Request and writes their Response", async () => {
+      // Ported from Next.js: test/e2e/edge-async-local-storage/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-async-local-storage/index.test.ts
+      const storage = new AsyncLocalStorage<{ id: string }>();
+      const handler = vi.fn((request: Request) => {
+        const id = request.headers.get("req-id") ?? "";
+        return storage.run({ id }, async () => {
+          await Promise.resolve();
+          return Response.json(storage.getStore());
+        });
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/users", undefined, {
+        host: "example.com",
+        "req-id": "req-42",
+      });
+      const res = mockRes();
+
+      const handled = await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+
+      expect(handled).toBe(true);
+      expect(handler).toHaveBeenCalledOnce();
+      expect(res._statusCode).toBe(200);
+      expect(res._headers["content-type"]).toBe("application/json");
+      expect(res._body.toString()).toBe(JSON.stringify({ id: "req-42" }));
+    });
+
+    it("ignores x-forwarded-proto by default (untrusted proxy) for edge API request URLs", async () => {
+      // Regression test for F-PROD-7. Without `VINEXT_TRUST_PROXY` set, an
+      // attacker who can reach the dev server directly must not be able to
+      // flip `request.url.protocol` to "https:" via a forged header.
+      let capturedUrl = "";
+      const handler = vi.fn((request: Request) => {
+        capturedUrl = request.url;
+        return Response.json({ ok: true });
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/users", undefined, {
+        host: "example.com",
+        "x-forwarded-proto": "https, http",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/users?name=alice", [route("/api/users")]);
+
+      expect(capturedUrl).toBe("http://example.com/api/users?name=alice");
+    });
+
+    it("falls back to http for unsupported x-forwarded-proto values", async () => {
+      let capturedUrl = "";
+      const handler = vi.fn((request: Request) => {
+        capturedUrl = request.url;
+        return Response.json({ ok: true });
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/users", undefined, {
+        host: "example.com",
+        "x-forwarded-proto": "ftp, https",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+
+      expect(capturedUrl).toBe("http://example.com/api/users");
+    });
+
+    it("preserves multiple Set-Cookie headers from edge API responses", async () => {
+      const handler = vi.fn(() => {
+        const headers = new Headers();
+        headers.append("set-cookie", "one=1; Path=/");
+        headers.append("set-cookie", "two=2; Path=/");
+        return new Response("ok", { headers });
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/users", undefined, {
+        host: "example.com",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+
+      expect(res._statusCode).toBe(200);
+      expect(res._headers["set-cookie"]).toEqual(["one=1; Path=/", "two=2; Path=/"]);
+      expect(res._body.toString()).toBe("ok");
+    });
+
+    it("streams edge API response bodies through the dev bridge", async () => {
+      let releaseSecondChunk!: () => void;
+      const secondChunkReady = new Promise<void>((resolve) => {
+        releaseSecondChunk = resolve;
+      });
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("first"));
+          void secondChunkReady.then(() => {
+            controller.enqueue(encoder.encode("-second"));
+            controller.close();
+          });
+        },
+      });
+      const handler = vi.fn(() => new Response(body));
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const nodeServer = http.createServer((req, res) => {
+        handleApiRoute(server, req, res, req.url ?? "/", [route("/api/users")]).catch((error) => {
+          if (!res.headersSent) {
+            res.writeHead(500);
+            res.end(error instanceof Error ? error.message : String(error));
+            return;
+          }
+          res.destroy(error instanceof Error ? error : new Error(String(error)));
+        });
+      });
+
+      try {
+        await new Promise<void>((resolve) => nodeServer.listen(0, resolve));
+        const address = nodeServer.address() as AddressInfo;
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/users`);
+        const reader = response.body?.getReader();
+        expect(reader).toBeDefined();
+        if (!reader) return;
+
+        const first = await reader.read();
+        expect(first.done).toBe(false);
+        expect(new TextDecoder().decode(first.value)).toBe("first");
+
+        releaseSecondChunk();
+        const second = await reader.read();
+        const done = await reader.read();
+
+        expect(second.done).toBe(false);
+        expect(new TextDecoder().decode(second.value)).toBe("-second");
+        expect(done.done).toBe(true);
+      } finally {
+        nodeServer.closeAllConnections();
+        await new Promise<void>((resolve, reject) => {
+          nodeServer.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    });
+
+    it("passes a NextRequest with nextUrl.searchParams to edge handlers", async () => {
+      // Ported from Next.js: test/e2e/edge-pages-support/app/pages/api/hello.js
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/app/pages/api/hello.js
+      // Next.js wraps the incoming Request in a NextRequest before invoking
+      // edge API handlers, so handlers can use `req.nextUrl.searchParams`.
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as { nextUrl?: URL }).nextUrl;
+        if (!nextUrl) return new Response("missing nextUrl", { status: 500 });
+        return Response.json({
+          hello: "world",
+          query: Object.fromEntries(nextUrl.searchParams),
+        });
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/hello?a=b", undefined, {
+        host: "example.com",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")]);
+
+      expect(res._statusCode).toBe(200);
+      expect(JSON.parse(res._body.toString())).toEqual({
+        hello: "world",
+        query: { a: "b" },
+      });
+    });
+
+    it("applies basePath and i18n config to edge API nextUrl", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (
+          request as Request & {
+            nextUrl?: { basePath: string; locale: string; pathname: string };
+          }
+        ).nextUrl;
+        return Response.json({
+          basePath: nextUrl?.basePath,
+          locale: nextUrl?.locale,
+          pathname: nextUrl?.pathname,
+        });
+      });
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/docs/fr/api/hello?a=b", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/fr/api/hello?a=b", [route("/fr/api/hello")], {
+        basePath: "/docs",
+        i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+      });
+
+      expect(JSON.parse(res._body.toString())).toMatchObject({
+        basePath: "/docs",
+        locale: "fr",
+        pathname: "/api/hello",
+      });
+    });
+
+    it("reconstructs Vite-stripped basePath for edge API nextUrl", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as Request & { nextUrl?: { basePath: string; pathname: string } })
+          .nextUrl;
+        return Response.json({ basePath: nextUrl?.basePath, pathname: nextUrl?.pathname });
+      });
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
+        basePath: "/docs",
+      });
+
+      expect(JSON.parse(res._body.toString())).toEqual({
+        basePath: "/docs",
+        pathname: "/api/hello",
+      });
+    });
+
+    it("does not double-prefix an exact basePath edge API rewrite", async () => {
+      const handler = vi.fn((request: Request) => Response.json({ url: request.url }));
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/docs", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello", [route("/api/hello")], {
+        basePath: "/docs",
+      });
+
+      expect(JSON.parse(res._body.toString())).toEqual({ url: "http://example.com/docs" });
+    });
+
+    it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {
+      // Ported from Next.js: packages/next/src/build/analysis/get-page-static-info.ts
+      // Both `export const runtime = "edge"` and `export const config = { runtime: "edge" }`
+      // are valid ways to mark a Pages Router API route as edge. Next.js resolves
+      // via `config.runtime ?? config.config?.runtime`, so a bare `runtime` export
+      // takes precedence over the nested config form.
+      const handler = vi.fn((request: Request) =>
+        Response.json({ id: request.headers.get("req-id") }),
+      );
+      const server = mockServer({
+        runtime: "edge",
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/users", undefined, {
+        host: "example.com",
+        "req-id": "req-7",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+
+      expect(res._statusCode).toBe(200);
+      expect(JSON.parse(res._body.toString())).toEqual({ id: "req-7" });
+    });
+
+    it("streams edge API request bodies into the handler before the client finishes sending", async () => {
+      const decoder = new TextDecoder();
+      const handler = vi.fn(async (request: Request) => {
+        const reader = request.body?.getReader();
+        if (!reader) return new Response("missing body", { status: 400 });
+        const first = await reader.read();
+        return new Response(first.done ? "done" : decoder.decode(first.value));
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const nodeServer = http.createServer((req, res) => {
+        handleApiRoute(server, req, res, req.url ?? "/", [route("/api/users")]).catch((error) => {
+          if (!res.headersSent) {
+            res.writeHead(500);
+            res.end(error instanceof Error ? error.message : String(error));
+            return;
+          }
+          res.destroy(error instanceof Error ? error : new Error(String(error)));
+        });
+      });
+
+      try {
+        await new Promise<void>((resolve) => nodeServer.listen(0, resolve));
+        const address = nodeServer.address() as AddressInfo;
+        const req = http.request({
+          headers: { "content-type": "text/plain", "transfer-encoding": "chunked" },
+          host: "127.0.0.1",
+          method: "POST",
+          path: "/api/users",
+          port: address.port,
+        });
+
+        const responseBody = await new Promise<string>((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error("Timed out waiting for streamed request body response")),
+            1000,
+          );
+          req.on("error", (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+          req.on("response", (response) => {
+            const chunks: Buffer[] = [];
+            response.on("data", (chunk: Buffer) => chunks.push(chunk));
+            response.on("error", (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            });
+            response.on("end", () => {
+              clearTimeout(timeout);
+              resolve(Buffer.concat(chunks).toString("utf-8"));
+            });
+          });
+          req.write("first");
+        });
+
+        req.end("-second");
+        expect(responseBody).toBe("first");
+      } finally {
+        nodeServer.closeAllConnections();
+        await new Promise<void>((resolve, reject) => {
+          nodeServer.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
     });
   });
 

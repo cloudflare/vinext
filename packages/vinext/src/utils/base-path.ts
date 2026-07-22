@@ -22,3 +22,25 @@ export function stripBasePath(pathname: string, basePath: string): string {
   if (!hasBasePath(pathname, basePath)) return pathname;
   return pathname.slice(basePath.length) || "/";
 }
+
+/**
+ * Add the configured basePath to a pathname unless it is already inside that
+ * basePath. Query strings and hashes must be handled by callers before calling
+ * this pathname-only helper.
+ */
+export function addBasePathToPathname(pathname: string, basePath: string | undefined): string {
+  if (!basePath || hasBasePath(pathname, basePath)) return pathname;
+  return pathname === "/" ? basePath : `${basePath}${pathname}`;
+}
+
+/**
+ * Remove trailing slashes from a pathname while preserving the root "/".
+ * Collapses any number of trailing slashes ("/a//" → "/a"). Used by the
+ * trailing-slash redirect path and route pattern normalization.
+ */
+export function removeTrailingSlash(pathname: string): string {
+  if (pathname === "/") return "/";
+  let end = pathname.length;
+  while (end > 0 && pathname.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return end === 0 ? "/" : pathname.slice(0, end);
+}

@@ -2,9 +2,19 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
+  mergeMiddlewareResponseHeaders,
   resolveAppPageHtmlResponsePolicy,
   resolveAppPageRscResponsePolicy,
 } from "../packages/vinext/src/server/app-page-response.js";
+import {
+  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
+  VINEXT_RSC_VARY_HEADER,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { withEnvVar } from "./env-test-helpers.js";
 
 function createBody(text: string): ReadableStream {
   return new ReadableStream({
@@ -20,6 +30,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: true,
@@ -34,6 +45,8 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
+        expireSeconds: 300,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -41,7 +54,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "s-maxage=60, stale-while-revalidate",
+      cacheControl: "s-maxage=60, stale-while-revalidate=240",
       cacheState: "MISS",
     });
   });
@@ -50,6 +63,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: true,
         isForceStatic: false,
@@ -63,6 +77,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -77,6 +92,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -90,6 +106,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: true,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -101,10 +118,44 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("resolves draft mode response policies as uncacheable", () => {
+    expect(
+      resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
+        isDraftMode: true,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: true,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+  });
+
   it("resolves HTML response policy precedence", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: true,
+        hasScriptNonce: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -119,6 +170,8 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -134,10 +187,29 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
         isProduction: true,
+        revalidateSeconds: Infinity,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: false,
         revalidateSeconds: Infinity,
       }),
     ).toEqual({
@@ -151,6 +223,8 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -164,10 +238,132 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("writes force-static HTML responses to cache in production", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: false,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "STATIC",
+      shouldWriteToCache: false,
+    });
+  });
+
+  it("treats progressive action HTML responses as no-store", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        isProgressiveActionRender: true,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+  });
+
+  it("treats revalidate = 0 as no-store in RSC response policy", () => {
+    expect(
+      resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+    });
+
+    // revalidate = 0 takes priority over isForceStatic
+    expect(
+      resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+    });
+  });
+
+  it("treats revalidate = 0 as no-store in HTML response policy", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+
+    // revalidate = 0 takes priority over isForceStatic
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+  });
+
   it("treats force-static with explicit revalidate as ISR in both policy helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: true,
@@ -182,6 +378,8 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: true,
@@ -192,6 +390,24 @@ describe("app page response helpers", () => {
       cacheControl: "s-maxage=60, stale-while-revalidate",
       cacheState: "MISS",
       shouldWriteToCache: true,
+    });
+  });
+
+  it("treats HTML responses with a script nonce as no-store", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: true,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
     });
   });
 
@@ -219,13 +435,91 @@ describe("app page response helpers", () => {
     });
 
     expect(response.status).toBe(202);
-    expect(response.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"slug":"test"}'));
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(response.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+    expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("x-vinext-timing")).toBe("10,5,-1");
     await expect(response.text()).resolves.toBe("flight");
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on RSC responses when the route opts into the edge runtime (issue #1531)", () => {
+    // Next.js sets `x-edge-runtime: 1` on edge-runtime app responses (see
+    // edge-ssr-app.ts in the Next.js source). Mirror that only for routes
+    // whose resolved segment config is `runtime = "edge"`.
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      isEdgeRuntime: true,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on RSC responses for nodejs-runtime routes", () => {
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
+  });
+
+  it("builds RSC responses with the current compatibility ID header", () => {
+    const response = withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-a", () =>
+      buildAppPageRscResponse(createBody("flight"), {
+        middlewareContext: { headers: null, status: null },
+        policy: {},
+      }),
+    );
+
+    expect(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
+  });
+
+  it("emits per-page dynamic stale time metadata on RSC responses", () => {
+    // Next.js sends the per-page dynamic stale time in the Flight response `d`
+    // field; vinext carries the same response-level contract through an RSC
+    // response header that the client cache can snapshot.
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      dynamicStaleTimeSeconds: 60,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+  });
+
+  it("keeps the framework rendered path when middleware sets the internal alias header", () => {
+    const middlewareHeaders = new Headers({
+      [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/spoofed?searchParam=wrong"),
+    });
+
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: middlewareHeaders, status: null },
+      policy: {},
+      renderedPathAndSearch: "/search-params/target-page?searchParam=rewrittenSearchParam",
+    });
+
+    expect(response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+      encodeURIComponent("/search-params/target-page?searchParam=rewrittenSearchParam"),
+    );
+  });
+
+  it("keeps the framework compatibility ID when middleware sets the internal header", () => {
+    const middlewareHeaders = new Headers({
+      [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "middleware-compat",
+    });
+
+    const response = withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "framework-compat", () =>
+      buildAppPageRscResponse(createBody("flight"), {
+        middlewareContext: { headers: middlewareHeaders, status: null },
+        policy: {},
+      }),
+    );
+
+    expect(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("framework-compat");
   });
 
   it("percent-encodes X-Vinext-Params so non-ASCII characters survive the ByteString header constraint (issue #676)", () => {
@@ -248,14 +542,17 @@ describe("app page response helpers", () => {
     expect(JSON.parse(decodeURIComponent(rawHeader))).toEqual({ slug: [koreanSlug] });
   });
 
-  it("builds HTML responses with draft cookies, preload links, middleware, and timing", async () => {
+  it("builds HTML responses with middleware override/append header semantics", async () => {
     const middlewareHeaders = new Headers();
+    middlewareHeaders.set("cache-control", "private, max-age=5");
     middlewareHeaders.append("set-cookie", "mw=1; Path=/");
+    middlewareHeaders.set("vary", "Next-Router-State-Tree");
     middlewareHeaders.append("x-extra", "present");
+    middlewareHeaders.set("cache-control", "private, max-age=5");
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",
-      fontLinkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
+      linkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
       middlewareContext: {
         headers: middlewareHeaders,
         status: 203,
@@ -274,8 +571,10 @@ describe("app page response helpers", () => {
 
     expect(response.status).toBe(203);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
+    expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
@@ -286,5 +585,111 @@ describe("app page response helpers", () => {
     expect(setCookies).toContain("__prerender_bypass=token; Path=/");
     expect(setCookies).toContain("mw=1; Path=/");
     await expect(response.text()).resolves.toBe("<h1>page</h1>");
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on HTML responses when the route opts into the edge runtime (issue #1531)", () => {
+    // Next.js sets `x-edge-runtime: 1` on edge-runtime app responses (see
+    // edge-ssr-app.ts in the Next.js source). Mirror that only for routes
+    // whose resolved segment config is `runtime = "edge"`.
+    const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
+      isEdgeRuntime: true,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on HTML responses for nodejs-runtime routes", () => {
+    const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
+  });
+});
+
+describe("mergeMiddlewareResponseHeaders", () => {
+  it("is a no-op when middleware headers are null", () => {
+    const target = new Headers({ "Content-Type": "text/plain" });
+    mergeMiddlewareResponseHeaders(target, null);
+    expect(target.get("Content-Type")).toBe("text/plain");
+    expect([...target].length).toBe(1);
+  });
+
+  it("sets singular headers via set(), overriding existing values", () => {
+    const target = new Headers({ "Cache-Control": "no-store", "X-Custom": "original" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Cache-Control", "private, max-age=5");
+    mwHeaders.set("X-Custom", "from-middleware");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Cache-Control")).toBe("private, max-age=5");
+    expect(target.get("X-Custom")).toBe("from-middleware");
+  });
+
+  it("appends Set-Cookie headers instead of overriding", () => {
+    const target = new Headers();
+    target.append("Set-Cookie", "existing=1; Path=/");
+    const mwHeaders = new Headers();
+    mwHeaders.append("Set-Cookie", "mw-session=abc; Path=/");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    const cookies = target.getSetCookie();
+    expect(cookies).toContain("existing=1; Path=/");
+    expect(cookies).toContain("mw-session=abc; Path=/");
+  });
+
+  it("appends Vary headers instead of overriding", () => {
+    const target = new Headers({ Vary: "RSC, Accept" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "Next-Router-State-Tree");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+  });
+
+  it("deduplicates Vary values when appending middleware headers", () => {
+    const target = new Headers({ Vary: VINEXT_RSC_VARY_HEADER });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "next-router-state-tree, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, X-Auth-State`);
+  });
+
+  it("preserves wildcard Vary semantics when appending middleware headers", () => {
+    const target = new Headers({ Vary: "RSC, Accept" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "*, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
+  });
+
+  it("preserves wildcard Vary semantics when target already has Vary wildcard", () => {
+    const target = new Headers({ Vary: "*" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
+  });
+
+  it("preserves wildcard Vary semantics when middleware is the first Vary source", () => {
+    const target = new Headers();
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "*, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
   });
 });

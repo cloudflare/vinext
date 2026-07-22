@@ -62,9 +62,9 @@ test.describe("instrumentation.ts onRequestError", () => {
     const data = await stateRes.json();
     expect(data.errors.length).toBeGreaterThanOrEqual(1);
 
-    const err = data.errors[data.errors.length - 1];
+    const err = data.errors.find((e: { path: string }) => e.path === "/api/error-route");
+    expect(err).toBeTruthy();
     expect(err.message).toBe("Intentional route handler error");
-    expect(err.path).toBe("/api/error-route");
     expect(err.method).toBe("GET");
     expect(err.routerKind).toBe("App Router");
     expect(err.routeType).toBe("route");

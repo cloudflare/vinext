@@ -3,6 +3,7 @@ import { readAppRouteHandlerCacheResponse } from "../packages/vinext/src/server/
 import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
+import type { HeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -44,7 +45,75 @@ function buildCachedRouteValue(
   };
 }
 
+type ReadAppRouteHandlerCacheOptions = Parameters<typeof readAppRouteHandlerCacheResponse>[0];
+
+function createReadOptions(
+  overrides: Partial<ReadAppRouteHandlerCacheOptions> = {},
+): ReadAppRouteHandlerCacheOptions {
+  return {
+    buildPageCacheTags(pathname, extraTags) {
+      return [pathname, ...extraTags];
+    },
+    cleanPathname: "/api/cached",
+    clearRequestContext() {},
+    consumeDynamicUsage() {
+      return false;
+    },
+    getCollectedFetchTags() {
+      return [];
+    },
+    async handlerFn() {
+      return new Response("fresh");
+    },
+    isAutoHead: false,
+    async isrGet() {
+      return null;
+    },
+    isrRouteKey(pathname) {
+      return `route:${pathname}`;
+    },
+    async isrSet() {},
+    markDynamicUsage() {},
+    middlewareContext: { headers: null, status: null },
+    params: {},
+    requestUrl: "https://example.com/api/cached",
+    revalidateSearchParams: new URLSearchParams(),
+    revalidateSeconds: 60,
+    routePattern: "/api/cached",
+    async runInRevalidationContext(renderFn) {
+      await renderFn();
+    },
+    scheduleBackgroundRegeneration() {},
+    setHeadersAccessPhase() {
+      return "render";
+    },
+    setNavigationContext() {},
+    ...overrides,
+  };
+}
+
 describe("app route handler cache helpers", () => {
+  it("does not serve or background-regenerate hard-expired route handlers", async () => {
+    const scheduleBackgroundRegeneration = vi.fn();
+    const clearRequestContext = vi.fn();
+    const response = await readAppRouteHandlerCacheResponse(
+      createReadOptions({
+        clearRequestContext,
+        async isrGet() {
+          return {
+            ...buildISRCacheEntry(buildCachedRouteValue("expired"), true),
+            isExpired: true,
+          };
+        },
+        scheduleBackgroundRegeneration,
+      }),
+    );
+
+    expect(response).toBeNull();
+    expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(clearRequestContext).not.toHaveBeenCalled();
+  });
+
   it("returns HIT responses from cached APP_ROUTE entries", async () => {
     let didClearRequestContext = false;
 
@@ -91,6 +160,9 @@ describe("app route handler cache helpers", () => {
       scheduleBackgroundRegeneration() {
         throw new Error("should not schedule regeneration");
       },
+      setHeadersAccessPhase() {
+        return "render";
+      },
       setNavigationContext() {},
     });
 
@@ -106,6 +178,7 @@ describe("app route handler cache helpers", () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
     const isrSetCalls: Array<{
       key: string;
+      expireSeconds: number | undefined;
       revalidateSeconds: number;
       tags: string[];
     }> = [];
@@ -135,15 +208,16 @@ describe("app route handler cache helpers", () => {
       isrRouteKey(pathname) {
         return "route:" + pathname;
       },
-      async isrSet(key, value, revalidateSeconds, tags) {
+      async isrSet(key, value, revalidateSeconds, tags, expireSeconds) {
         expect(value.kind).toBe("APP_ROUTE");
-        isrSetCalls.push({ key, revalidateSeconds, tags });
+        isrSetCalls.push({ key, expireSeconds, revalidateSeconds, tags });
       },
       markDynamicUsage: dynamicUsage.markDynamicUsage,
       middlewareContext: { headers: null, status: null },
       params: { slug: "demo" },
       requestUrl: "https://example.com/base/api/stale?ping=pong",
       revalidateSearchParams: new URLSearchParams("ping=pong"),
+      expireSeconds: 300,
       revalidateSeconds: 60,
       routePattern: "/api/stale",
       async runInRevalidationContext(renderFn) {
@@ -151,6 +225,9 @@ describe("app route handler cache helpers", () => {
       },
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRegenerations.push(renderFn);
+      },
+      setHeadersAccessPhase() {
+        return "render";
       },
       setNavigationContext(context) {
         navigationCalls.push(context?.pathname ?? null);
@@ -166,11 +243,70 @@ describe("app route handler cache helpers", () => {
     expect(isrSetCalls).toEqual([
       {
         key: "route:/api/stale",
+        expireSeconds: 300,
         revalidateSeconds: 60,
         tags: ["/api/stale", "tag:regen"],
       },
     ]);
     expect(navigationCalls).toEqual(["/api/stale", null]);
+  });
+
+  it("sets the route-handler header access phase while stale route handlers regenerate", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const scheduledRegens: Array<() => Promise<void>> = [];
+    const phases: string[] = [];
+    const options = {
+      buildPageCacheTags(pathname: string, extraTags: string[]) {
+        return [pathname, ...extraTags];
+      },
+      cleanPathname: "/api/stale-force-static",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      dynamicConfig: "force-static",
+      getCollectedFetchTags() {
+        return [];
+      },
+      handlerFn() {
+        return new Response("regenerated");
+      },
+      isAutoHead: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
+      },
+      isrRouteKey(pathname: string) {
+        return "route:" + pathname;
+      },
+      async isrSet() {},
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      requestUrl: "https://example.com/api/stale-force-static",
+      revalidateSearchParams: new URLSearchParams(),
+      revalidateSeconds: 60,
+      routePattern: "/api/stale-force-static",
+      async runInRevalidationContext(renderFn: () => Promise<void>) {
+        await renderFn();
+      },
+      scheduleBackgroundRegeneration(_key: string, renderFn: () => Promise<void>) {
+        scheduledRegens.push(renderFn);
+      },
+      setHeadersAccessPhase(phase: HeadersAccessPhase): HeadersAccessPhase {
+        phases.push(phase);
+        return "render";
+      },
+      setNavigationContext() {},
+    };
+
+    await readAppRouteHandlerCacheResponse(options);
+
+    const scheduledRegenRun = scheduledRegens[0];
+    expect(scheduledRegens).toHaveLength(1);
+    if (!scheduledRegenRun) {
+      throw new Error("Expected scheduled route regeneration");
+    }
+    await scheduledRegenRun();
+
+    expect(phases).toEqual(["route-handler"]);
   });
 
   it("skips regeneration writes when the stale handler reads dynamic request data", async () => {
@@ -217,6 +353,9 @@ describe("app route handler cache helpers", () => {
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRegens.push(renderFn);
       },
+      setHeadersAccessPhase() {
+        return "render";
+      },
       setNavigationContext() {},
     });
 
@@ -229,6 +368,70 @@ describe("app route handler cache helpers", () => {
 
     expect(wroteCache).toBe(false);
     expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+  });
+
+  it("rejects invalid route handler responses during background regeneration", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const scheduledRegens: Array<() => Promise<void>> = [];
+    let wroteCache = false;
+
+    const response = await readAppRouteHandlerCacheResponse({
+      buildPageCacheTags(pathname, extraTags) {
+        return [pathname, ...extraTags];
+      },
+      cleanPathname: "/api/stale-invalid",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      getCollectedFetchTags() {
+        return [];
+      },
+      handlerFn() {
+        return new Response("should not be cached", {
+          headers: { "x-middleware-next": "1" },
+        });
+      },
+      isAutoHead: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {
+        wroteCache = true;
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      requestUrl: "https://example.com/api/stale-invalid",
+      revalidateSearchParams: new URLSearchParams(),
+      revalidateSeconds: 60,
+      routePattern: "/api/stale-invalid",
+      async runInRevalidationContext(renderFn) {
+        await renderFn();
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegens.push(renderFn);
+      },
+      setHeadersAccessPhase() {
+        return "render";
+      },
+      setNavigationContext() {},
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+    await expect(response?.text()).resolves.toBe("from-stale");
+    expect(scheduledRegens).toHaveLength(1);
+
+    const scheduledRegenRun = scheduledRegens[0];
+    if (!scheduledRegenRun) {
+      throw new Error("Expected scheduled route regeneration");
+    }
+
+    await expect(scheduledRegenRun()).rejects.toThrow(
+      "NextResponse.next() was used in a app route handler",
+    );
+    expect(wroteCache).toBe(false);
   });
 
   it("falls through on cache read errors", async () => {
@@ -268,6 +471,9 @@ describe("app route handler cache helpers", () => {
         await renderFn();
       },
       scheduleBackgroundRegeneration() {},
+      setHeadersAccessPhase() {
+        return "render";
+      },
       setNavigationContext() {},
     });
 

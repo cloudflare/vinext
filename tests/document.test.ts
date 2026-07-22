@@ -32,20 +32,27 @@ describe("NextScript", () => {
 });
 
 describe("Head", () => {
-  it("injects default charset and viewport meta tags", () => {
+  // Charset and viewport defaults are intentionally NOT emitted by the
+  // `_document` Head shim. They are seeded into `next/head`'s collector via
+  // `defaultHead()` and serialised by `getSSRHeadHTML()` — see the comment in
+  // `shims/document.tsx`. This mirrors Next.js's pipeline, where the defaults
+  // flow through the same `data-next-head=""` dedupe step as user tags.
+  it("renders an empty <head> when given no children (defaults flow via next/head)", () => {
     const html = render(React.createElement(Head));
-    expect(html).toContain('charSet="utf-8"');
-    expect(html).toContain('content="width=device-width, initial-scale=1"');
+    expect(html).toBe("<head></head>");
   });
 
-  it("preserves custom children alongside defaults", () => {
+  it("renders only user-provided children — defaults are not duplicated here", () => {
     const html = render(
       React.createElement(Head, null, React.createElement("title", null, "My App")),
     );
     // Custom content rendered
     expect(html).toContain("<title>My App</title>");
-    // Defaults still present
-    expect(html).toContain('charSet="utf-8"');
+    // The shim must NOT also emit charset/viewport — those flow through
+    // next/head's defaultHead() instead, so they go through the same dedupe
+    // pipeline as user-supplied tags.
+    expect(html).not.toContain("charSet=");
+    expect(html).not.toContain('name="viewport"');
   });
 });
 
@@ -88,5 +95,103 @@ describe("Html", () => {
     const html = render(React.createElement(Document));
     // Default Document uses Html as root — output must start with <html
     expect(html).toMatch(/^<html/);
+  });
+});
+
+// Regression test for the contract motivating PR #1381 (issue #1361):
+// user `pages/_document.tsx` files commonly use the class form
+// `class MyDocument extends Document`. If the shim's default export is a
+// function, the extends chain produces a class React refuses to construct
+// (`Class constructor cannot be invoked without 'new'`), which 500s SSR and
+// surfaces as empty pages in deploy-suite e2e tests.
+//
+// Ported from Next.js: test/e2e/async-modules/pages/_document.jsx
+// https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/pages/_document.jsx
+describe("Document base class", () => {
+  it("can be extended by a user class that React can construct", () => {
+    class MyDocument extends Document {
+      render() {
+        return React.createElement(
+          Html,
+          { lang: "ja" },
+          React.createElement(Head),
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", { id: "doc-marker" }, "ok"),
+            React.createElement(Main),
+            React.createElement(NextScript),
+          ),
+        );
+      }
+    }
+    const html = render(React.createElement(MyDocument));
+    expect(html).toMatch(/<html[^>]*lang="ja"/);
+    expect(html).toContain('id="doc-marker"');
+    expect(html).toContain("__NEXT_MAIN__");
+    expect(html).toContain("__NEXT_SCRIPTS__");
+  });
+
+  it("delegates static getInitialProps to ctx.defaultGetInitialProps", async () => {
+    const defaultGetInitialProps = async () => ({ html: "<main>page</main>" });
+    const context = { defaultGetInitialProps } as never;
+    await expect(Document.getInitialProps(context)).resolves.toEqual({
+      html: "<main>page</main>",
+    });
+  });
+});
+
+// Regression coverage for issue #1361 follow-up: user `_document.tsx` files
+// that override `static async getInitialProps` (as the Next.js async-modules
+// fixture does) must have those props forwarded to the rendered Document.
+// `loadUserDocumentInitialProps` is the SSR-side helper that both the Pages
+// Router dev-server and the production response builder call.
+//
+// Ported from Next.js: test/e2e/async-modules/pages/_document.jsx
+// https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/pages/_document.jsx
+describe("loadUserDocumentInitialProps", () => {
+  it("invokes overridden Document.getInitialProps and returns the resolved props", async () => {
+    const { loadUserDocumentInitialProps } =
+      await import("../packages/vinext/src/server/pages-document-initial-props.js");
+    class MyDocument extends Document {
+      static async getInitialProps(_ctx: unknown) {
+        const base = await Document.getInitialProps(_ctx as never);
+        return { ...base, docValue: await Promise.resolve("doc value") };
+      }
+    }
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
+    expect(props).not.toBeNull();
+    expect(props!.docValue).toBe("doc value");
+    expect(props!.html).toBe("");
+  });
+
+  it("returns null when the user did not override the base getInitialProps", async () => {
+    const { loadUserDocumentInitialProps } =
+      await import("../packages/vinext/src/server/pages-document-initial-props.js");
+    class MyDocument extends Document {
+      // No getInitialProps override — inherits the base shim's stub.
+      render() {
+        return React.createElement("html");
+      }
+    }
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
+    expect(props).toBeNull();
+  });
+
+  it("lets errors from the user getInitialProps propagate, matching Next.js render.tsx", async () => {
+    const { loadUserDocumentInitialProps } =
+      await import("../packages/vinext/src/server/pages-document-initial-props.js");
+    class BadDocument extends Document {
+      static async getInitialProps(_ctx: unknown): Promise<never> {
+        throw new Error("boom");
+      }
+    }
+    // Next.js's `loadGetInitialProps` does NOT catch — a throw surfaces as a
+    // 500 to the caller. vinext matches that contract so user bugs in
+    // `_document.tsx`'s getInitialProps are visible instead of silently
+    // erasing docProps from every render.
+    await expect(
+      loadUserDocumentInitialProps(BadDocument as unknown as React.ComponentType),
+    ).rejects.toThrow("boom");
   });
 });

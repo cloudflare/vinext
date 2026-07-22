@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 1 # zizmor: ignore[dependabot-cooldown] — fast cooldown is intentional
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 1 # zizmor: ignore[dependabot-cooldown] — fast cooldown is intentional

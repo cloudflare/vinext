@@ -232,6 +232,41 @@ describe("Next.js compat: app-routes", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  it("POST form route handler redirect() produces 303", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/post-form-redirect`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain(
+      "/nextjs-compat/route-handler-redirects?success=true",
+    );
+    expect(res.headers.get("set-cookie")).toContain("route-redirect=preserved");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  it("POST form route handler permanentRedirect() produces 303", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/post-form-permanent-redirect`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain(
+      "/nextjs-compat/route-handler-redirects?success=true",
+    );
+  });
+
   // ── notFound() in route handlers ─────────────────────────────
   // Next.js: 'can respond correctly in nodejs' (notFound)
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L186-L191
@@ -353,6 +388,15 @@ describe("Next.js compat: app-routes", () => {
   //
   // Next.js: 'provides params to routes with dynamic parameters'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L84-L92
+
+  // Next.js: 'does not provide params to routes without dynamic parameters'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L424-L431
+  it("does not provide params to routes without dynamic parameters", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/params-null`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.params).toBeNull();
+  });
 
   it("catch-all route handler supports await params (Next.js 15 async params)", async () => {
     const res = await fetch(`${baseUrl}/api/catch-all/a/b/c`);

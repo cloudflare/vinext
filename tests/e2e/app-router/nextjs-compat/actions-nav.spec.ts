@@ -7,22 +7,16 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: actions-navigation (browser)", () => {
   // Next.js: 'should handle actions correctly after navigation / redirection events'
   // Simplified: Navigate to action page, submit form, verify result
   test("server action works after client-side navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/action-redirect-nav`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate to the action page via Link click
     await page.click("#go-to-action");

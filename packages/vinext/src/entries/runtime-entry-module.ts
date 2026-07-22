@@ -1,19 +1,20 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { toSlash } from "pathslash";
 
 /**
  * Resolve a sibling module path relative to a caller's `import.meta.url`,
  * returning a forward-slash path safe for embedding in generated code.
  *
  * This is the single place that owns the
- * `fileURLToPath(new URL(rel, base)).replace(/\\/g, "/")` idiom so callers
- * don't duplicate it.
+ * `fileURLToPath(new URL(rel, base))` + path-separator normalization idiom so
+ * callers don't duplicate it.
  *
  * @param rel  - Relative path to the target module (e.g. `"../server/foo.js"`)
  * @param base - The caller's `import.meta.url`
  */
 export function resolveEntryPath(rel: string, base: string): string {
-  return fileURLToPath(new URL(rel, base)).replace(/\\/g, "/");
+  return toSlash(fileURLToPath(new URL(rel, base)));
 }
 
 /**
@@ -25,12 +26,20 @@ export function resolveEntryPath(rel: string, base: string): string {
  * published packages.
  */
 export function resolveRuntimeEntryModule(name: string): string {
+  return resolveRuntimeModulePath("server", name);
+}
+
+export function resolveClientRuntimeModule(name: string): string {
+  return resolveRuntimeModulePath("client", name);
+}
+
+function resolveRuntimeModulePath(directory: "client" | "server", name: string): string {
   for (const ext of [".ts", ".js", ".mts", ".mjs"]) {
-    const filePath = resolveEntryPath(`../server/${name}${ext}`, import.meta.url);
+    const filePath = resolveEntryPath(`../${directory}/${name}${ext}`, import.meta.url);
     if (fs.existsSync(filePath)) {
       return filePath;
     }
   }
 
-  return resolveEntryPath(`../server/${name}.js`, import.meta.url);
+  return resolveEntryPath(`../${directory}/${name}.js`, import.meta.url);
 }

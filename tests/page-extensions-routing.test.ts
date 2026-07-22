@@ -67,8 +67,10 @@ describe("pageExtensions route discovery", () => {
     }
   });
 
-  it("excludes _ prefixed files from api routes", async () => {
-    // Next.js ignores _-prefixed files in pages/api/ the same way it does in pages/.
+  it("serves _ prefixed files in api routes", async () => {
+    // Next.js does NOT ignore _-prefixed files in pages/api/ — the private-
+    // folder underscore rule is App Router only. Pages Router serves them.
+    // Ported from Next.js: test/e2e/app-dir/underscore-ignore-app-paths
     const tmpRoot = await makeTempDir("vinext-api-underscore-");
     const pagesDir = path.join(tmpRoot, "pages");
     try {
@@ -84,7 +86,7 @@ describe("pageExtensions route discovery", () => {
       const patterns = apiRoutes.map((r) => r.pattern);
 
       expect(patterns).toContain("/api/hello");
-      expect(patterns).not.toContain("/api/_helpers");
+      expect(patterns).toContain("/api/_helpers");
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateRouteCache(pagesDir);

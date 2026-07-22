@@ -1,6 +1,17 @@
+import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_VARY_HEADER,
+  applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
+} from "./app-rsc-cache-busting.js";
+import { resolveAppPageSegmentParams } from "./app-page-params.js";
+
 export type AppPageParams = Record<string, string | string[]>;
 
-export type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent> = {
+type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent> = {
   getDefaultExport: (module: TModule | null | undefined) => TComponent | null | undefined;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
@@ -11,19 +22,41 @@ export type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent
   statusCode: number;
 };
 
-export type ResolveAppPageErrorBoundaryOptions<TModule, TComponent> = {
+type ResolveAppPageHttpAccessBoundaryModuleOptions<TModule> = {
+  rootForbiddenModule?: TModule | null;
+  rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
+  routeForbiddenModule?: TModule | null;
+  routeNotFoundModule?: TModule | null;
+  routeUnauthorizedModule?: TModule | null;
+  statusCode: number;
+};
+
+type ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule> = {
+  layoutIndex: number;
+  rootForbiddenModule?: TModule | null;
+  rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
+  routeForbiddenModules?: readonly (TModule | null | undefined)[] | null;
+  routeNotFoundModules?: readonly (TModule | null | undefined)[] | null;
+  routeUnauthorizedModules?: readonly (TModule | null | undefined)[] | null;
+  statusCode: number;
+};
+
+type ResolveAppPageErrorBoundaryOptions<TModule, TComponent> = {
   getDefaultExport: (module: TModule | null | undefined) => TComponent | null | undefined;
   globalErrorModule?: TModule | null;
+  errorModules?: readonly (TModule | null | undefined)[] | null;
   layoutErrorModules?: readonly (TModule | null | undefined)[] | null;
   pageErrorModule?: TModule | null;
 };
 
-export type ResolveAppPageErrorBoundaryResult<TComponent> = {
+type ResolveAppPageErrorBoundaryResult<TComponent> = {
   component: TComponent | null;
   isGlobalError: boolean;
 };
 
-export type WrapAppPageBoundaryElementOptions<
+type WrapAppPageBoundaryElementOptions<
   TElement,
   TLayoutModule,
   TLayoutComponent,
@@ -43,7 +76,10 @@ export type WrapAppPageBoundaryElementOptions<
   matchedParams: AppPageParams;
   renderErrorBoundary: (component: TGlobalErrorComponent, children: TElement) => TElement;
   renderLayout: (component: TLayoutComponent, children: TElement, params: unknown) => TElement;
-  renderLayoutSegmentProvider?: (childSegments: TChildSegments, children: TElement) => TElement;
+  renderLayoutSegmentProvider?: (
+    segmentMap: { children: TChildSegments },
+    children: TElement,
+  ) => TElement;
   resolveChildSegments?: (
     routeSegments: readonly string[],
     treePosition: number,
@@ -59,11 +95,13 @@ type AppPageBoundaryOnError = (
   errorContext: unknown,
 ) => unknown;
 
-export type RenderAppPageBoundaryResponseOptions<TElement> = {
+type RenderAppPageBoundaryResponseOptions<TElement> = {
   createHtmlResponse: (rscStream: ReadableStream<Uint8Array>, status: number) => Promise<Response>;
   createRscOnErrorHandler: () => AppPageBoundaryOnError;
   element: TElement;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
+  middlewareHeaders?: Headers | null;
   renderToReadableStream: (
     element: TElement,
     options: { onError: AppPageBoundaryOnError },
@@ -74,6 +112,24 @@ export type RenderAppPageBoundaryResponseOptions<TElement> = {
 export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
   options: ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent>,
 ): TComponent | null {
+  return (
+    options.getDefaultExport(
+      resolveAppPageHttpAccessBoundaryModule({
+        rootForbiddenModule: options.rootForbiddenModule,
+        rootNotFoundModule: options.rootNotFoundModule,
+        rootUnauthorizedModule: options.rootUnauthorizedModule,
+        routeForbiddenModule: options.routeForbiddenModule,
+        routeNotFoundModule: options.routeNotFoundModule,
+        routeUnauthorizedModule: options.routeUnauthorizedModule,
+        statusCode: options.statusCode,
+      }),
+    ) ?? null
+  );
+}
+
+export function resolveAppPageHttpAccessBoundaryModule<TModule>(
+  options: ResolveAppPageHttpAccessBoundaryModuleOptions<TModule>,
+): TModule | null {
   let boundaryModule: TModule | null | undefined;
 
   if (options.statusCode === 403) {
@@ -84,7 +140,55 @@ export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
     boundaryModule = options.routeNotFoundModule ?? options.rootNotFoundModule;
   }
 
-  return options.getDefaultExport(boundaryModule) ?? null;
+  return boundaryModule ?? null;
+}
+
+export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(
+  options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
+): TModule | null {
+  return resolveAppPageParentHttpAccessBoundary(options).module;
+}
+
+/**
+ * Like {@link resolveAppPageParentHttpAccessBoundaryModule}, but also returns
+ * the layout index that owns the resolved boundary so callers can slice the
+ * layouts array to skip rendering layouts below the boundary owner.
+ *
+ * `layoutIndex` is the per-layout index where the boundary lives, or `null` if
+ * the resolved boundary is the root module (which conceptually sits above all
+ * layouts when no layout-level boundary is present).
+ *
+ * Used by the page-error fast path to make `forbidden()` / `unauthorized()` /
+ * `notFound()` escalate past intermediate layouts that lack a boundary file,
+ * matching Next.js's `create-component-tree.tsx` behavior where the nearest
+ * ancestor boundary owns the fallback subtree.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+export function resolveAppPageParentHttpAccessBoundary<TModule>(
+  options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
+): { module: TModule | null; layoutIndex: number | null } {
+  let routeModules = options.routeNotFoundModules;
+  let rootModule = options.rootNotFoundModule;
+
+  if (options.statusCode === 403) {
+    routeModules = options.routeForbiddenModules;
+    rootModule = options.rootForbiddenModule;
+  } else if (options.statusCode === 401) {
+    routeModules = options.routeUnauthorizedModules;
+    rootModule = options.rootUnauthorizedModule;
+  }
+
+  if (routeModules) {
+    for (let index = options.layoutIndex - 1; index >= 0; index--) {
+      const module = routeModules[index];
+      if (module) {
+        return { module, layoutIndex: index };
+      }
+    }
+  }
+
+  return { module: rootModule ?? null, layoutIndex: null };
 }
 
 export function resolveAppPageErrorBoundary<TModule, TComponent>(
@@ -98,12 +202,13 @@ export function resolveAppPageErrorBoundary<TModule, TComponent>(
     };
   }
 
-  if (options.layoutErrorModules) {
-    for (let index = options.layoutErrorModules.length - 1; index >= 0; index--) {
-      const layoutErrorComponent = options.getDefaultExport(options.layoutErrorModules[index]);
-      if (layoutErrorComponent) {
+  const segmentErrorModules = options.errorModules ?? options.layoutErrorModules;
+  if (segmentErrorModules) {
+    for (let index = segmentErrorModules.length - 1; index >= 0; index--) {
+      const segmentErrorComponent = options.getDefaultExport(segmentErrorModules[index]);
+      if (segmentErrorComponent) {
         return {
-          component: layoutErrorComponent,
+          component: segmentErrorComponent,
           isGlobalError: false,
         };
       }
@@ -135,14 +240,16 @@ export function wrapAppPageBoundaryElement<
   let element = options.element;
 
   if (!options.skipLayoutWrapping) {
-    const asyncParams = options.makeThenableParams(options.matchedParams);
-
     for (let index = options.layoutModules.length - 1; index >= 0; index--) {
       const layoutComponent = options.getDefaultExport(options.layoutModules[index]);
       if (!layoutComponent) {
         continue;
       }
 
+      const treePosition = options.layoutTreePositions ? options.layoutTreePositions[index] : 0;
+      const asyncParams = options.makeThenableParams(
+        resolveAppPageSegmentParams(options.routeSegments, treePosition, options.matchedParams),
+      );
       element = options.renderLayout(layoutComponent, element, asyncParams);
 
       if (
@@ -150,13 +257,12 @@ export function wrapAppPageBoundaryElement<
         options.renderLayoutSegmentProvider &&
         options.resolveChildSegments
       ) {
-        const treePosition = options.layoutTreePositions ? options.layoutTreePositions[index] : 0;
         const childSegments = options.resolveChildSegments(
           options.routeSegments ?? [],
           treePosition,
           options.matchedParams,
         );
-        element = options.renderLayoutSegmentProvider(childSegments, element);
+        element = options.renderLayoutSegmentProvider({ children: childSegments }, element);
       }
     }
   }
@@ -171,17 +277,32 @@ export function wrapAppPageBoundaryElement<
 export async function renderAppPageBoundaryResponse<TElement>(
   options: RenderAppPageBoundaryResponseOptions<TElement>,
 ): Promise<Response> {
-  const rscStream = options.renderToReadableStream(options.element, {
-    onError: options.createRscOnErrorHandler(),
-  });
+  // Defensive wrap for standalone callers; idempotent under dispatchAppPage.
+  // The async stream consumption that follows relies on the surrounding
+  // runWithRequestContext to keep ALS state alive after this synchronous call
+  // returns. See app-page-render.ts for the same pattern.
+  const rscStream = runWithFetchDedupe(() =>
+    options.renderToReadableStream(options.element, {
+      onError: options.createRscOnErrorHandler(),
+    }),
+  );
 
   if (options.isRscRequest) {
     // Do NOT clear request-scoped context here. RSC responses are consumed lazily
     // by the client, so headers()/cookies() and async server components still need
     // their ALS-backed state while the stream is being read.
+    const headers = new Headers({
+      "Content-Type": VINEXT_RSC_CONTENT_TYPE,
+      Vary: VINEXT_RSC_VARY_HEADER,
+    });
+    applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+    mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
+    applyRscCompatibilityIdHeader(headers);
+    applyRscDeploymentIdHeader(headers);
+
     return new Response(rscStream, {
       status: options.status,
-      headers: { "Content-Type": "text/x-component; charset=utf-8", Vary: "RSC, Accept" },
+      headers,
     });
   }
 

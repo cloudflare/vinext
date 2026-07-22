@@ -1,0 +1,18 @@
+{
+  "name": "vinext-cf-sentry-pages",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@sentry/nextjs": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}

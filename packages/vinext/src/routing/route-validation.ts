@@ -4,6 +4,8 @@
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/sorted-routes.ts
  */
 
+import { removeTrailingSlash } from "../utils/base-path.js";
+
 class UrlNode {
   placeholder = true;
   children = new Map<string, UrlNode>();
@@ -148,16 +150,17 @@ class UrlNode {
 export function patternToNextFormat(pattern: string): string {
   if (pattern === "/") return "/";
 
+  // Match any non-/ param name. Non-greedy with lookahead ensures the
+  // +/* suffix is consumed as a modifier, not swallowed into the param name
+  // when the name itself contains + or * internally (e.g. :c++lang → [c++lang]).
   return pattern
-    .replace(/:([\w-]+)\+/g, "[...$1]")
-    .replace(/:([\w-]+)\*/g, "[[...$1]]")
-    .replace(/:([\w-]+)/g, "[$1]");
+    .replace(/:([^/]+?)\+(?=\/|$)/g, "[...$1]")
+    .replace(/:([^/]+?)\*(?=\/|$)/g, "[[...$1]]")
+    .replace(/:([^/]+?)(?=\/|$)/g, "[$1]");
 }
 
 function normalizeRoutePattern(pattern: string): string {
-  if (pattern === "/") return "/";
-  const normalized = pattern.replace(/\/+$/, "");
-  return normalized === "" ? "/" : normalized;
+  return removeTrailingSlash(pattern);
 }
 
 export function validateRoutePatterns(patterns: readonly string[]): void {

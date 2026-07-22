@@ -23,7 +23,7 @@ type LocaleRedirectOptions = {
   };
 };
 
-export type PagesI18nRequestInfo = {
+type PagesI18nRequestInfo = {
   locale: string;
   url: string;
   hadPrefix: boolean;
@@ -44,8 +44,60 @@ function readHeader(headers: HeaderBag, name: string): string | undefined {
   return direct;
 }
 
-export const normalizeHostname = normalizeDomainHostname;
+const normalizeHostname = normalizeDomainHostname;
 export { detectDomainLocale };
+
+/**
+ * Prepend the default locale prefix to a pathname when i18n is configured and
+ * the path does not already carry a locale prefix. Mirrors Next.js's
+ * server-side path normalisation in `resolve-routes.ts` (lines ~250-263):
+ *
+ *   if (!initialLocaleResult.detectedLocale && !pathname.startsWith('/_next/')) {
+ *     parsedUrl.pathname = `/${defaultLocale}${pathname === '/' ? '' : pathname}`
+ *   }
+ *
+ * Run this **before** matching against `next.config.js` redirects/rewrites
+ * (which are emitted by `applyLocaleToRoutes` in locale-prefixed forms) so
+ * that requests arriving without a locale prefix still match those rules.
+ *
+ * Skips internal paths that Next.js leaves alone:
+ *   - `/_next/*` (build assets, prerender manifests, image optimisation)
+ *   - `/__vinext/*` (vinext-internal endpoints)
+ *
+ * Returns the input unchanged when i18n is not configured or when the path
+ * already starts with one of the configured locales. The host-based default
+ * locale (i18n.domains[].defaultLocale) is preferred over the global default
+ * when supplied, matching Next.js's `domainLocale.defaultLocale` branch.
+ *
+ * Item 4 of issue #1336: without this normalisation, requests like
+ * `/to-sv` (default locale = en) against a rule `source: '/:locale/to-sv'`
+ * with `locale: false` do not match because there is no segment for
+ * `:locale`. After normalisation the request looks like `/en/to-sv` and
+ * the rule matches with `:locale=en`.
+ *
+ * Ported from Next.js: packages/next/src/server/lib/router-utils/resolve-routes.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+ */
+export function normalizeDefaultLocalePathname(
+  pathname: string,
+  i18n: NextI18nConfig | null | undefined,
+  options: { hostname?: string | null } = {},
+): string {
+  if (!i18n) return pathname;
+  // Don't touch internal paths.
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
+  // If the path already starts with a known locale, leave it alone.
+  const parts = pathname.split("/", 3);
+  // parts[0] is the empty string before the leading "/", parts[1] is the first segment.
+  if (parts[1] && i18n.locales.includes(parts[1])) return pathname;
+
+  // Pick the default locale: prefer the domain-mapped one when host matches.
+  const domainLocale = detectDomainLocale(i18n.domains, options.hostname ?? undefined);
+  const defaultLocale = domainLocale?.defaultLocale ?? i18n.defaultLocale;
+
+  if (pathname === "/") return `/${defaultLocale}`;
+  return `/${defaultLocale}${pathname}`;
+}
 
 /**
  * Extract locale prefix from a URL path.
@@ -71,6 +123,30 @@ export function extractLocaleFromUrl(
 }
 
 /**
+ * Strip a leading i18n locale segment from a URL so the result can be used for
+ * API route matching. Mirrors Next.js's base-server behaviour for Pages
+ * Router API routes: `normalizeLocalePath(pathname, i18n.locales).pathname`
+ * runs before the `/api/*` check so `/fr/api/ok` resolves to the
+ * `pages/api/ok` handler instead of 404'ing.
+ *
+ * Returns the original URL untouched when:
+ * - `i18nConfig` is null/undefined (no i18n configured)
+ * - the URL does not start with a configured locale
+ *
+ * The query string is preserved verbatim — only the path segment is stripped.
+ *
+ * Reference: packages/next/src/shared/lib/i18n/normalize-locale-path.ts.
+ */
+export function stripI18nLocaleForApiRoute(
+  url: string,
+  i18nConfig: NextI18nConfig | null | undefined,
+): string {
+  if (!i18nConfig) return url;
+  const { url: stripped, hadPrefix } = extractLocaleFromUrl(url, i18nConfig);
+  return hadPrefix ? stripped : url;
+}
+
+/**
  * Detect the preferred locale from the Accept-Language header.
  * Returns the best matching locale or null.
  */
@@ -80,27 +156,84 @@ export function detectLocaleFromAcceptLanguage(
 ): string | null {
   if (!acceptLang) return null;
 
-  const langs = acceptLang
-    .split(",")
-    .map((part) => {
-      const [lang, qPart] = part.trim().split(";");
-      const q = qPart ? parseFloat(qPart.replace("q=", "")) : 1;
-      return { lang: lang.trim().toLowerCase(), q };
-    })
-    .sort((a, b) => b.q - a.q);
-
-  for (const { lang } of langs) {
-    const exactMatch = i18nConfig.locales.find((locale) => locale.toLowerCase() === lang);
-    if (exactMatch) return exactMatch;
-
-    const prefix = lang.split("-")[0];
-    const prefixMatch = i18nConfig.locales.find((locale) => {
-      const lowered = locale.toLowerCase();
-      return lowered === prefix || lowered.startsWith(prefix + "-");
-    });
-    if (prefixMatch) return prefixMatch;
+  // Ported from Next.js's acceptLanguage() preference selection. In
+  // particular, configured locale order breaks equal-quality ties, language
+  // ranges match configured regional variants, q=0 excludes a selection, and
+  // `*` chooses the first configured locale that was not explicitly listed.
+  const configured = new Map<string, { locale: string; position: number }>();
+  let position = 0;
+  for (const locale of i18nConfig.locales) {
+    const lower = locale.toLowerCase();
+    configured.set(lower, { locale, position: position++ });
+    const parts = lower.split("-");
+    while (parts.length > 1) {
+      parts.pop();
+      const prefix = parts.join("-");
+      if (!configured.has(prefix)) {
+        configured.set(prefix, { locale, position: position++ });
+      }
+    }
   }
 
+  type Selection = { token: string; headerPosition: number; quality: number; preference?: number };
+  const selections: Selection[] = [];
+  const listedTokens = new Set<string>();
+
+  try {
+    const parts = acceptLang.replace(/[ \t]/g, "").split(",");
+    for (let headerPosition = 0; headerPosition < parts.length; headerPosition++) {
+      const part = parts[headerPosition];
+      if (!part) continue;
+
+      const params = part.split(";");
+      if (params.length > 2) throw new Error("Invalid Accept-Language header");
+
+      const token = params[0].toLowerCase();
+      if (!token) throw new Error("Invalid Accept-Language header");
+
+      const selection: Selection = { token, headerPosition, quality: 1 };
+      const configuredMatch = configured.get(token);
+      if (configuredMatch) selection.preference = configuredMatch.position;
+      listedTokens.add(token);
+
+      if (params.length === 2) {
+        const [key, value] = params[1].split("=");
+        if (!value || (key !== "q" && key !== "Q")) {
+          throw new Error("Invalid Accept-Language header");
+        }
+        const quality = parseFloat(value);
+        if (quality === 0) continue;
+        if (Number.isFinite(quality) && quality >= 0.001 && quality <= 1) {
+          selection.quality = quality;
+        }
+      }
+
+      selections.push(selection);
+    }
+  } catch {
+    return null;
+  }
+
+  selections.sort((a, b) => {
+    if (b.quality !== a.quality) return b.quality - a.quality;
+    if (a.preference !== b.preference) {
+      if (a.preference === undefined) return 1;
+      if (b.preference === undefined) return -1;
+      return a.preference - b.preference;
+    }
+    return a.headerPosition - b.headerPosition;
+  });
+
+  for (const { token } of selections) {
+    if (token === "*") {
+      for (const [preference, { locale }] of configured) {
+        if (!listedTokens.has(preference)) return locale;
+      }
+      continue;
+    }
+    const match = configured.get(token);
+    if (match) return match.locale;
+  }
   return null;
 }
 
@@ -124,8 +257,12 @@ export function parseCookieLocaleFromHeader(
     return null;
   }
 
-  if (i18nConfig.locales.includes(value)) return value;
-  return null;
+  // Match case-insensitively and return the canonical configured locale, so a
+  // cookie like `NEXT_LOCALE=EN-US` resolves to a configured `en-US`. Mirrors
+  // Next.js's `getLocaleFromCookie` (get-locale-redirect.ts), which lowercases
+  // the cookie value and finds the matching configured locale.
+  const lowerValue = value.toLowerCase();
+  return i18nConfig.locales.find((locale) => locale.toLowerCase() === lowerValue) ?? null;
 }
 
 function formatLocalizedRootPath(

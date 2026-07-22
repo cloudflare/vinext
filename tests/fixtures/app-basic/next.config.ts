@@ -11,8 +11,32 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
+  ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+    ? {
+        basePath: "/docs",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      }
+    : {}),
+  // Used by E2E: nextjs-compat/gesture-transitions.spec.ts — enabled
+  // fixture-wide solely for that spec (the only observable effect is the
+  // optional `experimental_gesturePush` method being attached). Note this
+  // means the fixture does NOT represent the default (gate-off) config, so
+  // don't assert the method's absence against this fixture.
+  experimental: {
+    gestureTransition: true,
+  },
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
+
+  // Used by Vitest: nextjs-compat/react-max-headers-length.test.ts — caps the
+  // total emitted preload `Link` header length. Env-driven so the test can
+  // start a fresh dev server per configured value (matching the upstream
+  // fixture's TEST_REACT_MAX_HEADERS_LENGTH switch). Undefined when unset, so
+  // the rest of the suite keeps the default behavior.
+  reactMaxHeadersLength: process.env.TEST_REACT_MAX_HEADERS_LENGTH
+    ? Number.parseInt(process.env.TEST_REACT_MAX_HEADERS_LENGTH, 10)
+    : undefined,
 
   async redirects() {
     return [
@@ -72,8 +96,21 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        // Encoded App Page params must have the same canonical representation
+        // on direct requests and config rewrites.
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity/rewrite/:path*"
+            : "/encoded-parity/rewrite/:path*",
+          destination: "/encoded-parity/page/:path*",
+        },
         // Used by Vitest: app-router.test.ts
-        { source: "/rewrite-about", destination: "/about" },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/rewrite-about"
+            : "/rewrite-about",
+          destination: "/about",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
@@ -97,12 +134,43 @@ const nextConfig: NextConfig = {
           has: [{ type: "cookie", key: "mw-before-user" }],
           destination: "/about",
         },
+        // Used by Vitest: app-router-next-config-dev.test.ts — unused source
+        // params must be appended to the destination query and exposed through
+        // App Router searchParams, matching Next.js prepareDestination.
+        {
+          source: "/rewrite-search-param/:term",
+          destination: "/search?q=from-rewrite",
+        },
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts
         { source: "/after-rewrite-about", destination: "/about" },
+        // Ported from Next.js: test/e2e/app-dir/revalidate-path-with-rewrites/next.config.js
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/revalidate-path-with-rewrites/next.config.js
+        {
+          source: "/static",
+          destination:
+            process.env.__NEXT_CACHE_COMPONENTS === "true"
+              ? "/cache-components/static"
+              : "/legacy/static",
+        },
+        {
+          source: "/dynamic",
+          destination:
+            process.env.__NEXT_CACHE_COMPONENTS === "true"
+              ? "/cache-components/dynamic"
+              : "/legacy/dynamic",
+        },
         // Used by E2E: config-redirect.spec.ts
         { source: "/config-rewrite", destination: "/" },
+        // Used by Vitest: nextjs-compat/hooks.test.ts — usePathname should
+        // return the CANONICAL URL after a config rewrite, not the internal
+        // rewrite target. Ported from Next.js test/e2e/app-dir/hooks/next.config.js
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/next.config.js
+        {
+          source: "/rewritten-use-pathname",
+          destination: "/nextjs-compat/hooks-search",
+        },
       ],
       fallback: [
         // Used by Vitest: app-router.test.ts — fallback rewrite gated on a

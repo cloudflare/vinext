@@ -6,7 +6,7 @@
  *
  * ## Why this exists
  *
- * Vite 7's `server.ssrLoadModule()` and the lazy `RunnableDevEnvironment.runner`
+ * Vite's `server.ssrLoadModule()` and the lazy `RunnableDevEnvironment.runner`
  * getter both use `SSRCompatModuleRunner`, which constructs a
  * `createServerModuleRunnerTransport` synchronously. That transport calls
  * `connect()` immediately, which reads `environment.hot.api.outsideEmitter` —
@@ -65,7 +65,7 @@ import type { DevEnvironment } from "vite";
  * environment types — including Cloudflare's custom environments that don't
  * support the hot-channel-based transport.
  */
-export type DevEnvironmentLike = {
+type DevEnvironmentLike = {
   fetchModule: (
     id: string,
     importer?: string,

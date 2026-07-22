@@ -3,6 +3,22 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("Error Boundaries", () => {
+  test("global-error preserves server and SSR client error semantics after hydration", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/global-error-rsc`);
+    await expect(page.locator('[data-testid="global-error-message"]')).toContainText(
+      "server page error",
+    );
+    await expect(page.locator('[data-testid="global-error-digest"]')).not.toBeEmpty();
+
+    await page.goto(`${BASE}/nextjs-compat/global-error-ssr`);
+    await expect(page.locator('[data-testid="global-error-message"]')).toHaveText(
+      "client page error",
+    );
+    await expect(page.locator('[data-testid="global-error-digest"]')).toHaveCount(0);
+  });
+
   test("error.tsx catches client component error on button click", async ({ page }) => {
     await page.goto(`${BASE}/error-test`);
 
@@ -42,6 +58,30 @@ test.describe("Error Boundaries", () => {
     });
     const resetButton = page.locator("#error-boundary button");
     await expect(resetButton).toHaveText("Try again");
+  });
+
+  test("error.tsx catches falsy values thrown by client components", async ({ page }) => {
+    // Ported from Next.js: test/e2e/app-dir/errors/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/errors/index.test.ts
+    const cases = [
+      ["undefined", "undefined"],
+      ["null", "null"],
+      ["zero", "0"],
+      ["empty-string", ""],
+      ["false", "false"],
+    ] satisfies readonly (readonly [string, string])[];
+
+    for (const [name, expectedText] of cases) {
+      await page.goto(`${BASE}/falsy-error-boundary-test`);
+      await expect(page.locator('[data-testid="falsy-error-content"]')).toBeVisible();
+      const trigger = page.locator(`[data-testid="throw-${name}"]`);
+      await expect(trigger).toBeEnabled();
+      await trigger.click();
+      await expect(page.locator('[data-testid="falsy-error-boundary"]')).toBeVisible({
+        timeout: 5000,
+      });
+      await expect(page.locator('[data-testid="falsy-error-message"]')).toHaveText(expectedText);
+    }
   });
 
   test("server component error renders error.tsx boundary with 200", async ({ page }) => {

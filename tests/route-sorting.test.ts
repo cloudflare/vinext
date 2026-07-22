@@ -25,9 +25,16 @@ import {
 } from "../packages/vinext/src/routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { validateRoutePatterns } from "../packages/vinext/src/routing/route-validation.js";
+import { sortRoutes } from "../packages/vinext/src/routing/utils.js";
+import { toSlash } from "pathslash";
 
 const PAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const APP_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+
+/** Expected canonical (forward-slash) path for router-output assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
+}
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -156,6 +163,22 @@ describe("patternToNextFormat", () => {
 
   it("converts hyphenated optional catch-all :sign-up* to [[...sign-up]]", () => {
     expect(patternToNextFormat("/register/:sign-up*")).toBe("/register/[[...sign-up]]");
+  });
+
+  it("converts dotted, at-sign, and colon param names (Next.js PARAMETER_PATTERN parity)", () => {
+    expect(patternToNextFormat("/:variant.id")).toBe("/[variant.id]");
+    expect(patternToNextFormat("/:user@domain")).toBe("/[user@domain]");
+    // Colon-only: tested here because : is not a valid NTFS filename character on Windows.
+    expect(patternToNextFormat("/:repo:name")).toBe("/[repo:name]");
+  });
+
+  it("handles param names with internal + or * correctly (no backtracking corruption)", () => {
+    // Regression: greedy [^/]+ in the +/* suffix patterns would backtrack
+    // and split on the internal +/*, mangling the param name. Non-greedy
+    // with lookahead prevents this. E.g. :c++lang → [c++lang], not [...c+]lang.
+    expect(patternToNextFormat("/:c++lang")).toBe("/[c++lang]");
+    expect(patternToNextFormat("/:a*b")).toBe("/[a*b]");
+    expect(patternToNextFormat("/utils/:a+b/c")).toBe("/utils/[a+b]/c");
   });
 });
 
@@ -467,11 +490,11 @@ describe("App Router route sorting (additional)", () => {
 
       expect(membersRoute).toBeDefined();
       expect(membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
-        path.join("@team", "(a)", "members"),
+        canonical(path.join("@team", "(a)", "members")),
       );
       expect(
         membersRoute!.parallelSlots.find((slot) => slot.name === "analytics")!.pagePath,
-      ).toContain(path.join("@analytics", "(b)", "members"));
+      ).toContain(canonical(path.join("@analytics", "(b)", "members")));
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();
@@ -559,9 +582,82 @@ describe("App Router route sorting (additional)", () => {
       const settingsRoute = routes.find((route) => route.pattern === "/dashboard/settings");
 
       expect(settingsRoute).toBeDefined();
-      expect(settingsRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
-        path.join("settings", "@team", "page.tsx"),
+      const teamSlots = settingsRoute!.parallelSlots.filter((slot) => slot.name === "team");
+      const slotsByOwner = new Map(
+        teamSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
+
+      expect(teamSlots).toHaveLength(2);
+      expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
+        canonical(path.join("settings", "@team", "page.tsx")),
+      );
+      expect(slotsByOwner.get("dashboard/@team")!.pagePath).toContain(
+        canonical(path.join("@team", "settings", "page.tsx")),
+      );
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("does not assign child slot sub-pages to inherited same-named slots in generated sub-routes", async () => {
+    const tmpRoot = await makeTempDir("vinext-app-slot-subroute-ownership-");
+    const appDir = path.join(tmpRoot, "app");
+
+    try {
+      await fs.mkdir(path.join(appDir, "dashboard", "@team"), { recursive: true });
+      await fs.mkdir(path.join(appDir, "dashboard", "settings", "@team", "member"), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "page.tsx"),
+        "export default function DashboardPage() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "default.tsx"),
+        "export default function DashboardDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "default.tsx"),
+        "export default function ParentTeamDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "page.tsx"),
+        "export default function SettingsPage() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "default.tsx"),
+        "export default function SettingsDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "@team", "default.tsx"),
+        "export default function ChildTeamDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "@team", "member", "page.tsx"),
+        "export default function ChildTeamMember() { return null; }",
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const memberRoute = routes.find((route) => route.pattern === "/dashboard/settings/member");
+
+      expect(memberRoute).toBeDefined();
+
+      const teamSlots = memberRoute!.parallelSlots.filter((slot) => slot.name === "team");
+      const slotsByOwner = new Map(
+        teamSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
+      );
+
+      expect(teamSlots).toHaveLength(2);
+      expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
+        canonical(path.join("settings", "@team", "member", "page.tsx")),
+      );
+      expect(slotsByOwner.get("dashboard/@team")!.pagePath).toBeNull();
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();
@@ -589,5 +685,76 @@ describe("Pages Router API routes", () => {
       const firstDynamicIdx = routes.indexOf(dynamicRoutes[0]);
       expect(lastStaticIdx).toBeLessThan(firstDynamicIdx);
     }
+  });
+});
+
+// ─── sortRoutes (precomputed precedence) ────────────────────────────────
+
+describe("sortRoutes", () => {
+  const order = (patterns: string[]): string[] =>
+    sortRoutes(patterns.map((pattern) => ({ pattern }))).map((r) => r.pattern);
+
+  it("orders static → dynamic → catch-all → optional catch-all", () => {
+    expect(order(["/:slug*", "/:id+", "/:id", "/about"])).toEqual([
+      "/about",
+      "/:id",
+      "/:id+",
+      "/:slug*",
+    ]);
+  });
+
+  it("prefers a static prefix over a bare dynamic segment at the same depth", () => {
+    // /_sites/:subdomain must sort before /:subdomain (static-prefix reduction).
+    expect(order(["/:subdomain", "/_sites/:subdomain"])).toEqual([
+      "/_sites/:subdomain",
+      "/:subdomain",
+    ]);
+  });
+
+  it("breaks ties lexicographically for a deterministic total order", () => {
+    expect(order(["/zebra", "/apple", "/mango"])).toEqual(["/apple", "/mango", "/zebra"]);
+  });
+
+  it("sorts in place and returns the same array reference", () => {
+    const routes = [{ pattern: "/:id" }, { pattern: "/about" }];
+    const result = sortRoutes(routes);
+    expect(result).toBe(routes);
+    expect(result.map((r) => r.pattern)).toEqual(["/about", "/:id"]);
+  });
+
+  it("is idempotent — sorting an already-sorted array is a no-op", () => {
+    const patterns = ["/about", "/blog/:slug", "/:id", "/:rest+", "/:rest*"];
+    const once = order(patterns);
+    expect(order(once)).toEqual(once);
+  });
+
+  it("produces the same order as comparing precedence inline (decorate-sort parity)", () => {
+    // Shuffled input must still land in the documented precedence order. This
+    // is the property the decorate-sort optimization preserves byte-for-byte.
+    // Scores: "/"=0, "/about"=0, "/blog/:slug"=51, "/:id"=100,
+    // "/blog/:year/:month/:slug"=256, "/:rest+"=1000, "/:rest*"=2000.
+    const patterns = [
+      "/blog/:year/:month/:slug",
+      "/:rest*",
+      "/about",
+      "/blog/:slug",
+      "/:rest+",
+      "/",
+      "/:id",
+    ];
+    expect(order(patterns)).toEqual([
+      "/",
+      "/about",
+      "/blog/:slug",
+      "/:id",
+      "/blog/:year/:month/:slug",
+      "/:rest+",
+      "/:rest*",
+    ]);
+  });
+
+  it("handles empty and single-element arrays", () => {
+    expect(order([])).toEqual([]);
+    expect(order(["/only"])).toEqual(["/only"]);
   });
 });

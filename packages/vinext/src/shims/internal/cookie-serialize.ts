@@ -1,0 +1,88 @@
+/**
+ * Set-Cookie serialization for the mutable next/headers shim.
+ *
+ * `ResponseCookies` in server.ts deliberately uses the exact
+ * @edge-runtime/cookies serialization order and casing instead. It also has to
+ * preserve the absence of a default path when parsing an existing Set-Cookie
+ * header, while this helper always defaults new mutable cookies to `Path=/`.
+ *
+ * Note: this is a value-encoding helper for response cookies only. The
+ * request `Cookie:` header serialization in `RequestCookies._serialize`
+ * (server.ts) intentionally lives separately — it builds a different format
+ * (no attributes, just `name=value; name=value`) and shouldn't share this
+ * code.
+ */
+
+type SerializeSetCookieOptions = {
+  path?: string;
+  domain?: string;
+  maxAge?: number;
+  expires?: Date;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: true | false | "strict" | "lax" | "none" | "Strict" | "Lax" | "None";
+  partitioned?: boolean;
+  priority?: "low" | "medium" | "high";
+};
+
+/**
+ * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
+ * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
+ */
+const VALID_COOKIE_NAME_RE =
+  /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
+
+export function validateCookieName(name: string): void {
+  if (!name || !VALID_COOKIE_NAME_RE.test(name)) {
+    throw new Error(`Invalid cookie name: ${JSON.stringify(name)}`);
+  }
+}
+
+/**
+ * Validate cookie attribute values (path, domain) to prevent injection
+ * via semicolons, newlines, or other control characters.
+ */
+export function validateCookieAttributeValue(value: string, attributeName: string): void {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f || value[i] === ";") {
+      throw new Error(`Invalid cookie ${attributeName} value: ${JSON.stringify(value)}`);
+    }
+  }
+}
+
+/**
+ * Build a Set-Cookie header string from a cookie name, value, and attributes.
+ *
+ * - Encodes the value with `encodeURIComponent`.
+ * - Defaults `Path` to `/` (matching @edge-runtime/cookies and Next.js).
+ * - Validates path/domain to reject control characters and semicolons.
+ * - Emits attributes in the same order and casing as Next.js's compiled
+ *   `@edge-runtime/cookies` serializer: Path, Expires, Max-Age, Domain,
+ *   Secure, HttpOnly, SameSite, Partitioned, Priority.
+ *
+ * The caller is responsible for validating the cookie name (typically before
+ * mutating any internal state) via `validateCookieName`.
+ */
+export function serializeSetCookie(
+  name: string,
+  value: string | null | undefined,
+  options?: SerializeSetCookieOptions,
+): string {
+  const parts = [`${name}=${encodeURIComponent(value ?? "")}`];
+  const path = options?.path ?? "/";
+  validateCookieAttributeValue(path, "Path");
+  if (path) parts.push(`Path=${path}`);
+  if (options?.expires) parts.push(`Expires=${options.expires.toUTCString()}`);
+  if (options?.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
+  if (options?.domain) {
+    validateCookieAttributeValue(options.domain, "Domain");
+    parts.push(`Domain=${options.domain}`);
+  }
+  if (options?.secure) parts.push("Secure");
+  if (options?.httpOnly) parts.push("HttpOnly");
+  if (options?.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  if (options?.partitioned) parts.push("Partitioned");
+  if (options?.priority) parts.push(`Priority=${options.priority}`);
+  return parts.join("; ");
+}

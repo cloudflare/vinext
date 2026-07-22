@@ -1,7 +1,7 @@
 ---
 description: Monitors Next.js canary commits and opens tracking issues for changes relevant to vinext
 mode: primary
-model: anthropic/claude-opus-4-6
+model: anthropic/claude-opus-4-7
 temperature: 0.2
 permission:
   bash:
@@ -57,9 +57,6 @@ packages/vinext/src/
     app-rsc-entry.ts    # App Router RSC entry generator
     app-ssr-entry.ts    # App Router SSR entry
     app-browser-entry.ts # App Router client entry
-  cloudflare/
-    worker-entry.ts     # Cloudflare Workers entry
-    kv-cache-handler.ts # KV-backed CacheHandler
 ```
 
 ## What to look for (relevant)

@@ -5,6 +5,10 @@ import {
   renderAppPageErrorBoundary,
   renderAppPageHttpAccessFallback,
 } from "../packages/vinext/src/server/app-page-boundary-render.js";
+import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
+import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -15,8 +19,24 @@ function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   });
 }
 
-function renderElementToStream(element: React.ReactNode): ReadableStream<Uint8Array> {
+function renderElementToStream(element: React.ReactNode | AppElements): ReadableStream<Uint8Array> {
+  if (element !== null && typeof element === "object" && !React.isValidElement(element)) {
+    // Flat map payload — extract the route element and render it to HTML
+    // (mirrors what the real SSR entry does after deserializing the Flight stream)
+    const record = element as Record<string, unknown>;
+    const routeId = record.__route;
+    if (typeof routeId === "string" && React.isValidElement(record[routeId])) {
+      return createStreamFromMarkup(
+        ReactDOMServer.renderToStaticMarkup(record[routeId] as React.ReactNode),
+      );
+    }
+    return createStreamFromMarkup(JSON.stringify(element));
+  }
   return createStreamFromMarkup(ReactDOMServer.renderToStaticMarkup(element));
+}
+
+function renderWirePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
+  return createStreamFromMarkup(JSON.stringify(payload));
 }
 
 function createCommonOptions() {
@@ -28,6 +48,7 @@ function createCommonOptions() {
   }));
 
   return {
+    applyFileBasedMetadata,
     buildFontLinkHeader(preloads: readonly { href: string; type: string }[] | null | undefined) {
       if (!preloads || preloads.length === 0) {
         return "";
@@ -48,19 +69,37 @@ function createCommonOptions() {
       return [".font { font-family: Test; }"];
     },
     getNavigationContext() {
-      return { pathname: "/posts/missing" };
+      return { pathname: "/posts/missing", searchParams: new URLSearchParams(), params: {} };
     },
     isRscRequest: false,
     loadSsrHandler,
     makeThenableParams<T>(params: T) {
       return params;
     },
+    middlewareContext: {
+      headers: null,
+      status: null,
+    },
+    metadataRoutes: [],
     renderToReadableStream: renderElementToStream,
+    request: new Request("https://example.com/posts/missing"),
     requestUrl: "https://example.com/posts/missing",
     resolveChildSegments() {
       return [];
     },
-    rootLayouts: [],
+    rootLayouts: EMPTY_ROOT_LAYOUTS,
+  };
+}
+
+function createMiddlewareContext() {
+  const headers = new Headers();
+  headers.set("x-middleware-security", "present");
+  headers.append("set-cookie", "session=rotated; Path=/; HttpOnly");
+  headers.set("vary", "x-auth-state");
+
+  return {
+    headers,
+    status: 299,
   };
 }
 
@@ -100,33 +139,97 @@ function GlobalErrorBoundary({ error }: { error: Error }) {
   return React.createElement("p", { "data-boundary": "global-error" }, `global:${error.message}`);
 }
 
+function GlobalErrorBoundaryWithStack({ error }: { error: Error }) {
+  return React.createElement("p", { "data-boundary": "global-error" }, error.stack);
+}
+
+type TestModule = {
+  default: React.ComponentType<any>;
+  generateMetadata?: (props: any) => unknown;
+  generateViewport?: (props: any) => unknown;
+  metadata?: { description?: string; title?: string };
+  viewport?: Record<string, unknown>;
+};
+
 const rootLayoutModule = {
-  default: RootLayout as React.ComponentType<any>,
+  default: RootLayout,
   metadata: { description: "Root layout description" },
   viewport: { themeColor: "#111111" },
-};
+} satisfies TestModule;
 
 const leafLayoutModule = {
-  default: LeafLayout as React.ComponentType<any>,
-};
+  default: LeafLayout,
+} satisfies TestModule;
 
 const notFoundModule = {
-  default: NotFoundBoundary as React.ComponentType<any>,
-};
+  default: NotFoundBoundary,
+} satisfies TestModule;
+
+function RedirectingRootLayout(): React.ReactNode {
+  const error = Object.assign(new Error("NEXT_REDIRECT"), {
+    digest: "NEXT_REDIRECT;replace;/login;307;",
+  });
+  throw error;
+}
+
+const redirectingRootLayoutModule = {
+  default: RedirectingRootLayout,
+} satisfies TestModule;
+
+function NotFoundThrowingRootLayout(): React.ReactNode {
+  // Mimics notFound() re-thrown while the route-miss boundary itself is
+  // rendering — the shape that has no parent boundary to climb to.
+  const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  throw signal;
+}
+
+const notFoundThrowingRootLayoutModule = {
+  default: NotFoundThrowingRootLayout,
+} satisfies TestModule;
+
+const notFoundModuleWithMetadata = {
+  default: NotFoundBoundary,
+  metadata: { title: "notfound title" },
+} satisfies TestModule;
 
 const routeErrorModule = {
-  default: RouteErrorBoundary as React.ComponentType<any>,
-};
+  default: RouteErrorBoundary,
+} satisfies TestModule;
 
 const globalErrorModule = {
-  default: GlobalErrorBoundary as React.ComponentType<any>,
-};
+  default: GlobalErrorBoundary,
+} satisfies TestModule;
+
+const globalErrorModuleWithStack = {
+  default: GlobalErrorBoundaryWithStack,
+} satisfies TestModule;
+
+function ThrowingGlobalErrorBoundary(): React.ReactNode {
+  throw new Error("global-error boom");
+}
+
+const throwingGlobalErrorModule = {
+  default: ThrowingGlobalErrorBoundary,
+} satisfies TestModule;
+
+function SignalThrowingGlobalErrorBoundary(): React.ReactNode {
+  // Mimics notFound() called from inside global-error: a navigation signal that
+  // must propagate rather than being degraded to a built-in 200.
+  const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  throw signal;
+}
+
+const signalThrowingGlobalErrorModule = {
+  default: SignalThrowingGlobalErrorBoundary,
+} satisfies TestModule;
+
+const EMPTY_ROOT_LAYOUTS: readonly TestModule[] = [];
 
 describe("app page boundary render helpers", () => {
   it("returns null when no HTTP access fallback boundary exists", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       matchedParams: { slug: "missing" },
       route: {
@@ -141,10 +244,54 @@ describe("app page boundary render helpers", () => {
     expect(common.clearRequestContext).not.toHaveBeenCalled();
   });
 
+  it("converts redirects thrown while rendering HTTP access fallbacks into redirect responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [redirectingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(307);
+    const location = response?.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(new URL(location!, common.request.url).pathname).toBe("/login");
+    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminates with a status-text response when an http-access signal is thrown while rendering the boundary", async () => {
+    // Scope boundary for the route-miss redirect fix. Redirects thrown during
+    // boundary rendering are fully handled (see the test above), but a
+    // notFound()/forbidden()/unauthorized() re-thrown *inside* the boundary has
+    // no parent boundary to climb to. renderBoundarySpecialErrorResponse omits
+    // renderFallbackPage precisely so it cannot recurse on the same boundary,
+    // so it falls through to a plain status-text response rather than the
+    // boundary UI. Pins that deliberate terminal behavior.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [notFoundThrowingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const body = await response?.text();
+    expect(body).toBe("Not Found");
+    expect(body).not.toContain('data-boundary="not-found"');
+  });
+
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       matchedParams: { slug: "missing" },
       rootLayouts: [rootLayoutModule],
@@ -175,11 +322,433 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('content="noindex"');
   });
 
+  it("renders not-found boundary metadata exactly once for HTTP access fallbacks", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should not duplicate metadata with navigation API"
+    //
+    // The upstream fixture calls notFound() from generateMetadata() and expects
+    // the rendered not-found boundary's metadata (`not-found.tsx` static
+    // metadata) to produce a single title in the document.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [rootLayoutModule],
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>notfound title</title>");
+  });
+
+  it("uses mirrored-slot params and branch-local metadata and viewport for blocking 404s", async () => {
+    const common = createCommonOptions();
+    const applyMetadata = vi.fn(
+      async (metadata: Parameters<typeof applyFileBasedMetadata>[0]) => metadata,
+    );
+    const metadataParams: unknown[] = [];
+    const viewportParams: unknown[] = [];
+    const primaryNotFound = {
+      default: NotFoundBoundary,
+      viewport: { width: "primary-only" },
+    } satisfies TestModule;
+    const slotNotFound = {
+      default: NotFoundBoundary,
+      async generateMetadata({ params }: { params: Promise<unknown> }) {
+        metadataParams.push(await params);
+        return { title: "slot blocking metadata" };
+      },
+      async generateViewport({ params }: { params: Promise<unknown> }) {
+        viewportParams.push(await params);
+        return { themeColor: "#abcdef" };
+      },
+    } satisfies TestModule;
+    const route = {
+      layouts: [],
+      notFound: primaryNotFound,
+      notFoundTreePosition: 3,
+      pattern: "/distinct/[id]/[...rest]",
+      routeSegments: ["distinct", "[id]", "[...rest]"],
+      slots: {
+        mirrored: {
+          layoutIndex: -1,
+          name: "mirrored",
+          notFound: slotNotFound,
+          notFoundTreePosition: 3,
+          routeSegments: ["distinct", "[name]", "[...catchAll]"],
+          slotParamNames: ["name", "catchAll"],
+          slotPatternParts: ["distinct", ":name", ":catchAll+"],
+        },
+      },
+    } as const;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      applyFileBasedMetadata: applyMetadata,
+      basePath: "/base",
+      matchedParams: { id: "alice", rest: ["tail"] },
+      metadataRoutes: [
+        {
+          contentType: "image/png",
+          filePath: "/tmp/app/icon.png",
+          isDynamic: false,
+          routePrefix: "/",
+          servedUrl: "/icon.png",
+          type: "icon",
+        },
+      ],
+      request: new Request("https://example.com/base/distinct/alice/tail"),
+      requestUrl: "https://example.com/base/distinct/alice/tail",
+      route,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toContain("<title>slot blocking metadata</title>");
+    expect(html).toContain('name="theme-color" content="#abcdef"');
+    expect(html).toContain("width=primary-only");
+    expect(metadataParams).toEqual([
+      { catchAll: ["tail"], name: "alice" },
+      { catchAll: ["tail"], name: "alice" },
+    ]);
+    expect(viewportParams).toEqual([{ catchAll: ["tail"], name: "alice" }]);
+    expect(applyMetadata).toHaveBeenCalledTimes(1);
+
+    metadataParams.length = 0;
+    viewportParams.length = 0;
+    const rscResponse = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      basePath: "/base",
+      isRscRequest: true,
+      matchedParams: { id: "alice", rest: ["tail"] },
+      renderToReadableStream: renderWirePayloadToStream,
+      request: new Request("https://example.com/base/distinct/alice/tail.rsc"),
+      requestUrl: "https://example.com/base/distinct/alice/tail.rsc",
+      route,
+      statusCode: 404,
+    });
+    expect(rscResponse?.status).toBe(404);
+    expect(metadataParams).toEqual([
+      { catchAll: ["tail"], name: "alice" },
+      { catchAll: ["tail"], name: "alice" },
+    ]);
+    expect(viewportParams).toEqual([{ catchAll: ["tail"], name: "alice" }]);
+  });
+
+  it("scopes an explicitly selected ancestor not-found boundary to its layout params", async () => {
+    const common = createCommonOptions();
+    const seenParams: unknown[] = [];
+    const ancestorNotFound = {
+      default: NotFoundBoundary,
+      async generateMetadata({ params }: { params: Promise<unknown> }) {
+        seenParams.push(await params);
+        return { title: "ancestor not found" };
+      },
+    } satisfies TestModule;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      boundaryModule: ancestorNotFound,
+      matchedParams: { locale: "en", slug: "missing" },
+      route: {
+        layoutTreePositions: [1, 3],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        notFoundTreePosition: 3,
+        notFounds: [ancestorNotFound, null],
+        pattern: "/[locale]/posts/[slug]",
+        routeSegments: ["[locale]", "posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(seenParams).toEqual([{ locale: "en" }]);
+  });
+
+  it("uses loader-tree head traversal for blocking auth fallbacks", async () => {
+    const common = createCommonOptions();
+    const seenParams: unknown[] = [];
+    const forbiddenModule = {
+      default: NotFoundBoundary,
+      async generateMetadata({ params }: { params: Promise<unknown> }) {
+        seenParams.push(await params);
+        return { title: "forbidden metadata" };
+      },
+    } satisfies TestModule;
+    const slotLayout = {
+      default: RootLayout,
+      metadata: { description: "active slot description" },
+      viewport: { themeColor: "#403403" },
+    } satisfies TestModule;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { locale: "en", slug: "private" },
+      route: {
+        forbidden: forbiddenModule,
+        forbiddenTreePosition: 1,
+        layoutTreePositions: [1],
+        layouts: [rootLayoutModule],
+        pattern: "/[locale]/posts/[slug]",
+        routeSegments: ["[locale]", "posts", "[slug]"],
+        slots: {
+          sidebar: {
+            layout: slotLayout,
+            layoutIndex: 0,
+            name: "sidebar",
+            routeSegments: ["[locale]", "posts", "[slug]"],
+          },
+        },
+      },
+      statusCode: 403,
+    });
+
+    expect(response?.status).toBe(403);
+    const html = await response?.text();
+    expect(html).toContain("<title>forbidden metadata</title>");
+    expect(html).toContain('content="active slot description"');
+    expect(html).toContain('name="theme-color" content="#403403"');
+    expect(seenParams).toEqual([{ locale: "en" }, { locale: "en" }]);
+  });
+
+  it("does not inject child route file metadata into layout-level HTTP access fallbacks", async () => {
+    const common = createCommonOptions();
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: false,
+        filePath: "/tmp/app/posts/[slug]/opengraph-image.png",
+        routePrefix: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+        servedUrl: "/posts/-/opengraph-image.png",
+        contentType: "image/png",
+        headData: {
+          kind: "openGraph",
+          href: "/posts/-/opengraph-image.png?hash",
+          type: "image/png",
+          width: 1200,
+          height: 630,
+        },
+      },
+    ];
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      layoutModules: [rootLayoutModule],
+      matchedParams: { slug: "missing" },
+      metadataRoutes,
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const html = await response?.text();
+    expect(html).toContain('content="Root layout description"');
+    expect(html).not.toContain("opengraph-image");
+  });
+
+  it("preserves middleware headers on HTTP access fallback HTML responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      middlewareContext: createMiddlewareContext(),
+      route: {
+        layouts: [rootLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-middleware-security")).toBe("present");
+    expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
+    expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
+  });
+
+  it("renders HTTP access fallback RSC responses as flat payloads", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      rootLayouts: [rootLayoutModule],
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("Content-Type")).toBe("text/x-component");
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__layoutIds).toEqual(["layout:/", "layout:/posts"]);
+    expect(payload.__rootLayout).toBe("/");
+    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("derives HTTP access fallback layout metadata from the rendered layout subset", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      layoutModules: [rootLayoutModule],
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__layoutIds).toEqual(["layout:/"]);
+    expect(payload.__rootLayout).toBe("/");
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("uses unknown root metadata when no route layout is rendered for an HTTP access fallback", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      layoutModules: [],
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__layoutIds).toEqual([]);
+    expect(payload.__rootLayout).toBeNull();
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("preserves middleware headers on HTTP access fallback RSC responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      middlewareContext: createMiddlewareContext(),
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-middleware-security")).toBe("present");
+    expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
+    expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
+  });
+
+  it("uses null root layout metadata when a boundary payload has no route context", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      boundaryComponent: NotFoundBoundary,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      rootLayouts: [rootLayoutModule],
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__layoutIds).toEqual([]);
+    expect(payload.__rootLayout).toBeNull();
+    expect(payload.__sourcePage).toBeUndefined();
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("omits source-page metadata when route segments are unavailable", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      matchedParams: {},
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        notFound: notFoundModule,
+        pattern: "/posts/missing",
+      },
+      statusCode: 404,
+    });
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__sourcePage).toBeUndefined();
+  });
+
   it("renders route error boundaries with sanitized errors inside layouts", async () => {
     const common = createCommonOptions();
     const sanitizeErrorForClient = vi.fn((error: Error) => new Error(`safe:${error.message}`));
 
-    const response = await renderAppPageErrorBoundary({
+    const response = await renderAppPageErrorBoundary<TestModule>({
       ...common,
       error: new Error("secret"),
       matchedParams: { slug: "post" },
@@ -202,10 +771,175 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain("route:safe:secret");
   });
 
+  it("does not serialize production SSR stacks into the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const common = createCommonOptions();
+    const error = new Error("client page error");
+    error.stack = "/private/deployment/server.js:42";
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "ssr",
+        globalErrorModule,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("client page error");
+      expect(html).not.toContain("/private/deployment/server.js:42");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves development RSC stacks in the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const common = createCommonOptions();
+    const error = Object.assign(new Error("server page error"), {
+      digest: "12345",
+      stack: "/app/rsc/page.tsx:2",
+    });
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "rsc",
+        globalErrorModule: globalErrorModuleWithStack,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("/app/rsc/page.tsx:2");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves middleware headers on error boundary responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("secret"),
+      matchedParams: { slug: "post" },
+      middlewareContext: createMiddlewareContext(),
+      route: {
+        error: routeErrorModule,
+        params: { slug: "post" },
+        pattern: "/posts/[slug]",
+      },
+      sanitizeErrorForClient(error: Error) {
+        return error;
+      },
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-middleware-security")).toBe("present");
+    expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
+    expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
+  });
+
+  it("renders error boundaries when dynamic file metadata resolution fails", async () => {
+    const error = new Error("metadata boom");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const common = createCommonOptions();
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/app/posts/[slug]/opengraph-image.tsx",
+        routePrefix: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+        servedUrl: "/posts/[slug]/opengraph-image",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata() {
+            throw error;
+          },
+        },
+      },
+    ];
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error: new Error("secret"),
+        matchedParams: { slug: "post" },
+        metadataRoutes,
+        route: {
+          error: routeErrorModule,
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          params: { slug: "post" },
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        sanitizeErrorForClient(error: Error) {
+          return error;
+        },
+      });
+
+      expect(response?.status).toBe(200);
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] File-based metadata resolution failed while rendering error boundary for /posts/[slug]:",
+        error,
+      );
+
+      const html = await response?.text();
+      expect(html).toContain('data-boundary="route-error"');
+      expect(html).toContain("route:secret");
+      expect(html).toContain('content="Root layout description"');
+      expect(html).not.toContain("opengraph-image");
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("renders error boundary RSC responses as flat payloads", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("secret"),
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        error: routeErrorModule,
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      sanitizeErrorForClient(error: Error) {
+        return new Error(`safe:${error.message}`);
+      },
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("Content-Type")).toBe("text/x-component");
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__layoutIds).toEqual(["layout:/"]);
+    expect(payload.__rootLayout).toBe("/");
+    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
   it("renders global-error boundaries without layout wrapping", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageErrorBoundary({
+    const response = await renderAppPageErrorBoundary<TestModule>({
       ...common,
       error: new Error("boom"),
       globalErrorModule,
@@ -220,11 +954,76 @@ describe("app page boundary render helpers", () => {
       },
     });
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
 
     const html = await response?.text();
     expect(html).toContain('data-boundary="global-error"');
     expect(html).toContain("global:boom");
     expect(html).not.toContain('data-layout="root"');
+    expect(html).not.toContain("Root layout description");
+    expect(html).not.toContain('name="viewport"');
+  });
+
+  it("falls back to the built-in default global-error when the user's global-error throws", async () => {
+    // When the resolved global-error boundary itself throws while rendering, the
+    // SSR render rejects; renderAppPageErrorBoundary catches it and re-renders
+    // with the built-in default global-error so the request still produces a
+    // usable error document with the original HTTP 500 semantics. Locks in the server-side
+    // retry directly (the integration test in tests/nextjs-compat/global-error
+    // exercises the same path through the dev/preview server). Fixes #1548.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("boom"),
+      globalErrorModule: throwingGlobalErrorModule,
+      matchedParams: { slug: "post" },
+      route: {
+        layouts: [rootLayoutModule],
+        params: { slug: "post" },
+        pattern: "/posts/[slug]",
+      },
+      sanitizeErrorForClient(error: Error) {
+        return error;
+      },
+    });
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const html = await response?.text();
+    // The built-in default global-error UI from
+    // packages/vinext/src/shims/default-global-error.tsx.
+    expect(html).toContain("This page couldn");
+    // The user's throwing boundary contributed no markup.
+    expect(html).not.toContain("global-error boom");
+  });
+
+  it("re-throws navigation signals from a throwing global-error instead of degrading to the built-in fallback", async () => {
+    // A redirect()/notFound() thrown from inside global-error must propagate,
+    // not be swallowed into a built-in default 200.
+    const common = createCommonOptions();
+
+    await expect(
+      renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error: new Error("boom"),
+        globalErrorModule: signalThrowingGlobalErrorModule,
+        matchedParams: { slug: "post" },
+        route: {
+          layouts: [rootLayoutModule],
+          params: { slug: "post" },
+          pattern: "/posts/[slug]",
+        },
+        sanitizeErrorForClient(error: Error) {
+          return error;
+        },
+      }),
+    ).rejects.toMatchObject({ digest: "NEXT_NOT_FOUND" });
   });
 });

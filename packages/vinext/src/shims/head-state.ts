@@ -9,8 +9,8 @@
  */
 
 import type React from "react";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerHeadStateAccessors } from "./head.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -23,15 +23,16 @@ import {
 
 export type HeadState = {
   ssrHeadChildren: React.ReactNode[];
+  documentInitialHead: React.ReactNode[];
 };
 
-const _ALS_KEY = Symbol.for("vinext.head.als");
 const _FALLBACK_KEY = Symbol.for("vinext.head.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<HeadState>()) as AsyncLocalStorage<HeadState>;
+const _als = getOrCreateAls<HeadState>("vinext.head.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrHeadChildren: [],
+  documentInitialHead: [],
 } satisfies HeadState) as HeadState;
 
 function _getState(): HeadState {
@@ -46,15 +47,19 @@ function _getState(): HeadState {
  * Ensures per-request isolation for Pages Router <Head> elements
  * on concurrent runtimes.
  */
+export function runWithHeadState<T>(fn: () => Promise<T>): Promise<T>;
+export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T>;
 export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.ssrHeadChildren = [];
+      uCtx.documentInitialHead = [];
     }, fn);
   }
 
   const state: HeadState = {
     ssrHeadChildren: [],
+    documentInitialHead: [],
   };
   return _als.run(state, fn);
 }
@@ -69,6 +74,16 @@ _registerHeadStateAccessors({
   },
 
   resetSSRHead(): void {
-    _getState().ssrHeadChildren = [];
+    const s = _getState();
+    s.ssrHeadChildren = [];
+    s.documentInitialHead = [];
+  },
+
+  getDocumentInitialHead(): React.ReactNode[] {
+    return _getState().documentInitialHead;
+  },
+
+  setDocumentInitialHead(head: React.ReactNode[]): void {
+    _getState().documentInitialHead = head;
   },
 });

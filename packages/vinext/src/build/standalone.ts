@@ -1,6 +1,11 @@
 import fs from "node:fs";
+// Standalone output assembly works entirely in native-separator space: it
+// copies directory trees with fs.cpSync filters that split on path.sep and
+// never feeds paths back into id/URL comparisons, so pathslash buys nothing.
+// oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { createRequire } from "node:module";
+import { readJsonFile } from "../utils/safe-json-file.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
 type PackageJson = {
@@ -10,7 +15,7 @@ type PackageJson = {
   optionalDependencies?: Record<string, string>;
 };
 
-export type StandaloneBuildOptions = {
+type StandaloneBuildOptions = {
   root: string;
   outDir: string;
   /**
@@ -19,7 +24,7 @@ export type StandaloneBuildOptions = {
   vinextPackageRoot?: string;
 };
 
-export type StandaloneBuildResult = {
+type StandaloneBuildResult = {
   standaloneDir: string;
   copiedPackages: string[];
 };
@@ -61,20 +66,36 @@ function readServerExternalsManifest(serverDir: string): string[] {
   if (!fs.existsSync(manifestPath)) {
     return [];
   }
-  try {
-    return JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as string[];
-  } catch (err) {
-    console.warn(
-      `[vinext] Warning: failed to parse ${manifestPath}, proceeding without externals manifest: ${String(err)}`,
-    );
-    return [];
-  }
+  return (
+    readJsonFile<string[]>(manifestPath, {
+      onError: (err) => {
+        console.warn(
+          `[vinext] Warning: failed to parse ${manifestPath}, proceeding without externals manifest: ${String(err)}`,
+        );
+      },
+    }) ?? []
+  );
 }
 
 function resolvePackageJsonPath(packageName: string, resolver: NodeRequire): string | null {
   try {
     return resolver.resolve(`${packageName}/package.json`);
   } catch {
+    // Some packages only expose subpath exports (for example `rsc-html-stream`,
+    // which exports `./server` but not `.` or `./package.json`). resolver.resolve()
+    // cannot access those hidden paths, but Node still exposes the installed
+    // node_modules lookup locations via resolve.paths().
+    const lookupPaths = resolver.resolve.paths(packageName) ?? [];
+    for (const lookupPath of lookupPaths) {
+      const candidate = path.join(lookupPath, packageName, "package.json");
+      if (fs.existsSync(candidate)) {
+        const pkg = readPackageJson(candidate);
+        if (pkg.name === packageName) {
+          return candidate;
+        }
+      }
+    }
+
     // Some packages do not export ./package.json via exports map.
     // Fallback: resolve package entry and walk up to the nearest matching package.json.
     try {
@@ -132,7 +153,8 @@ function copyPackageAndRuntimeDeps(
       );
     }
 
-    const packageRoot = path.dirname(packageJsonPath);
+    const realPackageJsonPath = fs.realpathSync(packageJsonPath);
+    const packageRoot = path.dirname(realPackageJsonPath);
     const packageTarget = path.join(targetNodeModulesDir, entry.packageName);
     fs.mkdirSync(path.dirname(packageTarget), { recursive: true });
     fs.cpSync(packageRoot, packageTarget, {
@@ -151,8 +173,8 @@ function copyPackageAndRuntimeDeps(
 
     copied.add(entry.packageName);
 
-    const packageResolver = createRequire(packageJsonPath);
-    const pkg = readPackageJson(packageJsonPath);
+    const packageResolver = createRequire(realPackageJsonPath);
+    const pkg = readPackageJson(realPackageJsonPath);
     const optionalDeps = new Set(Object.keys(pkg.optionalDependencies ?? {}));
     for (const depName of runtimeDeps(pkg)) {
       if (!copied.has(depName)) {
@@ -258,6 +280,10 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
     dereference: true,
     filter: (src) => !path.relative(serverDir, src).split(path.sep).includes("node_modules"),
   });
+  const clientAssetsSidecar = path.join(outDir, "vinext-client-assets.js");
+  if (fs.existsSync(clientAssetsSidecar)) {
+    fs.copyFileSync(clientAssetsSidecar, path.join(standaloneDistDir, "vinext-client-assets.js"));
+  }
 
   const publicDir = path.join(root, "public");
   if (fs.existsSync(publicDir)) {

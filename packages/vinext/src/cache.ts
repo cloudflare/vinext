@@ -8,4 +8,4 @@
  *
  * @module
  */
-export { cacheForRequest } from "./shims/cache-for-request.js";
+export { cacheForRequest } from "vinext/shims/cache-for-request";

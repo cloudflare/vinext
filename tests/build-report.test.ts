@@ -1,7 +1,7 @@
 /**
  * Build report tests — verifies route classification, formatting, and sorting.
  *
- * Tests the regex-based export detection helpers and the classification
+ * Tests the static export detection helpers and the classification
  * logic for both Pages Router and App Router routes, using real fixture files
  * where integration testing is needed.
  */
@@ -10,17 +10,19 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import {
+  hasExportedName,
   hasNamedExport,
   extractExportConstString,
   extractExportConstNumber,
   extractGetStaticPropsRevalidate,
   classifyPagesRoute,
   classifyAppRoute,
+  classifyLayoutSegmentConfig,
   buildReportRows,
   formatBuildReport,
   printBuildReport,
 } from "../packages/vinext/src/build/report.js";
-import { invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
 
 const FIXTURES_PAGES = path.resolve("tests/fixtures/pages-basic/pages");
@@ -57,6 +59,27 @@ describe("hasNamedExport", () => {
     expect(hasNamedExport("export { getStaticProps as gsp };", "getStaticProps")).toBe(true);
   });
 
+  it("does not detect alias exported under the searched name", () => {
+    expect(hasNamedExport("export { gsp as getStaticProps };", "getStaticProps")).toBe(false);
+  });
+
+  it("matches Next.js local-name handling for aliased exports", () => {
+    expect(hasExportedName("export { gsp as getStaticProps };", "getStaticProps")).toBe(false);
+    expect(hasExportedName("export { getStaticProps as gsp };", "getStaticProps")).toBe(true);
+  });
+
+  it("ignores type-only exports with a runtime data-fetching name", () => {
+    expect(
+      hasExportedName('export type { Loader as getStaticProps } from "./data";', "getStaticProps"),
+    ).toBe(false);
+    expect(
+      hasExportedName(
+        "type Loader = () => unknown; export { type Loader as getStaticProps };",
+        "getStaticProps",
+      ),
+    ).toBe(false);
+  });
+
   it("returns false when export is absent", () => {
     expect(hasNamedExport("export default function Page() {}", "getStaticProps")).toBe(false);
   });
@@ -75,6 +98,13 @@ describe("hasNamedExport", () => {
 
   it("detects TypeScript-annotated const", () => {
     expect(hasNamedExport("export const dynamic: string = 'force-dynamic';", "dynamic")).toBe(true);
+  });
+
+  it("ignores export-shaped text inside block comments", () => {
+    const code = `/*
+export function getServerSideProps() {}
+*/`;
+    expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
   });
 });
 
@@ -97,6 +127,19 @@ describe("extractExportConstString", () => {
     expect(extractExportConstString("export const dynamic: string = 'error';", "dynamic")).toBe(
       "error",
     );
+  });
+
+  it("extracts no-substitution template literal values", () => {
+    expect(extractExportConstString("export const dynamic = `force-dynamic`;", "dynamic")).toBe(
+      "force-dynamic",
+    );
+  });
+
+  it("ignores export-shaped string values inside block comments", () => {
+    const code = `/*
+export const dynamic = "force-dynamic";
+*/`;
+    expect(extractExportConstString(code, "dynamic")).toBeNull();
   });
 
   it("returns null when export is absent", () => {
@@ -125,6 +168,12 @@ describe("extractExportConstNumber", () => {
     );
   });
 
+  it("extracts false as Infinity (revalidate = false means cache indefinitely)", () => {
+    expect(extractExportConstNumber("export const revalidate = false;", "revalidate")).toBe(
+      Infinity,
+    );
+  });
+
   it("extracts negative value", () => {
     expect(extractExportConstNumber("export const revalidate = -1;", "revalidate")).toBe(-1);
   });
@@ -133,6 +182,16 @@ describe("extractExportConstNumber", () => {
     expect(extractExportConstNumber("export const revalidate: number = 120;", "revalidate")).toBe(
       120,
     );
+  });
+
+  it("extracts numeric separators", () => {
+    expect(extractExportConstNumber("export const revalidate = 60_000;", "revalidate")).toBe(60000);
+  });
+
+  it("extracts config from TypeScript files with generic arrow syntax", () => {
+    const code = `const identity = <T>(value: T) => value;
+export const revalidate = 60;`;
+    expect(extractExportConstNumber(code, "revalidate")).toBe(60);
   });
 
   it("returns null when export is absent", () => {
@@ -317,11 +376,26 @@ export { getStaticProps } from "./shared";
     expect(extractGetStaticPropsRevalidate(code)).toBeNull();
   });
 
+  it("ignores an alias exported under the getStaticProps name", () => {
+    const code = `const gsp = async () => ({ props: {}, revalidate: 60 });
+
+export { gsp as getStaticProps };
+`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
   it("handles inline comment after value (fixture file style)", () => {
     // From tests/fixtures/pages-basic/pages/isr-test.tsx:
     //   revalidate: 1, // Revalidate every 1 second
     const code = `return { props: {}, revalidate: 1, // comment\n};`;
     expect(extractGetStaticPropsRevalidate(code)).toBe(1);
+  });
+
+  it("extracts revalidate from numeric separators in getStaticProps", () => {
+    const code = `export async function getStaticProps() {
+  return { props: {}, revalidate: 60_000 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60000);
   });
 });
 
@@ -411,6 +485,12 @@ describe("classifyAppRoute", () => {
     const pagePath = path.join(FIXTURES_APP, "revalidate-infinity-test", "page.tsx");
     expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
   });
+
+  it("classifies revalidate=false page as static", () => {
+    // revalidate = false means "cache indefinitely" — same as Infinity.
+    const pagePath = path.join(FIXTURES_APP, "revalidate-false-test", "page.tsx");
+    expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
+  });
 });
 
 // ─── buildReportRows ──────────────────────────────────────────────────────────
@@ -479,6 +559,21 @@ describe("buildReportRows", () => {
     const rows = buildReportRows({ pageRoutes });
     expect(rows[0].pattern).toBe("/aaa");
     expect(rows[1].pattern).toBe("/zzz");
+  });
+
+  it("classifies layout-only parallel-slot app routes from their render entry", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(FIXTURES_APP);
+    const rows = buildReportRows({ appRoutes: routes });
+
+    expect(rows.find((row) => row.pattern === "/parallel-nested/home")).toMatchObject({
+      pattern: "/parallel-nested/home",
+      type: "unknown",
+    });
+    expect(rows.find((row) => row.pattern === "/slot-collision")).toMatchObject({
+      pattern: "/slot-collision",
+      type: "unknown",
+    });
   });
 });
 
@@ -737,5 +832,66 @@ describe("printBuildReport respects pageExtensions", () => {
 
     const output = lines.join("\n");
     expect(output).toContain("/about");
+  });
+});
+
+// ─── classifyLayoutSegmentConfig ─────────────────────────────────────────────
+
+describe("classifyLayoutSegmentConfig", () => {
+  it("returns kind=static with segment-config reason for force-static", () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-static" },
+    });
+  });
+
+  it('returns kind=static with segment-config reason for dynamic = "error"', () => {
+    expect(classifyLayoutSegmentConfig("export const dynamic = 'error';")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: "error" },
+    });
+  });
+
+  it("returns kind=dynamic with segment-config reason for force-dynamic", () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toEqual({
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
+    });
+  });
+
+  it("returns kind=dynamic with revalidate reason for revalidate = 0", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 0;")).toEqual({
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "revalidate", value: 0 },
+    });
+  });
+
+  it("returns kind=static with revalidate reason for revalidate = Infinity", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
+    });
+  });
+
+  it("returns kind=static with revalidate reason for revalidate = false", () => {
+    // revalidate = false means "cache indefinitely" — same as Infinity.
+    expect(classifyLayoutSegmentConfig("export const revalidate = false;")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
+    });
+  });
+
+  it("returns kind=absent when no config is present (defers to module graph)", () => {
+    expect(
+      classifyLayoutSegmentConfig(
+        "export default function Layout({ children }) { return children; }",
+      ),
+    ).toEqual({ kind: "absent" });
+  });
+
+  it("returns kind=absent for positive revalidate (ISR is a page concept)", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 60;")).toEqual({
+      kind: "absent",
+    });
   });
 });

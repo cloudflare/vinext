@@ -119,9 +119,9 @@ function runLocalImageUrlParitySuite(router: "app" | "pages"): void {
       const src = getImageSrcFromHtml(html, "unicode");
       const imageUrl = new URL(src, baseUrl);
 
-      expect(imageUrl.pathname).toBe("/_vinext/image");
+      expect(imageUrl.pathname).toBe("/_next/image");
       expect(imageUrl.searchParams.get("url")).toBe("/äöüščří.png");
-      expect(imageUrl.searchParams.get("w")).toBe("64");
+      expect(imageUrl.searchParams.get("w")).toBe("128");
       expect(imageUrl.searchParams.get("q")).toBe("75");
 
       const res = await fetch(imageUrl);
@@ -136,16 +136,43 @@ function runLocalImageUrlParitySuite(router: "app" | "pages"): void {
       const src = getImageSrcFromHtml(html, "space");
       const imageUrl = new URL(src, baseUrl);
 
-      expect(imageUrl.pathname).toBe("/_vinext/image");
+      expect(imageUrl.pathname).toBe("/_next/image");
       expect(imageUrl.searchParams.get("url")).toBe("/hello world.png");
-      expect(imageUrl.searchParams.get("w")).toBe("64");
+      expect(imageUrl.searchParams.get("w")).toBe("128");
       expect(imageUrl.searchParams.get("q")).toBe("75");
 
       const res = await fetch(imageUrl);
       expect(res.status).toBe(200);
     });
+
+    // Both /_next/image and /_vinext/image are accepted so apps wired to
+    // either prefix get images served through the same optimizer pipeline.
+    it("routes /_vinext/image requests through the optimizer", async () => {
+      const vinextUrl = new URL("/_vinext/image", baseUrl);
+      vinextUrl.searchParams.set("url", "/hello world.png");
+      vinextUrl.searchParams.set("w", "64");
+      vinextUrl.searchParams.set("q", "75");
+      const res = await fetch(vinextUrl);
+      expect(res.status).toBe(200);
+    });
   });
 }
+
+describe("image deployment query parity", () => {
+  it("accepts Next.js deployment IDs without including them in the source path", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const requestUrl = new URL(
+      "http://vinext.test/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Ftest.hash.png&w=828&q=85&dpl=deploy-1",
+    );
+
+    expect(parseImageParams(requestUrl)).toEqual({
+      imageUrl: "/_next/static/media/test.hash.png",
+      width: 828,
+      quality: 85,
+    });
+  });
+});
 
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");

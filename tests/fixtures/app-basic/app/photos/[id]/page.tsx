@@ -1,4 +1,6 @@
 // Full photo page — rendered on direct navigation to /photos/[id].
+export const fetchCache = "only-cache";
+
 export default function PhotoPage({ params }: { params: { id: string } }) {
   return (
     <div data-testid="photo-page">

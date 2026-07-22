@@ -10,5 +10,5 @@
       "@/*": ["./*"]
     }
   },
-  "include": ["pages", "components", "*.ts"]
+  "include": ["next-env.d.ts", "pages", "components", "*.ts"]
 }

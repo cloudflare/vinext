@@ -30,25 +30,40 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
-import { getCacheHandler, type CachedAppPageValue } from "../shims/cache.js";
-import { isrCacheKey, setRevalidateDuration } from "./isr-cache.js";
-import { getOutputPath, getRscOutputPath } from "../build/prerender.js";
+import path from "pathslash";
+import type { CachedAppPageValue } from "vinext/shims/cache-handler";
+import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
+import { buildAppPageCacheTags } from "./app-page-cache.js";
+import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
+import {
+  addPregeneratedConcretePath,
+  clearPregeneratedConcretePaths,
+  normalizePregeneratedPathname,
+} from "./pregenerated-concrete-paths.js";
+import {
+  readPrerenderManifest,
+  getRenderedAppRoutes,
+  isFallbackShellArtifactPath,
+} from "./prerender-manifest.js";
 
-// ─── Manifest types ───────────────────────────────────────────────────────────
-
-type PrerenderManifest = {
-  buildId: string;
-  trailingSlash?: boolean;
-  routes: PrerenderManifestRoute[];
+type PrerenderCacheSeedMetadata = {
+  expireSeconds?: number;
+  revalidateSeconds?: number;
+  /**
+   * Path-derived implicit tags (`/foo`, `_N_T_/foo`, `_N_T_/foo/page`, ...)
+   * required for `revalidatePath()` to invalidate the seeded entry. See #1486.
+   */
+  tags?: string[];
 };
 
-type PrerenderManifestRoute = {
-  route: string;
-  status: string;
-  revalidate?: number | false;
-  path?: string;
-  router?: "app" | "pages";
+type PrerenderCacheSeedOptions = {
+  buildAppPageHtmlKey?: (pathname: string) => string;
+  buildAppPageRscKey?: (pathname: string) => string;
+  writeAppPageEntry?: (
+    key: string,
+    data: CachedAppPageValue,
+    metadata: PrerenderCacheSeedMetadata,
+  ) => Promise<void>;
 };
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -62,38 +77,74 @@ type PrerenderManifestRoute = {
  * @param serverDir - Path to `dist/server/` (where vinext-prerender.json lives)
  * @returns The number of routes seeded (0 if no manifest or no renderable routes).
  */
-export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<number> {
-  const manifestPath = path.join(serverDir, "vinext-prerender.json");
-  if (!fs.existsSync(manifestPath)) return 0;
+export async function seedMemoryCacheFromPrerender(
+  serverDir: string,
+  options?: PrerenderCacheSeedOptions,
+): Promise<number> {
+  // Clear any pre-existing concrete paths from a previous build BEFORE checking
+  // whether the manifest exists. This ensures that a missing or corrupt manifest
+  // in a new build still fails closed to an empty set — the stale paths from a
+  // previous build are never visible to the new server process.
+  clearPregeneratedConcretePaths();
 
-  let manifest: PrerenderManifest;
-  try {
-    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-  } catch (err) {
-    console.warn("[vinext] Failed to parse vinext-prerender.json, skipping cache seeding:", err);
-    return 0;
-  }
+  const manifestPath = path.join(serverDir, "vinext-prerender.json");
+  const manifest = readPrerenderManifest(manifestPath);
+  if (!manifest) return 0;
 
   const { buildId, routes } = manifest;
   if (!buildId || !Array.isArray(routes)) return 0;
 
   const trailingSlash = manifest.trailingSlash ?? false;
   const prerenderDir = path.join(serverDir, "prerendered-routes");
-  const handler = getCacheHandler();
+  const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
   let seeded = 0;
 
-  for (const route of routes) {
-    if (route.status !== "rendered") continue;
-    if (route.router !== "app") continue;
+  const appRoutes = getRenderedAppRoutes(routes);
 
-    const pathname = route.path ?? route.route;
-    const baseKey = isrCacheKey("app", pathname, buildId);
+  for (const route of appRoutes) {
+    const concretePathname = route.path ?? route.route;
+    if (!isFallbackShellArtifactPath(concretePathname, route)) {
+      addPregeneratedConcretePath(route.route, concretePathname);
+    }
+
+    const artifactPathname = route.path ?? route.route;
+    const cachePathname = normalizePregeneratedPathname(artifactPathname);
+    // Fallback keys support older generated entries that do not export their
+    // runtime key builders. Current App Router entries inject buildAppPage*Key
+    // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
+    const baseKey = isrCacheKey("app", cachePathname, buildId);
+    const htmlKey = options?.buildAppPageHtmlKey?.(cachePathname) ?? baseKey + ":html";
+    const rscKey = options?.buildAppPageRscKey?.(cachePathname) ?? baseKey + ":rsc";
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
+    const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
+
+    // Path-derived implicit tags so revalidatePath()/revalidateTag() can
+    // invalidate seeded entries. Without this the seeded entry has no tags
+    // and tag-based invalidation can never reach it (#1486).
+    const tags = buildAppPageCacheTags(cachePathname, []);
 
     if (
-      await seedHtml(handler, prerenderDir, baseKey, pathname, trailingSlash, revalidateSeconds)
+      await seedHtml(
+        writeAppPageEntry,
+        prerenderDir,
+        htmlKey,
+        artifactPathname,
+        trailingSlash,
+        route.headers,
+        revalidateSeconds,
+        expireSeconds,
+        tags,
+      )
     ) {
-      await seedRsc(handler, prerenderDir, baseKey, pathname, revalidateSeconds);
+      await seedRsc(
+        writeAppPageEntry,
+        prerenderDir,
+        rscKey,
+        artifactPathname,
+        revalidateSeconds,
+        expireSeconds,
+        tags,
+      );
       seeded++;
     }
   }
@@ -103,12 +154,10 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
-/**
- * Build the CacheHandler context object from a revalidate value.
- * `revalidate: undefined` (static routes) → empty context → no expiry.
- */
-function revalidateCtx(seconds: number | undefined): Record<string, unknown> {
-  return seconds !== undefined ? { revalidate: seconds } : {};
+function createDefaultAppPageEntryWriter(): NonNullable<
+  PrerenderCacheSeedOptions["writeAppPageEntry"]
+> {
+  return (key, data, metadata) => isrSetPrerenderedAppPage(key, data, metadata);
 }
 
 /**
@@ -116,12 +165,15 @@ function revalidateCtx(seconds: number | undefined): Record<string, unknown> {
  * Returns true if the file existed and was seeded.
  */
 async function seedHtml(
-  handler: ReturnType<typeof getCacheHandler>,
+  writeAppPageEntry: NonNullable<PrerenderCacheSeedOptions["writeAppPageEntry"]>,
   prerenderDir: string,
-  baseKey: string,
+  key: string,
   pathname: string,
   trailingSlash: boolean,
+  headers: Record<string, string> | undefined,
   revalidateSeconds: number | undefined,
+  expireSeconds: number | undefined,
+  tags: string[] | undefined,
 ): Promise<boolean> {
   const relPath = getOutputPath(pathname, trailingSlash);
   const fullPath = path.join(prerenderDir, relPath);
@@ -131,17 +183,12 @@ async function seedHtml(
     kind: "APP_PAGE",
     html: fs.readFileSync(fullPath, "utf-8"),
     rscData: undefined,
-    headers: undefined,
+    headers,
     postponed: undefined,
     status: undefined,
   };
 
-  const key = baseKey + ":html";
-  await handler.set(key, htmlValue, revalidateCtx(revalidateSeconds));
-
-  if (revalidateSeconds !== undefined) {
-    setRevalidateDuration(key, revalidateSeconds);
-  }
+  await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds, tags });
 
   return true;
 }
@@ -151,11 +198,13 @@ async function seedHtml(
  * No-op if the .rsc file doesn't exist on disk.
  */
 async function seedRsc(
-  handler: ReturnType<typeof getCacheHandler>,
+  writeAppPageEntry: NonNullable<PrerenderCacheSeedOptions["writeAppPageEntry"]>,
   prerenderDir: string,
-  baseKey: string,
+  key: string,
   pathname: string,
   revalidateSeconds: number | undefined,
+  expireSeconds: number | undefined,
+  tags: string[] | undefined,
 ): Promise<void> {
   const relPath = getRscOutputPath(pathname);
   const fullPath = path.join(prerenderDir, relPath);
@@ -174,10 +223,5 @@ async function seedRsc(
     status: undefined,
   };
 
-  const key = baseKey + ":rsc";
-  await handler.set(key, rscValue, revalidateCtx(revalidateSeconds));
-
-  if (revalidateSeconds !== undefined) {
-    setRevalidateDuration(key, revalidateSeconds);
-  }
+  await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds, tags });
 }

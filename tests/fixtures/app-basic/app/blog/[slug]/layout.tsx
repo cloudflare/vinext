@@ -1,3 +1,6 @@
+import Link from "next/link";
+import { LayoutCounter } from "../../components/layout-counter";
+
 /**
  * Layout for /blog/[slug] — regression fixture for layout params fix.
  *
@@ -23,6 +26,15 @@ export default async function BlogSlugLayout({
 
   return (
     <div data-testid="blog-slug-layout">
+      <nav>
+        <Link href="/blog/hello-world" data-testid="blog-hello-world-link">
+          Hello world
+        </Link>
+        <Link href="/blog/getting-started" data-testid="blog-getting-started-link">
+          Getting started
+        </Link>
+      </nav>
+      <LayoutCounter />
       <p data-testid="layout-slug-awaited">{slug}</p>
       <p data-testid="layout-slug-direct">{slugDirect}</p>
       {children}

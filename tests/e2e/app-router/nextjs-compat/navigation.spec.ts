@@ -12,15 +12,13 @@
  */
 
 import { test, expect } from "@playwright/test";
+import {
+  isAppRouterRscRequestForPath,
+  waitForAppRouterHydration,
+  waitForHydration,
+} from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: navigation (browser)", () => {
   // Next.js: 'should redirect in a server component'
@@ -36,13 +34,71 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Source: navigation.test.ts#L184-L191
   test("client-side redirect via router.push()", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-client-redirect`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#redirect-btn");
     await expect(page.locator("#result-page")).toHaveText("Result Page", {
       timeout: 10_000,
     });
     expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  test("client-side redirect() sentinel navigates and resets the boundary", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-client-redirect-sentinel`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#trigger-redirect");
+    await expect(page.locator("#result-page")).toHaveText("Result Page", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+  });
+
+  test("client-side redirect() guard navigates once and does not loop", async ({ page }) => {
+    const loginRscRequests: string[] = [];
+    page.on("request", (request) => {
+      if (isAppRouterRscRequestForPath(request, "/nextjs-compat/nav-redirect-guard/login")) {
+        loginRscRequests.push(request.url());
+      }
+    });
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) {
+        throw new Error("window.next.router is not installed");
+      }
+      void router.push("/nextjs-compat/nav-redirect-guard");
+    });
+
+    await expect(page.locator("#redirect-guard-login")).toHaveText("Login Page", {
+      timeout: 10_000,
+    });
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/nav-redirect-guard/login");
+    await page.waitForLoadState("networkidle");
+    expect(loginRscRequests).toHaveLength(1);
+  });
+
+  test("client-side navigation from App Router does not leak stale params into Pages Router", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/app-to-pages-params/alpha`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#go-to-pages-params");
+    await waitForHydration(page);
+
+    await expect(page.locator("#params")).toHaveText('{"foo":"foo"}', {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#params-change-count")).toHaveText("2");
+    const paramsSnapshots = await page.locator("#params-snapshots").textContent();
+    expect(paramsSnapshots).toContain("foo");
+    expect(paramsSnapshots).not.toContain("alpha");
   });
 
   // Next.js: 'should trigger not-found in a server component'
@@ -58,7 +114,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Source: navigation.test.ts#L155-L165
   test("client-side notFound() trigger renders not-found component", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-client-notfound`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Verify the page loaded correctly first
     await expect(page.locator("#notfound-trigger-page")).toHaveText("Not Found Trigger Page");
@@ -71,12 +127,14 @@ test.describe("Next.js compat: navigation (browser)", () => {
       const text = await page.locator("body").textContent();
       expect(text).toContain("404");
     }).toPass({ timeout: 10_000 });
+
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex");
   });
 
   // Next.js: Link-based client-side navigation
   test("Link navigates client-side without full reload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Set marker for reload detection
     await page.evaluate(() => {
@@ -100,7 +158,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // exist should render the not-found.tsx boundary, not a blank white page.
   test("Link to non-existent route renders not-found via client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Set marker to verify it's a client-side navigation (no full reload)
     await page.evaluate(() => {
@@ -122,7 +180,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Click Link to a page that calls notFound()
     await page.click("#link-to-notfound-page");
@@ -137,7 +195,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Back/forward navigation
   test("browser back button works after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate to result page
     await page.click("#link-to-result");
@@ -152,7 +210,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
 
   test("Link onNavigate reports the resolved URL for relative query hrefs", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(async () => {
       const ready = await page.evaluate(() => !!(window as any).__APP_RELATIVE_QUERY_LINK_READY__);
       expect(ready).toBe(true);
@@ -172,5 +230,33 @@ test.describe("Next.js compat: navigation (browser)", () => {
       () => (window as any).__APP_RELATIVE_ONNAV_URL__ ?? null,
     );
     expect(reportedUrl).toBe("/nextjs-compat/nav-link-test?page=2");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  test("router.push to an external URL keeps useTransition pending until unload", async ({
+    page,
+  }) => {
+    const storageKey = `external-${Date.now()}`;
+    await page.goto(`${BASE}/nextjs-compat/router-push-external-pending/${storageKey}`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#go");
+    await page.waitForURL("https://example.vercel.sh/stuff?abc=123", { timeout: 10_000 });
+
+    await page.goto(`${BASE}/nextjs-compat/router-push-external-pending/${storageKey}`);
+    await expect(page.locator("#storage")).toContainText(
+      `path-/nextjs-compat/router-push-external-pending/${storageKey}`,
+    );
+    const stored = JSON.parse((await page.locator("#storage").textContent()) ?? "{}");
+
+    expect(stored).toMatchObject({
+      [`path-/nextjs-compat/router-push-external-pending/${storageKey}`]: "true",
+      lastIsPending: "true",
+    });
+
+    if (stored["navigation-supported"] === "true") {
+      expect(stored["navigate-https://example.vercel.sh/stuff?abc=123"]).toBe("1");
+    }
   });
 });

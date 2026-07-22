@@ -1,8 +1,21 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import type { HeadersAccessPhase } from "../shims/headers.js";
-import type { ExecutionContextLike } from "../shims/request-context.js";
-import type { CachedRouteValue } from "../shims/cache.js";
 import {
+  isDraftModeRequest,
+  setHeadersContext,
+  type HeadersAccessPhase,
+} from "vinext/shims/headers";
+import type { ExecutionContextLike } from "vinext/shims/request-context";
+import type { CachedRouteValue } from "vinext/shims/cache-handler";
+import type { NextRequest } from "vinext/shims/server";
+import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
+import { runWithRootParamsUsage } from "vinext/shims/root-params";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import {
+  createStaticGenerationHeadersContext,
+  getAppRouteStaticGenerationErrorMessage,
+} from "./app-static-generation.js";
+import {
+  isPossibleAppRouteActionRequest,
   resolveAppRouteHandlerSpecialError,
   shouldApplyAppRouteHandlerRevalidateHeader,
   shouldWriteAppRouteHandlerCache,
@@ -11,6 +24,7 @@ import {
 import {
   applyRouteHandlerMiddlewareContext,
   applyRouteHandlerRevalidateHeader,
+  assertSupportedAppRouteHandlerResponse,
   buildAppRouteCacheValue,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
@@ -24,15 +38,27 @@ import {
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
 export type MarkAppRouteDynamicUsageFn = () => void;
+/**
+ * Route handler context.
+ *
+ * `params` is `null` for non-dynamic routes (no `[param]` segments) so that
+ * user code like `params ? await params : null` resolves to `null`, matching
+ * Next.js behavior. For dynamic routes it's a thenable that resolves to the
+ * matched params object.
+ *
+ * See: test/e2e/app-dir/app-routes/app-custom-routes.test.ts in Next.js for
+ * the authoritative assertion (`expect(meta.params).toEqual(null)`).
+ */
 export type AppRouteHandlerFunction = (
-  request: Request,
-  context: { params: AppRouteParams },
+  request: NextRequest,
+  context: { params: AppRouteParams | null },
 ) => Response | Promise<Response>;
 export type RouteHandlerCacheSetter = (
   key: string,
   data: CachedRouteValue,
   revalidateSeconds: number,
   tags: string[],
+  expireSeconds?: number,
 ) => Promise<void>;
 type AppRouteErrorReporter = (
   error: Error,
@@ -41,31 +67,57 @@ type AppRouteErrorReporter = (
 ) => void;
 export type AppRouteDebugLogger = (event: string, detail: string) => void;
 
-export type RunAppRouteHandlerOptions = {
+type RunAppRouteHandlerOptions = {
   basePath?: string;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
+  draftModeSecret?: string;
+  dynamicConfig?: string;
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
+  isDraftMode?: boolean;
+  trailingSlash?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
-  params: AppRouteParams;
+  middlewareRequestHeaders?: Headers | null;
+  /**
+   * `null` for non-dynamic routes. Passed through to the handler context
+   * unchanged — callers are expected to compute this from `route.isDynamic`.
+   */
+  params: AppRouteParams | null;
   request: Request;
+  routePattern?: string;
+  setHeadersAccessPhase?: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
 
-export type RunAppRouteHandlerResult = {
+type RunAppRouteHandlerResult = {
   dynamicUsedInHandler: boolean;
   response: Response;
 };
 
-export type ExecuteAppRouteHandlerOptions = {
+export function applyDraftModeCachePolicy(response: Response, isDraftMode: boolean): Response {
+  if (!isDraftMode) return response;
+
+  const headers = new Headers(response.headers);
+  applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+type ExecuteAppRouteHandlerOptions = {
   buildPageCacheTags: (pathname: string, extraTags: string[]) => string[];
   clearRequestContext: () => void;
   cleanPathname: string;
   executionContext: ExecutionContextLike | null;
   getAndClearPendingCookies: () => string[];
   getCollectedFetchTags: () => string[];
+  getActiveDraftModeState?: () => boolean | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handler: AppRouteHandlerModule;
   isAutoHead: boolean;
+  initialDraftModeCookie?: string | null;
+  isDraftMode?: boolean;
   isProduction: boolean;
   isrDebug?: AppRouteDebugLogger;
   isrRouteKey: (pathname: string) => string;
@@ -73,25 +125,62 @@ export type ExecuteAppRouteHandlerOptions = {
   method: string;
   middlewareContext: RouteHandlerMiddlewareContext;
   reportRequestError: AppRouteErrorReporter;
+  expireSeconds?: number;
   revalidateSeconds: number | null;
   routePattern: string;
   setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 } & RunAppRouteHandlerOptions;
 
+function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOptions): void {
+  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    const isDraftMode =
+      options.isDraftMode ??
+      (options.draftModeSecret !== undefined &&
+        isDraftModeRequest(options.request, options.draftModeSecret));
+    setHeadersContext(
+      createStaticGenerationHeadersContext({
+        draftModeEnabled: isDraftMode,
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: options.dynamicConfig,
+        routeKind: "route",
+        routePattern: options.routePattern,
+      }),
+    );
+    options.setHeadersAccessPhase?.("route-handler");
+  }
+}
+
 export async function runAppRouteHandler(
   options: RunAppRouteHandlerOptions,
 ): Promise<RunAppRouteHandlerResult> {
   options.consumeDynamicUsage();
+  configureAppRouteStaticGenerationContext(options);
   const trackedRequest = createTrackedAppRouteRequest(options.request, {
     basePath: options.basePath,
     i18n: options.i18n,
+    trailingSlash: options.trailingSlash,
+    middlewareHeaders: options.middlewareRequestHeaders,
     onDynamicAccess() {
       options.markDynamicUsage();
     },
+    requestMode:
+      options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
+        ? options.dynamicConfig
+        : "auto",
+    staticGenerationErrorMessage(expression) {
+      return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
+    },
   });
-  const response = await options.handlerFn(trackedRequest.request, {
-    params: options.params,
-  });
+  const response = await runWithRootParamsUsage(
+    {
+      kind: "route-handler",
+      routePattern: options.routePattern ?? new URL(options.request.url).pathname,
+    },
+    () =>
+      options.handlerFn(trackedRequest.request, {
+        params: options.params,
+      }),
+  );
 
   return {
     dynamicUsedInHandler: options.consumeDynamicUsage(),
@@ -105,18 +194,52 @@ export async function executeAppRouteHandler(
   const previousHeadersPhase = options.setHeadersAccessPhase("route-handler");
 
   try {
-    const { dynamicUsedInHandler, response } = await runAppRouteHandler(options);
+    let handlerResult: RunAppRouteHandlerResult;
+    try {
+      handlerResult = await runAppRouteHandler({
+        ...options,
+        dynamicConfig: options.handler.dynamic,
+      });
+    } finally {
+      // Route Handlers expose synchronous revalidation APIs; their async cache
+      // work belongs to the request lifecycle and must settle before response
+      // finalization clears the request context.
+      await _drainPendingRevalidations();
+    }
+    const { dynamicUsedInHandler, response } = handlerResult;
+    assertSupportedAppRouteHandlerResponse(response);
     const handlerSetCacheControl = response.headers.has("cache-control");
 
     if (dynamicUsedInHandler) {
       markKnownDynamicAppRoute(options.routePattern);
     }
 
+    const pendingCookies = options.getAndClearPendingCookies();
+    const handlerDraftCookie = options.getDraftModeCookieHeader();
+    const draftCookie = handlerDraftCookie ?? options.initialDraftModeCookie;
+    const activeDraftMode = options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
+    const shouldApplyDraftPolicy = activeDraftMode || draftCookie != null;
+
+    // Unlike force-static request reads, draft-mode mutations are dynamic in
+    // Next.js. Remember the route when the handler itself crossed the draft
+    // boundary so a pre-existing ISR entry cannot be replayed later.
+    if (handlerDraftCookie != null) {
+      markKnownDynamicAppRoute(options.routePattern);
+    }
+
+    // The route's cache tags, shared by the response Cache-Tag header (so edge
+    // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
+    const routeTags = options.buildPageCacheTags(
+      options.cleanPathname,
+      options.getCollectedFetchTags(),
+    );
+
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
         dynamicUsedInHandler,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
+        isDraftMode: shouldApplyDraftPolicy,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
       })
@@ -125,7 +248,12 @@ export async function executeAppRouteHandler(
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler revalidate seconds");
       }
-      applyRouteHandlerRevalidateHeader(response, revalidateSeconds);
+      applyRouteHandlerRevalidateHeader(
+        response,
+        revalidateSeconds,
+        options.expireSeconds,
+        routeTags,
+      );
     }
 
     if (
@@ -134,6 +262,7 @@ export async function executeAppRouteHandler(
         dynamicUsedInHandler,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
+        isDraftMode: shouldApplyDraftPolicy,
         isProduction: options.isProduction,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
@@ -146,14 +275,16 @@ export async function executeAppRouteHandler(
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler cache revalidate seconds");
       }
-      const routeTags = options.buildPageCacheTags(
-        options.cleanPathname,
-        options.getCollectedFetchTags(),
-      );
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);
-          await options.isrSet(routeKey, routeCacheValue, revalidateSeconds, routeTags);
+          await options.isrSet(
+            routeKey,
+            routeCacheValue,
+            revalidateSeconds,
+            routeTags,
+            options.expireSeconds,
+          );
           options.isrDebug?.("route cache written", routeKey);
         } catch (cacheErr) {
           console.error("[vinext] ISR route cache write error:", cacheErr);
@@ -162,37 +293,60 @@ export async function executeAppRouteHandler(
       options.executionContext?.waitUntil(routeWritePromise);
     }
 
-    const pendingCookies = options.getAndClearPendingCookies();
-    const draftCookie = options.getDraftModeCookieHeader();
     options.clearRequestContext();
 
-    return applyRouteHandlerMiddlewareContext(
-      finalizeRouteHandlerResponse(response, {
-        pendingCookies,
-        draftCookie,
-        isHead: options.isAutoHead,
-      }),
-      options.middlewareContext,
+    return applyDraftModeCachePolicy(
+      applyRouteHandlerMiddlewareContext(
+        finalizeRouteHandlerResponse(response, {
+          pendingCookies,
+          draftCookie,
+          isHead: options.isAutoHead,
+        }),
+        options.middlewareContext,
+      ),
+      shouldApplyDraftPolicy,
     );
   } catch (error) {
-    options.getAndClearPendingCookies();
-    const specialError = resolveAppRouteHandlerSpecialError(error, options.request.url);
+    const pendingCookies = options.getAndClearPendingCookies();
+    const handlerDraftCookie = options.getDraftModeCookieHeader();
+    const draftCookie = handlerDraftCookie ?? options.initialDraftModeCookie;
+    const activeDraftMode = options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
+    const shouldApplyDraftPolicy = activeDraftMode || draftCookie != null;
+    if (handlerDraftCookie != null) {
+      markKnownDynamicAppRoute(options.routePattern);
+    }
+    const specialError = resolveAppRouteHandlerSpecialError(error, options.request.url, {
+      isAction: isPossibleAppRouteActionRequest(options.request),
+    });
     options.clearRequestContext();
 
     if (specialError) {
       if (specialError.kind === "redirect") {
-        return applyRouteHandlerMiddlewareContext(
-          new Response(null, {
-            status: specialError.statusCode,
-            headers: { Location: specialError.location },
-          }),
-          options.middlewareContext,
+        return applyDraftModeCachePolicy(
+          applyRouteHandlerMiddlewareContext(
+            finalizeRouteHandlerResponse(
+              new Response(null, {
+                status: specialError.statusCode,
+                headers: { Location: specialError.location },
+              }),
+              {
+                pendingCookies,
+                draftCookie,
+                isHead: options.isAutoHead,
+              },
+            ),
+            options.middlewareContext,
+          ),
+          shouldApplyDraftPolicy,
         );
       }
 
-      return applyRouteHandlerMiddlewareContext(
-        new Response(null, { status: specialError.statusCode }),
-        options.middlewareContext,
+      return applyDraftModeCachePolicy(
+        applyRouteHandlerMiddlewareContext(
+          new Response(null, { status: specialError.statusCode }),
+          options.middlewareContext,
+        ),
+        shouldApplyDraftPolicy,
       );
     }
 
@@ -211,9 +365,12 @@ export async function executeAppRouteHandler(
       },
     );
 
-    return applyRouteHandlerMiddlewareContext(
-      new Response(null, { status: 500 }),
-      options.middlewareContext,
+    return applyDraftModeCachePolicy(
+      applyRouteHandlerMiddlewareContext(
+        new Response(null, { status: 500 }),
+        options.middlewareContext,
+      ),
+      shouldApplyDraftPolicy,
     );
   } finally {
     options.setHeadersAccessPhase(previousHeadersPhase);

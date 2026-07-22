@@ -8,15 +8,25 @@
  * These complement the integration-level ISR tests in features.test.ts
  * by testing the ISR cache layer in isolation.
  */
-import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import {
   isrCacheKey,
+  appIsrCacheKey,
+  appIsrHtmlKey,
+  appIsrRscKey,
+  appIsrRouteKey,
+  isrGet,
+  isrSet,
   buildPagesCacheValue,
   buildAppPageCacheValue,
+  normalizeMountedSlotsHeader,
   setRevalidateDuration,
   getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
+import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
   createRequestContext,
@@ -33,7 +43,65 @@ import {
 
 // ─── isrCacheKey ────────────────────────────────────────────────────────
 
+// Revalidation secret
+describe("revalidation secret", () => {
+  const secretKey = Symbol.for("vinext.isrCache.devRevalidateSecret");
+  const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+  const originalBakedSecret = process.env.__VINEXT_REVALIDATE_SECRET;
+
+  beforeEach(() => {
+    delete process.env.__VINEXT_REVALIDATE_SECRET;
+    delete globals[secretKey];
+  });
+
+  afterEach(() => {
+    if (originalBakedSecret === undefined) {
+      delete process.env.__VINEXT_REVALIDATE_SECRET;
+    } else {
+      process.env.__VINEXT_REVALIDATE_SECRET = originalBakedSecret;
+    }
+    delete globals[secretKey];
+    vi.resetModules();
+  });
+
+  it("shares the development fallback across separately evaluated module copies", async () => {
+    vi.resetModules();
+    const firstModule = await import("../packages/vinext/src/server/isr-cache.js");
+    const secret = firstModule.getRevalidateSecret();
+
+    // Simulate Vite's separate RSC/SSR module graphs by discarding the module
+    // registry while leaving the process global intact.
+    vi.resetModules();
+    const secondModule = await import("../packages/vinext/src/server/isr-cache.js");
+    const differentSecret = `${secret.slice(0, -1)}${secret.endsWith("0") ? "1" : "0"}`;
+
+    expect(secret).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondModule).not.toBe(firstModule);
+    expect(secondModule.getRevalidateSecret()).toBe(secret);
+    expect(secondModule.isOnDemandRevalidateRequest(secret)).toBe(true);
+    expect(secondModule.isOnDemandRevalidateRequest(differentSecret)).toBe(false);
+  });
+
+  it("prefers the baked production secret over the development fallback slot", async () => {
+    globals[secretKey] = "development-fallback";
+    process.env.__VINEXT_REVALIDATE_SECRET = "baked-production-secret";
+    vi.resetModules();
+
+    const module = await import("../packages/vinext/src/server/isr-cache.js");
+
+    expect(module.getRevalidateSecret()).toBe("baked-production-secret");
+    expect(module.isOnDemandRevalidateRequest("baked-production-secret")).toBe(true);
+    expect(module.isOnDemandRevalidateRequest("development-fallback")).toBe(false);
+  });
+});
+
+// Cache keys
 describe("isrCacheKey", () => {
+  it("fnv1a64 uses fixed-width unambiguous output", () => {
+    const hash = fnv1a64("/" + "a".repeat(250));
+    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
   it("generates pages: prefix for Pages Router", () => {
     expect(isrCacheKey("pages", "/about")).toBe("pages:/about");
   });
@@ -108,6 +176,144 @@ describe("isrCacheKey", () => {
   });
 });
 
+describe("App Router ISR cache key primitives", () => {
+  const originalBuildId = process.env.__VINEXT_BUILD_ID;
+
+  afterEach(() => {
+    if (originalBuildId === undefined) {
+      delete process.env.__VINEXT_BUILD_ID;
+      return;
+    }
+
+    process.env.__VINEXT_BUILD_ID = originalBuildId;
+  });
+
+  it("builds separate html, rsc, and route keys from the normalized pathname", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    expect(appIsrHtmlKey("/about/")).toBe("app:/about:html");
+    expect(appIsrRscKey("/about/")).toBe("app:/about:rsc");
+    expect(appIsrRouteKey("/api/feed/")).toBe("app:/api/feed:route");
+  });
+
+  it("includes the build id when present", () => {
+    process.env.__VINEXT_BUILD_ID = "build-42";
+
+    expect(appIsrHtmlKey("/dashboard")).toBe("app:build-42:/dashboard:html");
+  });
+
+  it("supports explicit build ids when deriving suffixed app keys", () => {
+    expect(appIsrCacheKey("/dashboard", "html", "build-42")).toBe("app:build-42:/dashboard:html");
+  });
+
+  it("hashes long pathname keys while preserving the cache entry suffix", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const key = appIsrRscKey("/" + "a".repeat(250));
+
+    expect(key).toMatch(/^app:__hash:[a-z0-9]+:rsc$/);
+  });
+
+  it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const first = appIsrRscKey("/feed", "slot:modal:/ slot:sidebar:/");
+    const second = appIsrRscKey("/feed", "slot:sidebar:/ slot:modal:/");
+
+    expect(first).toBe(second);
+    expect(first).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+$/);
+  });
+
+  it("bounds RSC cache-key cardinality against attacker-supplied mounted-slot values", () => {
+    // SECURITY-AUDIT-2026-05 F-PROD-1: an attacker who forges
+    // X-Vinext-Mounted-Slots: <unique-value> must not be able to fan out
+    // unbounded distinct cache keys (per-write KV billing / wallet attack).
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const keys = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      // Each of these violates the legitimate slot:<name>:<treePath> wire
+      // shape and must be dropped by normalization.
+      keys.add(appIsrRscKey("/feed", `attacker-${i}`));
+    }
+    // All 1000 distinct attacker values collapse to the same "no slots" key.
+    expect(keys.size).toBe(1);
+    expect(keys.values().next().value).toBe("app:/feed:rsc");
+  });
+
+  it("caps cache-key cardinality when an attacker pads the mounted-slots header", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    // Even when every token has the legitimate wire shape, the raw header
+    // length is capped (4096 bytes). When attacker payloads exceed the cap
+    // they are dropped to null, collapsing into the no-slots cache key.
+    const keys = new Set<string>();
+    for (let batch = 0; batch < 100; batch++) {
+      // 1000 legitimate tokens per batch easily exceeds the 4 KiB length cap.
+      const tokens = Array.from({ length: 1000 }, (_, i) => `slot:b${batch}_s${i}:/`).join(" ");
+      keys.add(appIsrRscKey("/feed", tokens));
+    }
+    expect(keys.size).toBe(1);
+    expect(keys.values().next().value).toBe("app:/feed:rsc");
+  });
+
+  it("keys intercepted RSC variants by source context", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const fromFeed = appIsrRscKey("/photos/42", "slot:modal:/", undefined, "/feed");
+    const fromGallery = appIsrRscKey("/photos/42", "slot:modal:/", undefined, "/gallery");
+    const direct = appIsrRscKey("/photos/42", "slot:modal:/");
+
+    expect(fromFeed).not.toBe(fromGallery);
+    expect(fromFeed).not.toBe(direct);
+    expect(fromFeed).toMatch(/^app:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
+  });
+
+  it("normalizes source context before keying intercepted RSC variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const encoded = appIsrRscKey("/photos/café", "modal", undefined, "/caf%C3%A9");
+    const decoded = appIsrRscKey("/photos/café", "modal", undefined, "/café");
+    const duplicateSlash = appIsrRscKey("/photos/café", "modal", undefined, "/café//");
+
+    expect(encoded).toBe(decoded);
+    expect(duplicateSlash).toBe(decoded);
+  });
+
+  it("ignores invalid source context before keying intercepted RSC variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const invalidSource = appIsrRscKey("/photos/42", "modal", undefined, "/feed?tab=popular");
+    const direct = appIsrRscKey("/photos/42", "modal");
+
+    expect(invalidSource).toBe(direct);
+  });
+
+  it("keys RSC loading-shell prefetch variants separately from normal navigation variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toBe(
+      "app:/feed:rsc:prefetch-loading-shell",
+    );
+    expect(
+      appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
+    ).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
+  });
+});
+
+describe("normalizeMountedSlotsHeader", () => {
+  it("returns null for missing or blank mounted-slot headers", () => {
+    expect(normalizeMountedSlotsHeader(null)).toBeNull();
+    expect(normalizeMountedSlotsHeader("   \t\n  ")).toBeNull();
+  });
+
+  it("deduplicates and sorts whitespace-separated slot ids", () => {
+    expect(
+      normalizeMountedSlotsHeader(" slot:sidebar:/  slot:modal:/ slot:sidebar:/\tslot:cart:/ "),
+    ).toBe("slot:cart:/ slot:modal:/ slot:sidebar:/");
+  });
+});
+
 // ─── buildPagesCacheValue ───────────────────────────────────────────────
 
 describe("buildPagesCacheValue", () => {
@@ -175,6 +381,95 @@ describe("setRevalidateDuration / getRevalidateDuration", () => {
   });
 });
 
+// ─── Expire ceiling handling ────────────────────────────────────────────
+
+describe("ISR expire ceiling", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("serves stale within expire and retains entries beyond expire for blocking regeneration", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+
+    await isrSet("expire-test", buildPagesCacheValue("<html>cached</html>", {}), 1, [], 3);
+
+    vi.setSystemTime(2_500);
+    const stale = await isrGet("expire-test");
+    expect(stale?.isStale).toBe(true);
+    expect(stale?.value.value?.kind).toBe("PAGES");
+
+    vi.setSystemTime(4_500);
+    const expired = await isrGet("expire-test");
+    expect(expired).toMatchObject({ isStale: true, isExpired: true });
+    expect(expired?.value.value?.kind).toBe("PAGES");
+
+    // Hard expiry is a serving boundary, not deletion. The old value remains
+    // available as regeneration input until the fresh write replaces it.
+    await expect(isrGet("expire-test")).resolves.toMatchObject({
+      isStale: true,
+      isExpired: true,
+    });
+  });
+
+  it("preserves legacy revalidate context while writing cache-control metadata", async () => {
+    let setContext: Record<string, unknown> | undefined;
+    setCacheHandler({
+      async get() {
+        return null;
+      },
+      async set(_key, _data, ctx) {
+        setContext = ctx;
+      },
+      async revalidateTag() {},
+    });
+
+    await isrSet("compat-test", buildPagesCacheValue("<html>cached</html>", {}), 60, ["tag"], 300);
+
+    expect(setContext).toEqual({
+      cacheControl: { revalidate: 60, expire: 300 },
+      revalidate: 60,
+      tags: ["tag"],
+    });
+  });
+
+  it("stores revalidate false without creating a revalidation deadline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+
+    await isrSet("static-test", buildPagesCacheValue("<html>static</html>", {}), false);
+
+    vi.setSystemTime(1_000 + 10 * 31_536_000 * 1000);
+    const cached = await isrGet("static-test");
+    expect(cached?.isStale).toBe(false);
+    expect(cached?.value.cacheControl).toEqual({ revalidate: false });
+  });
+
+  it("retains expired entries surfaced by custom cache handlers", async () => {
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now() - 10_000,
+          cacheState: "expired",
+          value: buildPagesCacheValue("<html>expired</html>", {}),
+        };
+      },
+      async set() {},
+      async revalidateTag() {},
+    });
+
+    await expect(isrGet("expired-handler-entry")).resolves.toMatchObject({
+      isStale: true,
+      isExpired: true,
+      value: {
+        cacheState: "expired",
+        value: { kind: "PAGES", html: "<html>expired</html>" },
+      },
+    });
+  });
+});
+
 // ─── triggerBackgroundRegeneration ───────────────────────────────────────
 
 describe("triggerBackgroundRegeneration", () => {
@@ -236,6 +531,79 @@ describe("triggerBackgroundRegeneration", () => {
     expect(renderFn2).toHaveBeenCalledOnce();
 
     consoleError.mockRestore();
+  });
+
+  it("reports error via onRequestError handler when errorContext is provided", async () => {
+    const handler = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = handler;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const renderFn = vi.fn().mockRejectedValue(new Error("regen failed"));
+      triggerBackgroundRegeneration("regen-report-error", renderFn, {
+        routerKind: "App Router",
+        routePath: "/blog/[slug]",
+        routeType: "render",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(handler).toHaveBeenCalledOnce();
+      const [error, request, context] = handler.mock.calls[0];
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("regen failed");
+      expect(request).toEqual({ path: "regen-report-error", method: "GET", headers: {} });
+      expect(context).toEqual({
+        routerKind: "App Router",
+        routePath: "/blog/[slug]",
+        routeType: "render",
+        revalidateReason: "stale",
+      });
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      consoleError.mockRestore();
+    }
+  });
+
+  it("does NOT call onRequestError handler when errorContext is omitted", async () => {
+    const handler = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = handler;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const renderFn = vi.fn().mockRejectedValue(new Error("regen failed"));
+      triggerBackgroundRegeneration("regen-no-ctx", renderFn);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(consoleError).toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      consoleError.mockRestore();
+    }
+  });
+
+  it("wraps non-Error throw values in Error before reporting", async () => {
+    const handler = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = handler;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const renderFn = vi.fn().mockRejectedValue("string error");
+      triggerBackgroundRegeneration("regen-string-error", renderFn, {
+        routerKind: "Pages Router",
+        routePath: "/about",
+        routeType: "render",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(handler).toHaveBeenCalledOnce();
+      const [error] = handler.mock.calls[0];
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("string error");
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      consoleError.mockRestore();
+    }
   });
 
   it("different keys run independently", async () => {
@@ -327,26 +695,17 @@ describe("triggerBackgroundRegeneration", () => {
 describe("revalidatePath type parameter", () => {
   let handler: MemoryCacheHandler;
 
-  /**
-   * Mirrors `__pageCacheTags` in app-rsc-entry.ts — keep in sync.
-   */
-  function deriveImplicitTags(pathname: string): string[] {
-    const tags = ["_N_T_/layout"];
-    const segments = pathname.split("/");
-    let built = "";
-    for (let i = 1; i < segments.length; i++) {
-      if (segments[i]) {
-        built += "/" + segments[i];
-        tags.push(`_N_T_${built}/layout`);
-      }
-    }
-    tags.push(`_N_T_${built}/page`);
-    return tags;
+  function staticRouteSegments(pathname: string): string[] {
+    return pathname.split("/").filter(Boolean);
   }
 
   /** Helper: store a FETCH cache entry with path + implicit hierarchy tags. */
-  async function seedEntry(path: string, body: string): Promise<void> {
-    const tags = [path, `_N_T_${path}`, ...deriveImplicitTags(path)];
+  async function seedEntry(
+    path: string,
+    body: string,
+    routeSegments = staticRouteSegments(path),
+  ): Promise<void> {
+    const tags = buildPageCacheTags(path, [], routeSegments, "page");
     const value: CachedFetchValue = {
       kind: "FETCH",
       data: { headers: {}, body, url: path },
@@ -373,7 +732,7 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/dashboard/profile")).not.toBeNull();
     expect(await handler.get("entry:/about")).not.toBeNull();
 
-    await revalidatePath("/dashboard", "layout");
+    await Promise.resolve(revalidatePath("/dashboard", "layout"));
 
     // All three dashboard entries should be invalidated
     expect(await handler.get("entry:/dashboard")).toBeNull();
@@ -388,7 +747,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about", "about-page");
     await seedEntry("/about/team", "about-team");
 
-    await revalidatePath("/about", "page");
+    await Promise.resolve(revalidatePath("/about", "page"));
 
     // Only /about should be invalidated
     expect(await handler.get("entry:/about")).toBeNull();
@@ -400,12 +759,27 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about", "about-page");
     await seedEntry("/about/team", "about-team");
 
-    await revalidatePath("/about");
+    await Promise.resolve(revalidatePath("/about"));
 
     // Only /about should be invalidated
     expect(await handler.get("entry:/about")).toBeNull();
     // /about/team should remain
     expect(await handler.get("entry:/about/team")).not.toBeNull();
+  });
+
+  it("uses route pattern tags for typed dynamic route invalidation", async () => {
+    await seedEntry("/blog/hello", "hello", ["blog", "[slug]"]);
+
+    await Promise.resolve(revalidatePath("/blog/hello", "layout"));
+    expect(await handler.get("entry:/blog/hello")).not.toBeNull();
+
+    await Promise.resolve(revalidatePath("/blog/[slug]", "layout"));
+    expect(await handler.get("entry:/blog/hello")).toBeNull();
+
+    await seedEntry("/blog/hello", "hello", ["blog", "[slug]"]);
+
+    await Promise.resolve(revalidatePath("/blog/hello"));
+    expect(await handler.get("entry:/blog/hello")).toBeNull();
   });
 
   it("handles deeply nested children under a layout prefix", async () => {
@@ -414,7 +788,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/app/blog/2024", "blog-2024");
     await seedEntry("/app/blog/2024/01/post", "blog-post");
 
-    await revalidatePath("/app", "layout");
+    await Promise.resolve(revalidatePath("/app", "layout"));
 
     // All entries under /app should be invalidated
     expect(await handler.get("entry:/app")).toBeNull();
@@ -431,7 +805,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/dashboard-admin", "dashboard-admin");
     await seedEntry("/dashboard/settings", "settings");
 
-    await revalidatePath("/dashboard", "layout");
+    await Promise.resolve(revalidatePath("/dashboard", "layout"));
 
     expect(await handler.get("entry:/dashboard")).toBeNull();
     expect(await handler.get("entry:/dashboard/settings")).toBeNull();
@@ -445,7 +819,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/dashboard", "dashboard");
     await seedEntry("/dashboard/settings", "settings");
 
-    await revalidatePath("/", "layout");
+    await Promise.resolve(revalidatePath("/", "layout"));
 
     // Root layout covers all routes
     expect(await handler.get("entry:/")).toBeNull();
@@ -458,7 +832,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/", "home");
     await seedEntry("/about", "about");
 
-    await revalidatePath("/", "page");
+    await Promise.resolve(revalidatePath("/", "page"));
 
     // Root page should be invalidated
     expect(await handler.get("entry:/")).toBeNull();
@@ -472,7 +846,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about", "about-page");
 
     // revalidatePath("/dashboard/", "layout") must behave like ("/dashboard", "layout")
-    await revalidatePath("/dashboard/", "layout");
+    await Promise.resolve(revalidatePath("/dashboard/", "layout"));
 
     expect(await handler.get("entry:/dashboard")).toBeNull();
     expect(await handler.get("entry:/dashboard/settings")).toBeNull();
@@ -499,7 +873,7 @@ describe("revalidatePath type parameter", () => {
     await handler.set("entry:page-only", pageOnlyValue, { tags: ["_N_T_/about/page"] });
     await handler.set("entry:bare-path", barePathValue, { tags: ["/about", "_N_T_/about"] });
 
-    await revalidatePath("/about", "page");
+    await Promise.resolve(revalidatePath("/about", "page"));
 
     // "page" type targets the /page leaf tag only
     expect(await handler.get("entry:page-only")).toBeNull();
@@ -512,7 +886,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about/team", "about-team");
 
     // revalidatePath("/about/", "page") must be equivalent to ("/about", "page")
-    await revalidatePath("/about/", "page");
+    await Promise.resolve(revalidatePath("/about/", "page"));
 
     expect(await handler.get("entry:/about")).toBeNull();
     // /about/team should remain — only the exact path was invalidated

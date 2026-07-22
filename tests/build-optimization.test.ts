@@ -9,18 +9,52 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import { createBuilder, parseAst } from "vite";
+import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
-  clientManualChunks,
-  clientTreeshakeConfig,
+  hasExportAllCandidate as _hasExportAllCandidate,
+  hasServerExportCandidate as _hasServerExportCandidate,
+  stripServerExports as _stripServerExportsImpl,
+  validatePageExports as _validatePageExports,
+} from "../packages/vinext/src/plugins/strip-server-exports.js";
+import {
+  createClientManualChunks,
+  getClientTreeshakeConfig,
+  createRscFrameworkChunkOutputConfig,
+  RSC_FRAMEWORK_CHUNK_TEST,
+  isRscFrameworkModule,
+} from "../packages/vinext/src/build/client-build-config.js";
+import {
+  computeDynamicImportPreloads,
   computeLazyChunks,
-  _augmentSsrManifestFromBundle,
-  _stripServerExports,
-  _asyncHooksStubPlugin,
-} from "../packages/vinext/src/index.js";
+} from "../packages/vinext/src/utils/lazy-chunks.js";
+import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
+import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
+import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
+import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
+import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
+import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+import { aliasEntriesToRecord } from "./helpers.js";
+
+// `stripServerExports` returns `{ code, map }`; these tests assert on the
+// transformed source, so unwrap to the code string (null is preserved).
+const _stripServerExports = (code: string): string | null =>
+  _stripServerExportsImpl(code)?.code ?? null;
+
+// Create a clientManualChunks instance with a test shims directory.
+// The exact path doesn't matter for the node_modules-focused tests;
+// shims-chunk tests would need a real path.
+const clientManualChunks = createClientManualChunks("/vinext/shims/");
+const appClientManualChunks = createClientManualChunks("/vinext/shims/", true);
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't
 // pollute each other — this affects optimizeDeps, treeshake, and NODE_ENV tests.
+//
+// We write through Reflect rather than direct assignment because Next.js's
+// global.d.ts augments NodeJS.ProcessEnv to make NODE_ENV readonly at the type
+// level. Node itself has no such restriction at runtime — the production code
+// under test relies on being able to set NODE_ENV directly.
 let originalNodeEnv: string | undefined;
 
 beforeEach(() => {
@@ -29,34 +63,19 @@ beforeEach(() => {
 
 afterEach(() => {
   if (originalNodeEnv === undefined) {
-    delete process.env.NODE_ENV;
+    Reflect.deleteProperty(process.env, "NODE_ENV");
   } else {
-    process.env.NODE_ENV = originalNodeEnv;
+    Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
   }
 });
 
 function getBuildBundlerOptions(result: any) {
-  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+  return result.build?.rolldownOptions;
 }
 
 function getEnvBuildBundlerOptions(env: any) {
-  return env?.build?.rolldownOptions ?? env?.build?.rollupOptions;
+  return env?.build?.rolldownOptions;
 }
-
-// ─── clientTreeshakeConfig ────────────────────────────────────────────────────
-
-describe("clientTreeshakeConfig", () => {
-  it("uses 'recommended' preset for safe defaults", () => {
-    expect(clientTreeshakeConfig.preset).toBe("recommended");
-  });
-
-  it("sets moduleSideEffects to 'no-external' for aggressive vendor DCE", () => {
-    // 'no-external' marks node_modules as side-effect-free (enabling DCE for
-    // barrel-heavy libraries) while preserving side effects for local modules
-    // (CSS imports, polyfills).
-    expect(clientTreeshakeConfig.moduleSideEffects).toBe("no-external");
-  });
-});
 
 // ─── clientManualChunks ───────────────────────────────────────────────────────
 
@@ -69,11 +88,71 @@ describe("clientManualChunks", () => {
     expect(clientManualChunks("/node_modules/react-dom/client.js")).toBe("framework");
   });
 
+  it("splits the react-dom server renderer into its own 'react-dom-server' chunk", () => {
+    // Next.js supports these APIs in client components:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
+    // Their Fizz implementation must not ride in the always-loaded framework
+    // chunk when only some client routes import it.
+    expect(clientManualChunks("/node_modules/react-dom/server.js")).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/server.browser.js")).toBe(
+      "react-dom-server",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/server.edge.js")).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/static.browser.js")).toBe(
+      "react-dom-server",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/static.edge.js")).toBe("react-dom-server");
+    expect(
+      clientManualChunks("/node_modules/react-dom/cjs/react-dom-server.browser.production.js"),
+    ).toBe("react-dom-server");
+    expect(
+      clientManualChunks(
+        "/node_modules/react-dom/cjs/react-dom-server-legacy.browser.production.js",
+      ),
+    ).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/server.browser.js?commonjs-entry")).toBe(
+      "react-dom-server",
+    );
+  });
+
+  it("keeps react-dom client + shared internals + server stub in 'framework'", () => {
+    expect(clientManualChunks("/node_modules/react-dom/index.js")).toBe("framework");
+    expect(clientManualChunks("/node_modules/react-dom/cjs/react-dom-client.production.js")).toBe(
+      "framework",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/cjs/react-dom.production.js")).toBe(
+      "framework",
+    );
+    // The client-side stub that throws if server APIs are called — stays with the client.
+    expect(clientManualChunks("/node_modules/react-dom/server-rendering-stub.js")).toBe(
+      "framework",
+    );
+  });
+
+  // Bundler ids carry backslashes only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")(
+    "classifies Windows-style backslash ids for the react-dom server split",
+    () => {
+      expect(clientManualChunks("C:\\proj\\node_modules\\react-dom\\server.browser.js")).toBe(
+        "react-dom-server",
+      );
+      expect(
+        clientManualChunks(
+          "C:\\proj\\node_modules\\react-dom\\cjs\\react-dom-server.browser.production.js",
+        ),
+      ).toBe("react-dom-server");
+      expect(clientManualChunks("C:\\proj\\node_modules\\react-dom\\client.js")).toBe("framework");
+      expect(
+        clientManualChunks("C:\\proj\\node_modules\\react-dom\\server-rendering-stub.js"),
+      ).toBe("framework");
+    },
+  );
+
   it("groups scheduler into 'framework' chunk", () => {
     expect(clientManualChunks("/node_modules/scheduler/index.js")).toBe("framework");
   });
 
-  it("returns undefined for other node_modules (Rollup default splitting)", () => {
+  it("returns undefined for other node_modules (default graph splitting)", () => {
     expect(clientManualChunks("/node_modules/mermaid/dist/mermaid.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/lodash-es/lodash.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/@mui/material/index.js")).toBeUndefined();
@@ -83,6 +162,26 @@ describe("clientManualChunks", () => {
   it("returns undefined for user source files", () => {
     expect(clientManualChunks("/src/components/App.tsx")).toBeUndefined();
     expect(clientManualChunks("/src/pages/index.tsx")).toBeUndefined();
+  });
+
+  it("keeps shared vinext shims in the runtime chunk", () => {
+    expect(clientManualChunks("/vinext/shims/link.js")).toBe("vinext");
+    expect(clientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
+    expect(appClientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
+  });
+
+  it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
+    expect(appClientManualChunks("/vinext/shims/compat-router.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(
+      appClientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.js"),
+    ).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/legacy-image.tsx")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/layout-segment-context.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/web-vitals.ts")).toBeUndefined();
   });
 
   it("handles pnpm-style nested node_modules paths", () => {
@@ -99,6 +198,16 @@ describe("clientManualChunks", () => {
 // ─── optimizeDeps.exclude — prevents esbuild scanning virtual module imports ─
 
 describe("optimizeDeps.exclude for vinext", () => {
+  const rscClientShimExcludes = [
+    "vinext/shims/error-boundary",
+    "vinext/shims/form",
+    "vinext/shims/layout-segment-context",
+    "vinext/shims/link",
+    "vinext/shims/script",
+    "vinext/shims/slot",
+    "vinext/shims/offline",
+  ];
+
   it("excludes vinext at top level for Pages Router builds", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
@@ -130,7 +239,9 @@ describe("optimizeDeps.exclude for vinext", () => {
         plugins: [],
         optimizeDeps: { exclude: ["@lingui/macro"] },
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
@@ -138,6 +249,11 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
+      expect(result.environments.ssr.resolve.external).toContain("typescript");
+      expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
+      expect(
+        aliasEntriesToRecord(result.resolve.alias)["vinext/server/pages-client-assets"],
+      ).toMatch(/server\/pages-client-assets\.ts$/);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -185,7 +301,9 @@ describe("optimizeDeps.exclude for vinext", () => {
           include: ["some-lib"],
         },
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // All environments should contain the incoming excludes
       for (const envName of ["rsc", "ssr", "client"]) {
@@ -244,7 +362,9 @@ describe("optimizeDeps.exclude for vinext", () => {
 
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // Top-level
       expect(result.optimizeDeps?.exclude).toContain("vinext");
@@ -252,6 +372,417 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.rsc.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
+      expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"false"');
+      for (const shimExclude of rscClientShimExcludes) {
+        expect(result.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.client.optimizeDeps?.exclude).toContain(shimExclude);
+      }
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("does not externalize the built App Router request handler from a source checkout", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const mainPlugin = vinext().find(
+      (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-rsc-handler-source-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    try {
+      const devConfig = await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [] },
+        { command: "serve" },
+      );
+      expect(devConfig.environments.rsc.resolve.external).not.toContain(
+        "vinext/server/app-rsc-handler",
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  // Regression for #1103: when the user sets `ssr.external: true`, plugin-rsc's
+  // crawlFrameworkPkgs adds React to environments.ssr.optimizeDeps.include and
+  // Vite pre-bundles a second React copy into deps_ssr/. Externalized callers
+  // (vinext's runtime) and SSR-transformed 'use client' modules then end up
+  // with two distinct React module records, leaving React.H null and crashing
+  // every useContext / useSyncExternalStore call. The fix excludes React from
+  // the SSR optimizer so deps_ssr/ stays React-free.
+  const ssrExternalReactEntries = [
+    "react",
+    "react-dom",
+    "react-dom/server.edge",
+    "react-dom/static.edge",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+    "react-server-dom-webpack/client.edge",
+  ];
+
+  async function setupAppRouterConfigTest(prefix: string) {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const mainPlugin = vinext().find(
+      (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    await fsp.mkdir(path.join(root, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(root, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(root, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(root, "next.config.mjs"), `export default {};`);
+
+    return {
+      config(userConfig: Record<string, unknown> = {}, command: "serve" | "build" = "serve") {
+        return (mainPlugin as any).config(
+          { root, build: {}, plugins: [], ...userConfig },
+          { command },
+        );
+      },
+      cleanup: () => fsp.rm(root, { recursive: true, force: true }),
+    };
+  }
+
+  it("excludes React from ssr optimizeDeps when ssr.external: true (App Router)", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-true-");
+
+    try {
+      const result = await fixture.config({ ssr: { external: true } });
+
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(ssrExclude, `ssr exclude should contain ${entry}`).toContain(entry);
+      }
+      // RSC env still needs the react-server condition pre-bundled, so React
+      // must NOT be excluded there.
+      const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
+      expect(rscExclude).not.toContain("react");
+      expect(rscExclude).not.toContain("react-dom");
+      // Top-level ssr.noExternal: true also needs to be skipped — Vite
+      // applies top-level ssr.* as defaults for environments.ssr.*, so
+      // setting noExternal: true here would force-bundle React despite
+      // external: true and recreate the duplicate-React bug.
+      expect(result.ssr?.noExternal).toBeUndefined();
+      expect(result.ssr?.external).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("externalizes React from the SSR transform graph only in default Node dev", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-default-");
+
+    try {
+      const devResult = await fixture.config();
+
+      const devExternal = devResult.environments.ssr.resolve.external ?? [];
+      const devExclude = devResult.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(devExternal, `dev SSR external should contain ${entry}`).toContain(entry);
+        expect(devExclude, `dev SSR exclude should contain ${entry}`).toContain(entry);
+      }
+
+      const buildResult = await fixture.config({}, "build");
+      const buildExternal = buildResult.environments.ssr.resolve.external ?? [];
+      const buildExclude = buildResult.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(buildExternal, `build SSR external should NOT contain ${entry}`).not.toContain(
+          entry,
+        );
+        expect(buildExclude, `build SSR exclude should NOT contain ${entry}`).not.toContain(entry);
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("does not externalize React from adapter-managed SSR environments", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-ssr-react-adapter-");
+
+    try {
+      const result = await fixture.config({
+        plugins: [{ name: "vite-plugin-cloudflare" }],
+      });
+
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(ssrExclude, `adapter SSR exclude should NOT contain ${entry}`).not.toContain(entry);
+      }
+      expect(result.environments.ssr.resolve).toBeUndefined();
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("preserves user SSR externals while externalizing React in Node dev", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-array-");
+
+    try {
+      const result = await fixture.config({ ssr: { external: ["pg"] } });
+
+      const ssrExternal = result.environments.ssr.resolve.external ?? [];
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      expect(ssrExternal).toContain("pg");
+      for (const entry of ssrExternalReactEntries) {
+        expect(ssrExternal, `ssr external should contain ${entry}`).toContain(entry);
+        expect(ssrExclude, `ssr exclude should contain ${entry}`).toContain(entry);
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  // Regression: `ipaddr.js` is imported by the next/image client shim for
+  // server-side private-IP validation. It's already in ssr.resolve.external,
+  // but the SSR dep optimizer would still pre-bundle it on first request,
+  // producing a `(ssr) ✨ new dependencies optimized: ipaddr.js` log and the
+  // accompanying full reload. Excluding it from the SSR optimizer avoids the
+  // reload; runtime resolution still works via resolve.external (Node) or the
+  // worker bundle (Cloudflare/Nitro).
+  it("excludes ipaddr.js from the SSR optimizer (App Router)", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-ipaddr-app-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      expect(ssrExclude).toContain("ipaddr.js");
+
+      // The client environment must NOT exclude ipaddr.js — next/image is a
+      // 'use client' component and the browser optimizer still needs to
+      // pre-bundle the CJS module into ESM for client-side validation.
+      const clientExclude = result.environments.client.optimizeDeps?.exclude ?? [];
+      expect(clientExclude).not.toContain("ipaddr.js");
+
+      // RSC env doesn't render the client image shim, so we leave its
+      // optimizer alone — ipaddr.js shouldn't appear in either direction.
+      const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
+      expect(rscExclude).not.toContain("ipaddr.js");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("excludes ipaddr.js from the SSR optimizer (Pages Router on Node)", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-optdeps-ipaddr-pages-"),
+    );
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const ssrExclude = result.environments?.ssr?.optimizeDeps?.exclude ?? [];
+      expect(ssrExclude).toContain("ipaddr.js");
+      expect(
+        result.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
+          "process.env.NODE_ENV"
+        ],
+      ).toBe(JSON.stringify("development"));
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("seeds Cloudflare Pages Router worker optimizer entries during dev", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configEnvironment === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optdeps-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const workerEnvConfig = {
+        optimizeDeps: {
+          entries: ["already-present.ts"],
+          include: ["already-included"],
+          exclude: ["already-excluded"],
+        },
+      };
+      (mainPlugin as any).configEnvironment("worker", workerEnvConfig);
+
+      expect(workerEnvConfig.optimizeDeps.entries).toContain("already-present.ts");
+      expect(workerEnvConfig.optimizeDeps.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("already-included");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server.edge");
+      expect(workerEnvConfig.optimizeDeps.include).toContain(
+        "use-sync-external-store/with-selector",
+      );
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/pages-router-entry");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optwarn-"));
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const warned: string[] = [];
+      const logger = {
+        hasWarned: false,
+        info() {},
+        warn(msg: string) {
+          warned.push(msg);
+        },
+        warnOnce(msg: string) {
+          warned.push(msg);
+        },
+        error() {},
+        clearScreen() {},
+        hasErrorLogged() {
+          return false;
+        },
+      };
+
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: {},
+        logger,
+        plugins: [],
+      });
+
+      logger.warn(
+        "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
+      );
+      logger.warn(
+        "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
+      );
+      logger.warn(
+        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+      );
+
+      expect(warned).toEqual([
+        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+      ]);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -294,7 +825,10 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "production",
+      });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
     } finally {
@@ -321,9 +855,28 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(mockConfig, { command: "serve", mode: "development" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "serve",
+        mode: "development",
+      });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("development"));
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("is injected as production for preview", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, {
+        command: "serve",
+        mode: "production",
+        isPreview: true,
+      });
+
+      expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -338,10 +891,21 @@ describe("process.env.NODE_ENV define", () => {
         plugins: [],
         define: { "process.env.NODE_ENV": JSON.stringify("staging") },
       };
-      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "production",
+      });
 
       // Should NOT override the user's explicit define
       expect(result.define?.["process.env.NODE_ENV"]).toBeUndefined();
+      expect(
+        result.optimizeDeps?.rolldownOptions?.transform?.define?.["process.env.NODE_ENV"],
+      ).toBe(JSON.stringify("staging"));
+      expect(
+        result.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
+          "process.env.NODE_ENV"
+        ],
+      ).toBe(JSON.stringify("staging"));
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -383,11 +947,12 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // treeshake should be set on bundler options for non-SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toEqual({
-        preset: "recommended",
         moduleSideEffects: "no-external",
       });
     } finally {
@@ -425,10 +990,13 @@ describe("treeshake config integration", () => {
         build: { ssr: "virtual:vinext-server-entry" },
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // treeshake should NOT be set for SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
+      expect(result.ssr.external).toContain("typescript");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -444,7 +1012,12 @@ describe("treeshake config integration", () => {
     const mainPlugin = plugins.find(
       (p: any) => p.name === "vinext:config" && typeof p.config === "function",
     );
+    const clientAssetsDefaultsPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:css-url-assets-defaults" && typeof p.configEnvironment === "function",
+    );
     expect(mainPlugin).toBeDefined();
+    expect(clientAssetsDefaultsPlugin).toBeDefined();
 
     const os = await import("node:os");
     const fsp = await import("node:fs/promises");
@@ -472,24 +1045,124 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // Global bundler options should NOT have treeshake (would leak into RSC/SSR)
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
+      expect(result.build.assetsInlineLimit).toBeUndefined();
 
       // Client environment should have treeshake
       expect(getEnvBuildBundlerOptions(result.environments.client).treeshake).toEqual({
-        preset: "recommended",
         moduleSideEffects: "no-external",
       });
+      expect(result.environments.client.build.assetsInlineLimit).toBe(0);
 
       // RSC and SSR environments should NOT have treeshake
       expect(getEnvBuildBundlerOptions(result.environments.rsc)?.treeshake).toBeUndefined();
       expect(getEnvBuildBundlerOptions(result.environments.ssr)?.treeshake).toBeUndefined();
+      expect(result.environments.rsc.build.assetsInlineLimit).toBeUndefined();
+      expect(result.environments.ssr.build.assetsInlineLimit).toBeUndefined();
+
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment("client", {}, { command: "build" }),
+      ).toEqual({
+        build: { assetsInlineLimit: 0 },
+      });
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
+      ).toEqual({
+        build: {
+          rolldownOptions: {
+            output: {
+              assetFileNames: expect.any(Function),
+            },
+          },
+        },
+      });
+      const customAssetFileNames = "custom/[name][extname]";
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: { output: { assetFileNames: customAssetFileNames } },
+            },
+          },
+          { command: "build" },
+        ),
+      ).toBeNull();
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: {
+                output: [{ entryFileNames: "first.js" }, { chunkFileNames: "second.js" }],
+              },
+            },
+          },
+          { command: "build" },
+        ),
+      ).toBeNull();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("resolves CSS URL asset inline defaults through Vite's builder lifecycle", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-css-assets-env-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    try {
+      const defaultBuilder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+
+      expect(defaultBuilder.environments.client.config.build.assetsInlineLimit).toBe(0);
+      expect(defaultBuilder.environments.rsc.config.build.assetsInlineLimit).not.toBe(0);
+      expect(defaultBuilder.environments.ssr.config.build.assetsInlineLimit).not.toBe(0);
+
+      const userAssetsInlineLimit = 1234;
+      const userBuilder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+        build: {
+          assetsInlineLimit: userAssetsInlineLimit,
+        },
+      });
+
+      expect(userBuilder.environments.client.config.build.assetsInlineLimit).toBe(
+        userAssetsInlineLimit,
+      );
+      expect(userBuilder.environments.rsc.config.build.assetsInlineLimit).toBe(
+        userAssetsInlineLimit,
+      );
+      expect(userBuilder.environments.ssr.config.build.assetsInlineLimit).toBe(
+        userAssetsInlineLimit,
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30_000);
 
   it("client output config includes minimum chunk sizing", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
@@ -521,12 +1194,16 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // For standalone client builds (non-SSR, non-multi-env),
       // output config should include the min chunk size setting.
       const output = getBuildBundlerOptions(result).output;
       expect(output).toBeDefined();
+      expect(output.entryFileNames).toBe("_next/static/chunks/[name]-[hash].js");
+      expect(output.chunkFileNames).toBe("_next/static/chunks/[name]-[hash].js");
       if (output.codeSplitting) {
         expect(output.codeSplitting.minSize).toBe(10_000);
       } else {
@@ -537,12 +1214,11 @@ describe("treeshake config integration", () => {
     }
   }, 15000);
 
-  it("App Router client env gets manifest: true when Cloudflare plugin is present", async () => {
-    // When deploying to Cloudflare Workers, the client environment must produce
-    // a build manifest (manifest.json) so the vinext:cloudflare-build plugin can
-    // read dynamicImports and compute lazy chunks. Without this, all chunks get
-    // modulepreloaded on every page, defeating code-splitting for React.lazy()
-    // and next/dynamic boundaries.
+  it("App Router client env gets manifest: true for dynamic preload metadata", async () => {
+    // App Router production rendering uses Vite's client manifest to map
+    // next/dynamic module IDs to the chunk files that need rendered preload
+    // hints. Cloudflare builds also read it during closeBundle to inject those
+    // globals into the Worker entry.
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
 
@@ -580,14 +1256,18 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [fakeCloudflarePlugin],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // Client environment should have manifest: true for lazy chunk detection
+      // and rendered next/dynamic preload metadata.
       expect(result.environments).toBeDefined();
       expect(result.environments.client).toBeDefined();
       expect(result.environments.client.build.manifest).toBe(true);
 
-      // Without Cloudflare plugin, manifest should NOT be set (standard App Router)
+      // Node production App Router needs the same manifest at startProdServer()
+      // time, so this is no longer Cloudflare-only.
       const resultNoCf = await (mainPlugin as any).config(
         {
           root: tmpDir,
@@ -597,7 +1277,61 @@ describe("treeshake config integration", () => {
         { command: "build" },
       );
 
-      expect(resultNoCf.environments.client.build.manifest).toBeUndefined();
+      expect(resultNoCf.environments.client.build.manifest).toBe(true);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("App Router client env also emits the Pages client entry when pages/ exists", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-hybrid-entry-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "legacy.tsx"),
+      `export default function Legacy() { return <h1>Legacy</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const result = await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [],
+        },
+        { command: "build" },
+      );
+
+      expect(result.environments.client.build.manifest).toBe(true);
+      expect(result.environments.client.build.ssrManifest).toBe(true);
+      expect(getEnvBuildBundlerOptions(result.environments.client).input).toEqual({
+        index: "virtual:vinext-app-browser-entry",
+        "vinext-client-entry": "virtual:vinext-client-entry",
+      });
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -874,6 +1608,515 @@ describe("computeLazyChunks", () => {
   });
 });
 
+describe("computeDynamicImportPreloads", () => {
+  it("maps each dynamic import to its own JS and static dependency files", () => {
+    const manifest = {
+      "virtual:vinext-app-browser-entry": {
+        file: "_next/static/app-entry.js",
+        isEntry: true,
+        imports: ["node_modules/react/index.js"],
+        dynamicImports: ["app/dynamic/widget.tsx"],
+      },
+      "node_modules/react/index.js": {
+        file: "_next/static/framework.js",
+      },
+      "app/dynamic/widget.tsx": {
+        file: "_next/static/widget.js",
+        isDynamicEntry: true,
+        imports: ["app/dynamic/widget-helper.ts"],
+        css: ["_next/static/widget.css"],
+      },
+      "app/dynamic/widget-helper.ts": {
+        file: "_next/static/widget-helper.js",
+      },
+      "app/dynamic/unrelated.tsx": {
+        file: "_next/static/unrelated.js",
+        isDynamicEntry: true,
+      },
+    };
+
+    expect(computeDynamicImportPreloads(manifest)).toEqual({
+      "app/dynamic/widget.tsx": [
+        "_next/static/widget.js",
+        "_next/static/widget.css",
+        "_next/static/widget-helper.js",
+      ],
+    });
+  });
+
+  it("does not pull nested dynamic imports into the parent boundary", () => {
+    const manifest = {
+      "app/page.tsx": {
+        file: "_next/static/page.js",
+        isEntry: true,
+        dynamicImports: ["app/dynamic/chart.tsx"],
+      },
+      "app/dynamic/chart.tsx": {
+        file: "_next/static/chart.js",
+        isDynamicEntry: true,
+        dynamicImports: ["app/dynamic/heavy-vendor.ts"],
+      },
+      "app/dynamic/heavy-vendor.ts": {
+        file: "_next/static/heavy-vendor.js",
+        isDynamicEntry: true,
+      },
+    };
+
+    expect(computeDynamicImportPreloads(manifest)).toEqual({
+      "app/dynamic/chart.tsx": ["_next/static/chart.js"],
+      "app/dynamic/heavy-vendor.ts": ["_next/static/heavy-vendor.js"],
+    });
+  });
+});
+
+// Returns the AST node-type of each argument of the FIRST `dynamic(...)` call in
+// `code`. Used to prove the loader is preserved as argument 0 (not collapsed
+// into a SequenceExpression) after the options object is injected.
+function firstDynamicCallArgTypes(code: string): (string | undefined)[] {
+  let call: { arguments?: { type?: string }[] } | undefined;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    const n = node as Record<string, unknown>;
+    const callee = n.callee as Record<string, unknown> | undefined;
+    if (n.type === "CallExpression" && callee?.type === "Identifier" && callee.name === "dynamic") {
+      call ??= n as { arguments?: { type?: string }[] };
+    }
+    for (const value of Object.values(n)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === "object") visit(value);
+    }
+  };
+  visit(parseAst(code));
+  return (call?.arguments ?? []).map((a) => a?.type);
+}
+
+describe("next/dynamic preload metadata transform", () => {
+  const root = path.resolve("/repo");
+  const importer = path.join(root, "app/page.tsx");
+  const resolveDynamicImport = async (specifier: string) =>
+    specifier === "./dynamic-widget"
+      ? path.join(root, "app/dynamic-widget.tsx")
+      : specifier === "./named"
+        ? path.join(root, "app/named.tsx")
+        : specifier === "./ignored"
+          ? path.join(root, "app/ignored.tsx")
+          : null;
+
+  it("adds loadableGenerated modules to dynamic loader calls", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic(() => import("./dynamic-widget"), { loading: Loading });`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+  });
+
+  it("preserves existing explicit loadableGenerated metadata", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["custom"] } });`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("supports the object loader form", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic({ loader: () => import("./named"), ssr: true });`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/named.tsx"] }`);
+  });
+
+  it("does not transform a function parameter that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `function makeThing(dynamic) {`,
+      `  return dynamic(() => import("./dynamic-widget"));`,
+      `}`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not transform an arrow parameter that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const makeThing = (dynamic) => dynamic(() => import("./dynamic-widget"));`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not transform a block binding that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `{`,
+      `  const dynamic = customFactory;`,
+      `  dynamic(() => import("./dynamic-widget"));`,
+      `}`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not transform a switch case binding that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `switch (kind) {`,
+      `  case "x":`,
+      `    const dynamic = customFactory;`,
+      `    dynamic(() => import("./dynamic-widget"));`,
+      `}`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not transform inside a named class expression that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Component = class dynamic {`,
+      `  static Widget = dynamic(() => import("./dynamic-widget"));`,
+      `};`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("transforms renamed next/dynamic imports", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import loadDynamic from "next/dynamic";`,
+        `const Widget = loadDynamic(() => import("./dynamic-widget"));`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+  });
+
+  it("only records the object-form loader import", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic({`,
+        `  loader: () => import("./dynamic-widget"),`,
+        `  debugOnly: () => import("./ignored"),`,
+        `});`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).not.toContain("app/ignored.tsx");
+  });
+
+  it("transforms dynamic imports with whitespace between import and paren", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic(() => import ("./dynamic_widget"), { loading: Loading });`,
+      ].join("\n"),
+      importer,
+      root,
+      async (specifier) =>
+        specifier === "./dynamic_widget" ? path.join(root, "app/dynamic_widget.tsx") : null,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic_widget.tsx"] }`);
+  });
+
+  it("transforms generic next/dynamic calls in TSX-shaped source after type stripping", async () => {
+    // Vite's built-in TS transform strips type annotations and JSX before
+    // the transform hook runs, so dynamic<Props>(args) becomes dynamic(args)
+    // and { loading: () => <div /> } becomes { loading: () => ... }.
+    // This test verifies the post-strip JS passes through parseAst correctly.
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic(`,
+        `  () => import("./dynamic-widget"),`,
+        `  { loading: () => null },`,
+        `);`,
+      ].join("\n"),
+      importer,
+      root,
+      async (specifier) =>
+        specifier === "./dynamic-widget" ? path.join(root, "app/dynamic-widget.tsx") : null,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+  });
+
+  it("preserves existing loadableGenerated metadata in object-form dynamic options", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic({`,
+      `  loader: () => import("./dynamic-widget"),`,
+      `  loadableGenerated: { modules: ["custom"] },`,
+      `});`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("injects metadata into nested dynamic() calls without clobbering each other", async () => {
+    // Guards the MagicString disjoint-region invariant: the inner call edits a
+    // region inside the outer call's options object; both must land intact.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Outer = dynamic(() => import("./dynamic-widget"), {`,
+      `  loading: dynamic(() => import("./named")),`,
+      `});`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/named.tsx"] }`);
+    // The output must still parse (disjoint edits produced valid JS).
+    expect(() => parseAst(result!.code)).not.toThrow();
+  });
+
+  it("throws when a dynamic() call has more than 2 arguments (Next.js parity)", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic(() => import("./dynamic-widget"), {}, "extra");`,
+    ].join("\n");
+
+    await expect(
+      _transformNextDynamicPreloadMetadata(code, importer, root, resolveDynamicImport),
+    ).rejects.toThrow(/only accepts 2 arguments/);
+  });
+
+  it("preserves a comment containing a comma between the loader and close paren", async () => {
+    // Regression: the previous substring-`,` scan overwrote this region and ate
+    // the comment. The comment-aware trailing-comma check now leaves it intact.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic(() => import("./dynamic-widget") /* trailing , comment */);`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(`/* trailing , comment */`);
+    expect(() => parseAst(result!.code)).not.toThrow();
+  });
+
+  it("does not corrupt a parenthesized loader into a sequence expression", async () => {
+    // Regression guard: oxc reports an arrow's `end` BEFORE a wrapping paren, so
+    // inserting the options at firstArg.end lands inside the parens and collapses
+    // the loader into a sequence expression (dropping it). Insertion must happen
+    // at the call's closing paren instead.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic((() => import("./dynamic-widget")));`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+
+    // The dynamic() call must still receive TWO arguments and the first must be
+    // the loader (an arrow), not a SequenceExpression.
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ArrowFunctionExpression",
+      "ObjectExpression",
+    ]);
+  });
+
+  it("supports the bare-promise loader form dynamic(import(...))", async () => {
+    // The only shape that drives an ImportExpression (not an arrow/object) into
+    // the close-paren insertion path. The loader must stay arg 0.
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic(import("./dynamic-widget"));`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ImportExpression",
+      "ObjectExpression",
+    ]);
+  });
+
+  it("supports a parenthesized bare-promise loader dynamic((import(...)))", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic((import("./dynamic-widget")));`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ImportExpression",
+      "ObjectExpression",
+    ]);
+  });
+
+  it("does not emit a double comma when the loader already has a trailing comma", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic(() => import("./dynamic-widget"),);`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    // Exact output isolates the comment-aware separator choice: a naive
+    // always-`", "` separator would emit `…,)`->`…, { … },)` (double comma); the
+    // pre-existing trailing comma must instead be consumed as the separator.
+    expect(result?.code).toBe(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["app/dynamic-widget.tsx"] } });`,
+      ].join("\n"),
+    );
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ArrowFunctionExpression",
+      "ObjectExpression",
+    ]);
+  });
+
+  it("does not throw on >2 args when the dynamic binding is shadowed", async () => {
+    // The >2-argument throw must apply ONLY to the real next/dynamic import, not
+    // a shadowed local binding of the same name.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `function make(dynamic) { return dynamic(a, b, c); }`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("normalises a symlinked resolved path to the real root-relative manifest key", async () => {
+    // pnpm/Cloudflare resolve modules through symlinks; the resolved id may not
+    // share the (possibly symlinked) root prefix. Without realpath normalisation
+    // the module is dropped and the preload silently disappears.
+    const realRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-real-"));
+    const linkParent = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-link-"));
+    const linkRoot = path.join(linkParent, "root");
+    try {
+      await fsp.mkdir(path.join(realRoot, "app"), { recursive: true });
+      await fsp.writeFile(path.join(realRoot, "app", "widget.tsx"), "export default () => null;");
+      await fsp.symlink(realRoot, linkRoot, "dir");
+
+      const code = [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic(() => import("./app/widget"));`,
+      ].join("\n");
+
+      // root = SYMLINK path; resolver returns the REAL path (the mismatch case).
+      const result = await _transformNextDynamicPreloadMetadata(
+        code,
+        path.join(linkRoot, "page.tsx"),
+        linkRoot,
+        async () => path.join(realRoot, "app", "widget.tsx"),
+      );
+
+      expect(result?.code).toContain(`loadableGenerated: { modules: ["app/widget.tsx"] }`);
+    } finally {
+      await fsp.rm(realRoot, { recursive: true, force: true });
+      await fsp.rm(linkParent, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("augmentSsrManifestFromBundle", () => {
   it("backfills inlined page modules with the containing entry chunk", () => {
     const bundle = {
@@ -971,6 +2214,41 @@ describe("augmentSsrManifestFromBundle", () => {
     expect(augmented["pages/about.tsx"]).toEqual(["assets/about.js", "assets/about.css"]);
   });
 
+  it("collapses a basePath that Vite duplicated in the SSR manifest", () => {
+    // basePath baked into fileNames + reapplied by Vite yields a doubled URL
+    // that 404s; both sources must dedupe to one single-base path here.
+    const bundle = {
+      "docs/_next/static/_slug_.js": {
+        type: "chunk" as const,
+        fileName: "docs/_next/static/_slug_.js",
+        imports: [],
+        modules: {
+          "/proj/pages/[slug].tsx": {},
+        },
+      },
+    };
+
+    const ssrManifest = {
+      "pages/[slug].tsx": ["docs/docs/_next/static/_slug_.js"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/proj", "/docs/");
+
+    expect(augmented["pages/[slug].tsx"]).toEqual(["docs/_next/static/_slug_.js"]);
+  });
+
+  it("leaves a single basePath prefix untouched (no over-collapse)", () => {
+    // Guards the collapse logic against rewriting a correctly single-prefixed
+    // entry (e.g. when the bundler does not bake base into fileNames).
+    const ssrManifest = {
+      "pages/index.tsx": ["docs/_next/static/index.js"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, {}, "/proj", "/docs/");
+
+    expect(augmented["pages/index.tsx"]).toEqual(["docs/_next/static/index.js"]);
+  });
+
   it("normalizes existing absolute manifest keys before merging bundle metadata", () => {
     const bundle = {
       "assets/counter.js": {
@@ -1039,41 +2317,24 @@ describe("augmentSsrManifestFromBundle", () => {
 // ─── collectAssetTags lazy filtering (integration) ────────────────────────────
 
 describe("collectAssetTags lazy chunk filtering", () => {
-  // collectAssetTags lives inside the generated virtual server entry and
-  // can't be imported directly. These tests verify the filtering behavior
-  // by simulating what collectAssetTags does: build a lazy set from
-  // computeLazyChunks output, then filter asset tags accordingly.
-
-  /**
-   * Simulates the collectAssetTags filtering logic:
-   * - Normalizes leading slashes from SSR manifest values
-   * - CSS files always get a <link rel="stylesheet"> tag
-   * - Non-lazy JS files get both modulepreload and script tags
-   * - Lazy JS files are skipped entirely
-   *
-   * Must match the actual collectAssetTags implementation in index.ts.
-   */
+  // Drive the REAL exported `collectAssetTags` (server/pages-asset-tags.ts) so
+  // these tests can't drift from production. The thin adapter keeps the original
+  // `(ssrManifestFiles, lazyChunks) -> string[]` shape: it wires the lazy set
+  // through the runtime asset registry the function actually reads, feeds the
+  // files as a single page module, and disables optimized
+  // loading (no `defer`) to match the legacy assertions.
   function simulateAssetTagFiltering(ssrManifestFiles: string[], lazyChunks: string[]): string[] {
-    const lazySet = new Set(lazyChunks);
-    const tags: string[] = [];
-    const seen = new Set<string>();
-
-    for (let tf of ssrManifestFiles) {
-      // Normalize: strip leading slash from SSR manifest values to avoid
-      // producing protocol-relative URLs (e.g. "//assets/chunk.js") and
-      // to ensure consistent matching against lazySet and seen set.
-      if (tf.startsWith("/")) tf = tf.slice(1);
-      if (seen.has(tf)) continue;
-      seen.add(tf);
-      if (tf.endsWith(".css")) {
-        tags.push(`<link rel="stylesheet" href="/${tf}" />`);
-      } else if (tf.endsWith(".js")) {
-        if (lazySet.has(tf)) continue;
-        tags.push(`<link rel="modulepreload" href="/${tf}" />`);
-        tags.push(`<script type="module" src="/${tf}" crossorigin></script>`);
-      }
+    setPagesClientAssets({ lazyChunks });
+    try {
+      const html = collectAssetTags({
+        manifest: { "page.js": ssrManifestFiles },
+        moduleIds: ["page.js"],
+        disableOptimizedLoading: true,
+      });
+      return html ? html.split("\n  ") : [];
+    } finally {
+      setPagesClientAssets(undefined);
     }
-    return tags;
   }
 
   it("excludes lazy JS chunks from modulepreload and script tags", () => {
@@ -1252,7 +2513,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
   });
 
   it("deduplicates entries when SSR manifest has leading slashes and client entry does not", () => {
-    // The client entry (from __VINEXT_CLIENT_ENTRY__) uses values without
+    // The client entry from the Pages client asset descriptor uses values without
     // leading slashes ("assets/entry.js"), while SSR manifest values have
     // them ("/assets/entry.js"). After normalization, both should resolve
     // to the same key and the entry should appear only once.
@@ -1271,6 +2532,63 @@ describe("collectAssetTags lazy chunk filtering", () => {
     // framework.js should also appear with correct path
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
   });
+
+  it("excludes lazy chunks from modulepreload end-to-end under basePath + assetPrefix", async () => {
+    // Round-trip regression guard for the lazy-chunk key-space fix. It wires the
+    // real PRODUCER (computeClientRuntimeMetadata, reading a manifest from disk)
+    // to the real CONSUMER (collectAssetTags). If lazy chunks were ever
+    // asset-prefixed again, their key-space would diverge from the base-relative
+    // SSR-manifest values and the lazy chunk would leak into <link rel=modulepreload>.
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-roundtrip-"));
+    const clientDir = path.join(tmpDir, "client");
+    await fsp.mkdir(path.join(clientDir, ".vite"), { recursive: true });
+    // A real assetPrefix build bakes the prefix into the manifest `file` fields
+    // (build.assetsDir = "<prefix>/_next/static").
+    const manifest = {
+      "virtual:vinext-client-entry": {
+        file: "cdn/_next/static/chunks/entry-abc.js",
+        isEntry: true,
+        dynamicImports: ["src/widget.tsx"],
+      },
+      "src/widget.tsx": {
+        file: "cdn/_next/static/chunks/widget-def.js",
+        isDynamicEntry: true,
+      },
+    };
+    await fsp.writeFile(path.join(clientDir, ".vite", "manifest.json"), JSON.stringify(manifest));
+    try {
+      const metadata = computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/docs/",
+        assetPrefix: "/cdn",
+      });
+      // Producer: lazy chunks are base-only (NOT asset-prefixed) — the on-disk
+      // file already carries the cdn prefix and base "/docs/" is prepended.
+      expect(metadata.lazyChunks).toEqual(["docs/cdn/_next/static/chunks/widget-def.js"]);
+
+      // The SSR manifest stores the SAME base-normalized values (the backfill
+      // uses manifestFileWithBase(file, base)); derive them identically.
+      const ssrFiles = [
+        manifestFileWithBase(manifest["virtual:vinext-client-entry"].file, "/docs/"),
+        manifestFileWithBase(manifest["src/widget.tsx"].file, "/docs/"),
+      ];
+
+      // Consumer: the real collectAssetTags must exclude the lazy widget chunk
+      // while keeping the eager entry chunk. Assert by basename (presence /
+      // absence), NOT the exact href: the precise URL collectAssetTags renders
+      // for the basePath+path-assetPrefix combo is subject to a separate,
+      // pre-existing asset-URL bug (it emits the base+prefix form rather than the
+      // assetPrefix-only form), which is out of scope for this lazy-exclusion
+      // guard.
+      const tags = simulateAssetTagFiltering(ssrFiles, metadata.lazyChunks!);
+      expect(tags.some((t) => t.includes("modulepreload") && t.includes("entry-abc.js"))).toBe(
+        true,
+      );
+      expect(tags.some((t) => t.includes("widget-def.js"))).toBe(false);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── vinext:async-hooks-stub ───────────────────────────────────────────────────
@@ -1282,7 +2600,9 @@ describe("vinext:async-hooks-stub", () => {
   // mock context to control which environment is being simulated.
   function resolveId(id: string, environmentName: string | undefined): string | undefined {
     const handler = (
-      _asyncHooksStubPlugin.resolveId as { handler: (id: string) => string | undefined }
+      _asyncHooksStubPlugin.resolveId as {
+        handler: (id: string) => string | undefined;
+      }
     ).handler;
     return handler.call(
       { environment: environmentName ? { name: environmentName } : undefined },
@@ -1291,8 +2611,11 @@ describe("vinext:async-hooks-stub", () => {
   }
 
   function load(id: string): string | undefined {
-    const handler = (_asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined })
-      .handler;
+    const handler = (
+      _asyncHooksStubPlugin.load as {
+        handler: (id: string) => string | undefined;
+      }
+    ).handler;
     return handler.call({}, id);
   }
 
@@ -1319,14 +2642,6 @@ describe("vinext:async-hooks-stub", () => {
   });
 
   describe("load", () => {
-    it("returns stub source with AsyncLocalStorage class", () => {
-      const source = load(VIRTUAL_ID);
-      expect(source).toBeDefined();
-      expect(source).toContain("export class AsyncLocalStorage");
-      expect(source).toContain("getStore()");
-      expect(source).toContain("run(_store, fn, ...args)");
-    });
-
     it("returns undefined for other module ids", () => {
       expect(load("some-other-module")).toBeUndefined();
     });
@@ -1360,6 +2675,59 @@ describe("vinext:async-hooks-stub", () => {
 // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
 describe("stripServerExports", () => {
+  it("cheaply identifies modules that can contain server data exports", () => {
+    expect(
+      _hasServerExportCandidate("export const getServerSideProps = () => ({ props: {} })"),
+    ).toBe(true);
+    expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
+  });
+
+  it("cheaply identifies export-all syntax without matching multiplication", () => {
+    expect(_hasExportAllCandidate(`export * from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export\n*\nfrom './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export /* comment */ * from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export // comment\n* from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
+  });
+
+  it("rejects export-all declarations in page modules", () => {
+    // Ported from Next.js: test/production/re-export-all-exports-from-page-disallowed/
+    // re-export-all-exports-from-page-disallowed.test.ts
+    expect(() => _stripServerExports(`export * from './other-page';`)).toThrow(
+      "Using `export * from '...'` in a page is disallowed.",
+    );
+    expect(() => _validatePageExports(`export\n*\nfrom './other-page';`)).toThrow(
+      "Using `export * from '...'` in a page is disallowed.",
+    );
+    expect(() => _validatePageExports(`export /* comment */ * from './other-page';`)).toThrow(
+      "Using `export * from '...'` in a page is disallowed.",
+    );
+  });
+
+  it("allows export-star text that is not an export-all declaration", () => {
+    expect(() =>
+      _validatePageExports(`const message = "export * from './not-code'";`),
+    ).not.toThrow();
+  });
+
+  it("rejects mixed getServerSideProps and static data exports", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    const message =
+      "You can not use getStaticProps or getStaticPaths with getServerSideProps. To use SSG, please remove getServerSideProps";
+    expect(() =>
+      _stripServerExports(`
+export function getStaticProps() {}
+export function getServerSideProps() {}
+`),
+    ).toThrow(message);
+    expect(() =>
+      _stripServerExports(`
+export { getServerSideProps } from './ssr';
+export { getStaticPaths } from './ssg';
+`),
+    ).toThrow(message);
+  });
+
   it("returns null when code has no server exports", () => {
     const code = `
 export default function Page({ data }) {
@@ -1386,7 +2754,19 @@ export async function getServerSideProps(ctx) {
     expect(result).not.toBeNull();
     expect(result).toContain("export default function Page");
     expect(result).not.toContain("db.query");
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
+  });
+
+  it("preserves sibling declarators in exported variable declarations", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/support-multiple-export-var-decl
+    const result = _stripServerExports(`
+export const other = 0,
+  getStaticProps = async () => {};
+`);
+    expect(result).toContain("export const other = 0;");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
   });
 
   it("strips export function getStaticProps", () => {
@@ -1401,7 +2781,7 @@ export function getStaticProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getStaticProps()");
+    expect(result).not.toContain("getStaticProps");
     expect(result).not.toContain("revalidate: 60");
   });
 
@@ -1423,8 +2803,8 @@ export async function getStaticProps({ params }) {
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
     expect(result).not.toContain("fallback: false");
-    expect(result).toContain("export function getStaticPaths()");
-    expect(result).toContain("export function getStaticProps()");
+    expect(result).not.toContain("getStaticPaths");
+    expect(result).not.toContain("getStaticProps");
   });
 
   it("strips export const getServerSideProps = arrow function", () => {
@@ -1441,7 +2821,7 @@ export const getServerSideProps = async (ctx) => {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("api.example.com");
   });
 
@@ -1457,7 +2837,7 @@ export const getServerSideProps = fetchPageData;
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("getServerSideProps");
   });
 
   it("preserves the default export and non-server exports", () => {
@@ -1478,7 +2858,7 @@ export async function getServerSideProps() {
     expect(result).not.toBeNull();
     expect(result).toContain("export const config");
     expect(result).toContain("export default function Page");
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("data: 'hello'");
   });
 
@@ -1500,7 +2880,7 @@ export async function getServerSideProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("nested: { deep: true }");
   });
 
@@ -1519,7 +2899,7 @@ export const getStaticProps = function() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getStaticProps = undefined;");
+    expect(result).not.toContain("getStaticProps");
     expect(result).not.toContain("fetchData");
   });
 
@@ -1536,12 +2916,17 @@ export const getServerSideProps = async function fetchData() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("db.query");
   });
 
   it("handles export { name } re-export syntax", () => {
     // This pattern was completely unhandled by the old regex approach.
+    //
+    // Regression test for #1354: emitting `export const getServerSideProps =
+    // undefined;` here collides with the existing local `const
+    // getServerSideProps` binding and triggers a parse error under
+    // OXC/Rolldown. We must drop the specifier without adding a stub.
     const code = `
 const getServerSideProps = async () => {
   return { props: { data: 'secret' } };
@@ -1555,9 +2940,16 @@ export { getServerSideProps };
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
-    // The original local declaration remains (dead code, tree-shaken later)
+    // The `export { getServerSideProps }` statement must be removed entirely
+    // — no stub declaration is added.
     expect(result).not.toContain("export { getServerSideProps }");
+    expect(result).not.toContain("export const getServerSideProps");
+    // Next.js removes the now-unreferenced local declaration in the same
+    // transform pass rather than relying on bundler tree-shaking.
+    const constMatches = result!.match(/const getServerSideProps\b/g) ?? [];
+    expect(constMatches).toHaveLength(0);
+    // The transformed code must be valid JS (no redeclaration).
+    expect(() => parseAst(result!)).not.toThrow();
   });
 
   it("handles export { name } with other specifiers", () => {
@@ -1575,9 +2967,534 @@ export { getServerSideProps, config };
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    // config should be preserved
+    // config should be preserved, getServerSideProps specifier dropped.
     expect(result).toContain("export { config }");
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("export { getServerSideProps");
+    expect(result).not.toContain("export const getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  // Regression test for #1354: every supported declaration form must
+  // produce parseable output when combined with `export { name }`.
+  it("does not redeclare identifiers for function-declaration + named export", () => {
+    const code = `
+async function getServerSideProps() {
+  return { props: {} };
+}
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("export const getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("rejects mixed named getServerSideProps and getStaticProps exports", () => {
+    const code = `
+const getServerSideProps = async () => ({ props: {} });
+const getStaticProps = async () => ({ props: {} });
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps, getStaticProps };
+`;
+    expect(() => _stripServerExports(code)).toThrow(
+      "You can not use getStaticProps or getStaticPaths with getServerSideProps. To use SSG, please remove getServerSideProps",
+    );
+  });
+
+  it("does not redeclare identifiers when local `let` binding is re-exported", () => {
+    const code = `
+let getStaticPaths = async () => ({ paths: [], fallback: false });
+
+export default function Page() {
+  return null;
+}
+
+export { getStaticPaths };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("export const getStaticPaths");
+    // Must not introduce a `const getStaticPaths` next to the `let`.
+    expect(result).not.toMatch(/const\s+getStaticPaths/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("handles aliased named export (export { local as getServerSideProps })", () => {
+    const code = `
+const fetchData = async () => ({ props: {} });
+
+export default function Page() {
+  return null;
+}
+
+export { fetchData as getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves aliased data-export bindings still used by client code", () => {
+    // Matches Next.js next-ssg-transform: the export edge is removed, but the
+    // local binding remains when the default export still references it.
+    const code = `
+const loader = () => 'visible';
+export { loader as getServerSideProps };
+export default function Page() { return loader(); }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("const loader");
+    expect(result).toContain("return loader()");
+    expect(result).not.toContain("getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves aliased data-export bindings with another named export", () => {
+    const code = `
+function loader() { return 'visible'; }
+export { loader as getStaticProps, loader as helper };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("function loader()");
+    expect(result).toContain("export { loader as helper }");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("strips server data exports re-exported from another module", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+export { getStaticPaths, loadPage as getStaticProps, default } from './server-page';
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export { default }");
+    expect(result).not.toContain("getStaticPaths");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a re-export statement containing only server data exports", () => {
+    const code = `
+export { getServerSideProps } from './server-props';
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("./server-props");
+    expect(result).toContain("export default function Page");
+  });
+
+  it("strips legacy server data export names", () => {
+    const code = `
+export { unstable_getServerProps, unstable_getStaticProps } from './legacy-data';
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("legacy-data");
+  });
+
+  it("sweeps imports and helpers used only by a direct server export", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+import secretDb, { shared as keepShared, serverOnly as dropServerOnly } from './db';
+
+function loadSecret() {
+  return secretDb.query(dropServerOnly);
+}
+
+export default function Page() {
+  return keepShared;
+}
+
+export async function getServerSideProps() {
+  return { props: { secret: await loadSecret() } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("shared as keepShared");
+    expect(result).not.toContain("secretDb");
+    expect(result).not.toContain("dropServerOnly");
+    expect(result).not.toContain("loadSecret");
+    expect(result).not.toContain(".query");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps recursive arrow helpers used only by a server export", () => {
+    const result = _stripServerExports(`
+const recurse = () => recurse();
+
+export function getStaticProps() {
+  recurse();
+  return { props: {} };
+}
+
+export default function Page() { return null; }
+`);
+    expect(result).not.toContain("recurse");
+    expect(result).toContain("export default function Page");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps mutually recursive arrow helpers used only by a server export", () => {
+    const result = _stripServerExports(`
+const first = () => second();
+const second = () => first();
+
+export function getStaticProps() {
+  first();
+  return { props: {} };
+}
+
+export default function Page() { return null; }
+`);
+    expect(result).not.toContain("first");
+    expect(result).not.toContain("second");
+    expect(result).toContain("export default function Page");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps dependencies of locally declared re-exported data functions", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+const buildProps = () => ({ props: { token: PRIVATE_TOKEN } });
+const getServerSideProps = () => buildProps();
+
+export default function Page() { return null; }
+export { getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("PRIVATE_TOKEN");
+    expect(result).not.toContain("./secrets");
+    expect(result).not.toContain("buildProps");
+    expect(result).not.toContain("export { getServerSideProps }");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not treat shadowed client identifiers as live server references", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+export default function Page(PRIVATE_TOKEN) {
+  return PRIVATE_TOKEN;
+}
+
+export function getServerSideProps() {
+  return { props: { token: PRIVATE_TOKEN } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("./secrets");
+    expect(result).toContain("function Page(PRIVATE_TOKEN)");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("resolves nested class and named-function-expression shadowing", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+export default function Page() {
+  class PRIVATE_TOKEN {}
+  const factory = function PRIVATE_TOKEN() { return PRIVATE_TOKEN; };
+  return [PRIVATE_TOKEN, factory];
+}
+
+export function getServerSideProps() {
+  return { props: { token: PRIVATE_TOKEN } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("./secrets");
+    expect(result).toContain("class PRIVATE_TOKEN");
+    expect(result).toContain("function PRIVATE_TOKEN()");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not over-remove bindings shadowed in loop scope", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+export default function Page() {
+  for (const PRIVATE_TOKEN of ['visible']) {
+    console.log(PRIVATE_TOKEN);
+  }
+  return null;
+}
+
+export function getServerSideProps() {
+  return { props: { token: PRIVATE_TOKEN } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("./secrets");
+    expect(result).toContain("const PRIVATE_TOKEN of");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("retains computed assignment-key dependencies in preserved code", () => {
+    const code = `
+import { sharedKey, serverOnly } from './data';
+const target = {};
+target[sharedKey] = 'visible';
+export default function Page() { return target; }
+export function getStaticProps() { return { props: { serverOnly } }; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("sharedKey");
+    expect(result).not.toContain("serverOnly");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes classes used only by server data functions", () => {
+    const code = `
+import secretBase from './secret-base';
+
+class SecretLoader extends secretBase {
+  load() { return 'secret'; }
+}
+
+export function getServerSideProps() {
+  return { props: { value: new SecretLoader().load() } };
+}
+
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("SecretLoader");
+    expect(result).not.toContain("secret-base");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("partially prunes object destructuring dependencies", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+import fs from 'fs';
+import other from 'other';
+
+const { readFile, readdir, access: secretAccess } = fs.promises;
+const { a, b, cat: bar, ...secretRest } = other;
+
+export async function getStaticProps() {
+  readFile;
+  readdir;
+  secretAccess;
+  b;
+  secretRest;
+  return { props: {} };
+}
+
+export default function Page() { return a + bar; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("from 'fs'");
+    expect(result).toContain("{ a, cat: bar }");
+    expect(result).not.toContain("secretRest");
+    expect(result).not.toMatch(/\bb\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves computed object destructuring keys", () => {
+    const code = `
+import source from 'source';
+const key = 'visible';
+const { [key]: visible, secret } = source;
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("{ [key]: visible } = source");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("partially prunes array destructuring dependencies", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+import fs from 'fs';
+import other from 'other';
+
+const [secretA, secretB, ...secretRest] = fs.promises;
+const [visible, secretTail] = other;
+
+export async function getStaticProps() {
+  secretA;
+  secretB;
+  secretRest;
+  secretTail;
+  return { props: {} };
+}
+
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("from 'fs'");
+    expect(result).toContain("const [visible] = other");
+    expect(result).not.toContain("secretTail");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves array positions when pruning a leading binding", () => {
+    const code = `
+import source from 'source';
+const [secret, visible] = source;
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("const [, visible] = source");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes assignments rooted in eliminated server bindings", () => {
+    const code = `
+import secret from './secret';
+
+let getServerSideProps = () => ({ props: {} });
+getServerSideProps.config = secret;
+getServerSideProps = () => ({ props: { secret } });
+
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("./secret");
+    expect(result).not.toContain(".config");
+    expect(result).not.toContain("props: { secret }");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes Babel-style memoized helpers used only by data exports", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/support-babel-style-memoized-function
+    const code = `
+function loadSecret() {
+  loadSecret = function () {};
+  return loadSecret.apply(this, arguments);
+}
+export function getStaticProps() {
+  loadSecret;
+  return { props: {} };
+}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("loadSecret");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("retains dependencies shared with preserved exports", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/not-remove-import-used-in-other-export
+    const code = `
+import { shared, serverOnly } from 'thing';
+export function otherExport() { return shared + serverOnly; }
+export function getStaticProps() { return { props: { serverOnly } }; }
+export default function Page() { return shared; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("shared");
+    expect(result).toContain("serverOnly");
+    expect(result).toContain("otherExport");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("partially prunes array destructuring assignments", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/destructuring-assignment-array
+    const code = `
+import fs from 'fs';
+import other from 'other';
+let secretA, secretB, secretRest;
+[secretA, secretB, ...secretRest] = fs.promises;
+let visible, secretTail;
+[visible, secretTail] = other;
+
+export async function getStaticProps() {
+  secretA; secretB; secretRest; secretTail;
+  return { props: {} };
+}
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("from 'fs'");
+    expect(result).toContain("[visible] = other");
+    expect(result).not.toContain("secretTail");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves array positions in destructuring assignments", () => {
+    const code = `
+import source from 'source';
+let secret, visible;
+[secret, visible] = source;
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("[, visible] = source");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps pruned object destructuring assignments parenthesized", () => {
+    const code = `
+import source from 'source';
+const key = 'visible';
+let visible, secret;
+({ [key]: visible, secret } = source);
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("({ [key]: visible } = source);");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves import attributes when pruning import specifiers", () => {
+    const code = `
+import { visible, secret } from './data.json' with { type: 'json' };
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("import { visible } from './data.json' with { type: 'json' };");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves export attributes when pruning re-export specifiers", () => {
+    const code = `
+export { visible, getStaticProps } from './data.json' with { type: 'json' };
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("export { visible } from './data.json' with { type: 'json' };");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
   });
 
   it("handles strings containing braces", () => {
@@ -1593,7 +3510,7 @@ export async function getServerSideProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("Hello {world}");
   });
 
@@ -1612,7 +3529,7 @@ export function getServerSideProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("pattern");
   });
 
@@ -1628,7 +3545,82 @@ export const getStaticPaths = () => [
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getStaticPaths = undefined;");
+    expect(result).not.toContain("getStaticPaths");
     expect(result).not.toContain("a;b");
+  });
+});
+
+// ─── getClientTreeshakeConfig ─────────────────────────────────────────────────
+
+describe("getClientTreeshakeConfig", () => {
+  it("returns Rolldown treeshake config without a Rollup preset", () => {
+    const config = getClientTreeshakeConfig();
+    expect(config).toEqual({
+      moduleSideEffects: "no-external",
+    });
+  });
+});
+
+// ─── createRscFrameworkChunkOutputConfig ──────────────────────────────────────
+
+describe("createRscFrameworkChunkOutputConfig", () => {
+  it("returns Rolldown codeSplitting, not the deprecated advancedChunks", () => {
+    const config = createRscFrameworkChunkOutputConfig();
+    expect(config).not.toHaveProperty("advancedChunks");
+    expect(config).not.toHaveProperty("manualChunks");
+    expect(config).toEqual({
+      codeSplitting: {
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            entriesAware: true,
+          },
+        ],
+      },
+    });
+  });
+});
+
+// ─── RSC framework package matching (single source of truth) ──────────────────
+
+describe("RSC framework package matching", () => {
+  const matching = [
+    "/app/node_modules/react/index.js",
+    "/app/node_modules/react-dom/server.js",
+    "/app/node_modules/scheduler/index.js",
+    "/app/node_modules/react-server-dom-webpack/client.js",
+    // pnpm-style nested path.
+    "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
+  ];
+  const notMatching = [
+    "/app/node_modules/react-icons/lib/index.js",
+    "/app/node_modules/@react-aria/utils/dist/index.js",
+    "/app/node_modules/@react-aria/focus/dist/index.js",
+    "/app/src/components/react-thing.tsx",
+  ];
+
+  it("RSC_FRAMEWORK_CHUNK_TEST matches framework packages only", () => {
+    for (const id of matching) {
+      expect(RSC_FRAMEWORK_CHUNK_TEST.test(id)).toBe(true);
+    }
+    for (const id of notMatching) {
+      expect(RSC_FRAMEWORK_CHUNK_TEST.test(id)).toBe(false);
+    }
+  });
+
+  it("isRscFrameworkModule matches framework packages only", () => {
+    for (const id of matching) {
+      expect(isRscFrameworkModule(id)).toBe(true);
+    }
+    for (const id of notMatching) {
+      expect(isRscFrameworkModule(id)).toBe(false);
+    }
+  });
+
+  // Bundler ids carry backslashes only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")("recognizes Windows-style ids", () => {
+    expect(RSC_FRAMEWORK_CHUNK_TEST.test("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
+    expect(isRscFrameworkModule("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
   });
 });

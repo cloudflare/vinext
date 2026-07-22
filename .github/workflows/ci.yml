@@ -3,8 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request: # run on PRs against any base branch, not just main
   workflow_call: # allow other workflows to run CI as a gate
 
 permissions:
@@ -19,22 +18,24 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
       - name: Build plugin (needed for benchmark workspace type resolution)
         run: vp run build
       - run: vp run check
+      - run: vp run knip
+      - name: Bash syntax check
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f" || { echo "Syntax error in $f"; exit 1; }
+          done
+      - name: Verify integration shard manifest
+        run: node scripts/ci-integration-shard.mjs --check --shard-total=10
 
   test-unit:
-    name: Vitest (unit)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
-      - run: vp test run --project unit
-
-  test-integration:
-    name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    name: Vitest (unit ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -42,14 +43,74 @@ jobs:
         shardIndex: [1, 2, 3]
         shardTotal: [3]
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: vp test run --project unit --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+
+  test-integration:
+    name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Shard count mirrors scripts/ci-integration-timings.json (shardTotal);
+        # the Check job fails on drift between this matrix and the manifest.
+        # Rebalance weights by regenerating the manifest from real CI blobs:
+        #   gh run download <run-id> -p 'blob-report-*' -D /tmp/blobs
+        #   node scripts/ci-integration-timings-refresh.mjs /tmp/blobs --run=<run-id> --write
+        # Revisit the count with: node scripts/ci-integration-shard.mjs --recommend --target-ms=<competing-bottleneck>
+        # 10 shards: the wall-clock floor for integration on this public repo
+        # (free runner minutes). Beyond 10, the slowest integration shard plus
+        # the serial report tail drops below the create-next-app (windows) job,
+        # so more shards stop moving the overall wall. See PR "Wall-clock vs
+        # shard count". Lowering it further means changing those two jobs, not
+        # this count.
+        shardIndex: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        shardTotal: [10]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
       - name: Build plugin (needed by ecosystem and nextjs-compat fixtures)
         run: vp run build
-      - run: vp test run --project integration --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - name: Compute shard files from timing manifest
+        id: shard
+        shell: bash
+        run: |
+          files=$(node scripts/ci-integration-shard.mjs --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$files" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+      # Coverage is gated to push-to-main runs to keep PR feedback fast.
+      # Istanbul instrumentation adds ~10–25% to each shard's wall-clock.
+      #
+      # SHARD_FILES holds the planner's emitted file list (paths discovered from
+      # `vp test list`). It is passed via env and left unquoted on purpose so the
+      # shell word-splits it into separate file arguments. Routing it through env
+      # instead of expanding ${{ steps.shard.outputs.files }} inline keeps a
+      # filename from a fork PR from being interpolated into the script text
+      # (template injection). The shell treats it as data, never as code.
+      - name: Run integration shard
+        run: |
+          if [ -z "${SHARD_FILES// /}" ]; then
+            echo "::error::shard ${SHARD_INDEX}/${SHARD_TOTAL} resolved to no files"
+            exit 1
+          fi
+
+          vp test run --project integration $COVERAGE \
+            --reporter=blob \
+            --outputFile.blob=".vitest-reports/blob-${SHARD_INDEX}-${SHARD_TOTAL}.json" \
+            $SHARD_FILES
         env:
           CI: true
-      - uses: actions/upload-artifact@v7
+          SHARD_FILES: ${{ steps.shard.outputs.files }}
+          COVERAGE: ${{ github.event_name == 'push' && '--coverage' || '' }}
+          SHARD_INDEX: ${{ matrix.shardIndex }}
+          SHARD_TOTAL: ${{ matrix.shardTotal }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: blob-report-${{ matrix.shardIndex }}
@@ -63,16 +124,30 @@ jobs:
     needs: [test-integration]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: .vitest-reports
           pattern: blob-report-*
           merge-multiple: true
-      - run: vp test run --merge-reports
+      # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
+      # coverage data embedded in each shard's blob, producing a unified report.
+      # Only enabled on push-to-main, matching the shard config above.
+      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
         env:
           CI: true
+      - name: Publish coverage matrix to job summary
+        if: ${{ !cancelled() && hashFiles('coverage/coverage-summary.json') != '' }}
+        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && hashFiles('coverage/index.html') != '' }}
+        with:
+          name: coverage-html
+          path: coverage
+          retention-days: 14
 
   create-next-app:
     name: create-next-app (${{ matrix.os }})
@@ -82,94 +157,500 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
       - name: Build plugin
         run: vp run build
 
-      - name: Pack vinext for local install
-        run: vp pm pack --pack-destination "${{ runner.temp }}"
+      - name: Pack vinext packages for local install
+        run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
 
       - name: Scaffold a fresh create-next-app project
-        run: vp dlx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
+        run: vp dlx create-next-app@16.2.7 "${{ runner.temp }}/cna-test" --yes
+
+      - name: Deny build scripts in scaffolded project
+        working-directory: ${{ runner.temp }}/cna-test
+        shell: bash
+        # pnpm 11 may auto-add placeholder allowBuilds entries during the
+        # scaffold install. Replace them with explicit false values.
+        run: |
+          node -e '
+            const fs = require("fs");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
+            y = y.trimEnd() + "\n\nallowBuilds:\n  sharp: false\n  unrs-resolver: false\n";
+            fs.writeFileSync(f, y);
+          '
+
+      - name: Pin pnpm in scaffolded project to vinext's version
+        working-directory: ${{ runner.temp }}/cna-test
+        shell: bash
+        # create-next-app's bundled pnpm links node_modules to a major-version
+        # store (e.g. v10). vp's bundled pnpm can drift to a newer major (v11),
+        # which then refuses to operate on the existing node_modules with
+        # ERR_PNPM_UNEXPECTED_STORE. vp respects the project's packageManager
+        # field, so writing the same one vinext itself uses makes vp's pnpm
+        # match the store layout from create-next-app. Tracks any future
+        # bump in vinext's root package.json automatically.
+        run: |
+          # cd into the workspace to read package.json via a relative path —
+          # ${{ github.workspace }} contains backslashes on Windows that get
+          # eaten by the JS string literal parser when interpolated inline.
+          PKG_MGR=$(cd "${{ github.workspace }}" && node -p "require('./package.json').packageManager")
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.packageManager = '$PKG_MGR';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "Pinned packageManager to $PKG_MGR"
 
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
-        run: vp add "${{ runner.temp }}"/vinext-*.tgz
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
 
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
-        run: vp exec vinext init --skip-check
+        run: vp exec vinext init --skip-check --platform=node
 
       - name: Start dev server and verify HTTP 200
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
         run: |
-          vp exec vite dev --port 3099 &
+          vp exec vite dev --host 127.0.0.1 --port 3099 &
           SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
-          for i in $(seq 1 30); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3099/ || true)
+          for i in $(seq 1 45); do
+            STATUS=$(node -e '
+              const http = require("node:http");
+              let done = false;
+              function finish(status) {
+                if (done) return;
+                done = true;
+                console.log(status);
+                process.exit(status === 200 ? 0 : 1);
+              }
+              const req = http.get("http://127.0.0.1:3099/", (res) => {
+                res.resume();
+                finish(res.statusCode);
+              });
+              req.setTimeout(10000, () => {
+                req.destroy();
+                finish("timeout");
+              });
+              req.on("error", () => {
+                finish("000");
+              });
+            ' || true)
+            echo "HTTP status from dev server: ${STATUS:-request failed} (attempt $i)"
             if [ "$STATUS" = "200" ]; then
               echo "Server responded with HTTP 200 (attempt $i)"
-              kill "$SERVER_PID" 2>/dev/null || true
               exit 0
             fi
             sleep 1
           done
 
-          echo "Server did not respond with HTTP 200 within 30 seconds"
-          kill "$SERVER_PID" 2>/dev/null || true
+          echo "Server did not respond with HTTP 200 before the retry limit"
           exit 1
 
+  create-next-app-cloudflare:
+    name: create-next-app (cloudflare init)
+    runs-on: ubuntu-latest
+    env:
+      CNA_CLOUDFLARE_WORKER: create-next-app-cloudflare
+      # Public test namespace already used by examples/workers-cache.
+      CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Build packages
+        run: vp run build
+
+      - name: Pack vinext packages for local install
+        working-directory: packages/vinext
+        run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../cloudflare
+          vp pm pack --pack-destination "${{ runner.temp }}"
+
+      - name: Scaffold a fresh create-next-app project
+        run: vp dlx create-next-app@16.2.7 "${{ runner.temp }}/cna-cloudflare" --yes
+
+      - name: Pin pnpm in scaffolded project to vinext's version
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          PKG_MGR=$(cd "${{ github.workspace }}" && node -p "require('./package.json').packageManager")
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.packageManager = '$PKG_MGR';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Allow required native dependency builds
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node -e '
+            const fs = require("fs");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
+            y = y.trimEnd() + "\n\nallowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n  workerd: true\n";
+            fs.writeFileSync(f, y);
+          '
+
+      - name: Install local vinext packages
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+
+      - name: Run Cloudflare init
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: >-
+          vp exec vinext init --skip-check --platform=cloudflare
+          --data-cache=kv
+          --image-optimization=cloudflare-images
+
+      - name: Configure generated Cloudflare deployment
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const configPath = "wrangler.jsonc";
+            const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+            config.name = process.env.CNA_CLOUDFLARE_WORKER;
+            config.preview_urls = true;
+            for (const namespace of config.kv_namespaces ?? []) {
+              if (namespace.binding === "VINEXT_KV_CACHE") {
+                namespace.id = process.env.CNA_CLOUDFLARE_KV_NAMESPACE_ID;
+              }
+            }
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+          '
+
+      - name: Build generated Cloudflare project
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: vp exec vinext build
+
+      - name: Verify generated Cloudflare build output
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: test -f dist/server/wrangler.json
+
+  create-vinext-app-cloudflare:
+    name: create-vinext-app (Cloudflare build)
+    runs-on: ubuntu-latest
+    env:
+      CVA_CLOUDFLARE_WORKER: create-vinext-app-cloudflare
+      # Public test namespace already used by examples/workers-cache.
+      CVA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Build packages
+        run: vp run build
+
+      - name: Pack vinext packages for local install
+        working-directory: packages/vinext
+        run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../cloudflare
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../create-vinext-app
+          vp pm pack --pack-destination "${{ runner.temp }}"
+
+      - name: Scaffold a fresh create-vinext-app project
+        working-directory: ${{ runner.temp }}
+        run: >-
+          npx --yes
+          --package "${{ runner.temp }}"/create-vinext-app-*.tgz
+          create-vinext-app "${{ runner.temp }}/cva-cloudflare"
+          --yes
+          --skip-install
+          --disable-git
+          --platform=cloudflare
+          --cdn-cache=data-cache
+          --data-cache=kv
+          --image-optimization=cloudflare-images
+
+      - name: Pin pnpm in scaffolded project to vinext's version
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          PKG_MGR=$(cd "${{ github.workspace }}" && node -p "require('./package.json').packageManager")
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.packageManager = '$PKG_MGR';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Allow required native dependency builds
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          node -e '
+            const fs = require("fs");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
+            y = y.trimEnd() + "\n\nallowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n  workerd: true\n";
+            fs.writeFileSync(f, y);
+          '
+
+      - name: Install local vinext packages
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+
+      - name: Configure generated Cloudflare deployment
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const configPath = "wrangler.jsonc";
+            const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+            config.name = process.env.CVA_CLOUDFLARE_WORKER;
+            config.preview_urls = true;
+            for (const namespace of config.kv_namespaces ?? []) {
+              if (namespace.binding === "VINEXT_KV_CACHE") {
+                namespace.id = process.env.CVA_CLOUDFLARE_KV_NAMESPACE_ID;
+              }
+            }
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+          '
+
+      - name: Build generated Cloudflare project
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: vp exec vinext build
+
+      - name: Verify generated Cloudflare build output
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: test -f dist/server/wrangler.json
+
   e2e:
-    name: E2E (${{ matrix.project }})
+    name: E2E (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        project:
-          - pages-router
-          - app-router
-          - cloudflare-pages-router
-          - pages-router-prod
-          - cloudflare-workers
-          - cloudflare-dev
-          - cloudflare-pages-router-dev
-          - static-export
-          - app-with-src
+        include:
+          - project: pages-router
+            label: pages-router
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-router-basepath-dev
+            label: pages-router-basepath-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-router-basepath
+            label: pages-router-basepath
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router
+            label: app-router 1/3
+            shardIndex: 1
+            shardTotal: 3
+          - project: app-router
+            label: app-router 2/3
+            shardIndex: 2
+            shardTotal: 3
+          - project: app-router-bfcache
+            label: app-router-bfcache
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-prefetch-searchparams
+            label: app-router-prefetch-searchparams
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router
+            label: app-router 3/3
+            shardIndex: 3
+            shardTotal: 3
+          - project: app-router-isr-prod
+            label: app-router-isr-prod
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-client-cache
+            label: app-router-client-cache
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-chrome-browser-specific
+            label: app-router-chrome-browser-specific
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-webkit-browser-specific
+            label: app-router-webkit-browser-specific
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-pages-router
+            label: cloudflare-pages-router
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-router-prod
+            label: pages-router-prod
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-scroll-restoration
+            label: pages-scroll-restoration
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-workers
+            label: cloudflare-workers
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-sentry-app
+            label: cloudflare-sentry-app
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-sentry-pages
+            label: cloudflare-sentry-pages
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-dev
+            label: cloudflare-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-pages-router-dev
+            label: cloudflare-pages-router-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: static-export
+            label: static-export
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-with-src
+            label: app-with-src
+            shardIndex: 1
+            shardTotal: 1
+          - project: standalone-output
+            label: standalone-output
+            shardIndex: 1
+            shardTotal: 1
+          - project: root-layout-redirect
+            label: root-layout-redirect
+            shardIndex: 1
+            shardTotal: 1
+          - project: ppr-impact-demo
+            label: ppr-impact-demo
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-front-redirect-issue
+            label: app-front-redirect-issue
+            shardIndex: 1
+            shardTotal: 1
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
       - name: Build plugin
         run: vp run build
 
+      # ci.yml owns the playwright browsers cache; nextjs-deploy-suite.yml
+      # restores it read-only via the same composite action so both workflows
+      # share a single warm cache entry per Playwright version + browser + OS.
       - name: Cache Playwright browsers
-        uses: actions/cache@v5
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
+          browser: ${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}
+          mode: cache
+          restore-keys: |
+            playwright-${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}-${{ runner.os }}-
 
-      - run: vp exec playwright install chromium
+      # Cache the apt download cache for WebKit's system dependencies.
+      # `playwright install-deps webkit` always runs `apt-get install`, but with
+      # the package archives cached we skip the (slow) download step on hits.
+      - name: Cache apt archives (WebKit deps)
+        if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/apt-archives
+          key: apt-webkit-${{ runner.os }}-v${{ steps.playwright-cache.outputs.version }}
+          restore-keys: |
+            apt-webkit-${{ runner.os }}-
 
-      - run: vp run test:e2e
+      # Install Chromium browser binaries. Skip when the cache is fully hit —
+      # `playwright install` is a no-op for already-installed browsers but the
+      # CLI startup itself adds a few seconds per job.
+      - name: Install Playwright Chromium
+        if: ${{ matrix.project != 'app-router-webkit-browser-specific' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        run: vp exec playwright install chromium
+
+      # Install WebKit browser binaries only on cache miss. System deps are
+      # installed in a separate step below so we can cache them independently.
+      - name: Install Playwright WebKit (browser only)
+        if: ${{ matrix.project == 'app-router-webkit-browser-specific' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        run: vp exec playwright install webkit
+
+      # Install WebKit system dependencies. This always runs because apt
+      # packages are root-level and not part of ~/.cache/ms-playwright. The
+      # apt archive cache above keeps this fast on hits by avoiding re-downloads.
+      # `playwright install-deps` invokes apt-get under sudo internally.
+      - name: Install Playwright WebKit system dependencies
+        if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cache/apt-archives
+          sudo mkdir -p /var/cache/apt/archives
+          # Seed apt's archive dir from our cache so apt skips re-downloading
+          # .deb files it already has from a previous run.
+          if [ -n "$(ls -A ~/.cache/apt-archives 2>/dev/null)" ]; then
+            sudo cp -rn ~/.cache/apt-archives/. /var/cache/apt/archives/ || true
+          fi
+          # Tell apt not to delete .deb files after install so they survive
+          # for our post-step cache copy.
+          echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/01keep-debs >/dev/null
+          vp exec playwright install-deps webkit
+          # Persist newly downloaded archives back to our cache directory.
+          sudo find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -n {} ~/.cache/apt-archives/ \;
+          sudo chown -R "$(id -u):$(id -g)" ~/.cache/apt-archives
+
+      - run: vp exec playwright test --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
         env:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: playwright-report-${{ matrix.project }}
+          name: playwright-report-${{ matrix.project }}-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}
           path: playwright-report/
           retention-days: 7
 
   ci:
     name: CI
     if: ${{ always() }}
-    needs: [check, test-unit, test-integration-merge, create-next-app, e2e]
+    needs:
+      [
+        check,
+        test-unit,
+        test-integration-merge,
+        create-next-app,
+        create-next-app-cloudflare,
+        create-vinext-app-cloudflare,
+        e2e,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

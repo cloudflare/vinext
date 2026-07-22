@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, it } from "vite-plus/test";
+import type { NextI18nConfig } from "../packages/vinext/src/config/next-config.js";
 
 describe("Pages i18n domain helpers", () => {
   let addLocalePrefix: typeof import("../packages/vinext/src/utils/domain-locale.js").addLocalePrefix;
+  let detectLocaleFromAcceptLanguage: typeof import("../packages/vinext/src/server/pages-i18n.js").detectLocaleFromAcceptLanguage;
   let detectDomainLocale: typeof import("../packages/vinext/src/server/pages-i18n.js").detectDomainLocale;
   let getLocaleRedirect: typeof import("../packages/vinext/src/server/pages-i18n.js").getLocaleRedirect;
   let resolvePagesI18nRequest: typeof import("../packages/vinext/src/server/pages-i18n.js").resolvePagesI18nRequest;
@@ -9,6 +11,7 @@ describe("Pages i18n domain helpers", () => {
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/server/pages-i18n.js");
     ({ addLocalePrefix } = await import("../packages/vinext/src/utils/domain-locale.js"));
+    detectLocaleFromAcceptLanguage = mod.detectLocaleFromAcceptLanguage;
     detectDomainLocale = mod.detectDomainLocale;
     getLocaleRedirect = mod.getLocaleRedirect;
     resolvePagesI18nRequest = mod.resolvePagesI18nRequest;
@@ -23,10 +26,38 @@ describe("Pages i18n domain helpers", () => {
       { domain: "example.fr", defaultLocale: "fr", http: true },
       { domain: "example.nl", defaultLocale: "nl-NL", locales: ["nl-BE"] },
     ],
-  };
+  } satisfies NextI18nConfig;
 
   it("matches configured domains ignoring port and case", () => {
     expect(detectDomainLocale(i18n.domains, "EXAMPLE.FR:3000")).toEqual(i18n.domains[1]);
+  });
+
+  it("does not select an Accept-Language entry with zero quality", () => {
+    // Ported from Next.js's Accept-Language parser, which skips q=0 entries:
+    // packages/next/src/server/accept-header.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/accept-header.ts
+    expect(detectLocaleFromAcceptLanguage("fr;q=0", i18n)).toBeNull();
+  });
+
+  it("uses configured locale order to break equal-quality ties", () => {
+    expect(detectLocaleFromAcceptLanguage("fr,en", i18n)).toBe("en");
+  });
+
+  it("matches language ranges to configured regional locales", () => {
+    expect(detectLocaleFromAcceptLanguage("nl", i18n)).toBe("nl-NL");
+  });
+
+  it("uses a wildcard to select the first unlisted configured locale", () => {
+    const wildcardI18n = { ...i18n, locales: ["fr", "en"] };
+    expect(detectLocaleFromAcceptLanguage("fr;q=0,*;q=0.5", wildcardI18n)).toBe("en");
+  });
+
+  it("accepts an uppercase quality parameter", () => {
+    expect(detectLocaleFromAcceptLanguage("fr;Q=0.8,en;Q=0.5", i18n)).toBe("fr");
+  });
+
+  it("ignores an invalid Accept-Language header", () => {
+    expect(detectLocaleFromAcceptLanguage("fr;q=0.8;level=1", i18n)).toBeNull();
   });
 
   it("matches a domain by locale aliases when switching locales", () => {
@@ -99,6 +130,17 @@ describe("Pages i18n domain helpers", () => {
     ).toBe("http://example.fr/");
   });
 
+  it("does not redirect to a locale explicitly rejected by Accept-Language", () => {
+    expect(
+      getLocaleRedirect({
+        headers: { "accept-language": "fr;q=0" },
+        nextConfig: { i18n, basePath: "", trailingSlash: false },
+        pathLocale: undefined,
+        urlParsed: { hostname: "example.com", pathname: "/" },
+      }),
+    ).toBeUndefined();
+  });
+
   it("does not redirect non-root requests for locale detection", () => {
     expect(
       getLocaleRedirect({
@@ -119,5 +161,101 @@ describe("Pages i18n domain helpers", () => {
         "example.com",
       ).redirectUrl,
     ).toBe("http://example.fr/?utm=campaign&next=%2Fcheckout");
+  });
+});
+
+// Ported from Next.js: test/e2e/i18n-support/shared.ts
+// `addDefaultLocaleCookie` sets `NEXT_LOCALE=EN-US` (uppercase) "to ensure
+// it's case-insensitive". Next.js resolves the cookie case-insensitively and
+// returns the canonical configured locale (get-locale-redirect.ts
+// `getLocaleFromCookie`).
+// https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support/shared.ts
+describe("parseCookieLocaleFromHeader (issue #1969)", () => {
+  let parseCookieLocaleFromHeader: typeof import("../packages/vinext/src/server/pages-i18n.js").parseCookieLocaleFromHeader;
+
+  beforeAll(async () => {
+    ({ parseCookieLocaleFromHeader } = await import("../packages/vinext/src/server/pages-i18n.js"));
+  });
+
+  const i18n = {
+    locales: ["en-US", "fr"],
+    defaultLocale: "en-US",
+    localeDetection: true,
+    domains: [],
+  };
+
+  it("matches an exact-case cookie value", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=en-US", i18n)).toBe("en-US");
+  });
+
+  it("resolves an uppercase cookie to the canonical configured locale", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=EN-US", i18n)).toBe("en-US");
+  });
+
+  it("resolves a mixed-case cookie to the canonical configured locale", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=Fr", i18n)).toBe("fr");
+  });
+
+  it("returns null when the cookie value is not a configured locale", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=de", i18n)).toBeNull();
+  });
+});
+
+// Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts
+// (the "should redirect to api route with locale" case)
+// https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-redirects/test/index.test.ts
+//
+// Reference Next.js implementation:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/i18n/normalize-locale-path.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/get-next-pathname-info.ts
+describe("stripI18nLocaleForApiRoute (issue #1336 item 3)", () => {
+  const i18n = {
+    locales: ["en", "fr", "nl-NL"],
+    defaultLocale: "en",
+    localeDetection: true,
+  };
+  let stripI18nLocaleForApiRoute: typeof import("../packages/vinext/src/server/pages-i18n.js").stripI18nLocaleForApiRoute;
+
+  beforeAll(async () => {
+    ({ stripI18nLocaleForApiRoute } = await import("../packages/vinext/src/server/pages-i18n.js"));
+  });
+
+  it("strips a single-segment locale prefix from an API path", () => {
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok", i18n)).toBe("/api/ok");
+  });
+
+  it("strips a region-tagged locale prefix from an API path", () => {
+    expect(stripI18nLocaleForApiRoute("/nl-NL/api/ok", i18n)).toBe("/api/ok");
+  });
+
+  it("preserves the query string when stripping the locale prefix", () => {
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok?id=1&tag=a&tag=b", i18n)).toBe(
+      "/api/ok?id=1&tag=a&tag=b",
+    );
+  });
+
+  it("returns the URL unchanged when no locale prefix is present", () => {
+    expect(stripI18nLocaleForApiRoute("/api/ok", i18n)).toBe("/api/ok");
+  });
+
+  it("returns the URL unchanged when the first segment is not a configured locale", () => {
+    // "es" is NOT in locales; this must NOT be treated as a locale prefix.
+    expect(stripI18nLocaleForApiRoute("/es/api/ok", i18n)).toBe("/es/api/ok");
+  });
+
+  it("returns the URL unchanged when i18nConfig is null/undefined", () => {
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok", null)).toBe("/fr/api/ok");
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok", undefined)).toBe("/fr/api/ok");
+  });
+
+  it("strips locale even on non-API paths (caller decides what to do with the result)", () => {
+    // The helper is locale-strip only; callers branch on the resulting
+    // pathname's /api/ prefix. This isolates the helper's behaviour from
+    // any caller-specific routing decisions.
+    expect(stripI18nLocaleForApiRoute("/fr/about", i18n)).toBe("/about");
+  });
+
+  it("leaves the root path untouched", () => {
+    expect(stripI18nLocaleForApiRoute("/", i18n)).toBe("/");
   });
 });

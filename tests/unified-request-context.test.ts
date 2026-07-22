@@ -4,7 +4,12 @@ import {
   runWithRequestContext,
   getRequestContext,
   isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import {
+  consumeRenderRequestApiUsage,
+  markRenderRequestApiUsage,
+} from "../packages/vinext/src/shims/headers.js";
 import {
   getRequestExecutionContext,
   runWithExecutionContext,
@@ -224,6 +229,24 @@ describe("unified-request-context", () => {
 
         // Outer scope restored
         expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe("outer");
+      });
+    });
+
+    it("consuming render request API usage in a shallow child scope preserves parent observations", async () => {
+      const outerCtx = createRequestContext();
+
+      await runWithRequestContext(outerCtx, async () => {
+        markRenderRequestApiUsage("headers");
+
+        await runWithUnifiedStateMutation(
+          () => {},
+          async () => {
+            expect(consumeRenderRequestApiUsage()).toEqual(["headers"]);
+            expect(consumeRenderRequestApiUsage()).toEqual([]);
+          },
+        );
+
+        expect(consumeRenderRequestApiUsage()).toEqual(["headers"]);
       });
     });
   });

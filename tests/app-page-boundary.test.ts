@@ -3,6 +3,7 @@ import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
   resolveAppPageHttpAccessBoundaryComponent,
+  resolveAppPageParentHttpAccessBoundaryModule,
   wrapAppPageBoundaryElement,
 } from "../packages/vinext/src/server/app-page-boundary.js";
 
@@ -50,6 +51,28 @@ describe("app page boundary helpers", () => {
     });
 
     expect(component).toBe("RootNotFound");
+  });
+
+  it("selects the matching parent HTTP access boundary for layout throws", () => {
+    expect(
+      resolveAppPageParentHttpAccessBoundaryModule({
+        layoutIndex: 2,
+        rootForbiddenModule: "RootForbidden",
+        routeForbiddenModules: [null, "ParentForbidden", "ThrowingLayoutForbidden"],
+        routeNotFoundModules: [null, "ParentNotFound"],
+        statusCode: 403,
+      }),
+    ).toBe("ParentForbidden");
+
+    expect(
+      resolveAppPageParentHttpAccessBoundaryModule({
+        layoutIndex: 2,
+        rootUnauthorizedModule: "RootUnauthorized",
+        routeNotFoundModules: [null, "ParentNotFound"],
+        routeUnauthorizedModules: [null, undefined, "ThrowingLayoutUnauthorized"],
+        statusCode: 401,
+      }),
+    ).toBe("RootUnauthorized");
   });
 
   it("resolves page, layout, and global error boundaries in order", () => {
@@ -116,18 +139,18 @@ describe("app page boundary helpers", () => {
       renderLayout(component, children, params) {
         return `Layout(${component})[${children}|${JSON.stringify(params)}]`;
       },
-      renderLayoutSegmentProvider(childSegments, children) {
-        return `Segment(${String(childSegments)})[${children}]`;
+      renderLayoutSegmentProvider(segmentMap, children) {
+        return `Segment(${String(segmentMap.children)})[${children}]`;
       },
       resolveChildSegments(routeSegments, treePosition, params) {
         const slug = Array.isArray(params.slug) ? params.slug.join("/") : params.slug;
         return `${routeSegments[treePosition] ?? "root"}:${slug}`;
       },
-      routeSegments: ["root", "[slug]"],
+      routeSegments: ["[slug]"],
     });
 
     expect(wrapped).toBe(
-      'ErrorBoundary(GlobalError)[Segment(root:post)[Layout(RootLayout)[Segment([slug]:post)[Layout(LeafLayout)[Boundary|{"slug":"post","thenable":true}]]|{"slug":"post","thenable":true}]]]',
+      'ErrorBoundary(GlobalError)[Segment([slug]:post)[Layout(RootLayout)[Segment(root:post)[Layout(LeafLayout)[Boundary|{"slug":"post","thenable":true}]]|{"thenable":true}]]]',
     );
   });
 
@@ -179,7 +202,7 @@ describe("app page boundary helpers", () => {
     });
 
     expect(response.status).toBe(404);
-    expect(response.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
+    expect(response.headers.get("Content-Type")).toBe("text/x-component");
     expect(createHtmlResponse).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("RSC boundary");
   });
@@ -210,5 +233,54 @@ describe("app page boundary helpers", () => {
 
     expect(createHtmlResponse).toHaveBeenCalledTimes(1);
     await expect(response.text()).resolves.toBe("200:HTML boundary");
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on boundary RSC responses for edge-runtime routes", async () => {
+    const response = await renderAppPageBoundaryResponse({
+      async createHtmlResponse() {
+        return new Response("html");
+      },
+      createRscOnErrorHandler() {
+        return () => null;
+      },
+      element: "boundary",
+      isEdgeRuntime: true,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(String(element)));
+            controller.close();
+          },
+        });
+      },
+      status: 404,
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on boundary RSC responses for nodejs-runtime routes", async () => {
+    const response = await renderAppPageBoundaryResponse({
+      async createHtmlResponse() {
+        return new Response("html");
+      },
+      createRscOnErrorHandler() {
+        return () => null;
+      },
+      element: "boundary",
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(String(element)));
+            controller.close();
+          },
+        });
+      },
+      status: 404,
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
   });
 });

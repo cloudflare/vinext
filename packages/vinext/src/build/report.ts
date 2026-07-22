@@ -8,9 +8,9 @@
  *   ?  Unknown  — no explicit config; likely dynamic but not confirmed
  *   λ  API      — API route handler
  *
- * Classification uses regex-based static source analysis (no module
- * execution). Vite's parseAst() is NOT used because it doesn't handle
- * TypeScript syntax.
+ * Classification uses AST-based static source analysis (no module execution).
+ * Runtime/prerender results are still treated as stronger evidence where
+ * available; AST analysis only reads top-level static exports.
  *
  * Limitation: without running the build, we cannot detect dynamic API usage
  * (headers(), cookies(), connection(), etc.) that implicitly forces a route
@@ -20,9 +20,13 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import { toSlash } from "pathslash";
+import { parseSync } from "vite";
+import type { ESTree } from "vite";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
+import { findDir } from "../utils/project.js";
+import type { LayoutBuildClassification } from "./layout-classification-types.js";
 import type { PrerenderResult } from "./prerender.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -42,60 +46,342 @@ export type RouteRow = {
   prerendered?: boolean;
 };
 
-// ─── Regex-based export detection ────────────────────────────────────────────
+type AppRouteRenderEntry = Pick<AppRoute, "pagePath" | "routePath" | "parallelSlots">;
+type ArrowFunctionExpression = ESTree.ArrowFunctionExpression;
+type BindingPattern = ESTree.BindingPattern;
+type BlockStatement = ESTree.BlockStatement;
+type Expression = ESTree.Expression;
+type FunctionBody = ESTree.FunctionBody;
+type FunctionLike = ESTree.Function | ArrowFunctionExpression;
+type ModuleExportName = ESTree.ModuleExportName;
+type ObjectExpression = ESTree.ObjectExpression;
+type Program = ESTree.Program;
+type PropertyKey = ESTree.PropertyKey;
+type Statement = ESTree.Statement;
+type VariableDeclarator = ESTree.VariableDeclarator;
+
+type StaticMiddlewareMatcherObject = {
+  source: string;
+  locale?: false;
+  has?: Array<Record<string, string>>;
+  missing?: Array<Record<string, string>>;
+};
+
+export type StaticMiddlewareMatcher = string | Array<string | StaticMiddlewareMatcherObject>;
+
+const UNSUPPORTED_STATIC_VALUE = Symbol("unsupported static value");
+
+export function getAppRouteRenderEntryPath(route: AppRouteRenderEntry): string | null {
+  if (route.pagePath) return route.pagePath;
+  if (route.routePath) return null;
+
+  for (const slot of route.parallelSlots) {
+    if (slot.pagePath) return slot.pagePath;
+  }
+
+  for (const slot of route.parallelSlots) {
+    if (slot.defaultPath) return slot.defaultPath;
+  }
+
+  return null;
+}
+
+// ─── Static export analysis ──────────────────────────────────────────────────
+
+type StaticNumberValue = number | false;
+
+function parseRouteModuleWithLang(code: string, lang: "ts" | "tsx"): Program | null {
+  try {
+    const result = parseSync(`vinext-route.${lang}`, code, {
+      astType: "ts",
+      lang,
+      sourceType: "module",
+    });
+
+    return result.errors.some((error) => error.severity === "Error") ? null : result.program;
+  } catch {
+    return null;
+  }
+}
+
+function parseRouteModule(code: string): Program | null {
+  return parseRouteModuleWithLang(code, "tsx") ?? parseRouteModuleWithLang(code, "ts");
+}
+
+function moduleExportNameValue(name: ModuleExportName): string | null {
+  if (name.type === "Identifier") return name.name;
+  if (name.type === "Literal" && typeof name.value === "string") return name.value;
+  return null;
+}
+
+function bindingName(pattern: BindingPattern): string | null {
+  return pattern.type === "Identifier" ? pattern.name : null;
+}
+
+function declarationHasBindingName(declaration: Statement | null, name: string): boolean {
+  if (declaration === null) return false;
+
+  if (declaration.type === "FunctionDeclaration") {
+    return declaration.id?.name === name;
+  }
+
+  if (declaration.type !== "VariableDeclaration") return false;
+
+  return declaration.declarations.some((declaration) => bindingName(declaration.id) === name);
+}
 
 /**
- * Returns true if the source code contains a named export with the given name.
+ * Returns true if the source code contains an export declaration with the given name.
+ * For re-export specifiers, this intentionally follows Next.js' static analyzer
+ * and checks the local/original binding name.
  * Handles all three common export forms:
  *   export function foo() {}
  *   export const foo = ...
  *   export { foo }
  */
 export function hasNamedExport(code: string, name: string): boolean {
-  // Function / generator / async function declaration
-  const fnRe = new RegExp(`(?:^|\\n)\\s*export\\s+(?:async\\s+)?function\\s+${name}\\b`);
-  if (fnRe.test(code)) return true;
+  const program = parseRouteModule(code);
+  if (!program) return false;
+  return hasNamedExportInProgram(program, name);
+}
 
-  // Variable declaration (const / let / var)
-  const varRe = new RegExp(`(?:^|\\n)\\s*export\\s+(?:const|let|var)\\s+${name}\\s*[=:]`);
-  if (varRe.test(code)) return true;
+/** Returns true when Next.js' analyzer recognizes the requested export name. */
+export function hasExportedName(code: string, name: string): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
 
-  // Re-export specifier: export { foo } or export { foo as bar }
-  const reRe = new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`);
-  if (reRe.test(code)) return true;
-
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+    if (node.exportKind === "type") continue;
+    if (declarationHasBindingName(node.declaration, name)) return true;
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.local) === name) return true;
+    }
+  }
   return false;
+}
+
+function hasNamedExportInProgram(program: Program, name: string): boolean {
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+
+    if (declarationHasBindingName(node.declaration, name)) return true;
+
+    for (const specifier of node.specifiers) {
+      if (moduleExportNameValue(specifier.local) === name) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function unwrapStaticExpression(expression: Expression): Expression {
+  let current = expression;
+  while (
+    current.type === "ParenthesizedExpression" ||
+    current.type === "TSAsExpression" ||
+    current.type === "TSSatisfiesExpression" ||
+    current.type === "TSTypeAssertion" ||
+    current.type === "TSNonNullExpression"
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function findExportedConstInitializer(code: string, name: string): Expression | null {
+  const program = parseRouteModule(code);
+  if (!program) return null;
+  return findExportedConstInitializerInProgram(program, name);
+}
+
+function findExportedConstInitializerInProgram(program: Program, name: string): Expression | null {
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+    const declaration = node.declaration;
+    if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") continue;
+
+    for (const declarator of declaration.declarations) {
+      if (bindingName(declarator.id) === name) {
+        return declarator.init;
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
  * Extracts the string value of `export const <name> = "value"`.
- * Handles optional TypeScript type annotations:
- *   export const dynamic: string = "force-dynamic"
+ * Handles TypeScript annotations/assertions and no-substitution template literals.
  * Returns null if the export is absent or not a string literal.
  */
 export function extractExportConstString(code: string, name: string): string | null {
-  const re = new RegExp(
-    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*['"]([^'"]+)['"]`,
-    "m",
-  );
-  const m = re.exec(code);
-  return m ? m[1] : null;
+  const initializer = findExportedConstInitializer(code, name);
+  return extractStringFromConstInitializer(initializer);
+}
+
+function extractExportConstStringFromProgram(program: Program, name: string): string | null {
+  return extractStringFromConstInitializer(findExportedConstInitializerInProgram(program, name));
+}
+
+function extractStringFromConstInitializer(initializer: Expression | null): string | null {
+  if (initializer === null) return null;
+
+  const expression = unwrapStaticExpression(initializer);
+  if (expression.type === "Literal" && typeof expression.value === "string") {
+    return expression.value;
+  }
+
+  if (expression.type === "TemplateLiteral" && expression.expressions.length === 0) {
+    return expression.quasis[0]?.value.cooked ?? expression.quasis[0]?.value.raw ?? null;
+  }
+
+  return null;
+}
+
+export function extractMiddlewareMatcherConfig(
+  filePath: string,
+): StaticMiddlewareMatcher | undefined {
+  const value = extractMiddlewareMatcherConfigValue(filePath);
+  return isStaticMiddlewareMatcher(value) ? value : undefined;
 }
 
 /**
- * Extracts the numeric value of `export const <name> = <number>`.
- * Supports integers, decimals, negative values, and `Infinity`.
- * Handles optional TypeScript type annotations.
- * Returns null if the export is absent or not a number.
+ * Extract the statically analyzable `config.matcher` value without first
+ * narrowing it to vinext's runtime matcher type. Build validation needs the
+ * raw value so malformed matcher objects are rejected instead of disappearing
+ * as though no matcher had been configured.
+ */
+export function extractMiddlewareMatcherConfigValue(filePath: string): unknown {
+  let code: string;
+  try {
+    code = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const initializer = findExportedConstInitializer(code, "config");
+  if (!initializer) return undefined;
+  const config = unwrapStaticExpression(initializer);
+  if (config.type !== "ObjectExpression") return undefined;
+
+  const matcherExpression = objectPropertyValue(config, "matcher");
+  if (!matcherExpression) return undefined;
+
+  const value = extractStaticJsonValue(matcherExpression);
+  return value === UNSUPPORTED_STATIC_VALUE ? undefined : value;
+}
+
+function objectPropertyValue(object: ObjectExpression, key: string): Expression | null {
+  for (const property of object.properties) {
+    if (property.type !== "Property" || property.computed) continue;
+    if (propertyKeyName(property.key) !== key) continue;
+    return property.value;
+  }
+  return null;
+}
+
+function propertyKeyName(key: PropertyKey): string | null {
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "Literal" && typeof key.value === "string") return key.value;
+  return null;
+}
+
+function extractStaticJsonValue(expression: Expression): unknown {
+  const value = unwrapStaticExpression(expression);
+
+  if (value.type === "Literal") {
+    if (
+      typeof value.value === "string" ||
+      typeof value.value === "number" ||
+      typeof value.value === "boolean" ||
+      value.value === null
+    ) {
+      return value.value;
+    }
+    return UNSUPPORTED_STATIC_VALUE;
+  }
+
+  if (value.type === "TemplateLiteral" && value.expressions.length === 0) {
+    return value.quasis[0]?.value.cooked ?? value.quasis[0]?.value.raw ?? "";
+  }
+
+  if (value.type === "ArrayExpression") {
+    const items: unknown[] = [];
+    for (const element of value.elements) {
+      if (!element || element.type === "SpreadElement") return UNSUPPORTED_STATIC_VALUE;
+      const item = extractStaticJsonValue(element);
+      if (item === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+      items.push(item);
+    }
+    return items;
+  }
+
+  if (value.type === "ObjectExpression") {
+    const object: Record<string, unknown> = {};
+    for (const property of value.properties) {
+      if (property.type !== "Property" || property.computed) return UNSUPPORTED_STATIC_VALUE;
+      const key = propertyKeyName(property.key);
+      if (!key) return UNSUPPORTED_STATIC_VALUE;
+      const propertyValue = extractStaticJsonValue(property.value);
+      if (propertyValue === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+      object[key] = propertyValue;
+    }
+    return object;
+  }
+
+  return UNSUPPORTED_STATIC_VALUE;
+}
+
+function isStaticMiddlewareMatcher(value: unknown): value is StaticMiddlewareMatcher {
+  if (typeof value === "string") return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => typeof item === "string" || isStaticMiddlewareMatcherObject(item));
+}
+
+function isStaticMiddlewareMatcherObject(value: unknown): value is StaticMiddlewareMatcherObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.source !== "string") return false;
+  if (record.locale !== undefined && record.locale !== false) return false;
+  return isStaticMatcherConditions(record.has) && isStaticMatcherConditions(record.missing);
+}
+
+function isStaticMatcherConditions(value: unknown): value is Array<Record<string, string>> {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    return Object.values(item).every((entry) => typeof entry === "string");
+  });
+}
+
+/**
+ * Extracts the numeric value of `export const <name> = <number|false>`.
+ * Supports integers, decimals, negative values, `Infinity`, and `false`.
+ * `false` is returned as `Infinity` because `export const revalidate = false`
+ * means "cache indefinitely" in Next.js segment config.
+ * Handles TypeScript annotations/assertions and JavaScript numeric separators.
+ * Returns null if the export is absent or not a number/`false`.
  */
 export function extractExportConstNumber(code: string, name: string): number | null {
-  const re = new RegExp(
-    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*(-?\\d+(?:\\.\\d+)?|Infinity)`,
-    "m",
-  );
-  const m = re.exec(code);
-  if (!m) return null;
-  return m[1] === "Infinity" ? Infinity : parseFloat(m[1]);
+  const initializer = findExportedConstInitializer(code, name);
+  return extractNumberFromConstInitializer(initializer);
+}
+
+function extractExportConstNumberFromProgram(program: Program, name: string): number | null {
+  return extractNumberFromConstInitializer(findExportedConstInitializerInProgram(program, name));
+}
+
+function extractNumberFromConstInitializer(initializer: Expression | null): number | null {
+  if (initializer === null) return null;
+
+  const value = extractStaticNumberValue(initializer);
+  if (value === null) return null;
+  return value === false ? Infinity : value;
 }
 
 /**
@@ -110,501 +396,258 @@ export function extractExportConstNumber(code: string, name: string): number | n
  *   null     — no `revalidate` key found (fully static)
  */
 export function extractGetStaticPropsRevalidate(code: string): number | false | null {
-  const returnObjects = extractGetStaticPropsReturnObjects(code);
+  const program = parseRouteModule(code);
+  if (!program) return extractWrappedGetStaticPropsRevalidate(code);
+  return extractGetStaticPropsRevalidateFromProgram(program, code);
+}
 
-  if (returnObjects) {
-    for (const searchSpace of returnObjects) {
-      const revalidate = extractTopLevelRevalidateValue(searchSpace);
-      if (revalidate !== null) return revalidate;
-    }
+function extractGetStaticPropsRevalidateFromProgram(
+  program: Program,
+  fallbackCode: string,
+): number | false | null {
+  const getStaticProps = findExportedGetStaticProps(program);
+  if (getStaticProps === "external") return null;
+  if (getStaticProps === null) return extractWrappedGetStaticPropsRevalidate(fallbackCode);
+
+  return extractFunctionRevalidate(getStaticProps);
+}
+
+function extractStaticNumberValue(expression: Expression): StaticNumberValue | null {
+  const unwrapped = unwrapStaticExpression(expression);
+
+  if (unwrapped.type === "Literal") {
+    if (typeof unwrapped.value === "number") return unwrapped.value;
+    if (unwrapped.value === false) return false;
     return null;
   }
 
-  const m = /\brevalidate\s*:\s*(-?\d+(?:\.\d+)?|Infinity|false)\b/.exec(code);
-  if (!m) return null;
-  if (m[1] === "false") return false;
-  if (m[1] === "Infinity") return Infinity;
-  return parseFloat(m[1]);
+  if (unwrapped.type === "Identifier" && unwrapped.name === "Infinity") {
+    return Infinity;
+  }
+
+  if (unwrapped.type === "UnaryExpression") {
+    const argument = extractStaticNumberValue(unwrapped.argument);
+    if (typeof argument !== "number") return null;
+    if (unwrapped.operator === "-") return -argument;
+    if (unwrapped.operator === "+") return argument;
+    return null;
+  }
+
+  return null;
 }
 
-function extractTopLevelRevalidateValue(code: string): number | false | null {
-  let braceDepth = 0;
-  let parenDepth = 0;
-  let bracketDepth = 0;
-  let quote: '"' | "'" | "`" | null = null;
-  let inLineComment = false;
-  let inBlockComment = false;
+function findExportedGetStaticProps(program: Program): FunctionLike | "external" | null {
+  let hasLocalGetStaticPropsExport = false;
 
-  for (let i = 0; i < code.length; i++) {
-    const char = code[i];
-    const next = code[i + 1];
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
 
-    if (inLineComment) {
-      if (char === "\n") inLineComment = false;
-      continue;
+    const declaration = node.declaration;
+    if (declaration?.type === "FunctionDeclaration" && declaration.id?.name === "getStaticProps") {
+      return declaration;
     }
 
-    if (inBlockComment) {
-      if (char === "*" && next === "/") {
-        inBlockComment = false;
-        i++;
-      }
-      continue;
+    if (declaration?.type === "VariableDeclaration") {
+      const direct = findFunctionLikeVariable(declaration.declarations, "getStaticProps");
+      if (direct) return direct;
     }
 
-    if (quote) {
-      if (char === "\\") {
-        i++;
-        continue;
-      }
-      if (char === quote) quote = null;
-      continue;
+    for (const specifier of node.specifiers) {
+      const localName = moduleExportNameValue(specifier.local);
+      if (localName !== "getStaticProps") continue;
+      if (node.source !== null) return "external";
+      hasLocalGetStaticPropsExport = true;
+    }
+  }
+
+  if (!hasLocalGetStaticPropsExport) return null;
+
+  for (const node of program.body) {
+    if (node.type === "FunctionDeclaration" && node.id?.name === "getStaticProps") {
+      return node;
     }
 
-    if (char === "/" && next === "/") {
-      inLineComment = true;
-      i++;
-      continue;
-    }
-
-    if (char === "/" && next === "*") {
-      inBlockComment = true;
-      i++;
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-
-    if (char === "{") {
-      braceDepth++;
-      continue;
-    }
-
-    if (char === "}") {
-      braceDepth--;
-      continue;
-    }
-
-    if (char === "(") {
-      parenDepth++;
-      continue;
-    }
-
-    if (char === ")") {
-      parenDepth--;
-      continue;
-    }
-
-    if (char === "[") {
-      bracketDepth++;
-      continue;
-    }
-
-    if (char === "]") {
-      bracketDepth--;
-      continue;
-    }
-
-    if (
-      braceDepth === 1 &&
-      parenDepth === 0 &&
-      bracketDepth === 0 &&
-      matchesKeywordAt(code, i, "revalidate")
-    ) {
-      const colonIndex = findNextNonWhitespaceIndex(code, i + "revalidate".length);
-      if (colonIndex === -1 || code[colonIndex] !== ":") continue;
-
-      const valueStart = findNextNonWhitespaceIndex(code, colonIndex + 1);
-      if (valueStart === -1) return null;
-
-      const valueMatch = /^(-?\d+(?:\.\d+)?|Infinity|false)\b/.exec(code.slice(valueStart));
-      if (!valueMatch) return null;
-      if (valueMatch[1] === "false") return false;
-      if (valueMatch[1] === "Infinity") return Infinity;
-      return parseFloat(valueMatch[1]);
+    if (node.type === "VariableDeclaration") {
+      const local = findFunctionLikeVariable(node.declarations, "getStaticProps");
+      if (local) return local;
     }
   }
 
   return null;
 }
 
-function extractGetStaticPropsReturnObjects(code: string): string[] | null {
-  const declarationMatch =
-    /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+getStaticProps\b|(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+getStaticProps\b/.exec(
-      code,
+function findFunctionLikeVariable(
+  declarations: readonly VariableDeclarator[],
+  name: string,
+): FunctionLike | null {
+  for (const declaration of declarations) {
+    if (bindingName(declaration.id) !== name || declaration.init === null) continue;
+    const initializer = unwrapStaticExpression(declaration.init);
+    if (
+      initializer.type === "FunctionExpression" ||
+      initializer.type === "ArrowFunctionExpression"
+    ) {
+      return initializer;
+    }
+  }
+
+  return null;
+}
+
+function extractWrappedGetStaticPropsRevalidate(code: string): number | false | null {
+  // Exported helpers are also used by tests with bare `return { ... }` fragments,
+  // which are not valid module source until wrapped in a synthetic function.
+  const program = parseRouteModule(`function __vinextGetStaticProps() {\n${code}\n}`);
+  if (!program) return null;
+
+  for (const node of program.body) {
+    if (node.type === "FunctionDeclaration" && node.id?.name === "__vinextGetStaticProps") {
+      return extractFunctionRevalidate(node);
+    }
+  }
+
+  return null;
+}
+
+function extractFunctionRevalidate(fn: FunctionLike): number | false | null {
+  if (fn.type === "ArrowFunctionExpression" && fn.body.type !== "BlockStatement") {
+    const expression = unwrapStaticExpression(fn.body);
+    return expression.type === "ObjectExpression" ? extractObjectRevalidate(expression) : null;
+  }
+
+  if (!fn.body || fn.body.type !== "BlockStatement") return null;
+  return extractBlockRevalidate(fn.body);
+}
+
+function extractBlockRevalidate(block: BlockStatement | FunctionBody): number | false | null {
+  for (const statement of block.body) {
+    const result = extractStatementRevalidate(statement);
+    if (result !== null) return result;
+  }
+
+  return null;
+}
+
+function extractStatementRevalidate(statement: Statement): number | false | null {
+  if (statement.type === "ReturnStatement") {
+    if (!statement.argument) return null;
+    const argument = unwrapStaticExpression(statement.argument);
+    return argument.type === "ObjectExpression" ? extractObjectRevalidate(argument) : null;
+  }
+
+  if (statement.type === "BlockStatement") {
+    return extractBlockRevalidate(statement);
+  }
+
+  if (statement.type === "IfStatement") {
+    return (
+      extractStatementRevalidate(statement.consequent) ??
+      (statement.alternate ? extractStatementRevalidate(statement.alternate) : null)
     );
-  if (!declarationMatch) {
-    // A file can re-export getStaticProps from another module without defining
-    // it locally. In that case we can't safely infer revalidate from this file,
-    // so skip the whole-file fallback to avoid unrelated false positives.
-    if (/(?:^|\n)\s*export\s*\{[^}]*\bgetStaticProps\b[^}]*\}\s*from\b/.test(code)) {
-      return [];
+  }
+
+  if (
+    statement.type === "ForStatement" ||
+    statement.type === "ForInStatement" ||
+    statement.type === "ForOfStatement" ||
+    statement.type === "WhileStatement" ||
+    statement.type === "DoWhileStatement" ||
+    statement.type === "WithStatement" ||
+    statement.type === "LabeledStatement"
+  ) {
+    return extractStatementRevalidate(statement.body);
+  }
+
+  if (statement.type === "SwitchStatement") {
+    for (const switchCase of statement.cases) {
+      for (const consequent of switchCase.consequent) {
+        const result = extractStatementRevalidate(consequent);
+        if (result !== null) return result;
+      }
     }
     return null;
   }
 
-  const declaration = extractGetStaticPropsDeclaration(code, declarationMatch);
-  if (declaration === null) return [];
-
-  const returnObjects = declaration.trimStart().startsWith("{")
-    ? collectReturnObjectsFromFunctionBody(declaration)
-    : [];
-
-  if (returnObjects.length > 0) return returnObjects;
-
-  const arrowMatch = declaration.search(/=>\s*\(\s*\{/);
-  // getStaticProps was found but contains no return objects — return empty
-  // (non-null signals the caller to skip the whole-file fallback).
-  if (arrowMatch === -1) return [];
-
-  const braceStart = declaration.indexOf("{", arrowMatch);
-  if (braceStart === -1) return [];
-
-  const braceEnd = findMatchingBrace(declaration, braceStart);
-  if (braceEnd === -1) return [];
-
-  return [declaration.slice(braceStart, braceEnd + 1)];
-}
-
-function extractGetStaticPropsDeclaration(
-  code: string,
-  declarationMatch: RegExpExecArray,
-): string | null {
-  const declarationStart = declarationMatch.index;
-  const declarationText = declarationMatch[0];
-  const declarationTail = code.slice(declarationStart);
-
-  if (declarationText.includes("function getStaticProps")) {
-    return extractFunctionBody(code, declarationStart + declarationText.length);
+  if (statement.type === "TryStatement") {
+    return (
+      extractBlockRevalidate(statement.block) ??
+      (statement.handler ? extractBlockRevalidate(statement.handler.body) : null) ??
+      (statement.finalizer ? extractBlockRevalidate(statement.finalizer) : null)
+    );
   }
 
-  const functionExpressionMatch = /(?:async\s+)?function\b/.exec(declarationTail);
-  if (functionExpressionMatch) {
-    return extractFunctionBody(declarationTail, functionExpressionMatch.index);
-  }
-
-  const blockBodyMatch = /=>\s*\{/.exec(declarationTail);
-  if (blockBodyMatch) {
-    const braceStart = declarationTail.indexOf("{", blockBodyMatch.index);
-    if (braceStart === -1) return null;
-
-    const braceEnd = findMatchingBrace(declarationTail, braceStart);
-    if (braceEnd === -1) return null;
-
-    return declarationTail.slice(braceStart, braceEnd + 1);
-  }
-
-  const implicitArrowMatch = declarationTail.search(/=>\s*\(\s*\{/);
-  if (implicitArrowMatch === -1) return null;
-
-  const implicitBraceStart = declarationTail.indexOf("{", implicitArrowMatch);
-  if (implicitBraceStart === -1) return null;
-
-  const implicitBraceEnd = findMatchingBrace(declarationTail, implicitBraceStart);
-  if (implicitBraceEnd === -1) return null;
-
-  return declarationTail.slice(0, implicitBraceEnd + 1);
+  return null;
 }
 
-function extractFunctionBody(code: string, functionStart: number): string | null {
-  const bodyEnd = findFunctionBodyEnd(code, functionStart);
-  if (bodyEnd === -1) return null;
-
-  const paramsStart = code.indexOf("(", functionStart);
-  if (paramsStart === -1) return null;
-
-  const paramsEnd = findMatchingParen(code, paramsStart);
-  if (paramsEnd === -1) return null;
-
-  const bodyStart = code.indexOf("{", paramsEnd + 1);
-  if (bodyStart === -1) return null;
-
-  return code.slice(bodyStart, bodyEnd + 1);
-}
-
-function collectReturnObjectsFromFunctionBody(code: string): string[] {
-  const returnObjects: string[] = [];
-  let quote: '"' | "'" | "`" | null = null;
-  let inLineComment = false;
-  let inBlockComment = false;
-
-  for (let i = 0; i < code.length; i++) {
-    const char = code[i];
-    const next = code[i + 1];
-
-    if (inLineComment) {
-      if (char === "\n") inLineComment = false;
-      continue;
-    }
-
-    if (inBlockComment) {
-      if (char === "*" && next === "/") {
-        inBlockComment = false;
-        i++;
-      }
-      continue;
-    }
-
-    if (quote) {
-      if (char === "\\") {
-        i++;
-        continue;
-      }
-      if (char === quote) quote = null;
-      continue;
-    }
-
-    if (char === "/" && next === "/") {
-      inLineComment = true;
-      i++;
-      continue;
-    }
-
-    if (char === "/" && next === "*") {
-      inBlockComment = true;
-      i++;
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-
-    if (matchesKeywordAt(code, i, "function")) {
-      const nestedBodyEnd = findFunctionBodyEnd(code, i);
-      if (nestedBodyEnd !== -1) {
-        i = nestedBodyEnd;
-      }
-      continue;
-    }
-
-    if (matchesKeywordAt(code, i, "class")) {
-      const classBodyEnd = findClassBodyEnd(code, i);
-      if (classBodyEnd !== -1) {
-        i = classBodyEnd;
-      }
-      continue;
-    }
-
-    if (char === "=" && next === ">") {
-      const nestedBodyEnd = findArrowFunctionBodyEnd(code, i);
-      if (nestedBodyEnd !== -1) {
-        i = nestedBodyEnd;
-      }
-      continue;
-    }
-
+function extractObjectRevalidate(object: ObjectExpression): number | false | null {
+  for (const property of object.properties) {
     if (
-      (char >= "A" && char <= "Z") ||
-      (char >= "a" && char <= "z") ||
-      char === "_" ||
-      char === "$" ||
-      char === "*"
+      property.type !== "Property" ||
+      property.computed ||
+      propertyName(property.key) !== "revalidate"
     ) {
-      const methodBodyEnd = findObjectMethodBodyEnd(code, i);
-      if (methodBodyEnd !== -1) {
-        i = methodBodyEnd;
-        continue;
-      }
-    }
-
-    if (matchesKeywordAt(code, i, "return")) {
-      const braceStart = findNextNonWhitespaceIndex(code, i + "return".length);
-      if (braceStart === -1 || code[braceStart] !== "{") continue;
-
-      const braceEnd = findMatchingBrace(code, braceStart);
-      if (braceEnd === -1) continue;
-
-      returnObjects.push(code.slice(braceStart, braceEnd + 1));
-      i = braceEnd;
-    }
-  }
-
-  return returnObjects;
-}
-
-function findFunctionBodyEnd(code: string, functionStart: number): number {
-  const paramsStart = code.indexOf("(", functionStart);
-  if (paramsStart === -1) return -1;
-
-  const paramsEnd = findMatchingParen(code, paramsStart);
-  if (paramsEnd === -1) return -1;
-
-  const bodyStart = code.indexOf("{", paramsEnd + 1);
-  if (bodyStart === -1) return -1;
-
-  return findMatchingBrace(code, bodyStart);
-}
-
-function findClassBodyEnd(code: string, classStart: number): number {
-  const bodyStart = code.indexOf("{", classStart + "class".length);
-  if (bodyStart === -1) return -1;
-
-  return findMatchingBrace(code, bodyStart);
-}
-
-function findArrowFunctionBodyEnd(code: string, arrowIndex: number): number {
-  const bodyStart = findNextNonWhitespaceIndex(code, arrowIndex + 2);
-  if (bodyStart === -1 || code[bodyStart] !== "{") return -1;
-
-  return findMatchingBrace(code, bodyStart);
-}
-
-function findObjectMethodBodyEnd(code: string, start: number): number {
-  let i = start;
-
-  if (matchesKeywordAt(code, i, "async")) {
-    const afterAsync = findNextNonWhitespaceIndex(code, i + "async".length);
-    if (afterAsync === -1) return -1;
-    if (code[afterAsync] !== "(") {
-      i = afterAsync;
-    }
-  }
-
-  if (code[i] === "*") {
-    i = findNextNonWhitespaceIndex(code, i + 1);
-    if (i === -1) return -1;
-  }
-
-  if (!/[A-Za-z_$]/.test(code[i] ?? "")) return -1;
-
-  const nameStart = i;
-  while (/[A-Za-z0-9_$]/.test(code[i] ?? "")) i++;
-  const name = code.slice(nameStart, i);
-
-  if (
-    name === "if" ||
-    name === "for" ||
-    name === "while" ||
-    name === "switch" ||
-    name === "catch" ||
-    name === "function" ||
-    name === "return" ||
-    name === "const" ||
-    name === "let" ||
-    name === "var" ||
-    name === "new"
-  ) {
-    return -1;
-  }
-
-  if (name === "get" || name === "set") {
-    const afterAccessor = findNextNonWhitespaceIndex(code, i);
-    if (afterAccessor === -1) return -1;
-    if (code[afterAccessor] !== "(") {
-      i = afterAccessor;
-      if (!/[A-Za-z_$]/.test(code[i] ?? "")) return -1;
-      while (/[A-Za-z0-9_$]/.test(code[i] ?? "")) i++;
-    }
-  }
-
-  const paramsStart = findNextNonWhitespaceIndex(code, i);
-  if (paramsStart === -1 || code[paramsStart] !== "(") return -1;
-
-  const paramsEnd = findMatchingParen(code, paramsStart);
-  if (paramsEnd === -1) return -1;
-
-  const bodyStart = findNextNonWhitespaceIndex(code, paramsEnd + 1);
-  if (bodyStart === -1 || code[bodyStart] !== "{") return -1;
-
-  return findMatchingBrace(code, bodyStart);
-}
-
-function findNextNonWhitespaceIndex(code: string, start: number): number {
-  for (let i = start; i < code.length; i++) {
-    if (!/\s/.test(code[i])) return i;
-  }
-  return -1;
-}
-
-function matchesKeywordAt(code: string, index: number, keyword: string): boolean {
-  const before = index === 0 ? "" : code[index - 1];
-  const after = code[index + keyword.length] ?? "";
-  return (
-    code.startsWith(keyword, index) &&
-    (before === "" || !/[A-Za-z0-9_$]/.test(before)) &&
-    (after === "" || !/[A-Za-z0-9_$]/.test(after))
-  );
-}
-
-function findMatchingBrace(code: string, start: number): number {
-  return findMatchingToken(code, start, "{", "}");
-}
-
-function findMatchingParen(code: string, start: number): number {
-  return findMatchingToken(code, start, "(", ")");
-}
-
-function findMatchingToken(
-  code: string,
-  start: number,
-  openToken: string,
-  closeToken: string,
-): number {
-  let depth = 0;
-  let quote: '"' | "'" | "`" | null = null;
-  let inLineComment = false;
-  let inBlockComment = false;
-
-  for (let i = start; i < code.length; i++) {
-    const char = code[i];
-    const next = code[i + 1];
-
-    if (inLineComment) {
-      if (char === "\n") inLineComment = false;
       continue;
     }
 
-    if (inBlockComment) {
-      if (char === "*" && next === "/") {
-        inBlockComment = false;
-        i++;
-      }
-      continue;
-    }
-
-    if (quote) {
-      if (char === "\\") {
-        i++;
-        continue;
-      }
-      if (char === quote) quote = null;
-      continue;
-    }
-
-    if (char === "/" && next === "/") {
-      inLineComment = true;
-      i++;
-      continue;
-    }
-
-    if (char === "/" && next === "*") {
-      inBlockComment = true;
-      i++;
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-
-    if (char === openToken) {
-      depth++;
-      continue;
-    }
-
-    if (char === closeToken) {
-      depth--;
-      if (depth === 0) return i;
-    }
+    return extractStaticNumberValue(property.value);
   }
 
-  return -1;
+  return null;
+}
+
+function propertyName(key: PropertyKey): string | null {
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "Literal" && typeof key.value === "string") return key.value;
+  return null;
+}
+
+// ─── Layout segment config classification ────────────────────────────────────
+
+/**
+ * Classifies a layout file by its segment config exports (`dynamic`, `revalidate`).
+ *
+ * Returns a tagged `LayoutBuildClassification` carrying both the decision and
+ * the specific segment-config field that produced it. `{ kind: "absent" }`
+ * means no segment config is present and the caller should defer to the next
+ * layer (module graph analysis).
+ *
+ * Unlike page classification, positive `revalidate` values are not meaningful
+ * for layout skip decisions — ISR is a page-level concept. Only the extremes
+ * (`revalidate = 0` → dynamic, `revalidate = Infinity` → static) are decisive.
+ */
+export function classifyLayoutSegmentConfig(code: string): LayoutBuildClassification {
+  const program = parseRouteModule(code);
+  const dynamicValue = program ? extractExportConstStringFromProgram(program, "dynamic") : null;
+  if (dynamicValue === "force-dynamic") {
+    return {
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
+    };
+  }
+  if (dynamicValue === "force-static" || dynamicValue === "error") {
+    return {
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: dynamicValue },
+    };
+  }
+
+  const revalidateValue = program
+    ? extractExportConstNumberFromProgram(program, "revalidate")
+    : null;
+  if (revalidateValue === Infinity) {
+    return {
+      kind: "static",
+      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
+    };
+  }
+  if (revalidateValue === 0) {
+    return {
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "revalidate", value: 0 },
+    };
+  }
+
+  return { kind: "absent" };
 }
 
 // ─── Route classification ─────────────────────────────────────────────────────
@@ -620,7 +663,7 @@ export function classifyPagesRoute(filePath: string): {
   revalidate?: number;
 } {
   // API routes are identified by their path
-  const normalized = filePath.replace(/\\/g, "/");
+  const normalized = toSlash(filePath);
   if (normalized.includes("/pages/api/")) {
     return { type: "api" };
   }
@@ -632,12 +675,14 @@ export function classifyPagesRoute(filePath: string): {
     return { type: "unknown" };
   }
 
-  if (hasNamedExport(code, "getServerSideProps")) {
+  const program = parseRouteModule(code);
+
+  if (program && hasNamedExportInProgram(program, "getServerSideProps")) {
     return { type: "ssr" };
   }
 
-  if (hasNamedExport(code, "getStaticProps")) {
-    const revalidate = extractGetStaticPropsRevalidate(code);
+  if (program && hasNamedExportInProgram(program, "getStaticProps")) {
+    const revalidate = extractGetStaticPropsRevalidateFromProgram(program, code);
 
     if (revalidate === null || revalidate === false || revalidate === Infinity) {
       return { type: "static" };
@@ -679,8 +724,10 @@ export function classifyAppRoute(
     return { type: "unknown" };
   }
 
+  const program = parseRouteModule(code);
+
   // Check `export const dynamic`
-  const dynamicValue = extractExportConstString(code, "dynamic");
+  const dynamicValue = program ? extractExportConstStringFromProgram(program, "dynamic") : null;
   if (dynamicValue === "force-dynamic") {
     return { type: "ssr" };
   }
@@ -691,7 +738,9 @@ export function classifyAppRoute(
   }
 
   // Check `export const revalidate`
-  const revalidateValue = extractExportConstNumber(code, "revalidate");
+  const revalidateValue = program
+    ? extractExportConstNumberFromProgram(program, "revalidate")
+    : null;
   if (revalidateValue !== null) {
     if (revalidateValue === Infinity) return { type: "static" };
     if (revalidateValue === 0) return { type: "ssr" };
@@ -744,7 +793,12 @@ export function buildReportRows(options: {
   }
 
   for (const route of options.appRoutes ?? []) {
-    const { type, revalidate } = classifyAppRoute(route.pagePath, route.routePath, route.isDynamic);
+    const renderEntryPath = getAppRouteRenderEntryPath(route);
+    const { type, revalidate } = classifyAppRoute(
+      renderEntryPath,
+      route.routePath,
+      route.isDynamic,
+    );
     if (type === "unknown" && renderedRoutes.has(route.pattern)) {
       // Speculative prerender confirmed this route is static.
       rows.push({ pattern: route.pattern, type: "static", prerendered: true });
@@ -839,27 +893,11 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
   return lines.join("\n");
 }
 
-// ─── Directory detection ──────────────────────────────────────────────────────
-
-export function findDir(root: string, ...candidates: string[]): string | null {
-  for (const candidate of candidates) {
-    const full = path.join(root, candidate);
-    try {
-      if (fs.statSync(full).isDirectory()) return full;
-    } catch {
-      // not found or not a directory — try next candidate
-    }
-  }
-  return null;
-}
-
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
  * Scans the project at `root`, classifies all routes, and prints the
  * Next.js-style build report to stdout.
- *
- * Called at the end of `vinext build` in cli.ts.
  */
 export async function printBuildReport(options: {
   root: string;

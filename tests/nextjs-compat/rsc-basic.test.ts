@@ -81,7 +81,7 @@ describe("Next.js compat: rsc-basic", () => {
   // Next.js: 'should return RSC response with correct content-type'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
   it("RSC response has correct content-type", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/rsc-server`, {
+    const res = await fetch(`${baseUrl}/nextjs-compat/rsc-server.rsc`, {
       headers: {
         RSC: "1",
         Accept: "text/x-component",
@@ -94,7 +94,7 @@ describe("Next.js compat: rsc-basic", () => {
   // Next.js: 'should return RSC response with rendered content'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
   it("RSC response contains rendered content", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/rsc-server`, {
+    const res = await fetch(`${baseUrl}/nextjs-compat/rsc-server.rsc`, {
       headers: {
         RSC: "1",
         Accept: "text/x-component",

@@ -1,3 +1,5 @@
+import ipaddr from "ipaddr.js";
+
 /**
  * Image remote pattern validation.
  *
@@ -20,6 +22,12 @@ export type RemotePattern = {
   search?: string;
 };
 
+// Cache compiled glob regexes — bounded by the number of distinct configured
+// remotePatterns. Key uses \0 as a separator; \0 cannot appear in a valid glob
+// or separator character, so there are no collisions. Compiled regexes are
+// flagless, so sharing via .test() is safe.
+const globRegexCache = new Map<string, RegExp>();
+
 /**
  * Convert a glob pattern (with `*` and `**`) to a RegExp.
  *
@@ -34,6 +42,9 @@ export type RemotePattern = {
  * Literal characters are escaped for regex safety.
  */
 function globToRegex(pattern: string, separator: "." | "/"): RegExp {
+  const key = `${separator}\0${pattern}`;
+  const cached = globRegexCache.get(key);
+  if (cached !== undefined) return cached;
   // Split by ** first, then handle * within each part
   let regexStr = "^";
   const doubleStar = separator === "." ? ".+" : ".*";
@@ -55,7 +66,9 @@ function globToRegex(pattern: string, separator: "." | "/"): RegExp {
     }
   }
   regexStr += "$";
-  return new RegExp(regexStr);
+  const re = new RegExp(regexStr);
+  globRegexCache.set(key, re);
+  return re;
 }
 
 /**
@@ -110,4 +123,39 @@ export function hasRemoteMatch(
     domains.some((domain) => url.hostname === domain) ||
     remotePatterns.some((p) => matchRemotePattern(p, url))
   );
+}
+
+// ─── Private IP detection ───────────────────────────────────────────────
+
+/**
+ * Determine whether a string is a private (non-routable) IP address.
+ * Works for IPv4 and IPv6, including bracketed and IPv4-mapped forms.
+ *
+ * Uses ipaddr.js with range() !== 'unicast' — the same approach Next.js
+ * takes (via packages/next/src/server/is-private-ip.ts). This covers all
+ * IETF non-unicast ranges (CGNAT, benchmarking, multicast, reserved,
+ * teredo, documentation, discard, NAT64, etc.) without hand-rolling CIDR
+ * prefix checks that are easy to get wrong.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/is-private-ip.ts
+ */
+export function isPrivateIp(ip: string): boolean {
+  // Strip IPv6 brackets so ipaddr.js can parse the raw address.
+  if (ip.startsWith("[") && ip.endsWith("]")) {
+    ip = ip.slice(1, -1);
+  }
+
+  try {
+    const parsed = ipaddr.parse(ip);
+    // IPv4-mapped addresses are classified as "ipv4Mapped" by ipaddr.js,
+    // not "unicast". We must look at the embedded IPv4 address to decide
+    // whether it's private (e.g., ::ffff:127.0.0.1) or public.
+    if (parsed instanceof ipaddr.IPv6 && parsed.isIPv4MappedAddress()) {
+      return parsed.toIPv4Address().range() !== "unicast";
+    }
+    return parsed.range() !== "unicast";
+  } catch {
+    // Not a valid IP address (e.g., a domain name) — not private.
+    return false;
+  }
 }

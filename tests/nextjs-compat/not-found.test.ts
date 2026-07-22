@@ -373,6 +373,74 @@ describe("Next.js compat: not-found", () => {
     }
   });
 
+  // ── notFound() from a server action ─────────────────────────
+  // Regression coverage for issue #1340: when a fetch (RSC) server action
+  // throws via `notFound()`, the response must be 404 — not 500.
+  //
+  // Mirrors Next.js: when `isHTTPAccessFallbackError(err)` is true, the
+  // action handler sets `res.statusCode = getAccessFallbackHTTPStatus(err)`
+  // (i.e. 404) before generating the Flight payload.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/action-handler.ts
+  //
+  // Browser-style flow tested in Next.js:
+  // test/e2e/app-dir/actions/app-action.test.ts — "should support notFound".
+  it("server action calling notFound() returns 404 (fetch action)", async () => {
+    // Visit the actions page first so the dev server transforms and registers
+    // the "use server" module in @vitejs/plugin-rsc's serverReferenceMetaMap.
+    await fetch(`${baseUrl}/actions`).catch(() => {});
+
+    // The action ID for non-anonymous "use server" exports follows the
+    // `/app/<file path>#<exportName>` convention (see action-headers.test.ts).
+    const actionId = "/app/actions/actions.ts#notFoundAction";
+
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": actionId,
+        Origin: baseUrl,
+        Host: new URL(baseUrl).host,
+        "Content-Type": "text/plain",
+      },
+      body: "[]",
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    // The flight payload should carry the rejected actionResult so the
+    // client error boundary can recognise the not-found digest.
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(0);
+    // Should NOT surface as a generic 500 / internal-server-error body.
+    expect(body).not.toContain("Server action failed");
+  });
+
+  it("server action calling notFound() returns 404 (progressive form action)", async () => {
+    // Visit the page first so the action manifest is populated in dev.
+    await fetch(`${baseUrl}/actions`).catch(() => {});
+
+    // Progressive (no-JS) form submissions send multipart/form-data with the
+    // action id embedded in the body as `$ACTION_ID_<actionId>`, no
+    // `x-rsc-action` header. Mirrors Next.js' MPA action POST flow:
+    // packages/next/src/server/app-render/action-handler.ts.
+    const formData = new FormData();
+    formData.set("$ACTION_ID_/app/actions/actions.ts#notFoundAction", "");
+
+    const res = await fetch(`${baseUrl}/actions`, {
+      method: "POST",
+      headers: {
+        Origin: baseUrl,
+        Host: new URL(baseUrl).host,
+      },
+      body: formData,
+    });
+
+    expect(res.status).toBe(404);
+    // Should NOT surface as a generic 500.
+    const body = await res.text();
+    expect(body).not.toContain("Server action failed");
+    expect(body).not.toContain("Internal Server Error");
+  });
+
   // ── Browser-only tests (need Playwright, documented here) ──
   // These tests require clicking a button client-side which triggers notFound()
   // in a client component. Cannot be tested via HTTP fetch alone.

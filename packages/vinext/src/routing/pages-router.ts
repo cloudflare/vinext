@@ -1,12 +1,12 @@
-import path from "node:path";
-import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
+import path from "pathslash";
+import { decodeRouteSegment, sortRoutes } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
   type ValidFileMatcher,
 } from "./file-matcher.js";
-import { patternToNextFormat, validateRoutePatterns } from "./route-validation.js";
-import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
+import { validateRoutePatterns } from "./route-validation.js";
+import { createRouteTrieCache, matchRouteWithTrieRawPathname } from "./route-matching.js";
 
 export type Route = {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
@@ -21,14 +21,19 @@ export type Route = {
   params: string[];
 };
 
+/** Next.js special pages that should not produce routes. */
+const RESERVED_PAGE_NAMES = new Set(["_app", "_document", "_error"]);
+
 // Route cache — invalidated when pages directory changes
-const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> }>();
+const routeCache = new Map<string, Promise<Route[]>>();
+let routeCacheGeneration = 0;
 
 /**
  * Invalidate cached routes for a given pages directory.
  * Called by the file watcher when pages are added/removed.
  */
 export function invalidateRouteCache(pagesDir: string): void {
+  routeCacheGeneration++;
   for (const key of routeCache.keys()) {
     if (key.startsWith(`pages:${pagesDir}:`) || key.startsWith(`api:${pagesDir}:`)) {
       routeCache.delete(key);
@@ -45,7 +50,7 @@ export function invalidateRouteCache(pagesDir: string): void {
  * - pages/about.tsx -> /about
  * - pages/posts/[id].tsx -> /posts/:id
  * - pages/[...slug].tsx -> /:slug+
- * - Ignores _app.tsx, _document.tsx, _error.tsx, files starting with _
+ * - Ignores _app.tsx, _document.tsx, _error.tsx (Next.js special files)
  * - Ignores pages/api/ (handled separately later)
  */
 export async function pagesRouter(
@@ -55,25 +60,21 @@ export async function pagesRouter(
 ): Promise<Route[]> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const cacheKey = `pages:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
-  const cached = routeCache.get(cacheKey);
-  if (cached) return cached.promise;
-
-  const promise = scanPageRoutes(pagesDir, matcher);
-  routeCache.set(cacheKey, { routes: [], promise });
-  const routes = await promise;
-  routeCache.set(cacheKey, { routes, promise });
-  return routes;
+  return getCachedRoutes(cacheKey, () => scanPageRoutes(pagesDir, matcher));
 }
 
 async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
   const routes: Route[] = [];
 
-  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
+  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14).
+  // The `RESERVED_PAGE_NAMES` check here is a directory-traversal optimization only — glob's
+  // exclude callback fires on directory names, not file names, so root-level files like
+  // `_app.tsx` still get yielded and are filtered by the guard in `fileToRoute()` below.
   for await (const file of scanWithExtensions(
     "**/*",
     pagesDir,
     matcher.extensions,
-    (name: string) => name === "api" || name.startsWith("_"),
+    (name: string) => name === "api" || RESERVED_PAGE_NAMES.has(name),
   )) {
     const route = fileToRoute(file, pagesDir, matcher);
     if (route) routes.push(route);
@@ -82,7 +83,7 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
   validateRoutePatterns(routes.map((route) => route.pattern));
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return routes;
 }
@@ -95,8 +96,9 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   const withoutExt = matcher.stripExtension(file);
   if (withoutExt === file) return null;
 
-  // Convert to URL segments
-  const segments = withoutExt.split(path.sep);
+  // Convert to URL segments. `file` comes from `scanWithExtensions`, which
+  // yields forward-slash paths on every platform, so split on "/".
+  const segments = withoutExt.split("/");
 
   // Handle index files: pages/index.tsx -> /
   const lastSegment = segments[segments.length - 1];
@@ -113,29 +115,35 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
 
-    // Catch-all: [...slug] -> :slug+ (param names may contain hyphens)
-    const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
+    // Catch-all: [...slug] -> :slug+ (param names may contain any non-] chars)
+    // Matches Next.js PARAMETER_PATTERN.
+    const catchAllMatch = segment.match(/^\[\.\.\.([^\]]+)\]$/);
     if (catchAllMatch) {
       if (i !== segments.length - 1) return null;
+      // Guard: names ending in + or * would collide with internal pattern modifiers.
+      if (catchAllMatch[1].endsWith("+") || catchAllMatch[1].endsWith("*")) return null;
       isDynamic = true;
       params.push(catchAllMatch[1]);
       urlSegments.push(`:${catchAllMatch[1]}+`);
       continue;
     }
 
-    // Optional catch-all: [[...slug]] -> :slug* (param names may contain hyphens)
-    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
+    // Optional catch-all: [[...slug]] -> :slug* (param names may contain any non-] chars)
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([^\]]+)\]\]$/);
     if (optionalCatchAllMatch) {
       if (i !== segments.length - 1) return null;
+      if (optionalCatchAllMatch[1].endsWith("+") || optionalCatchAllMatch[1].endsWith("*"))
+        return null;
       isDynamic = true;
       params.push(optionalCatchAllMatch[1]);
       urlSegments.push(`:${optionalCatchAllMatch[1]}*`);
       continue;
     }
 
-    // Dynamic segment: [id] -> :id (param names may contain hyphens)
-    const dynamicMatch = segment.match(/^\[([\w-]+)\]$/);
+    // Dynamic segment: [id] -> :id (param names may contain any non-] chars)
+    const dynamicMatch = segment.match(/^\[([^\]]+)\]$/);
     if (dynamicMatch) {
+      if (dynamicMatch[1].endsWith("+") || dynamicMatch[1].endsWith("*")) return null;
       isDynamic = true;
       params.push(dynamicMatch[1]);
       urlSegments.push(`:${dynamicMatch[1]}`);
@@ -147,6 +155,14 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
 
   const pattern = "/" + urlSegments.join("/");
 
+  // Skip Next.js special pages (_app, _document, _error) at the root level only.
+  // Subdirectory files like admin/_app.tsx are not reserved and should be served.
+  // Read segments[0] after the index pop so this is correct for both `_app.tsx`
+  // and `_app/index.tsx` shapes, independent of the glob-level exclude.
+  if (segments.length === 1 && RESERVED_PAGE_NAMES.has(segments[0])) {
+    return null;
+  }
+
   return {
     pattern: pattern === "/" ? "/" : pattern,
     patternParts: urlSegments.filter(Boolean),
@@ -157,16 +173,7 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
 }
 
 // Trie cache — keyed by route array identity (same array = same trie)
-const trieCache = new WeakMap<Route[], TrieNode<Route>>();
-
-function getOrBuildTrie(routes: Route[]): TrieNode<Route> {
-  let trie = trieCache.get(routes);
-  if (!trie) {
-    trie = buildRouteTrie(routes);
-    trieCache.set(routes, trie);
-  }
-  return trie;
-}
+const trieCache = createRouteTrieCache<Route>();
 
 /**
  * Match a URL path against a route pattern.
@@ -176,15 +183,7 @@ export function matchRoute(
   url: string,
   routes: Route[],
 ): { route: Route; params: Record<string, string | string[]> } | null {
-  // Normalize: strip query string and trailing slash
-  const pathname = url.split("?")[0];
-  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  normalizedUrl = normalizePathnameForRouteMatch(normalizedUrl);
-
-  // Split URL once, look up via trie
-  const urlParts = normalizedUrl.split("/").filter(Boolean);
-  const trie = getOrBuildTrie(routes);
-  return trieMatch(trie, urlParts);
+  return matchRouteWithTrieRawPathname(url, routes, trieCache);
 }
 
 /**
@@ -202,14 +201,33 @@ export async function apiRouter(
 ): Promise<Route[]> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const cacheKey = `api:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
-  const cached = routeCache.get(cacheKey);
-  if (cached) return cached.promise;
+  return getCachedRoutes(cacheKey, () => scanApiRoutes(pagesDir, matcher));
+}
 
-  const promise = scanApiRoutes(pagesDir, matcher);
-  routeCache.set(cacheKey, { routes: [], promise });
-  const routes = await promise;
-  routeCache.set(cacheKey, { routes, promise });
-  return routes;
+async function getCachedRoutes(cacheKey: string, scan: () => Promise<Route[]>): Promise<Route[]> {
+  const cached = routeCache.get(cacheKey);
+  if (cached) return cached;
+
+  const promise = (async () => {
+    while (true) {
+      const scanGeneration = routeCacheGeneration;
+      const routes = await scan();
+      // A watcher may invalidate while the async filesystem scan is still in
+      // flight. Every caller shares this guarded promise, so retry instead of
+      // returning or resurrecting an obsolete result for concurrent callers.
+      // Watcher invalidations arrive in finite bursts, so intentionally wait for
+      // a quiescent scan rather than bounding retries and publishing stale routes.
+      if (scanGeneration === routeCacheGeneration) return routes;
+    }
+  })();
+  routeCache.set(cacheKey, promise);
+
+  try {
+    return await promise;
+  } catch (error) {
+    if (routeCache.get(cacheKey) === promise) routeCache.delete(cacheKey);
+    throw error;
+  }
 }
 
 async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
@@ -217,12 +235,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   let files: string[];
   try {
     files = [];
-    for await (const file of scanWithExtensions(
-      "**/*",
-      apiDir,
-      matcher.extensions,
-      (name: string) => name.startsWith("_"),
-    )) {
+    for await (const file of scanWithExtensions("**/*", apiDir, matcher.extensions)) {
       files.push(file);
     }
   } catch {
@@ -232,7 +245,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   const routes: Route[] = [];
 
   for (const file of files) {
-    // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix
+    // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix.
     const route = fileToRoute(path.join("api", file), pagesDir, matcher);
     if (route) {
       routes.push(route);
@@ -242,7 +255,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   validateRoutePatterns(routes.map((route) => route.pattern));
 
   // Sort same as page routes
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return routes;
 }

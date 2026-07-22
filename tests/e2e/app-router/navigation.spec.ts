@@ -1,23 +1,13 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
-
-/**
- * Wait for the RSC browser entry to hydrate. The browser entry sets
- * window.__VINEXT_RSC_ROOT__ after hydration completes.
- */
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("App Router Client-side Navigation", () => {
   test("Link click navigates without full page reload", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Set marker to detect full page reload
     await page.evaluate(() => {
@@ -42,7 +32,7 @@ test.describe("App Router Client-side Navigation", () => {
   test("Link navigates back from about to home", async ({ page }) => {
     await page.goto(`${BASE}/about`);
     await expect(page.locator("h1")).toHaveText("About");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.evaluate(() => {
       (window as any).__NAV_MARKER__ = true;
@@ -59,7 +49,7 @@ test.describe("App Router Client-side Navigation", () => {
   test("browser back/forward buttons work after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate: Home -> About via link
     await page.click('a[href="/about"]');
@@ -79,7 +69,7 @@ test.describe("App Router Client-side Navigation", () => {
   test("multiple sequential navigations work without reload", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.evaluate(() => {
       (window as any).__NAV_MARKER__ = true;
@@ -106,7 +96,7 @@ test.describe("App Router Client-side Navigation", () => {
   test("navigation to dynamic route renders correct params", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click('a[href="/blog/hello-world"]');
     await expect(page.locator("h1")).toHaveText("Blog Post");
@@ -117,7 +107,7 @@ test.describe("App Router Client-side Navigation", () => {
   test("navigation to dashboard preserves nested layout", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click('a[href="/dashboard"]');
     await expect(page.locator("h1")).toHaveText("Dashboard");
@@ -128,7 +118,7 @@ test.describe("App Router Client-side Navigation", () => {
   test("scroll-to-top happens after new content renders", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Make the page scrollable and scroll down
     await page.evaluate(() => {

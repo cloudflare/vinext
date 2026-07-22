@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!packages/types/next/upstream/dist/
+!packages/types/next/upstream/dist/**
 out/
 *.tsbuildinfo
 .vite/
@@ -10,11 +12,15 @@ out/
 test-results/
 playwright-report/
 out-e2e
+*.tgz
 
 # Environment + secrets
 .env
 .env.*
 !.env.example
+# wrangler convention for local-only secrets passed to `wrangler dev`
+.dev.vars
+.dev.vars.*
 
 # Logs / coverage
 *.log
@@ -23,9 +29,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 coverage/
+reports/
 
 # Worktrees
 .worktrees/
+.claude
 
 # Next.js reference clone (for searching source/tests)
 .nextjs-ref/
@@ -35,9 +43,20 @@ coverage/
 .idea/
 .vscode/
 .claude/
+.codex/
 
 # Nix
 result
 result-*
+# The Nix `result` pattern above also matches Next.js compat fixture routes
+# named `result`; re-include them so they don't silently fall out of tracking.
+!tests/fixtures/root-layout-redirect/app/result/
 .direnv/
 .corepack/
+
+.vinext
+next-env.d.ts
+
+# Leaked temp fixtures from the oxlint prefer-shared-utils rule test
+# (normally cleaned up in afterEach; ignore so a crashed run can't commit them).
+__lint_rule_fixtures__-*

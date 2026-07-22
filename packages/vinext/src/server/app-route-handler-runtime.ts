@@ -1,7 +1,15 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { NextRequest, type NextURL } from "../shims/server.js";
+import {
+  NextRequest,
+  RequestCookies,
+  sealRequestCookies,
+  sealRequestHeaders,
+  type NextURL,
+} from "vinext/shims/server";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
+import { addBasePathToPathname } from "../utils/base-path.js";
 
-export const ROUTE_HANDLER_HTTP_METHODS = [
+const ROUTE_HANDLER_HTTP_METHODS = [
   "GET",
   "HEAD",
   "POST",
@@ -14,6 +22,17 @@ export const ROUTE_HANDLER_HTTP_METHODS = [
 export type RouteHandlerHttpMethod = (typeof ROUTE_HANDLER_HTTP_METHODS)[number];
 
 export type RouteHandlerModule = Partial<Record<RouteHandlerHttpMethod | "default", unknown>>;
+
+/**
+ * Checks whether a string is a recognized HTTP method for App Router route
+ * handlers. Invalid methods must be rejected with 400 before any auto-OPTIONS
+ * or 405 logic runs.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/http.ts
+ */
+export function isValidHTTPMethod(maybeMethod: string): maybeMethod is RouteHandlerHttpMethod {
+  return (ROUTE_HANDLER_HTTP_METHODS as readonly string[]).includes(maybeMethod);
+}
 
 export function collectRouteHandlerMethods(handler: RouteHandlerModule): RouteHandlerHttpMethod[] {
   const methods = ROUTE_HANDLER_HTTP_METHODS.filter(
@@ -56,6 +75,8 @@ export function markKnownDynamicAppRoute(pattern: string): void {
 type RequestDynamicAccess =
   | "request.headers"
   | "request.cookies"
+  | "request.ip"
+  | "request.geo"
   | "request.url"
   | "request.body"
   | "request.blob"
@@ -73,15 +94,20 @@ type NextUrlDynamicAccess =
   | "nextUrl.toString"
   | "nextUrl.origin";
 
-export type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
+type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
+type AppRouteRequestMode = "auto" | "force-static" | "error";
 
-export type TrackedAppRouteRequestOptions = {
+type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
+  trailingSlash?: boolean;
+  middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
+  requestMode?: AppRouteRequestMode;
+  staticGenerationErrorMessage?: (expression?: string) => string;
 };
 
-export type TrackedAppRouteRequest = {
+type TrackedAppRouteRequest = {
   request: NextRequest;
   didAccessDynamicRequest(): boolean;
 };
@@ -93,15 +119,75 @@ function bindMethodIfNeeded<T>(value: T, target: object): T {
 function buildNextConfig(options: TrackedAppRouteRequestOptions): {
   basePath?: string;
   i18n?: NextI18nConfig;
+  trailingSlash?: boolean;
 } | null {
-  if (!options.basePath && !options.i18n) {
+  if (!options.basePath && !options.i18n && !options.trailingSlash) {
     return null;
   }
 
   return {
     basePath: options.basePath,
     i18n: options.i18n ?? undefined,
+    trailingSlash: options.trailingSlash,
   };
+}
+
+function rebuildRequestWithHeaders(input: Request, headers: Headers): Request {
+  const method = input.method;
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const init: RequestInit & { duplex?: "half" } = {
+    method,
+    headers,
+    cache: input.cache,
+    credentials: input.credentials,
+    integrity: input.integrity,
+    keepalive: input.keepalive,
+    mode: input.mode,
+    redirect: input.redirect,
+    referrer: input.referrer,
+    referrerPolicy: input.referrerPolicy,
+    signal: input.signal,
+  };
+
+  if (hasBody && input.body) {
+    init.body = input.body;
+    init.duplex = "half";
+  }
+
+  return new Request(input.url, init);
+}
+
+function cleanStaticUrl(url: string): string {
+  const cleanUrl = new URL(url);
+  cleanUrl.protocol = "http:";
+  cleanUrl.host = "localhost:3000";
+  cleanUrl.username = "";
+  cleanUrl.password = "";
+  cleanUrl.search = "";
+  cleanUrl.hash = "";
+  return cleanUrl.href;
+}
+
+function readEmptyBodyAsArrayBuffer(): Promise<ArrayBuffer> {
+  return new Response(null).arrayBuffer();
+}
+
+function readEmptyBodyAsBlob(): Promise<Blob> {
+  return new Response(null).blob();
+}
+
+// Empty JSON/form-data parses reject naturally; that keeps force-static body
+// stubs aligned with a bodyless request instead of inventing synthetic data.
+function readEmptyBodyAsFormData(): Promise<FormData> {
+  return new Response(null).formData();
+}
+
+function readEmptyBodyAsJson(): Promise<unknown> {
+  return new Response(null).json();
+}
+
+function readEmptyBodyAsText(): Promise<string> {
+  return new Response(null).text();
 }
 
 export function createTrackedAppRouteRequest(
@@ -109,6 +195,7 @@ export function createTrackedAppRouteRequest(
   options: TrackedAppRouteRequestOptions = {},
 ): TrackedAppRouteRequest {
   let didAccessDynamicRequest = false;
+  const requestMode = options.requestMode ?? "auto";
   const nextConfig = buildNextConfig(options);
 
   const markDynamicAccess = (access: AppRouteDynamicRequestAccess): void => {
@@ -143,21 +230,170 @@ export function createTrackedAppRouteRequest(
     return new Proxy(nextUrl, nextUrlHandler);
   };
 
-  const wrapRequest = (input: Request): NextRequest => {
+  const wrapForceStaticNextUrl = (nextUrl: NextURL): NextURL => {
+    const emptySearchParams = new URLSearchParams();
+    const staticHref = cleanStaticUrl(nextUrl.href);
+    const nextUrlHandler: ProxyHandler<NextURL> = {
+      get(target, prop): unknown {
+        switch (prop) {
+          case "search":
+            return "";
+          case "searchParams":
+            return emptySearchParams;
+          case "href":
+            return staticHref;
+          case "url":
+            return undefined;
+          case "toJSON":
+          case "toString":
+            return () => staticHref;
+          case "clone":
+            return () => wrapForceStaticNextUrl(target.clone());
+          default:
+            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        }
+      },
+    };
+
+    return new Proxy(nextUrl, nextUrlHandler);
+  };
+
+  const throwStaticGenerationError = (expression: string): never => {
+    throw new Error(
+      options.staticGenerationErrorMessage?.(expression) ??
+        `Route handler with \`dynamic = "error"\` used ${expression}.`,
+    );
+  };
+
+  const wrapRequireStaticNextUrl = (nextUrl: NextURL): NextURL => {
+    const nextUrlHandler: ProxyHandler<NextURL> = {
+      get(target, prop): unknown {
+        switch (prop) {
+          case "search":
+          case "searchParams":
+          case "url":
+          case "href":
+          case "toJSON":
+          case "toString":
+          case "origin":
+            return throwStaticGenerationError(`nextUrl.${String(prop)}`);
+          case "clone":
+            return () => wrapRequireStaticNextUrl(target.clone());
+          default:
+            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        }
+      },
+    };
+
+    return new Proxy(nextUrl, nextUrlHandler);
+  };
+
+  const wrapRequest = (rawInput: Request): NextRequest => {
+    // App Router route handlers only run for in-basePath requests — the
+    // routing layer strips the basePath prefix before invoking them. Re-add
+    // the configured prefix so the NextRequest mirrors the original URL
+    // Next.js hands to route handlers: request.url keeps the prefix while
+    // NextURL strips it back during construction, so nextUrl.pathname stays
+    // basePath-free and nextUrl.basePath reports the configured value.
+    let input = rawInput;
+    if (options.basePath) {
+      const inputUrl = new URL(rawInput.url);
+      const prefixedPathname = addBasePathToPathname(inputUrl.pathname, options.basePath);
+      if (prefixedPathname !== inputUrl.pathname) {
+        inputUrl.pathname = prefixedPathname;
+        // Branch the body so the caller-owned request stays readable.
+        const bodySource = rawInput.body && !rawInput.bodyUsed ? rawInput.clone() : rawInput;
+        input = new Request(inputUrl, bodySource);
+      }
+    }
+    const requestHeaders = options.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(input.headers, options.middlewareHeaders)
+      : null;
+    const requestWithOverrides = requestHeaders
+      ? rebuildRequestWithHeaders(input, requestHeaders)
+      : input;
     const nextRequest =
-      input instanceof NextRequest
-        ? input
-        : new NextRequest(input, { nextConfig: nextConfig ?? undefined });
+      requestWithOverrides instanceof NextRequest
+        ? requestWithOverrides
+        : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
     let proxiedNextUrl: NextURL | null = null;
+    let forceStaticNextUrl: NextURL | null = null;
+    let requireStaticNextUrl: NextURL | null = null;
+    let forceStaticHeaders: Headers | null = null;
+    let forceStaticCookies: RequestCookies | null = null;
 
     const requestHandler: ProxyHandler<NextRequest> = {
       get(target, prop): unknown {
+        if (requestMode === "force-static") {
+          switch (prop) {
+            case "nextUrl":
+              forceStaticNextUrl ??= wrapForceStaticNextUrl(target.nextUrl);
+              return forceStaticNextUrl;
+            case "headers":
+              forceStaticHeaders ??= sealRequestHeaders(new Headers());
+              return forceStaticHeaders;
+            case "cookies":
+              forceStaticCookies ??= sealRequestCookies(new RequestCookies(new Headers()));
+              return forceStaticCookies;
+            case "url":
+              return cleanStaticUrl(target.nextUrl.href);
+            case "ip":
+            case "geo":
+              return undefined;
+            case "body":
+              return null;
+            case "arrayBuffer":
+              return readEmptyBodyAsArrayBuffer;
+            case "blob":
+              return readEmptyBodyAsBlob;
+            case "formData":
+              return readEmptyBodyAsFormData;
+            case "json":
+              return readEmptyBodyAsJson;
+            case "text":
+              return readEmptyBodyAsText;
+            case "clone":
+              return () => wrapRequest(target.clone());
+            default:
+              return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+          }
+        }
+
+        if (requestMode === "error") {
+          switch (prop) {
+            case "nextUrl":
+              requireStaticNextUrl ??= wrapRequireStaticNextUrl(target.nextUrl);
+              return requireStaticNextUrl;
+            case "headers":
+            case "cookies":
+            case "url":
+            // Deliberate vinext divergence from Next.js: ip/geo are exposed
+            // on NextRequest for Cloudflare compatibility, so require-static
+            // treats them as dynamic request APIs instead of falling through.
+            case "ip":
+            case "geo":
+            case "body":
+            case "blob":
+            case "json":
+            case "text":
+            case "arrayBuffer":
+            case "formData":
+              return throwStaticGenerationError(`request.${String(prop)}`);
+            case "clone":
+              return () => wrapRequest(target.clone());
+            default:
+              return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+          }
+        }
+
         switch (prop) {
           case "nextUrl":
             proxiedNextUrl ??= wrapNextUrl(target.nextUrl);
             return proxiedNextUrl;
           case "headers":
           case "cookies":
+          case "ip":
+          case "geo":
           case "url":
           case "body":
           case "blob":
