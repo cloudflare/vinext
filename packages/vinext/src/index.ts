@@ -2490,6 +2490,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/head-state": path.join(shimsDir, "head-state"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "vinext/client": path.resolve(__dirname, "client", "index"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/instrumentation-client": path.resolve(

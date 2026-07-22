@@ -367,6 +367,49 @@ export default defineConfig({
 > Adding an explicit `rsc()` call fails the build with `[vinext] Duplicate @vitejs/plugin-rsc detected`.
 > Pass `rsc: false` to `vinext()` only if you want to own that registration.
 
+#### Module Federation (client-side)
+
+For client-side Module Federation, configure React and React DOM as singleton shared modules in both the host and remotes:
+
+```ts
+import { federation } from "@module-federation/vite";
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [
+    federation({
+      name: "host",
+      shared: {
+        react: { singleton: true },
+        "react/": { singleton: true },
+        "react-dom": { singleton: true },
+        "react-dom/": { singleton: true },
+      },
+    }),
+    vinext(),
+  ],
+});
+```
+
+In a remote client component, use `getVinextReact()` before reading React hooks. vinext registers the host's browser React instance before application modules execute, and the first registration remains stable across remote evaluation and HMR:
+
+```tsx
+"use client";
+
+import * as React from "react";
+import { getVinextReact } from "vinext/client";
+
+const { useState } = getVinextReact(React);
+
+export function RemoteCounter() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount((value) => value + 1)}>{count}</button>;
+}
+```
+
+This bridge is browser-only. It does not provide App Router Module Federation SSR or transparently replace React imports inside third-party packages; compatible React versions remain the responsibility of the Module Federation `shared` configuration.
+
 See the [examples](#live-examples) for complete working configurations.
 
 ### Other platforms (via Nitro)

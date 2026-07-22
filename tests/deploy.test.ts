@@ -1479,6 +1479,7 @@ describe("readPagesRouterEntrySource", () => {
 
   it("exports the built-in fetch handler and router-specific worker entries", () => {
     const exportsMap = readVinextPackageExports();
+    expect(hasPackageExport(exportsMap, "./client")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/fetch-handler")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/app-router-entry")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
