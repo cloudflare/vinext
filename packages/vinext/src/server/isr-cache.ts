@@ -31,6 +31,10 @@ import {
 } from "./app-rsc-render-mode.js";
 import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-identity.js";
 import type { RenderObservation } from "./cache-proof.js";
+import {
+  PRERENDER_REVALIDATE_HEADER,
+  PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
+} from "../utils/protocol-headers.js";
 export { normalizeMountedSlotsHeader };
 
 /**
@@ -51,7 +55,7 @@ export { normalizeMountedSlotsHeader };
  * isolates) with a constant-time comparison, and only the matching value (sent
  * by our own `res.revalidate()`) is honored.
  */
-export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
+export { PRERENDER_REVALIDATE_HEADER };
 
 /**
  * Companion header to {@link PRERENDER_REVALIDATE_HEADER}. When set,
@@ -61,7 +65,7 @@ export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
  * (`x-prerender-revalidate-if-generated`) — see
  * `.nextjs-ref/packages/next/src/lib/constants.ts`.
  */
-export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidate-if-generated";
+export { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER };
 
 /**
  * Build-time secret that authenticates on-demand revalidation requests, the
@@ -83,10 +87,11 @@ export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidat
  *
  * When the build-time define is absent — dev mode, and any path that doesn't
  * run through `vinext build` — we fall back to a lazily-generated random secret.
- * Those paths are single-process, so a module-scoped value is shared by sender
- * and receiver there — no regression.
+ * Those paths are single-process, but Vite can evaluate this module separately
+ * in its RSC and SSR module graphs. Store the fallback on `globalThis` under a
+ * registry symbol so every module copy in the process reads the same value.
  */
-let devRevalidateSecret: string | undefined;
+const _DEV_REVALIDATE_SECRET_KEY = Symbol.for("vinext.isrCache.devRevalidateSecret");
 
 export function getRevalidateSecret(): string {
   // Production: the build baked the shared secret into every server bundle.
@@ -96,16 +101,18 @@ export function getRevalidateSecret(): string {
   if (baked) return baked;
 
   // Dev/standalone fallback: no build-time define. Generate a single
-  // process-shared secret lazily — sufficient because there is exactly one dev
-  // process, so sender and receiver always read the same value. 32 random bytes
-  // (256 bits) hex-encoded, matching the build-time secret's entropy. Web
-  // Crypto's `getRandomValues` works in both Node and the Workers/edge runtime.
-  if (devRevalidateSecret === undefined) {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    devRevalidateSecret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  return devRevalidateSecret;
+  // process-shared secret lazily. 32 random bytes (256 bits) hex-encoded match
+  // the build-time secret's entropy. Web Crypto's `getRandomValues` works in
+  // both Node and the Workers/edge runtime.
+  const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+  const existing = globals[_DEV_REVALIDATE_SECRET_KEY];
+  if (typeof existing === "string") return existing;
+
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  globals[_DEV_REVALIDATE_SECRET_KEY] = secret;
+  return secret;
 }
 
 /**
@@ -123,6 +130,11 @@ function safeEqual(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
+export function isRevalidateSecret(value: string | null | undefined): boolean {
+  if (typeof value !== "string" || value.length === 0) return false;
+  return safeEqual(value, getRevalidateSecret());
+}
+
 /**
  * Authorize an incoming request as an on-demand revalidation trigger. Mirrors
  * Next.js's `checkIsOnDemandRevalidate`: the {@link PRERENDER_REVALIDATE_HEADER}
@@ -133,34 +145,36 @@ export function isOnDemandRevalidateRequest(
   headerValue: string | string[] | null | undefined,
 ): boolean {
   // Reject arrays (duplicate headers) and absent values outright.
-  if (typeof headerValue !== "string" || headerValue.length === 0) return false;
-  return safeEqual(headerValue, getRevalidateSecret());
+  if (typeof headerValue !== "string") return false;
+  return isRevalidateSecret(headerValue);
 }
 
 export type ISRCacheEntry = {
   value: CacheHandlerValue;
   isStale: boolean;
+  /** The entry crossed its hard expire boundary and must not be served. */
+  isExpired?: boolean;
 };
 
 /**
  * Get a cache entry with staleness information.
  *
  * Returns { value, isStale: false } for fresh entries,
- * { value, isStale: true } for expired-but-usable entries,
- * or null for cache misses.
+ * { value, isStale: true } for stale-but-usable entries,
+ * { value, isStale: true, isExpired: true } for entries that must be retained
+ * as regeneration input but not served, or null for cache misses.
  */
 export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   // Page-level reads go through the CDN cache adapter. The default adapter
   // reads the data cache; an edge adapter may return null so the CDN serves.
   const result = await getCdnCacheAdapter().get(key);
-  if (!result || !result.value) return null;
-  // Built-in handlers hard-delete expired entries and return null, but custom
-  // CacheHandler implementations may surface expiry explicitly.
-  if (result.cacheState === "expired") return null;
+  if (!result) return null;
+  const isExpired = result.cacheState === "expired";
 
   return {
     value: result,
-    isStale: result.cacheState === "stale",
+    isStale: isExpired || result.cacheState === "stale",
+    ...(isExpired ? { isExpired: true } : {}),
   };
 }
 
@@ -169,8 +183,8 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
  */
 export async function isrSet(
   key: string,
-  data: IncrementalCacheValue,
-  revalidateSeconds: number,
+  data: IncrementalCacheValue | null,
+  revalidateSeconds: number | false,
   tags?: string[],
   expireSeconds?: number,
 ): Promise<void> {
@@ -241,6 +255,37 @@ const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<string, Promise
   string,
   Promise<void>
 >;
+
+// Keep on-demand work in a distinct batch from ordinary/stale regeneration.
+// This mirrors Next.js ResponseCache's `{ key, isOnDemandRevalidate }` batch
+// key: concurrent `res.revalidate()` calls for the same page share one render,
+// while normal traffic remains free to read the existing representation.
+const _PENDING_ON_DEMAND_REGEN_KEY = Symbol.for("vinext.isrCache.pendingOnDemandRegenerations");
+const pendingOnDemandRegenerations = (_g[_PENDING_ON_DEMAND_REGEN_KEY] ??= new Map<
+  string,
+  Promise<unknown>
+>()) as Map<string, Promise<unknown>>;
+
+/** Coalesce same-key synchronous on-demand revalidations. */
+export function coalesceOnDemandRevalidation<T>(
+  key: string,
+  renderFn: () => Promise<T>,
+): Promise<T> {
+  const pending = pendingOnDemandRegenerations.get(key) as Promise<T> | undefined;
+  if (pending) return pending;
+
+  // Defer invocation until after the promise is registered, matching Next.js's
+  // response-cache scheduler and closing the same-tick stampede window.
+  const promise = Promise.resolve()
+    .then(renderFn)
+    .finally(() => {
+      if (pendingOnDemandRegenerations.get(key) === promise) {
+        pendingOnDemandRegenerations.delete(key);
+      }
+    });
+  pendingOnDemandRegenerations.set(key, promise);
+  return promise;
+}
 
 /**
  * Trigger a background regeneration for a cache key.
@@ -371,7 +416,7 @@ export function isrCacheKey(router: string, pathname: string, buildId?: string):
  * The suffix mirrors Next.js's separate on-disk app artifacts while keeping the
  * Cloudflare KV key under its 512-byte limit for long pathnames.
  */
-function appIsrCacheKey(
+export function appIsrCacheKey(
   pathname: string,
   suffix: string,
   buildId = process.env.__VINEXT_BUILD_ID,
@@ -393,7 +438,7 @@ function normalizeInterceptionContextForCacheKey(interceptionContext: string): s
  *
  * Variants are sequenced in order: `source:<hash>` (intercepted source context,
  * only when an interception context is present), `slots:<hash>` (mounted parallel
- * route slots), and optionally `<render-mode-variant>` (e.g. `preserve-ui` or
+ * route slots), and optionally `<render-mode-variant>` (for example,
  * `prefetch-loading-shell`). Existing cached entries under the old format will
  * become unreachable after deployment. This is acceptable because ISR entries
  * have TTLs and will be regenerated on the next request.

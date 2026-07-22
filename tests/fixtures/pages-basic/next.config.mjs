@@ -1,8 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
   generateBuildId: () => "test-build-id",
   env: {
     CUSTOM_VAR: "hello-from-config",
+  },
+  experimental: {
+    allowedRevalidateHeaderKeys: ["x-revalidate-token"],
   },
   async redirects() {
     return [
@@ -117,6 +121,10 @@ const nextConfig = {
         source: "/about",
         missing: [{ type: "cookie", key: "logged-in" }],
         headers: [{ key: "X-Guest-Only-Header", value: "1" }],
+      },
+      {
+        source: "/about",
+        headers: [{ key: "X-Page-Header", value: "about-page" }],
       },
       // Test that Vary headers from config are additive (append, not replace)
       {

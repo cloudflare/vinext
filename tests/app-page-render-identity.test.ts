@@ -16,6 +16,19 @@ describe("createAppPageRenderIdentity", () => {
     });
   });
 
+  it("keeps rewritten route identity separate from the browser-visible pathname", () => {
+    const identity = createAppPageRenderIdentity({
+      displayPathname: "/products/a",
+      matchedRoutePathname: "/products/b",
+    });
+
+    expect(identity.displayPathname).toBe("/products/a");
+    expect(identity.matchedRoutePathname).toBe("/products/b");
+    expect(identity.targetMatchedPathname).toBe("/products/a");
+    expect(identity.routeId).toBe("route:/products/b");
+    expect(identity.pageId).toBe("page:/products/b");
+  });
+
   it("uses the source route as the route identity for intercepted source renders", () => {
     const identity = createAppPageRenderIdentity({
       displayPathname: "/photos/42",

@@ -6,13 +6,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { createBuilder, createServer } from "vite";
+import { createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
   getTypeofWindowReplacement,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { supportsNativeTypeofWindowFolding } from "../packages/vinext/src/utils/vite-version.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -25,75 +25,100 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
-  it("does not fold prebundles when plugin instances are reused across servers", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-reuse-"));
+  it("configures the installed Vite typeof window folding strategy", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-define-"));
     temporaryDirectories.push(root);
-    const plugins = [vinext({ react: false, rsc: false })];
-    const transform = async (server: Awaited<ReturnType<typeof createServer>>, id: string) => {
-      const source = `export const browser = typeof window !== "undefined"`;
-      try {
-        return (await server.pluginContainer.transform(source, id))?.code;
-      } catch (error) {
-        const viteError = error as { code?: string; pluginCode?: string };
-        if (viteError.code !== "ERR_OUTDATED_OPTIMIZED_DEP") throw error;
-        return viteError.pluginCode;
-      }
-    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      environments: {
+        server: { consumer: "server" },
+      },
+      plugins: [vinext({ react: false, rsc: false })],
+    });
 
-    for (const name of ["first-cache", "second-cache"]) {
-      const cacheDir = path.join(root, name);
-      const server = await createServer({
-        root,
-        cacheDir,
-        configFile: false,
-        logLevel: "silent",
-        plugins,
-      });
+    const vitePackage = (await import("vite/package.json", { with: { type: "json" } })).default;
+    const viteVersion = vitePackage.bundledVersions?.vite ?? (await import("vite")).version;
+    const usesNativeFolding = supportsNativeTypeofWindowFolding(
+      viteVersion,
+      vitePackage.bundledVersions?.rolldown,
+    );
 
-      try {
-        const prebundleId = path.join(cacheDir, "deps_ssr/react.js");
-        const prebundleCode = await transform(server, prebundleId);
-        expect(prebundleCode).toContain("typeof window");
-
-        const sourceCode = await transform(server, path.join(root, `${name}.js`));
-        expect(sourceCode).not.toContain("typeof window");
-      } finally {
-        await server.close();
-      }
-    }
+    expect(builder.environments.client?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"object"' : undefined,
+    );
+    expect(builder.environments.server?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"undefined"' : undefined,
+    );
   });
 
-  it("configures the hook filter to skip the resolved Vite cache directory", async () => {
-    // Normalize the root to forward slashes up front so everything below stays
-    // in the same POSIX space the plugin's exclude regex (and Vite's ids) use.
-    const root = normalizePathSeparators(
-      await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-filter-")),
-    );
+  it("uses native folding only from the stable Vite 8.1.4 release", () => {
+    expect(supportsNativeTypeofWindowFolding("8.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.4+build.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("9.0.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0", "1.1.3")).toBe(false);
+  });
+
+  it("skips custom scan folding for modules in the Vite cache directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-cache-"));
     temporaryDirectories.push(root);
-    const cacheDir = path.posix.join(root, ".vite-cache[custom]");
-    const server = await createServer({
+    const cacheDir = path.join(root, ".vite-cache[custom]");
+    const builder = await createBuilder({
       root,
       cacheDir,
       configFile: false,
       logLevel: "silent",
       plugins: [vinext({ react: false, rsc: false })],
     });
-
-    try {
-      const plugin = server.config.plugins.find(
-        (candidate) => candidate?.name === "vinext:typeof-window",
-      );
-      if (!plugin?.transform || typeof plugin.transform === "function") {
-        throw new Error("vinext:typeof-window transform hook not found");
-      }
-      const idFilter = plugin.transform.filter?.id as { exclude?: RegExp } | undefined;
-      expect(idFilter?.exclude).toBeInstanceOf(RegExp);
-      expect(idFilter?.exclude?.test(path.posix.join(cacheDir, "deps_ssr/react.js"))).toBe(true);
-      expect(idFilter?.exclude?.test(path.posix.join(root, "app/page.js"))).toBe(false);
-      expect(idFilter?.exclude?.test(`${cacheDir}-other/deps/react.js`)).toBe(false);
-    } finally {
-      await server.close();
+    const plugin = builder.config.plugins.find(
+      (candidate) => candidate.name === "vinext:typeof-window-scan",
+    );
+    if (!plugin?.transform || typeof plugin.transform === "function") {
+      throw new Error("vinext:typeof-window-scan transform hook not found");
     }
+
+    const transform = plugin.transform.handler;
+    const context = {
+      environment: {
+        config: {
+          build: { write: false },
+          cacheDir,
+          consumer: "server",
+        },
+      },
+    };
+    const source = `if (typeof window !== "undefined") import("browser-only")`;
+    const appPageId = path.join(root, "app/page.js");
+
+    expect(
+      await transform.call(context as never, source, path.join(cacheDir, "deps_ssr/react.js")),
+    ).toBeNull();
+    const cachedServerResult = await transform.call(context as never, source, appPageId);
+    expect(cachedServerResult).not.toBeNull();
+    expect(await transform.call(context as never, source, appPageId)).toBe(cachedServerResult);
+
+    const clientContext = {
+      environment: {
+        config: {
+          ...context.environment.config,
+          consumer: "client",
+        },
+      },
+    };
+    const clientResult = await transform.call(clientContext as never, source, appPageId);
+    expect(clientResult).not.toBe(cachedServerResult);
+    expect(await transform.call(clientContext as never, source, appPageId)).toBe(clientResult);
+    expect(clientResult).toMatchObject({ code: expect.stringContaining("browser-only") });
+    expect(
+      await transform.call(context as never, `${source}\nconsole.log("changed")`, appPageId),
+    ).not.toBe(cachedServerResult);
   });
 
   it("only folds references to the global window binding", () => {

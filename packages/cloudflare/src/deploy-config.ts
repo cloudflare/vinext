@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { VinextCacheConfig } from "vinext/internal/cache-adapters";
 import { findViteConfigPath } from "vinext/internal/utils/project";
+import {
+  DEFAULT_KV_DATA_CACHE_BINDING,
+  type KvDataAdapterOptions,
+} from "./cache/kv-data-adapter.js";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
@@ -103,6 +108,50 @@ export function viteConfigHasCacheAdapter(root: string): boolean {
   const block = extractCacheBlock(content);
   if (!block) return false; // no cache config at all
   return cacheFieldAssigned(block, "cdn") || cacheFieldAssigned(block, "data");
+}
+
+export type ResolvedKvDataAdapterConfig = {
+  binding: string;
+  appPrefix?: string;
+  ttlSeconds?: number;
+};
+
+function isCloudflareKvDataAdapterPath(adapter: string): boolean {
+  const normalized = adapter.replace(/\\/g, "/");
+  return (
+    normalized === "@vinext/cloudflare/cache/kv-data-adapter.runtime" ||
+    normalized === "@vinext/cloudflare/cache/kv-data-adapter.runtime.js" ||
+    normalized.endsWith("/cache/kv-data-adapter.runtime.js")
+  );
+}
+
+function readPositiveNumberOption(
+  options: KvDataAdapterOptions | undefined,
+  field: "ttlSeconds",
+): number | undefined {
+  const value = options?.[field];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+export function resolveKvDataAdapterConfig(
+  cache: VinextCacheConfig | null | undefined,
+): ResolvedKvDataAdapterConfig | null {
+  const data = cache?.data;
+  if (!data?.adapter || !isCloudflareKvDataAdapterPath(data.adapter)) return null;
+
+  const options = data.options as KvDataAdapterOptions | undefined;
+  return {
+    binding:
+      typeof options?.binding === "string" && options.binding.length > 0
+        ? options.binding
+        : DEFAULT_KV_DATA_CACHE_BINDING,
+    ...(typeof options?.appPrefix === "string" && options.appPrefix.length > 0
+      ? { appPrefix: options.appPrefix }
+      : {}),
+    ...(readPositiveNumberOption(options, "ttlSeconds") !== undefined
+      ? { ttlSeconds: readPositiveNumberOption(options, "ttlSeconds") }
+      : {}),
+  };
 }
 
 export function viteConfigHasImageAdapter(root: string): boolean {

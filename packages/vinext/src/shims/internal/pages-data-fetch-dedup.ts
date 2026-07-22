@@ -33,6 +33,7 @@
  */
 
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
+import { MIDDLEWARE_SKIP_HEADER } from "../../utils/protocol-headers.js";
 
 type InflightEntry = {
   controller: AbortController;
@@ -51,10 +52,11 @@ const staticDataSources = new Map<string, Promise<Response>>();
 
 function getStaticDataKey(dataHref: string): string {
   if (typeof window === "undefined") return dataHref;
+  const previewVariant = window.__NEXT_DATA__?.isPreview === true ? "preview" : "normal";
   try {
-    return new URL(dataHref, window.location.href).href;
+    return `${new URL(dataHref, window.location.href).href}\n${previewVariant}`;
   } catch {
-    return dataHref;
+    return `${dataHref}\n${previewVariant}`;
   }
 }
 
@@ -94,6 +96,7 @@ export function fetchCachedPagesData(dataHref: string, init?: RequestInit): Prom
         if (
           !response.ok ||
           response.headers.get("x-middleware-cache") === "no-cache" ||
+          response.headers.get(MIDDLEWARE_SKIP_HEADER) !== null ||
           (responseDeploymentId !== null && responseDeploymentId !== expectedDeploymentId)
         ) {
           delete staticDataCache[key];
@@ -118,6 +121,17 @@ export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Prom
   return fetchCachedPagesData(dataHref, init);
 }
 
+export function fetchUncachedPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
+  return fetch(dataHref, init).then(async (response) => {
+    const body = await response.arrayBuffer();
+    return new Response(body, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  });
+}
+
 export function evictPagesDataCache(dataHref: string): void {
   const key = getStaticDataKey(dataHref);
   delete staticDataCache[key];
@@ -133,7 +147,11 @@ function getInflightKey(dataHref: string, init?: RequestInit): string {
   }
 
   const deploymentId = new Headers(init?.headers).get(NEXT_DEPLOYMENT_ID_HEADER) ?? "";
-  return `${resolvedHref}\n${deploymentId}`;
+  const previewVariant =
+    typeof window !== "undefined" && window.__NEXT_DATA__?.isPreview === true
+      ? "preview"
+      : "normal";
+  return `${resolvedHref}\n${deploymentId}\n${previewVariant}`;
 }
 
 function cloneSharedResponse(

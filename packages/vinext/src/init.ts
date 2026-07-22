@@ -17,9 +17,8 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { spawn, spawnSync } from "node:child_process";
-import { runCheck, formatReport } from "./check.js";
 import {
   detectProject,
   ensureESModule,
@@ -90,8 +89,8 @@ function inspectPnpmIgnoredBuilds(root: string): string {
 export type InitOptions = {
   /** Project root directory */
   root: string;
-  /** Dev server port (default: 3001) */
-  port?: number;
+  /** Dev server port (default: 3001), or false to omit the port flag. */
+  port?: number | false;
   /** Skip the compatibility check step */
   skipCheck?: boolean;
   /** Force overwrite even if vite.config.ts exists */
@@ -102,6 +101,10 @@ export type InitOptions = {
   prerender?: boolean;
   /** Cloudflare cache and image choices. */
   cloudflare?: CloudflareInitOptions;
+  /** Install missing dependencies with the detected package manager (default: true). */
+  install?: boolean;
+  /** Script naming style (default: namespaced, e.g. dev:vinext). */
+  scriptNames?: "namespaced" | "standard";
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (
     cmd: string,
@@ -153,7 +156,12 @@ export default defineConfig({
  * Add vinext scripts to package.json without overwriting existing scripts.
  * Returns the list of script names that were added.
  */
-export function addScripts(root: string, port: number): string[] {
+export function addScripts(
+  root: string,
+  port: number | false,
+  platform: InitPlatform = "node",
+  options: { warmCdnCache?: boolean; scriptNames?: "namespaced" | "standard" } = {},
+): string[] {
   const pkgPath = path.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return [];
 
@@ -166,20 +174,29 @@ export function addScripts(root: string, port: number): string[] {
     }
 
     const added: string[] = [];
+    const addScript = (name: string, command: string) => {
+      const scriptName = options.scriptNames === "standard" ? name : `${name}:vinext`;
+      if (pkg.scripts[scriptName]) return;
+      pkg.scripts[scriptName] = command;
+      added.push(scriptName);
+    };
 
-    if (!pkg.scripts["dev:vinext"]) {
-      pkg.scripts["dev:vinext"] = `vinext dev --port ${port}`;
-      added.push("dev:vinext");
-    }
+    addScript("dev", port === false ? "vinext dev" : `vinext dev --port ${port}`);
+    addScript("build", "vinext build");
+    addScript(
+      "start",
+      platform === "cloudflare"
+        ? "wrangler dev --config dist/server/wrangler.json"
+        : "vinext start",
+    );
 
-    if (!pkg.scripts["build:vinext"]) {
-      pkg.scripts["build:vinext"] = "vinext build";
-      added.push("build:vinext");
-    }
-
-    if (!pkg.scripts["start:vinext"]) {
-      pkg.scripts["start:vinext"] = "vinext start";
-      added.push("start:vinext");
+    if (platform === "cloudflare") {
+      addScript(
+        "deploy",
+        options.warmCdnCache
+          ? "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
+          : "vinext-cloudflare deploy --config dist/server/wrangler.json",
+      );
     }
 
     if (added.length > 0) {
@@ -194,16 +211,31 @@ export function addScripts(root: string, port: number): string[] {
 
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
-export function getInitDeps(isAppRouter: boolean, platform: InitPlatform): string[] {
-  const deps = ["vinext", "vite", "@vitejs/plugin-react"];
+export type InitDependencyGroups = {
+  dependencies: string[];
+  devDependencies: string[];
+};
+
+export function getInitDependencyGroups(
+  isAppRouter: boolean,
+  platform: InitPlatform,
+): InitDependencyGroups {
+  const dependencies = ["vinext"];
+  const devDependencies = ["vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
-    deps.push("@vitejs/plugin-rsc");
-    deps.push("react-server-dom-webpack");
+    dependencies.push("react-server-dom-webpack");
+    devDependencies.push("@vitejs/plugin-rsc");
   }
   if (platform === "cloudflare") {
-    deps.push("@cloudflare/vite-plugin", "@vinext/cloudflare", "wrangler");
+    dependencies.push("@vinext/cloudflare");
+    devDependencies.push("@cloudflare/vite-plugin", "wrangler");
   }
-  return deps;
+  return { dependencies, devDependencies };
+}
+
+export function getInitDeps(isAppRouter: boolean, platform: InitPlatform): string[] {
+  const groups = getInitDependencyGroups(isAppRouter, platform);
+  return [...groups.dependencies, ...groups.devDependencies];
 }
 
 export function isDepInstalled(root: string, dep: string): boolean {
@@ -220,6 +252,75 @@ export function isDepInstalled(root: string, dep: string): boolean {
   } catch {
     return false;
   }
+}
+
+function parseDependencySpecifier(specifier: string): {
+  name: string;
+  version: string;
+  hasExplicitVersion: boolean;
+} {
+  if (specifier.startsWith("@")) {
+    const versionSeparator = specifier.indexOf("@", 1);
+    if (versionSeparator !== -1) {
+      return {
+        name: specifier.slice(0, versionSeparator),
+        version: specifier.slice(versionSeparator + 1),
+        hasExplicitVersion: true,
+      };
+    }
+    return { name: specifier, version: "latest", hasExplicitVersion: false };
+  }
+
+  const versionSeparator = specifier.indexOf("@");
+  if (versionSeparator !== -1) {
+    return {
+      name: specifier.slice(0, versionSeparator),
+      version: specifier.slice(versionSeparator + 1),
+      hasExplicitVersion: true,
+    };
+  }
+  return { name: specifier, version: "latest", hasExplicitVersion: false };
+}
+
+function addDependencyEntries(root: string, deps: string[], { dev }: { dev: boolean }): string[] {
+  if (deps.length === 0) return [];
+
+  const pkgPath = path.join(root, "package.json");
+  if (!fs.existsSync(pkgPath)) return [];
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const targetKey = dev ? "devDependencies" : "dependencies";
+  const target = (pkg[targetKey] ??= {});
+  const added: string[] = [];
+
+  for (const dep of deps) {
+    const { name, version, hasExplicitVersion } = parseDependencySpecifier(dep);
+    const existingTarget =
+      pkg.dependencies?.[name] !== undefined
+        ? pkg.dependencies
+        : pkg.devDependencies?.[name] !== undefined
+          ? pkg.devDependencies
+          : undefined;
+
+    if (existingTarget) {
+      if (!hasExplicitVersion || existingTarget[name] === version) continue;
+      existingTarget[name] = version;
+      added.push(name);
+      continue;
+    }
+
+    target[name] = version;
+    added.push(name);
+  }
+
+  if (added.length > 0) {
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+  }
+
+  return added;
 }
 
 /**
@@ -420,6 +521,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const isApp = detectProject(root).isAppRouter;
   const pmName = detectPackageManagerName(root);
+  const shouldInstall = options.install ?? true;
 
   if (platform === "cloudflare") {
     validateCloudflarePlatformSetup(
@@ -438,6 +540,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   if (!options.skipCheck) {
     console.log("  Running compatibility check...\n");
+    const { runCheck, formatReport } = await import("./check.js");
     const checkResult = runCheck(root);
     console.log(formatReport(checkResult, { calledFromInit: true }));
     console.log(); // blank line before migration steps
@@ -462,7 +565,10 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 3: Add scripts ────────────────────────────────────────────────
 
-  const addedScripts = addScripts(root, port);
+  const addedScripts = addScripts(root, port, platform, {
+    warmCdnCache: options.cloudflare?.warmCdnCache ?? false,
+    scriptNames: options.scriptNames,
+  });
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────
 
@@ -487,16 +593,20 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
-  const neededDeps = getInitDeps(isApp, platform);
-  const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
+  const neededDeps = getInitDependencyGroups(isApp, platform);
+  const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
+  const missingDevDependencies = neededDeps.devDependencies.filter(
+    (dep) => !isDepInstalled(root, dep),
+  );
   let dependencyInstallNeedsApproval = false;
-  let dependenciesAdded = false;
+  const dependencyEntriesAdded: string[] = [];
+  const devDependencyEntriesAdded: string[] = [];
 
   // For App Router: react-server-dom-webpack requires react/react-dom versions
   // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
   // React is too old (common with create-next-app), upgrade it first as a
   // regular dependency to avoid ERESOLVE peer-dep conflicts.
-  if (isApp && missingDeps.includes("react-server-dom-webpack")) {
+  if (isApp && missingDependencies.includes("react-server-dom-webpack")) {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
       console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);
@@ -507,8 +617,13 @@ export async function init(options: InitOptions): Promise<InitResult> {
         ),
       );
       try {
-        const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
-        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+        if (shouldInstall) {
+          const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
+          if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+        } else {
+          const added = addDependencyEntries(root, reactUpgrade, { dev: false });
+          dependencyEntriesAdded.push(...added);
+        }
       } catch (error) {
         if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
         dependencyInstallNeedsApproval = true;
@@ -516,13 +631,37 @@ export async function init(options: InitOptions): Promise<InitResult> {
     }
   }
 
-  if (missingDeps.length > 0) {
+  if (missingDependencies.length > 0) {
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing dependencies:"))}`);
-    console.log(formatList(missingDeps, "    "));
+    console.log(formatList(missingDependencies, "    "));
     try {
-      const installOutput = await installDeps(root, missingDeps, exec);
-      dependenciesAdded = true;
-      if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      if (shouldInstall) {
+        const installOutput = await installDeps(root, missingDependencies, exec, { dev: false });
+        dependencyEntriesAdded.push(...missingDependencies);
+        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      } else {
+        const added = addDependencyEntries(root, missingDependencies, { dev: false });
+        dependencyEntriesAdded.push(...added);
+      }
+    } catch (error) {
+      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
+      dependencyInstallNeedsApproval = true;
+    }
+    console.log();
+  }
+
+  if (missingDevDependencies.length > 0) {
+    console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing devDependencies:"))}`);
+    console.log(formatList(missingDevDependencies, "    "));
+    try {
+      if (shouldInstall) {
+        const installOutput = await installDeps(root, missingDevDependencies, exec);
+        devDependencyEntriesAdded.push(...missingDevDependencies);
+        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      } else {
+        const added = addDependencyEntries(root, missingDevDependencies, { dev: true });
+        devDependencyEntriesAdded.push(...added);
+      }
     } catch (error) {
       if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
       dependencyInstallNeedsApproval = true;
@@ -532,6 +671,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   if (
     pmName === "pnpm" &&
+    shouldInstall &&
     !dependencyInstallNeedsApproval &&
     !options._exec &&
     hasAutomaticallyIgnoredBuilds(inspectPnpmIgnoredBuilds(root))
@@ -539,6 +679,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     dependencyInstallNeedsApproval = true;
   } else if (
     pmName === "pnpm" &&
+    shouldInstall &&
     !dependencyInstallNeedsApproval &&
     options._inspectPnpmIgnoredBuilds &&
     hasAutomaticallyIgnoredBuilds(options._inspectPnpmIgnoredBuilds(root))
@@ -550,9 +691,13 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   console.log(`  ${terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`);
 
-  if (dependenciesAdded) {
+  if (dependencyEntriesAdded.length > 0) {
+    console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to dependencies:`);
+    console.log(formatList(dependencyEntriesAdded, "      "));
+  }
+  if (devDependencyEntriesAdded.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
-    console.log(formatList(missingDeps, "      "));
+    console.log(formatList(devDependencyEntriesAdded, "      "));
   }
   if (dependencyInstallNeedsApproval) {
     console.log(
@@ -595,18 +740,30 @@ export async function init(options: InitOptions): Promise<InitResult> {
       "   pnpm install",
     );
   }
+  const scriptName = (name: string) =>
+    options.scriptNames === "standard" ? name : `${name}:vinext`;
+  const deployCommandStep =
+    platform === "cloudflare"
+      ? `    ${pmName} run ${scriptName("deploy")} Deploy to Cloudflare Workers\n`
+      : "";
+  const startCommandDescription =
+    platform === "cloudflare"
+      ? "Start the built Worker locally with Wrangler"
+      : "Start vinext production server";
 
   console.log(`
   ${terminalStyle.cyan(terminalStyle.bold("Next steps:"))}
 ${nextSteps.map((step) => `    ${step}`).join("\n")}${nextSteps.length > 0 ? "\n" : ""}
-    ${pmName} run dev:vinext    Start the vinext dev server
-    ${pmName} run build:vinext  Build production output
-    ${pmName} run start:vinext  Start vinext production server
-    ${pmName} run dev           Start Next.js (still works as before)
+    ${pmName} run ${scriptName("dev")}    Start the vinext dev server
+    ${pmName} run ${scriptName("build")}  Build production output
+    ${pmName} run ${scriptName("start")}  ${startCommandDescription}
+${deployCommandStep}${options.scriptNames === "standard" ? "" : `    ${pmName} run dev           Start Next.js (still works as before)\n`}
 `);
 
+  const installedDeps = [...new Set([...dependencyEntriesAdded, ...devDependencyEntriesAdded])];
+
   return {
-    installedDeps: dependenciesAdded ? missingDeps : [],
+    installedDeps,
     addedTypeModule,
     renamedConfigs,
     addedScripts,

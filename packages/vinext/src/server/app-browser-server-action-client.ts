@@ -28,6 +28,7 @@ import {
   ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
 } from "./headers.js";
+import { hasBasePath } from "../utils/base-path.js";
 
 type ServerActionResult = AppBrowserServerActionResult<AppWireElements>;
 
@@ -71,6 +72,7 @@ export type ClientServerActionDeps = {
 
 function resolveActionRedirectTarget(
   response: Response,
+  basePath: string,
   performHardNavigation: ClientServerActionDeps["performHardNavigation"],
 ): ActionRedirectTarget | null {
   const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
@@ -92,7 +94,10 @@ function resolveActionRedirectTarget(
       redirectUrl = new URL(actionRedirect, `${baseParsed.origin}${baseDir}${baseParsed.search}`);
     }
 
-    if (redirectUrl.origin !== window.location.origin) {
+    if (
+      redirectUrl.origin !== window.location.origin ||
+      (basePath !== "" && !hasBasePath(redirectUrl.pathname, basePath))
+    ) {
       performHardNavigation(actionRedirect);
       return null;
     }
@@ -117,7 +122,7 @@ class ServerActionRedirectError extends Error {
     const redirectUrl = new URL(target.href, window.location.href);
     const redirectHref = redirectUrl.pathname + redirectUrl.search + redirectUrl.hash;
     const redirectType = target.type === "push" ? "push" : "replace";
-    this.digest = `NEXT_REDIRECT;${redirectType};${encodeURIComponent(redirectHref)};${target.status};`;
+    this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};${target.status};`;
   }
 }
 
@@ -138,6 +143,10 @@ export async function invokeClientServerAction(
     actionId: id,
     basePath: deps.basePath,
     elements: actionInitiation.routerState.elements,
+    interceptionContext:
+      actionInitiation.routerState.interception !== null
+        ? actionInitiation.routerState.interceptionContext
+        : null,
     previousNextUrl: actionInitiation.routerState.previousNextUrl,
   }).headers;
   const fetchResponse = await fetch(createServerActionRequestUrl(actionInitiation.path), {
@@ -149,8 +158,10 @@ export async function invokeClientServerAction(
   throwOnServerActionNotFound(fetchResponse, id);
 
   const hasActionRedirect = fetchResponse.headers.has(ACTION_REDIRECT_HEADER);
-  const actionRedirectTarget = resolveActionRedirectTarget(fetchResponse, (url, historyMode) =>
-    deps.performHardNavigation(url, historyMode),
+  const actionRedirectTarget = resolveActionRedirectTarget(
+    fetchResponse,
+    deps.basePath,
+    (url, historyMode) => deps.performHardNavigation(url, historyMode),
   );
   if (hasActionRedirect && !actionRedirectTarget) return undefined;
 

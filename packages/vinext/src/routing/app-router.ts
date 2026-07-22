@@ -37,8 +37,10 @@ type AppRouteGraph = {
 let cachedGraph: AppRouteGraph | null = null;
 let cachedAppDir: string | null = null;
 let cachedPageExtensionsKey: string | null = null;
+let cacheGeneration = 0;
 
 export function invalidateAppRouteCache(): void {
+  cacheGeneration++;
   cachedGraph = null;
   cachedAppDir = null;
   cachedPageExtensionsKey = null;
@@ -49,9 +51,6 @@ export function invalidateAppRouteCache(): void {
  * TODO(#726): Layer 4 should consume this read model directly once the
  * navigation planner owns route graph facts.
  *
- * `appDir` must be forward-slash — callers normalize it at their entry, and it
- * flows into `buildAppRouteGraph`, which builds every path with `path.posix.*`.
- *
  * @internal
  */
 export async function appRouteGraph(
@@ -61,21 +60,28 @@ export async function appRouteGraph(
 ): Promise<AppRouteGraph> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const pageExtensionsKey = JSON.stringify(matcher.extensions);
-  if (cachedGraph && cachedAppDir === appDir && cachedPageExtensionsKey === pageExtensionsKey) {
-    return cachedGraph;
-  }
+  while (true) {
+    if (cachedGraph && cachedAppDir === appDir && cachedPageExtensionsKey === pageExtensionsKey) {
+      return cachedGraph;
+    }
 
-  const graph = await buildAppRouteGraph(appDir, matcher);
-  cachedGraph = graph;
-  cachedAppDir = appDir;
-  cachedPageExtensionsKey = pageExtensionsKey;
-  return graph;
+    const scanGeneration = cacheGeneration;
+    const graph = await buildAppRouteGraph(appDir, matcher);
+    // A watcher may invalidate while the async filesystem scan is still in
+    // flight. Retry instead of returning or caching that obsolete snapshot.
+    // Watcher invalidations arrive in finite bursts, so intentionally wait for
+    // a quiescent scan rather than bounding retries and publishing stale routes.
+    if (scanGeneration !== cacheGeneration) continue;
+
+    cachedGraph = graph;
+    cachedAppDir = appDir;
+    cachedPageExtensionsKey = pageExtensionsKey;
+    return graph;
+  }
 }
 
 /**
  * Scan the app/ directory and return a list of routes.
- *
- * `appDir` must be forward-slash — it is forwarded to `appRouteGraph`.
  */
 export async function appRouter(
   appDir: string,

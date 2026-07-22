@@ -13,6 +13,7 @@ function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): Cache
     buffer: new TextEncoder().encode("flight").buffer,
     contentType: "text/x-component",
     paramsHeader: null,
+    renderedPathAndSearch: null,
     url: "/dynamic.rsc",
     ...overrides,
   };

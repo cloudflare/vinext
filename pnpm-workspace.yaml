@@ -38,7 +38,6 @@ catalog:
   "@types/node": ^25.9.2
   "@types/react": ^19.2.16
   "@types/react-dom": ^19.2.3
-  "@typescript/native-preview": ^7.0.0-dev.20260213.1
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
   "@vitejs/plugin-react": ^6.0.1
@@ -73,6 +72,7 @@ catalog:
   next-view-transitions: ^0.3.5
   nitro: npm:nitro-nightly@latest
   nuqs: ^2.8.8
+  pathslash: ^0.1.0
   playwright: ^1.60.0
   postcss: 8.5.10
   react: ^19.2.7
@@ -84,13 +84,12 @@ catalog:
   swr: ^2.0.0
   tailwind-merge: ^3.3.0
   tailwindcss: 4.1.4
-  typescript: ^5.7.0
+  typescript: ^7.0.0
   use-count-up: 3.0.1
   validator: ^13.15.26
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.1
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.2
   vite-plugin-commonjs: ^0.10.4
-  vite-plus: 0.2.1
-  vite-tsconfig-paths: ^6.1.1
+  vite-plus: 0.2.2
   vitest: 4.1.9
   web-vitals: ^4.2.4
   wrangler: ^4.80.0
@@ -105,8 +104,10 @@ overrides:
 peerDependencyRules:
   allowAny:
     - vite
+    - vitest
   allowedVersions:
     vite: "*"
+    vitest: "*"
   ignoreMissing:
     - next
     - webpack

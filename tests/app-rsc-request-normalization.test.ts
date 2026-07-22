@@ -24,7 +24,6 @@ import {
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   createClientReuseManifest,
@@ -135,6 +134,14 @@ describe("normalizeRscRequest — basePath", () => {
     expect((result as Response).status).toBe(404);
   });
 
+  it("retains an out-of-basePath pathname for config rules that opt out", () => {
+    const result = normalized(normalizeRscRequest(req("/outside"), "/app", true));
+
+    expect(result.pathname).toBe("/outside");
+    expect(result.cleanPathname).toBe("/outside");
+    expect(result.hadBasePath).toBe(false);
+  });
+
   it("strips basePath prefix so internal routing sees basePath-free pathname", () => {
     const result = normalized(normalizeRscRequest(req("/app/dashboard"), "/app"));
     expect(result.pathname).toBe("/dashboard");
@@ -215,9 +222,12 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     expect(result.isRscRequest).toBe(false);
   });
 
-  it("does not select RSC rendering by RSC header alone on an HTML URL", () => {
+  it("detects full-route RSC requests by RSC header alone on an HTML URL", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
     const result = normalized(normalizeRscRequest(req("/about", { [RSC_HEADER]: "1" }), ""));
-    expect(result.isRscRequest).toBe(false);
+    expect(result.isRscRequest).toBe(true);
     expect(result.cleanPathname).toBe("/about");
   });
 
@@ -434,14 +444,6 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
   });
 
   it("normalizes the semantic render mode marker", () => {
-    const refresh = normalized(
-      normalizeRscRequest(
-        req("/page.rsc", {
-          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-        }),
-        "",
-      ),
-    );
     const normal = normalized(
       normalizeRscRequest(req("/page.rsc", { [VINEXT_RSC_RENDER_MODE_HEADER]: "true" }), ""),
     );
@@ -455,12 +457,13 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     );
     const html = normalized(
       normalizeRscRequest(
-        req("/page", { [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI }),
+        req("/page", {
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        }),
         "",
       ),
     );
 
-    expect(refresh.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
     expect(prefetchShell.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
     expect(normal.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
     expect(html.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
@@ -471,14 +474,14 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
       normalizeRscRequest(
         req(`/page?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
           [RSC_HEADER]: "1",
-          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         }),
         "",
       ),
     );
 
     expect(result.isRscRequest).toBe(true);
-    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
   });
 });
 

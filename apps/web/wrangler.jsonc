@@ -5,9 +5,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
   "preview_urls": true,
+  "account_id": "d48e2eb599d9aa075d5e682deaecc518",
   "assets": {
     "not_found_handling": "none",
     "binding": "ASSETS",
+    "directory": "dist/client",
   },
   "images": {
     "binding": "IMAGES",

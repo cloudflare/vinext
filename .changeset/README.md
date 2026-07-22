@@ -19,6 +19,19 @@ Commits** by `scripts/create-changeset.mts` during CI (see
 committed to `main`** — they exist just long enough for `changesets/action` to
 consume them into the rolling "Version Packages" PR.
 
+## Prerelease mode
+
+The repository is currently in Changesets prerelease mode with the `beta` tag.
+The initial Version Packages PR will release `vinext`, `@vinext/cloudflare`, and
+`create-vinext-app` as `1.0.0-beta.0`. Later Version PRs will increment the beta
+number, and `changeset publish` publishes them to npm's `beta` dist-tag. For
+example, install a vinext prerelease with `npm install vinext@beta`.
+
+When the beta is ready to become stable, run `vp exec changeset pre exit` and
+commit the resulting `.changeset/pre.json` update. The next Version Packages PR
+will remove the prerelease suffix, and its release will publish to npm's
+`latest` dist-tag.
+
 You can still author changesets by hand. A human-committed `.changeset/*.md` on
 `main` is honored exactly like normal: it is consumed alongside the
 auto-generated ones when the Version PR is built. Add one with `pnpm changeset`

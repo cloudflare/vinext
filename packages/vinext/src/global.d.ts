@@ -43,6 +43,17 @@ declare global {
     __VINEXT_ROOT__: Root | undefined;
 
     /**
+     * Whether `reactStrictMode: true` is set in next.config for the Pages
+     * Router. Set by the generated client entry and the dev hydration script
+     * before `hydrateRoot()`. Read by `wrapWithRouterContext` in
+     * `shims/router.ts` so the StrictMode wrap is applied on the initial
+     * hydration AND every client-side navigation render — mirroring Next.js's
+     * `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`, which runs
+     * for both the initial hydrate and subsequent `reactRoot.render()` calls.
+     */
+    __VINEXT_REACT_STRICT_MODE__: boolean | undefined;
+
+    /**
      * High-resolution timestamp recorded after client hydration is usable.
      * Pages Router writes from the stable router provider after passive
      * effects can attach; App Router writes after the first committed tree
@@ -66,7 +77,7 @@ declare global {
     __VINEXT_APP__:
       | React.ComponentType<{
           Component: React.ComponentType<Record<string, unknown>>;
-          pageProps: unknown;
+          pageProps?: unknown;
           router?: unknown;
           [key: string]: unknown;
         }>
@@ -287,7 +298,7 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_DOMAIN_LOCALES__:
-    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
+    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: true }>
     | undefined;
 
   /**
@@ -401,6 +412,9 @@ declare global {
        * standalone code paths.
        */
       __VINEXT_SHARED_REVALIDATE_SECRET?: string;
+      __VINEXT_PREVIEW_MODE_ID?: string;
+      __VINEXT_PREVIEW_MODE_SIGNING_KEY?: string;
+      __VINEXT_PREVIEW_MODE_ENCRYPTION_KEY?: string;
 
       /**
        * Deployment ID string injected via Vite `define` when
@@ -475,6 +489,8 @@ declare module "node:http" {
      * the final response status.
      */
     __vinextMiddlewareStatus?: number;
+    /** Encoded request URL captured before Vite normalizes the pathname. */
+    __vinextOriginalEncodedUrl?: string;
   }
 }
 

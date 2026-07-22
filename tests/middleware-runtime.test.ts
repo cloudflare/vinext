@@ -142,6 +142,35 @@ describe("middleware redirect protocol", () => {
     expect(result.redirectStatus).toBeUndefined();
   });
 
+  it("preserves middleware cache opt-out when shaping data-request redirects", async () => {
+    const module = {
+      default: (req: Request) =>
+        new Response(null, {
+          status: 307,
+          headers: {
+            Location: new URL("/new-home", req.url).toString(),
+            "x-middleware-cache": "no-cache",
+            "x-middleware-rewrite": "/internal",
+          },
+        }),
+    };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module,
+      isDataRequest: true,
+      request: new Request("http://localhost:3000/old-home"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.response?.status).toBe(200);
+    expect(result.response?.headers.get("x-nextjs-redirect")).toBe("/new-home");
+    expect(result.response?.headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(result.response?.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(result.response?.headers.get("Location")).toBeNull();
+    expect(result.redirectUrl).toBeUndefined();
+  });
+
   it("translates external redirects to x-nextjs-redirect for data requests", async () => {
     const module = {
       default: () => Response.redirect("https://example.vercel.sh/", 307),
@@ -297,5 +326,22 @@ describe("middleware nextUrl basePath", () => {
     expect(result.continue).toBe(true);
     expect(captured.request?.nextUrl.basePath).toBe("/root");
     expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
+  });
+
+  it("matches encoded aliases while exposing the raw pathname to middleware", async () => {
+    // Next.js tries middleware matchers against both the request pathname and
+    // its decoded form, while NextRequest keeps the original encoded value.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const { captured, module } = captureModule();
+    const moduleWithMatcher = { ...module, config: { matcher: "/about" } };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: moduleWithMatcher,
+      request: new Request("http://localhost:3000/%61bout"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.pathname).toBe("/%61bout");
   });
 });

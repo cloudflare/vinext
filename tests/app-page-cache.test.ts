@@ -256,6 +256,46 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
   });
 
+  it("does not serve or background-regenerate hard-expired app pages", async () => {
+    const scheduleBackgroundRegeneration = vi.fn();
+    const cacheOutcomes: AppPageCacheOutcomeMetric[] = [];
+    const expiredEntry: ISRCacheEntry = {
+      ...buildISRCacheEntry(buildCachedAppPageValue("<h1>expired</h1>"), true),
+      isExpired: true,
+    };
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/expired",
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      isrGet: vi.fn(async () => expiredEntry),
+      isrHtmlKey(pathname) {
+        return `html:${pathname}`;
+      },
+      isrRscKey(pathname) {
+        return `rsc:${pathname}`;
+      },
+      isrSet: vi.fn(async () => {}),
+      recordCacheOutcome(metric) {
+        cacheOutcomes.push(metric);
+      },
+      revalidateSeconds: 60,
+      renderFreshPageForCache: vi.fn(),
+      scheduleBackgroundRegeneration,
+    });
+
+    expect(response).toBeNull();
+    expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(cacheOutcomes).toEqual([
+      {
+        artifact: "html",
+        cacheKey: "html:/expired",
+        outcome: "miss",
+        reason: "expired",
+      },
+    ]);
+  });
+
   it("falls back to 200 for falsy cached status values", () => {
     const response = buildAppPageCachedResponse(
       buildCachedAppPageValue("<h1>cached</h1>", undefined, 0),
@@ -520,119 +560,86 @@ describe("app page cache helpers", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
-  it("keys RSC cache reads by mounted-slot header and echoes the variant header", async () => {
+  it("bypasses persistent RSC cache reads for mounted-slot variants", async () => {
+    const debugCalls: Array<[string, string]> = [];
+    const isrGet = vi.fn();
+    const isrRscKey = vi.fn();
+
     const response = await readAppPageCacheResponse({
       cleanPathname: "/cached",
       clearRequestContext() {},
       isRscRequest: true,
-      async isrGet(key) {
-        expect(key).toBe("rsc:/cached:slot:auth:/");
-        return buildISRCacheEntry(
-          buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
-        );
-      },
+      isrGet,
       isrHtmlKey(pathname) {
         return "html:" + pathname;
       },
-      isrRscKey(pathname, mountedSlotsHeader) {
-        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
-      },
+      isrRscKey,
       async isrSet() {},
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
       mountedSlotsHeader: "slot:auth:/",
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
-        throw new Error("should not render");
+        throw new Error("read helper should not render directly");
       },
       scheduleBackgroundRegeneration() {
         throw new Error("should not schedule regeneration");
       },
     });
 
-    expect(response?.headers.get("x-vinext-mounted-slots")).toBe("slot:auth:/");
+    expect(response).toBeNull();
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrRscKey).not.toHaveBeenCalled();
+    expect(debugCalls).toEqual([["MISS (mounted slots RSC variant)", "/cached"]]);
   });
 
-  it("serves stale RSC entries and regenerates only the matching RSC cache key", async () => {
+  it("does not serve or regenerate stale mounted-slot RSC cache entries", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
     const isrRscKey = vi.fn(
       (pathname: string, mountedSlotsHeader?: string | null) =>
         `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`,
     );
-    const isrSetCalls: Array<{
-      key: string;
-      html: string;
-      hasRscData: boolean;
-      expireSeconds: number | undefined;
-      revalidateSeconds: number;
-      tags: string[];
-    }> = [];
-    const rscData = new TextEncoder().encode("fresh-flight").buffer;
+    const isrGet = vi.fn();
+    const isrSet = vi.fn();
 
     const response = await readAppPageCacheResponse({
       cleanPathname: "/stale",
       clearRequestContext() {},
       isRscRequest: true,
-      async isrGet() {
-        return buildISRCacheEntry(buildCachedAppPageValue("", rscData), true);
-      },
+      isrGet,
       isrHtmlKey(pathname) {
         return "html:" + pathname;
       },
       isrRscKey,
-      async isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
-        isrSetCalls.push({
-          key,
-          html: data.html,
-          hasRscData: Boolean(data.rscData),
-          expireSeconds,
-          revalidateSeconds,
-          tags,
-        });
-      },
+      isrSet,
       mountedSlotsHeader: "slot:auth:/",
       expireSeconds: 300,
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
-        return {
-          cacheControl: { revalidate: 10, expire: 20 },
-          html: "<h1>fresh</h1>",
-          rscData,
-          tags: ["/stale", "_N_T_/stale"],
-        };
+        throw new Error("read helper should not render directly");
       },
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRegenerations.push(renderFn);
       },
     });
 
-    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
-    expect(scheduledRegenerations).toHaveLength(1);
-
-    await scheduledRegenerations[0]();
-
-    expect(isrRscKey).toHaveBeenCalledOnce();
-    expect(isrSetCalls).toEqual([
-      {
-        key: "rsc:/stale:slot:auth:/",
-        html: "",
-        hasRscData: true,
-        expireSeconds: 20,
-        revalidateSeconds: 10,
-        tags: ["/stale", "_N_T_/stale"],
-      },
-    ]);
+    expect(response).toBeNull();
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrRscKey).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(scheduledRegenerations).toHaveLength(0);
   });
 
-  it("dedups stale RSC regeneration by the slot-specific cache key", async () => {
+  it("does not dedup mounted-slot RSC regeneration by a persistent cache key", async () => {
     const scheduledKeys: string[] = [];
-    const rscData = new TextEncoder().encode("stale-flight").buffer;
+    const isrGet = vi.fn();
 
-    await readAppPageCacheResponse({
+    const response = await readAppPageCacheResponse({
       cleanPathname: "/parallel",
       clearRequestContext() {},
       isRscRequest: true,
-      async isrGet() {
-        return buildISRCacheEntry(buildCachedAppPageValue("", rscData), true);
-      },
+      isrGet,
       isrHtmlKey(pathname) {
         return "html:" + pathname;
       },
@@ -643,18 +650,16 @@ describe("app page cache helpers", () => {
       mountedSlotsHeader: "slot:auth:/",
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
-        return {
-          html: "<h1>fresh</h1>",
-          rscData,
-          tags: ["/parallel", "_N_T_/parallel"],
-        };
+        throw new Error("read helper should not render directly");
       },
       scheduleBackgroundRegeneration(key) {
         scheduledKeys.push(key);
       },
     });
 
-    expect(scheduledKeys).toEqual(["rsc:/parallel:slot:auth:/"]);
+    expect(response).toBeNull();
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(scheduledKeys).toEqual([]);
   });
 
   it("serves stale HTML entries and regenerates HTML plus canonical RSC cache keys", async () => {
@@ -687,6 +692,7 @@ describe("app page cache helpers", () => {
           revalidateSeconds,
         });
       },
+      mountedSlotsHeader: "slot:forged:/",
       expireSeconds: 300,
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
@@ -722,6 +728,66 @@ describe("app page cache helpers", () => {
     ]);
   });
 
+  it("preserves route-level revalidate when regenerated App page fetches live longer", async () => {
+    const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrSetCalls: Array<{
+      key: string;
+      expireSeconds: number | undefined;
+      revalidateSeconds: number;
+    }> = [];
+    const rscData = new TextEncoder().encode("fresh-flight").buffer;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/config-and-fetch-revalidate",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname, mountedSlotsHeader) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
+      },
+      async isrSet(key, _data, revalidateSeconds, _tags, expireSeconds) {
+        isrSetCalls.push({
+          key,
+          expireSeconds,
+          revalidateSeconds,
+        });
+      },
+      revalidateSeconds: 3,
+      async renderFreshPageForCache() {
+        return {
+          cacheControl: { revalidate: 9 },
+          html: "<h1>fresh</h1>",
+          rscData,
+          tags: ["/config-and-fetch-revalidate", "_N_T_/config-and-fetch-revalidate"],
+        };
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegenerations.push(renderFn);
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+    await scheduledRegenerations[0]();
+
+    expect(isrSetCalls).toEqual([
+      {
+        key: "rsc:/config-and-fetch-revalidate:none",
+        expireSeconds: undefined,
+        revalidateSeconds: 3,
+      },
+      {
+        key: "html:/config-and-fetch-revalidate",
+        expireSeconds: undefined,
+        revalidateSeconds: 3,
+      },
+    ]);
+  });
+
   it("serves stale static fallback shells without regenerating the shared shell key", async () => {
     const debugCalls: Array<[string, string]> = [];
 
@@ -753,6 +819,33 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("x-from-middleware")).toBe("yes");
     await expect(response?.text()).resolves.toContain("rewritten stale shell");
     expect(debugCalls).toContainEqual(["STALE (fallback shell)", "/en/blog/[slug]"]);
+  });
+
+  it("does not serve a hard-expired static fallback shell", async () => {
+    const clearRequestContext = vi.fn();
+    const response = await readAppPageFallbackShellCacheResponse({
+      clearRequestContext,
+      async isrGet() {
+        return {
+          ...buildISRCacheEntry(
+            buildCachedAppPageValue("<html><head></head><body>expired shell</body></html>"),
+            true,
+          ),
+          isExpired: true,
+        };
+      },
+      isrHtmlKey(pathname) {
+        return `html:${pathname}`;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      revalidateSeconds: 60,
+      rewriteHtml(html) {
+        return html;
+      },
+    });
+
+    expect(response).toBeNull();
+    expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
   it("falls through when a cached fallback shell requires request-time resume", async () => {
@@ -1193,6 +1286,36 @@ describe("app page cache helpers", () => {
     expect(debugCalls).toEqual([["RSC cache written", "rsc:/fresh-rsc"]]);
   });
 
+  it("skips persistent RSC cache writes for mounted-slot variants", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrRscKey = vi.fn();
+    const isrSet = vi.fn();
+
+    const didSchedule = scheduleAppPageRscCacheWrite({
+      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      cleanPathname: "/fresh-rsc",
+      consumeDynamicUsage() {
+        return false;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["/fresh-rsc", "_N_T_/fresh-rsc"];
+      },
+      isrRscKey,
+      isrSet,
+      mountedSlotsHeader: "slot:auth:/",
+      revalidateSeconds: 60,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    expect(didSchedule).toBe(false);
+    expect(pendingCacheWrites).toEqual([]);
+    expect(isrRscKey).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it("marks client-facing RSC cache MISS responses no-store until the stream dynamic check finishes", async () => {
     const pendingCacheWrites: Promise<void>[] = [];
     const isrSetCalls: string[] = [];
@@ -1230,6 +1353,53 @@ describe("app page cache helpers", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("flight");
+    expect(pendingCacheWrites).toHaveLength(1);
+
+    await pendingCacheWrites[0];
+
+    expect(isrSetCalls).toEqual(["rsc:/fresh-rsc"]);
+  });
+
+  it("omits provisional RSC cache state when pending dynamic usage may depend on query params", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSetCalls: string[] = [];
+
+    const response = finalizeAppPageRscCacheResponse(
+      new Response("flight", {
+        headers: {
+          "Content-Type": "text/x-component",
+          "Cache-Control": "s-maxage=60, stale-while-revalidate",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/fresh-rsc",
+        consumeDynamicUsage() {
+          return false;
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags() {
+          return ["/fresh-rsc"];
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet(key) {
+          isrSetCalls.push(key);
+        },
+        omitPendingDynamicCacheState: true,
+        revalidateSeconds: 60,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("X-Vinext-Cache")).toBeNull();
+    expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
     await expect(response.text()).resolves.toBe("flight");
     expect(pendingCacheWrites).toHaveLength(1);
 

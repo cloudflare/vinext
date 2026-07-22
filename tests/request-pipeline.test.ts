@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
-  applyConfigHeadersToHeaderRecord,
-  applyConfigHeadersToResponse,
+  canonicalizeRequestPathname,
+  canonicalizeRequestUrlPathname,
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   createStaticFileSignal,
@@ -18,8 +18,39 @@ import {
   processMiddlewareHeaders,
   VINEXT_INTERNAL_HEADERS,
 } from "../packages/vinext/src/server/request-pipeline.js";
-import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  applyConfigHeadersToHeaderRecord,
+  applyConfigHeadersToResponse,
+} from "../packages/vinext/src/server/config-headers.js";
+import {
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
+
+// Ported from the URL boundary used by Next.js request handling: WHATWG URL
+// pathname parsing canonicalizes recognized dot segments before routing.
+describe("canonicalizeRequestPathname", () => {
+  it("canonicalizes literal and percent-encoded dot segments", () => {
+    expect(canonicalizeRequestPathname("/%2e/about")).toBe("/about");
+    expect(canonicalizeRequestPathname("/x/%2E%2e/old-about")).toBe("/old-about");
+    expect(canonicalizeRequestPathname("/docs/.%2e/about")).toBe("/about");
+  });
+
+  it("preserves every unrelated percent escape byte-for-byte", () => {
+    for (const pathname of ["/%61bout/", "/dynamic/a%2561/b%2Fc", "/%2f", "/%5c", "/%252f"]) {
+      expect(canonicalizeRequestPathname(pathname)).toBe(pathname);
+    }
+  });
+
+  it("preserves the raw query while canonicalizing only the pathname", () => {
+    expect(canonicalizeRequestUrlPathname("/x/%2e%2e/about?next=%2e%2e&x=%61")).toBe(
+      "/about?next=%2e%2e&x=%61",
+    );
+  });
+});
 
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
 
@@ -718,6 +749,16 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.get("content-type")).toBe("text/html");
   });
 
+  it("preserves x-middleware-cache response opt-outs", () => {
+    const headers = new Headers({
+      "x-middleware-cache": "no-cache",
+      "x-middleware-next": "1",
+    });
+    processMiddlewareHeaders(headers);
+    expect(headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(headers.has("x-middleware-next")).toBe(false);
+  });
+
   it("is a no-op when no x-middleware-* headers are present", () => {
     const headers = new Headers({
       "content-type": "text/html",
@@ -784,15 +825,31 @@ describe("filterInternalHeaders", () => {
 
   it("strips vinext-only internal headers without extending Next.js INTERNAL_HEADERS", () => {
     const headers = new Headers({
+      [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
+      [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
+      [VINEXT_REVALIDATE_HOST_HEADER]: "example.fr",
       "user-agent": "test",
     });
 
     const result = filterInternalHeaders(headers);
 
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
-    expect(VINEXT_INTERNAL_HEADERS).toEqual([VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+    expect(VINEXT_INTERNAL_HEADERS).toEqual([
+      VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+      VINEXT_PRERENDER_SPECULATIVE_HEADER,
+      VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+      VINEXT_REVALIDATE_HOST_HEADER,
+    ]);
+    for (const name of VINEXT_INTERNAL_HEADERS) {
+      expect(name).toBe(name.toLowerCase());
+    }
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
     expect(result.get("user-agent")).toBe("test");
   });
 

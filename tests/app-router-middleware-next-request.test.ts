@@ -1,5 +1,5 @@
 import { type ViteDevServer } from "vite";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
 
 describe("App Router middleware with NextRequest", () => {

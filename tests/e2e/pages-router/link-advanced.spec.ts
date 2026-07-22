@@ -312,6 +312,27 @@ test.describe("Link onNavigate prop (Pages Router, OnNavigate fixture)", () => {
 });
 
 test.describe("Link href/as bracket-pattern interpolation (Pages Router)", () => {
+  // Ported from Next.js: test/e2e/dynamic-routing/pages/index.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/pages/index.js
+  test("object href query values fill dynamic segments", async ({ page }) => {
+    await page.goto(`${BASE}/link-test`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+
+    const link = page.locator('[data-testid="link-object-dynamic"]');
+    await expect(link).toHaveAttribute("href", "/link-dynamic/a/b/c?q=q");
+
+    await page.evaluate(() => {
+      (window as any).__softNavMarker = true;
+    });
+    await link.scrollIntoViewIfNeeded();
+    await link.click();
+
+    await expect(page.locator("h1")).toHaveText("Dynamic object Link target");
+    await expect(page.locator('[data-testid="dynamic-object-params"]')).toHaveText("a/b/q");
+    expect(page.url()).toBe(`${BASE}/link-dynamic/a/b/c?q=q`);
+    expect(await page.evaluate(() => (window as any).__softNavMarker)).toBe(true);
+  });
+
   // Regression coverage for the dynamic-route `<Link href="/posts/[id]" as="/posts/1">`
   // pattern: when the link mask collapses to a concrete URL, the navigation
   // must target the interpolated `/posts/1`, not the literal `/posts/[id]`

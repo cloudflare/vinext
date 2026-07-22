@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { collapseDuplicateBase, manifestFileWithBase } from "../utils/manifest-paths.js";
 
 export type BundleBackfillChunk = {
@@ -13,6 +13,10 @@ export type BundleBackfillChunk = {
   };
 };
 
+/**
+ * Realpath with NATIVE separators (backslashes on Windows). Callers apply
+ * `toSlash` where the result becomes a module id / manifest key.
+ */
 export function tryRealpathSync(candidate: string): string | null {
   try {
     return fs.realpathSync.native(candidate);
@@ -26,10 +30,14 @@ function isWindowsAbsolutePath(candidate: string): boolean {
 }
 
 export function relativeWithinRoot(root: string, moduleId: string): string | null {
+  // pathslash's `relative` emits forward slashes and (via native win32
+  // semantics) tolerates mixed separators / drive-letter casing on Windows.
+  // On POSIX it is plain posix.relative, so Windows-style absolute inputs
+  // still need routing through the (also slash-emitting) win32 variant.
   const useWindowsPath = isWindowsAbsolutePath(root) || isWindowsAbsolutePath(moduleId);
-  const relativeId = (
-    useWindowsPath ? path.win32.relative(root, moduleId) : path.relative(root, moduleId)
-  ).replace(/\\/g, "/");
+  const relativeId = useWindowsPath
+    ? path.win32.relative(root, moduleId)
+    : path.relative(root, moduleId);
   // path.relative(root, root) returns "", which is not a usable manifest key and should be
   // treated the same as "outside root" for this helper.
   if (!relativeId || relativeId === ".." || relativeId.startsWith("../")) return null;
@@ -37,7 +45,10 @@ export function relativeWithinRoot(root: string, moduleId: string): string | nul
 }
 
 function normalizeManifestModuleId(moduleId: string, root: string): string {
-  const normalizedId = moduleId.replace(/\\/g, "/");
+  // Rollup/Vite hand us ids with native separators; manifest keys are
+  // forward-slash. toSlash is a no-op on POSIX (backslash is a legal filename
+  // character there) and leaves \\?\-verbatim paths untouched.
+  const normalizedId = toSlash(moduleId);
   if (normalizedId.startsWith("\0")) return normalizedId;
   if (normalizedId.startsWith("node_modules/") || normalizedId.includes("/node_modules/")) {
     return normalizedId;
@@ -54,7 +65,7 @@ function normalizeManifestModuleId(moduleId: string, root: string): string {
 
   const rootCandidates = new Set<string>([root]);
   const realRoot = tryRealpathSync(root);
-  if (realRoot) rootCandidates.add(realRoot);
+  if (realRoot) rootCandidates.add(toSlash(realRoot));
 
   const moduleCandidates = new Set<string>();
   if (isWindowsAbsolutePath(moduleId) || path.isAbsolute(moduleId)) {
@@ -67,7 +78,7 @@ function normalizeManifestModuleId(moduleId: string, root: string): string {
     const realCandidate = tryRealpathSync(candidate);
     // Set iteration stays live as entries are appended, so this also checks the
     // realpath variant without needing a second pass or an intermediate array.
-    if (realCandidate) moduleCandidates.add(realCandidate);
+    if (realCandidate) moduleCandidates.add(toSlash(realCandidate));
   }
 
   for (const rootCandidate of rootCandidates) {

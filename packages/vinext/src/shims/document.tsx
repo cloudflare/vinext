@@ -1,120 +1,131 @@
 /**
  * next/document shim
  *
- * Provides Html, Head, Main, NextScript components for custom _document.tsx.
- * During SSR these render placeholder markers that the dev server replaces
- * with actual content.
+ * Provides Html, Head, Main, NextScript, and the class-based Document API for
+ * custom Pages Router documents. Vinext's renderer replaces the Main and
+ * NextScript placeholders with the rendered page and hydration scripts.
  */
 import React from "react";
+import type {
+  DocumentContext,
+  DocumentInitialProps,
+  DocumentProps,
+} from "@vinext/types/next/upstream/dist/shared/lib/utils";
+import type { HtmlProps } from "@vinext/types/next/upstream/dist/shared/lib/html-context.shared-runtime";
 
-export function Html({
-  children,
-  lang,
-  ...props
-}: React.HTMLAttributes<HTMLHtmlElement> & { children?: React.ReactNode }) {
-  return (
-    <html lang={lang} {...props}>
-      {children}
-    </html>
-  );
+export type { DocumentContext, DocumentInitialProps, DocumentProps };
+
+export type OriginProps = {
+  nonce?: string;
+  crossOrigin?: "anonymous" | "use-credentials" | "" | undefined;
+  children?: React.ReactNode;
+};
+
+type DocumentFiles = {
+  sharedFiles: readonly string[];
+  pageFiles: readonly string[];
+  allFiles: readonly string[];
+};
+
+type HeadProps = OriginProps & React.ComponentPropsWithoutRef<"head">;
+const HtmlContext = React.createContext<HtmlProps | undefined>(undefined);
+
+export function Html(
+  props: React.DetailedHTMLProps<React.HtmlHTMLAttributes<HTMLHtmlElement>, HTMLHtmlElement>,
+): React.ReactElement {
+  return <html {...props} />;
 }
 
-/**
- * Document Head - renders <head> with children.
- * The dev server injects meta tags, styles, etc.
- *
- * Note: charset and viewport are intentionally NOT hardcoded here. Those
- * defaults are seeded by `next/head`'s `defaultHead()` and emitted alongside
- * user `<Head>` tags via `getSSRHeadHTML()`, matching Next.js's canonical
- * ordering (`<meta charset>` first, then `<meta viewport>`, then user tags,
- * all with `data-next-head=""`). See `test/e2e/next-head/index.test.ts`.
- */
-export function Head({ children }: { children?: React.ReactNode }) {
-  return <head>{children}</head>;
+// oxlint-disable-next-line typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
+export interface Head {
+  context: HtmlProps;
 }
 
-/**
- * Main - renders the page content container.
- */
-export function Main() {
+export class Head extends React.Component<HeadProps> {
+  static contextType = HtmlContext;
+
+  getCssLinks(_files: DocumentFiles): React.ReactElement[] | null {
+    return null;
+  }
+
+  getPreloadDynamicChunks(): Array<React.ReactElement | null> {
+    return [];
+  }
+
+  getPreloadMainLinks(_files: DocumentFiles): React.ReactElement[] | null {
+    return null;
+  }
+
+  getBeforeInteractiveInlineScripts(): React.ReactElement[] {
+    return [];
+  }
+
+  getDynamicChunks(_files: DocumentFiles): Array<React.ReactElement | null> {
+    return [];
+  }
+
+  getPreNextScripts(): React.ReactElement {
+    return <></>;
+  }
+
+  getScripts(_files: DocumentFiles): React.ReactElement[] {
+    return [];
+  }
+
+  getPolyfillScripts(): React.ReactElement[] {
+    return [];
+  }
+
+  render(): React.ReactElement {
+    const { children, ...props } = this.props;
+    return <head {...props}>{children}</head>;
+  }
+}
+
+export function Main(): React.ReactElement {
   return <div id="__next" dangerouslySetInnerHTML={{ __html: "__NEXT_MAIN__" }} />;
 }
 
-/**
- * NextScript - renders a placeholder that the dev-server replaces with
- * actual hydration scripts (__NEXT_DATA__ + entry module).
- * Uses dangerouslySetInnerHTML so the HTML comment survives renderToString.
- */
-export function NextScript() {
-  return <span dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }} />;
+// oxlint-disable-next-line typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
+export interface NextScript {
+  context: HtmlProps;
 }
 
-/**
- * Stand-ins for Next.js's `DocumentContext` / `DocumentInitialProps`.
- * The signatures match Next.js so custom `_document.tsx` subclasses can use
- * `ctx.renderPage()` enhancers and delegate through
- * `await Document.getInitialProps(ctx)` with the expected public types.
- *
- * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/utils.ts
- */
-export type DocumentContext = {
-  // The full `DocumentContext` includes `renderPage`, `defaultGetInitialProps`,
-  // and the inherited `NextPageContext` (`pathname`, `query`, `req`, `res`,
-  // `err`, `asPath`, ...). They're declared as optional because the dev error
-  // renderer and compatibility paths may provide only a partial context.
-  renderPage: (
-    options?:
-      | {
-          enhanceApp?: (
-            App: React.ComponentType<{ children?: React.ReactNode }>,
-          ) => React.ComponentType<{ children?: React.ReactNode }>;
-          enhanceComponent?: (Comp: React.ComponentType<unknown>) => React.ComponentType<unknown>;
-        }
-      | ((Comp: React.ComponentType<unknown>) => React.ComponentType<unknown>),
-  ) => DocumentInitialProps | Promise<DocumentInitialProps>;
-  defaultGetInitialProps: (
-    ctx: DocumentContext,
-    options?: { nonce?: string },
-  ) => Promise<DocumentInitialProps>;
-  pathname?: string;
-  query?: Record<string, string | string[] | undefined>;
-  asPath?: string;
-  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-  err?: any;
-};
+export class NextScript extends React.Component<OriginProps> {
+  static contextType = HtmlContext;
 
-export type DocumentInitialProps = {
-  html: string;
-  head?: ReadonlyArray<React.ReactElement>;
-  styles?: React.ReactElement[] | Iterable<React.ReactNode> | React.ReactElement;
-};
+  getDynamicChunks(_files: DocumentFiles): Array<React.ReactElement | null> {
+    return [];
+  }
 
-/**
- * Default Document component — also the base class user `_document.tsx` files
- * `extend`. Must be a class (not a function) to match Next.js's `next/document`
- * default export so `class MyDocument extends Document` produces a constructible
- * class that React can instantiate during SSR. Returning a function here breaks
- * any user `_document.tsx` that uses the class-based form because `extends`
- * against a non-constructor produces a class that can only be called without
- * `new`, which React refuses to do.
- *
- * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
- * Ported behavior: Next.js's default `Document` is a `class Document extends
- * React.Component`. Custom documents extend it and override `getInitialProps`
- * and `render`. Generic default matches Next.js (`P = {}`).
- */
+  getPreNextScripts(): React.ReactElement {
+    return <></>;
+  }
+
+  getScripts(_files: DocumentFiles): React.ReactElement[] {
+    return [];
+  }
+
+  getPolyfillScripts(): React.ReactElement[] {
+    return [];
+  }
+
+  static getInlineScriptSource(context: Readonly<HtmlProps>): string {
+    return JSON.stringify(context.__NEXT_DATA__);
+  }
+
+  render(): React.ReactElement {
+    return <span dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }} />;
+  }
+}
+
 // oxlint-disable-next-line @typescript-eslint/no-empty-object-type
-export default class Document<P = {}> extends React.Component<P & { children?: React.ReactNode }> {
-  /**
-   * `getInitialProps` is invoked by the SSR pipeline. The runtime-provided
-   * `ctx.defaultGetInitialProps()` owns the page render and style collection,
-   * matching Next.js's canonical CSS-in-JS integration path.
-   */
+export default class Document<P = {}> extends React.Component<DocumentProps & P> {
   static getInitialProps(ctx: DocumentContext): Promise<DocumentInitialProps> {
     return ctx.defaultGetInitialProps(ctx);
   }
 
-  render(): React.ReactNode {
+  render(): React.ReactElement {
     return (
       <Html>
         <Head />

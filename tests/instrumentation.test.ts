@@ -10,7 +10,7 @@ import {
   findInstrumentationClientFile,
   findInstrumentationFile,
 } from "../packages/vinext/src/server/instrumentation.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
@@ -137,7 +137,7 @@ describe("findInstrumentationFile", () => {
     // Production always passes a forward-slash root (the config hook normalizes
     // it), so mirror that here — findInstrumentationFile now returns
     // forward-slash paths via path.posix.join.
-    tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-")));
+    tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-")));
   });
 
   afterEach(() => {
@@ -184,9 +184,7 @@ describe("findInstrumentationClientFile", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = normalizePathSeparators(
-      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-")),
-    );
+    tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-")));
   });
 
   afterEach(() => {
@@ -559,7 +557,7 @@ describe("Sentry Next.js internal compatibility", () => {
 
       for (const id of sentryAsyncStorageImports) {
         const resolved = await container.resolveId(id);
-        expect(normalizePathSeparators(resolved?.id ?? "")).toContain(
+        expect(toSlash(resolved?.id ?? "")).toContain(
           "/packages/vinext/src/shims/internal/work-unit-async-storage",
         );
       }
@@ -594,7 +592,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
         const resolved = await container.resolveId("private-next-instrumentation-client");
         expect(resolved).toBeTruthy();
         expect(resolved!.id).not.toBe(RESOLVED_INSTRUMENTATION_CLIENT);
-        expect(resolved!.id.replace(/\\/g, "/")).toContain("instrumentation-client.js");
+        expect(toSlash(resolved!.id)).toContain("instrumentation-client.js");
       },
     );
   });
@@ -604,7 +602,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
       const resolved = await container.resolveId("private-next-instrumentation-client");
       expect(resolved).toBeTruthy();
       expect(resolved!.id).not.toBe(RESOLVED_INSTRUMENTATION_CLIENT);
-      expect(resolved!.id.replace(/\\/g, "/")).toContain("empty-module");
+      expect(toSlash(resolved!.id)).toContain("empty-module");
     });
   });
 

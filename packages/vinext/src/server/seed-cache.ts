@@ -30,7 +30,7 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
 import { buildAppPageCacheTags } from "./app-page-cache.js";

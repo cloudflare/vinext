@@ -5,7 +5,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
-import { nextjsInputFingerprint } from "./nextjs-input-fingerprint.mts";
+import { nextjsBenchmarkInputTreeJq, nextjsInputFingerprint } from "./nextjs-input-fingerprint.mts";
 
 const inputPath = resolve(process.argv[2] ?? "performance-artifact/perf-results.json");
 const artifactRoot = dirname(inputPath);
@@ -36,12 +36,15 @@ function isSha(value) {
   return typeof value === "string" && /^[0-9a-f]{40}$/i.test(value);
 }
 
-function githubApi(path) {
+function githubApi(path, options = {}) {
   const token = requiredEnvironment("GITHUB_TOKEN");
+  const args = ["api", path];
+  if (options.jq) args.push("--jq", options.jq);
   return JSON.parse(
-    execFileSync("gh", ["api", path], {
+    execFileSync("gh", args, {
       encoding: "utf8",
       env: { ...process.env, GH_TOKEN: token },
+      maxBuffer: 8 * 1024 * 1024,
     }),
   );
 }
@@ -49,6 +52,7 @@ function githubApi(path) {
 function remoteNextjsInputFingerprint(repositoryName, ref) {
   const tree = githubApi(
     `repos/${repositoryName}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+    { jq: nextjsBenchmarkInputTreeJq },
   );
   assert(Array.isArray(tree.tree) && tree.truncated !== true, "Invalid repository tree");
   return nextjsInputFingerprint(tree.tree);

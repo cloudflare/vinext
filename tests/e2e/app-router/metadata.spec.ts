@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -36,11 +37,18 @@ test.describe("Static Metadata", () => {
     await expect(ogType).toHaveAttribute("content", "website");
   });
 
-  test("viewport export renders theme-color and color-scheme", async ({ page }) => {
+  test("viewport export renders all viewport metadata", async ({ page }) => {
     await page.goto(`${BASE}/metadata-test`);
+
+    const viewport = page.locator('meta[name="viewport"]');
+    await expect(viewport).toHaveAttribute(
+      "content",
+      "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-visual",
+    );
 
     const themeColor = page.locator('meta[name="theme-color"]');
     await expect(themeColor).toHaveAttribute("content", "#0070f3");
+    await expect(themeColor).toHaveAttribute("media", "(prefers-color-scheme: light)");
 
     const colorScheme = page.locator('meta[name="color-scheme"]');
     await expect(colorScheme).toHaveAttribute("content", "light dark");
@@ -73,6 +81,30 @@ test.describe("Dynamic Metadata (generateMetadata)", () => {
 
     const ogDescription = page.locator('meta[property="og:description"]');
     await expect(ogDescription).toHaveAttribute("content", "Dynamic OG Description");
+  });
+
+  test("generateMetadata keeps streamed metadata in body after hydration", async ({ page }) => {
+    await page.goto(`${BASE}/metadata-dynamic-test`);
+    await waitForAppRouterHydration(page);
+
+    await expect(page).toHaveTitle("Dynamic Metadata Page");
+    await expect(page.locator("head title")).toHaveCount(0);
+    await expect(page.locator("body title")).toHaveCount(1);
+    await expect(page.locator('body link[rel="canonical"]')).toHaveAttribute(
+      "href",
+      "https://example.com/metadata-dynamic-test",
+    );
+    await expect(page.locator('body link[rel="alternate"][hreflang="en-US"]')).toHaveAttribute(
+      "href",
+      "https://example.com/en/metadata-dynamic-test",
+    );
+    await expect(page.locator('body meta[name="robots"]')).toHaveAttribute(
+      "content",
+      "noindex, nofollow",
+    );
+    await expect(page.locator('head link[rel="canonical"]')).toHaveCount(0);
+    await expect(page.locator('head link[rel="alternate"][hreflang="en-US"]')).toHaveCount(0);
+    await expect(page.locator('head meta[name="robots"]')).toHaveCount(0);
   });
 });
 

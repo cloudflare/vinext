@@ -4,20 +4,22 @@
  * Loads the Next.js config file (if present) and extracts supported options.
  * Unsupported options are logged as warnings.
  */
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import type { PluginOption } from "vite";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
+import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
-import { getViteMajorVersion } from "../utils/vite-version.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
+export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -116,6 +118,8 @@ export type NextHeader = {
   headers: Array<{ key: string; value: string }>;
   /** See {@link NextRedirect.basePath}. */
   basePath?: false;
+  /** See {@link NextRedirect.locale}. */
+  locale?: false;
 };
 
 export type NextI18nConfig = {
@@ -135,7 +139,7 @@ export type NextI18nConfig = {
     domain: string;
     defaultLocale: string;
     locales?: string[];
-    http?: boolean;
+    http?: true;
   }>;
 };
 
@@ -149,6 +153,13 @@ export type MdxOptions = {
   rehypePlugins?: unknown[];
   recmaPlugins?: unknown[];
 };
+
+export type PrefetchInliningConfig =
+  | false
+  | {
+      maxBundleSize: number;
+      maxSize: number;
+    };
 
 export type NextConfig = {
   /** Additional env variables */
@@ -165,6 +176,12 @@ export type NextConfig = {
   assetPrefix?: string;
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /** TypeScript build settings. */
+  typescript?: {
+    /** Project-relative path to the TypeScript configuration file. */
+    tsconfigPath?: string;
+    [key: string]: unknown;
+  };
   /** Internationalization routing config */
   i18n?: NextI18nConfig;
   /** URL redirect rules */
@@ -216,6 +233,14 @@ export type NextConfig = {
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
   };
+  /**
+   * Enable React Strict Mode. When `true`, the client root is wrapped in
+   * `<React.StrictMode>` so React runs its dev-only strict checks (double-
+   * invoked effects/render, deprecation warnings). `null`/unset resolves per
+   * router: OFF for the Pages Router, ON for the App Router — matching Next.js.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactStrictMode
+   */
+  reactStrictMode?: boolean | null;
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
@@ -294,6 +319,14 @@ export type NextConfig = {
      * `useRouter().experimental_gesturePush()`.
      */
     gestureTransition?: boolean;
+    /**
+     * Enables App Router Segment Cache prefetch inlining. When provided as an
+     * object, thresholds are resolved with Next.js defaults and non-finite
+     * values are clamped to Number.MAX_SAFE_INTEGER.
+     */
+    prefetchInlining?: boolean | { maxBundleSize?: number; maxSize?: number };
+    /** Header names forwarded by Pages Router `res.revalidate()` internal requests. */
+    allowedRevalidateHeaderKeys?: string[];
     [key: string]: unknown;
   };
   /**
@@ -326,6 +359,24 @@ type NextConfigFactory = (
 
 export type NextConfigInput = NextConfig | NextConfigFactory;
 
+type VinextNextConfigPlugin = {
+  [VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY]?: NextConfigInput | null;
+};
+
+export async function findVinextNextConfigInPlugins(
+  plugins: PluginOption[] | undefined,
+): Promise<NextConfigInput | null> {
+  const flattened = await flattenPluginOptions(plugins);
+
+  for (const plugin of flattened) {
+    if (!isUnknownRecord(plugin)) continue;
+    const nextConfig = (plugin as VinextNextConfigPlugin)[VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY];
+    if (nextConfig) return nextConfig;
+  }
+
+  return null;
+}
+
 /**
  * Resolved configuration with all async values awaited.
  */
@@ -347,6 +398,7 @@ export type ResolvedNextConfig = {
    */
   assetPrefix: string;
   trailingSlash: boolean;
+  typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
   pageExtensions: string[];
   resolveExtensions: string[] | null;
@@ -360,11 +412,10 @@ export type ResolvedNextConfig = {
    */
   gestureTransition: boolean;
   /**
-   * Whether `experimental.prefetchInlining` is configured. Next.js uses this
-   * with the Segment Cache to fetch the route tree before the bundled inlined
-   * segment payload.
+   * Resolved `experimental.prefetchInlining` config. Next.js normalizes `true`
+   * and partial object config into concrete thresholds.
    */
-  prefetchInlining: boolean;
+  prefetchInlining: PrefetchInliningConfig;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -382,6 +433,8 @@ export type ResolvedNextConfig = {
   allowedDevOrigins: string[];
   /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
   serverActionsAllowedOrigins: string[];
+  /** Header names forwarded by Pages Router `res.revalidate()` internal requests. */
+  allowedRevalidateHeaderKeys: string[];
   /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
   optimizePackageImports: string[];
   /** Packages explicitly requested for server/client transpilation. */
@@ -470,6 +523,16 @@ export type ResolvedNextConfig = {
    * `test/e2e/optimized-loading` test fixture.
    */
   disableOptimizedLoading: boolean;
+  /**
+   * Resolved `reactStrictMode` from next.config, preserved as `boolean | null`
+   * so each router can apply its own default (Next.js resolves `null` to OFF
+   * for the Pages Router and ON for the App Router). When the effective value
+   * is `true`, the client root is wrapped in `<React.StrictMode>`.
+   *
+   * See `.nextjs-ref/packages/next/src/build/define-env.ts`
+   * (`__NEXT_STRICT_MODE` / `__NEXT_STRICT_MODE_APP`).
+   */
+  reactStrictMode: boolean | null;
   /**
    * Mirrors Next.js `experimental.scrollRestoration`. When true, the Pages
    * Router client takes ownership of browser history scroll restoration by
@@ -679,10 +742,12 @@ async function unwrapConfig(
 /**
  * Resolve a path through filesystem symlinks, falling back to the original
  * path when the file does not exist (e.g. virtual ids, query-suffixed ids).
+ * Output is forward-slashed so it compares consistently with pathslash
+ * results (fs.realpathSync returns backslashes on Windows).
  */
 function safeRealpath(p: string): string {
   try {
-    return fs.realpathSync(p);
+    return toSlash(fs.realpathSync(p));
   } catch {
     return p;
   }
@@ -935,16 +1000,14 @@ export async function loadNextConfig(
   const tsconfigBaseUrl = isTypeScriptConfig ? tsconfigResolution.baseUrl : null;
 
   // Vite 8 (Rolldown) resolves tsconfig `baseUrl` bare imports natively via
-  // `resolve.tsconfigPaths` (oxc-resolver). Vite 7 has no equivalent option,
-  // so baseUrl-based imports in `next.config.ts` are a documented Vite 7/8
-  // capability gap (see docs). `paths` aliases still work on both via
-  // `resolve.alias`. Mirrors the Vite-major gate used in index.ts.
+  // `resolve.tsconfigPaths` (oxc-resolver). `paths` aliases are materialized
+  // into `resolve.alias` so import.meta.glob and dynamic imports can see them.
   //
   // Note: installed packages stay externalized (so CJS config plugins like
   // `@next/mdx` that call `require`/`require.resolve` at runtime keep working).
   // baseUrl resolves bare imports that have no installed package of the same
   // name; it does not shadow an installed package with a baseUrl-local file.
-  const useNativeTsconfigPaths = !!tsconfigBaseUrl && getViteMajorVersion() >= 8;
+  const useNativeTsconfigPaths = !!tsconfigBaseUrl;
 
   // Symlink-resolved config path, used by the `commonjs()` filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
@@ -965,9 +1028,7 @@ export async function loadNextConfig(
         // handling: it follows `extends` and resolves baseUrl-local bare imports
         // via per-importer tsconfig discovery. Installed packages stay
         // externalized, so a baseUrl-local file does not shadow a package of the
-        // same name. Vite 7 has no native equivalent, so baseUrl bare imports in
-        // next.config.ts are unsupported there (documented gap); `resolve.alias`
-        // still covers `paths` aliases on both.
+        // same name.
         ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
         // those extensions (the plugin keys off `config.resolve.extensions`,
@@ -1165,10 +1226,12 @@ export function createRscCompatibilityId(
  * @returns A filesystem path suitable for path operations
  */
 function resolveCacheHandlerPathToFilesystem(filePath: string): string {
+  // toSlash: fileURLToPath and user-supplied require.resolve() results are
+  // backslash-separated on Windows; normalize into slash space.
   if (filePath.startsWith("file://")) {
-    return fileURLToPath(filePath);
+    return toSlash(fileURLToPath(filePath));
   }
-  return filePath;
+  return toSlash(filePath);
 }
 
 function resolveHtmlLimitedBots(value: NextConfig["htmlLimitedBots"]): string | undefined {
@@ -1316,13 +1379,162 @@ function resolveStaleTimes(experimental: Record<string, unknown> | undefined): {
   };
 }
 
+function normalizePrefetchInliningConfig(value: unknown): PrefetchInliningConfig {
+  if (!value) return false;
+  const raw = isUnknownRecord(value) ? value : null;
+  const maxSize = raw ? (raw.maxSize ?? 2048) : 2048;
+  const maxBundleSize = raw ? (raw.maxBundleSize ?? 10240) : 10240;
+  const normalizedMaxSize = Number(maxSize);
+  const normalizedMaxBundleSize = Number(maxBundleSize);
+  return {
+    maxBundleSize: Number.isFinite(normalizedMaxBundleSize)
+      ? normalizedMaxBundleSize
+      : Number.MAX_SAFE_INTEGER,
+    maxSize: Number.isFinite(normalizedMaxSize) ? normalizedMaxSize : Number.MAX_SAFE_INTEGER,
+  };
+}
+
+function normalizeI18nConfig(value: unknown): NextI18nConfig | null {
+  if (!value) return null;
+
+  const i18nType = typeof value;
+  if (i18nType !== "object") {
+    throw new Error(
+      `Specified i18n should be an object received ${i18nType}.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config`,
+    );
+  }
+
+  const i18n = value as Record<string, unknown>;
+  if (!Array.isArray(i18n.locales)) {
+    throw new Error(
+      `Specified i18n.locales should be an Array received ${typeof i18n.locales}.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config`,
+    );
+  }
+
+  if (i18n.locales.length > 100) {
+    console.warn(
+      `Received ${i18n.locales.length} i18n.locales items which exceeds the recommended max of 100.\nSee more info here: https://nextjs.org/docs/advanced-features/i18n-routing#how-does-this-work-with-static-generation`,
+    );
+  }
+
+  if (!i18n.defaultLocale || typeof i18n.defaultLocale !== "string") {
+    throw new Error(
+      "Specified i18n.defaultLocale should be a string.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+  }
+
+  if (i18n.domains !== undefined && !Array.isArray(i18n.domains)) {
+    throw new Error(
+      `Specified i18n.domains must be an array of domain objects e.g. [ { domain: 'example.fr', defaultLocale: 'fr', locales: ['fr'] } ] received ${typeof i18n.domains}.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config`,
+    );
+  }
+
+  if (i18n.domains) {
+    const invalidDomainItems = i18n.domains.filter((item) => {
+      if (!isUnknownRecord(item) || !item.defaultLocale) return true;
+      if (!item.domain || typeof item.domain !== "string") return true;
+
+      if (item.domain.includes(":")) {
+        console.warn(
+          `i18n domain: "${item.domain}" is invalid it should be a valid domain without protocol (https://) or port (:3000) e.g. example.vercel.sh`,
+        );
+        return true;
+      }
+
+      const defaultLocaleDuplicate = (i18n.domains as unknown[]).find(
+        (other) =>
+          isUnknownRecord(other) &&
+          other.defaultLocale === item.defaultLocale &&
+          other.domain !== item.domain,
+      );
+      if (defaultLocaleDuplicate && isUnknownRecord(defaultLocaleDuplicate)) {
+        console.warn(
+          `Both ${item.domain} and ${String(defaultLocaleDuplicate.domain)} configured the defaultLocale ${item.defaultLocale as string} but only one can. Change one item's default locale to continue`,
+        );
+        return true;
+      }
+
+      let hasInvalidLocale = false;
+      if (Array.isArray(item.locales)) {
+        for (const locale of item.locales) {
+          if (typeof locale !== "string") hasInvalidLocale = true;
+
+          for (const domainItem of i18n.domains as unknown[]) {
+            if (domainItem === item || !isUnknownRecord(domainItem)) continue;
+            const domainLocales = domainItem.locales as
+              | { includes(value: unknown): boolean }
+              | undefined;
+            if (domainLocales && domainLocales.includes(locale)) {
+              console.warn(
+                `Both ${item.domain} and ${String(domainItem.domain)} configured the locale (${String(locale)}) but only one can. Remove it from one i18n.domains config to continue`,
+              );
+              hasInvalidLocale = true;
+              break;
+            }
+          }
+        }
+      }
+
+      return hasInvalidLocale;
+    });
+
+    if (invalidDomainItems.length > 0) {
+      throw new Error(
+        `Invalid i18n.domains values:\n${invalidDomainItems.map((item) => JSON.stringify(item)).join("\n")}\n\ndomains value must follow format { domain: 'example.fr', defaultLocale: 'fr', locales: ['fr'] }.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config`,
+      );
+    }
+  }
+
+  const invalidLocales = i18n.locales.filter((locale) => typeof locale !== "string");
+  if (invalidLocales.length > 0) {
+    throw new Error(
+      `Specified i18n.locales contains invalid values (${invalidLocales.map(String).join(", ")}), locales must be valid locale tags provided as strings e.g. "en-US".\n` +
+        "See here for list of valid language sub-tags: http://www.iana.org/assignments/language-subtag-registry/language-subtag-registry",
+    );
+  }
+
+  const locales = i18n.locales as string[];
+  if (!locales.includes(i18n.defaultLocale)) {
+    throw new Error(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+  }
+
+  const normalizedLocales = new Set<string>();
+  const duplicateLocales = new Set<string>();
+  for (const locale of locales) {
+    const localeLower = locale.toLowerCase();
+    if (normalizedLocales.has(localeLower)) duplicateLocales.add(locale);
+    normalizedLocales.add(localeLower);
+  }
+  if (duplicateLocales.size > 0) {
+    throw new Error(
+      `Specified i18n.locales contains the following duplicate locales:\n${[...duplicateLocales].join(", ")}\nEach locale should be listed only once.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config`,
+    );
+  }
+
+  const localeDetectionType = typeof i18n.localeDetection;
+  if (localeDetectionType !== "boolean" && localeDetectionType !== "undefined") {
+    throw new Error(
+      `Specified i18n.localeDetection should be undefined or a boolean received ${localeDetectionType}.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config`,
+    );
+  }
+
+  return {
+    locales: [i18n.defaultLocale, ...locales.filter((locale) => locale !== i18n.defaultLocale)],
+    defaultLocale: i18n.defaultLocale,
+    localeDetection: (i18n.localeDetection as boolean | undefined) ?? true,
+    domains: i18n.domains as NextI18nConfig["domains"],
+  };
+}
+
 /**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
 export async function resolveNextConfig(
   config: NextConfig | null,
-  root: string = process.cwd(),
+  root: string = toSlash(process.cwd()),
   options: { dev?: boolean } = {},
 ): Promise<ResolvedNextConfig> {
   if (!config) {
@@ -1333,6 +1545,7 @@ export async function resolveNextConfig(
       basePath: "",
       assetPrefix: "",
       trailingSlash: false,
+      typescript: {},
       output: "",
       pageExtensions: normalizePageExtensions(),
       resolveExtensions: null,
@@ -1350,6 +1563,7 @@ export async function resolveNextConfig(
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      allowedRevalidateHeaderKeys: [],
       optimizePackageImports: [],
       transpilePackages: [],
       turbopackTranspilePackages: [...DEFAULT_TRANSPILED_PACKAGES],
@@ -1371,6 +1585,7 @@ export async function resolveNextConfig(
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
@@ -1385,6 +1600,8 @@ export async function resolveNextConfig(
   }
 
   warnDeprecatedConfigOptions(config, root);
+
+  const i18n = normalizeI18nConfig(config.i18n);
 
   // Resolve redirects
   let redirects: NextRedirect[] = [];
@@ -1484,8 +1701,7 @@ export async function resolveNextConfig(
     : [];
   const inlineCss = experimental?.inlineCss === true;
   const globalNotFound = experimental?.globalNotFound === true;
-  const prefetchInlining =
-    experimental?.prefetchInlining === true || isUnknownRecord(experimental?.prefetchInlining);
+  const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
@@ -1498,7 +1714,7 @@ export async function resolveNextConfig(
     if (!config.cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
-    if (experimental?.prefetchInlining !== true) {
+    if (!prefetchInlining) {
       missingCoFlags.push("experimental.prefetchInlining");
     }
     if (experimental?.varyParams !== true) {
@@ -1609,17 +1825,6 @@ export async function resolveNextConfig(
       ? readStringArray(experimentalTurbo.resolveExtensions)
       : null;
 
-  // Parse i18n config
-  let i18n: NextI18nConfig | null = null;
-  if (config.i18n) {
-    i18n = {
-      locales: config.i18n.locales,
-      defaultLocale: config.i18n.defaultLocale,
-      localeDetection: config.i18n.localeDetection ?? true,
-      domains: config.i18n.domains,
-    };
-  }
-
   const buildId = await resolveBuildId(config.generateBuildId);
   const deploymentId = resolveDeploymentId(config.deploymentId);
 
@@ -1633,7 +1838,8 @@ export async function resolveNextConfig(
   const cacheMaxMemorySize: number | undefined =
     typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
 
-  // Apply Next.js i18n locale-prefix transformation to redirects/rewrites.
+  // Apply Next.js i18n locale-prefix transformation to redirects, rewrites,
+  // and headers.
   // When i18n is configured and a rule does NOT carry `locale: false`, the
   // source is rewritten to match locale-prefixed URLs. Rules with
   // `locale: false` are left untouched so user-supplied `:locale` segments
@@ -1647,6 +1853,7 @@ export async function resolveNextConfig(
       afterFiles: applyLocaleToRoutes(rewrites.afterFiles, i18n, "rewrite", opts),
       fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite", opts),
     };
+    headers = applyLocaleToRoutes(headers, i18n, "header", opts);
   }
 
   const images = config.images
@@ -1671,6 +1878,10 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
+    typescript:
+      typeof config.typescript?.tsconfigPath === "string"
+        ? { tsconfigPath: config.typescript.tsconfigPath }
+        : {},
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
     resolveExtensions: resolveExtensions ?? webpackProbe.resolveExtensions,
@@ -1693,6 +1904,11 @@ export async function resolveNextConfig(
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
+    allowedRevalidateHeaderKeys: Array.isArray(experimental?.allowedRevalidateHeaderKeys)
+      ? (experimental.allowedRevalidateHeaderKeys as unknown[])
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.toLowerCase())
+      : [],
     optimizePackageImports,
     transpilePackages,
     turbopackTranspilePackages,
@@ -1724,6 +1940,9 @@ export async function resolveNextConfig(
     // Next.js stores this under `experimental.disableOptimizedLoading`.
     // Default `false` matches Next.js: page scripts get `defer` in <head>.
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
+    // Preserve `null` (unset) so each router applies its own default — Next.js
+    // resolves `null` to OFF for Pages Router, ON for App Router.
+    reactStrictMode: typeof config.reactStrictMode === "boolean" ? config.reactStrictMode : null,
     scrollRestoration: experimental?.scrollRestoration === true,
     compilerDefine: serializeCompilerDefine(config.compiler?.define),
     compilerDefineServer: serializeCompilerDefine(config.compiler?.defineServer),
@@ -2030,7 +2249,7 @@ function invokeLoaderSideEffects(rules: any[], root: string): void {
  */
 export async function extractMdxOptions(
   config: NextConfig,
-  root: string = process.cwd(),
+  root: string = toSlash(process.cwd()),
 ): Promise<MdxOptions | null> {
   return (await probeWebpackConfig(config, root, false)).mdx;
 }

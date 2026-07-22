@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures";
 import { waitForAppRouterHydration } from "../helpers";
 
-const iconInsertionScript = `document.querySelectorAll('body link[data-vinext-streamed-icon]').forEach(el => document.head.appendChild(el))`;
+const iconInsertionScript = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`;
 
 type OwnedIcon = {
   rel: string;
@@ -212,7 +212,7 @@ test.describe("Next.js compat: streamed metadata icons", () => {
     );
     expect(html).toContain(iconInsertionScript);
     expect(html).toMatch(
-      /<script nonce="vinext-test-nonce">document\.querySelectorAll\('body link\[data-vinext-streamed-icon\]'/,
+      /<script nonce="vinext-test-nonce">document\.querySelectorAll\('body link\[rel="icon"\], body link\[rel="apple-touch-icon"\]'/,
     );
     await expect(page.locator("body link[data-vinext-streamed-icon]")).toHaveCount(0);
     await expect.poll(() => ownedIcons(page)).toEqual(heartIcons);

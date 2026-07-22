@@ -1,5 +1,5 @@
 import type { IncomingMessage } from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { nodeToWebRequest } from "../packages/vinext/src/server/prod-server.js";
 
 /**

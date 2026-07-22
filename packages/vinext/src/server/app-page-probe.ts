@@ -278,7 +278,15 @@ export function probeAppPage(options: {
 
 type AppPageProbeModule = Readonly<{ default?: unknown }> | null | undefined;
 
-type AppPageProbeSlot = Readonly<{ page?: AppPageProbeModule }> | null | undefined;
+type AppPageProbeSlot =
+  | Readonly<{
+      page?: AppPageProbeModule;
+      loading?: AppPageProbeModule;
+      loadings?: readonly AppPageProbeModule[] | null;
+      loadingTreePositions?: readonly number[] | null;
+    }>
+  | null
+  | undefined;
 
 type AppPageProbeRoute = Readonly<{
   slots?: Readonly<Record<string, AppPageProbeSlot>> | null;
@@ -287,6 +295,7 @@ type AppPageProbeRoute = Readonly<{
 type AppPageProbeIntercept =
   | Readonly<{
       page?: AppPageProbeModule;
+      interceptLoadings?: readonly AppPageProbeModule[] | null;
       matchedParams?: unknown;
       /**
        * Key of the parallel-route slot this interception overrides. At render
@@ -375,6 +384,9 @@ export function buildAppPageProbes(options: {
     if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
       continue;
     }
+    if (slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)) {
+      continue;
+    }
     probes.push(
       probeAppPage({
         pageComponent: slot?.page?.default,
@@ -384,7 +396,18 @@ export function buildAppPageProbes(options: {
     );
   }
 
-  if (intercept) {
+  const interceptedSlot = intercept?.slotKey ? route.slots?.[intercept.slotKey] : null;
+  const interceptedSlotHasRootLoading = Boolean(
+    interceptedSlot?.loading?.default ||
+    interceptedSlot?.loadings?.some(
+      (loading, index) => loading?.default && interceptedSlot.loadingTreePositions?.[index] === 0,
+    ),
+  );
+  const interceptHasLoadingBoundary = Boolean(
+    intercept?.interceptLoadings?.some((loading) => loading?.default) ||
+    interceptedSlotHasRootLoading,
+  );
+  if (intercept && !interceptHasLoadingBoundary) {
     probes.push(
       probeAppPage({
         pageComponent: intercept.page?.default,

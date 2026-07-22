@@ -85,7 +85,7 @@ async function buildAndCollect(tmpDir: string): Promise<{ css: string; js: strin
         outDir: path.join(outDir, "client"),
         manifest: true,
         ssrManifest: true,
-        rollupOptions: { input: "virtual:vinext-client-entry" },
+        rolldownOptions: { input: "virtual:vinext-client-entry" },
       },
     });
 

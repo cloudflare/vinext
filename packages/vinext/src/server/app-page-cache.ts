@@ -3,6 +3,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
@@ -47,6 +48,7 @@ export type AppPageCacheOutcomeMetric = Readonly<{
   outcome: "hit" | "miss" | "stale";
   reason:
     | "empty-entry"
+    | "expired"
     | "no-entry"
     | "non-app-page-entry"
     | "query-variant-unproven"
@@ -199,6 +201,28 @@ function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean
   );
 }
 
+function resolveRegeneratedAppPageCachePolicy(options: {
+  expireSeconds?: number;
+  renderCacheControl?: CacheControlMetadata;
+  routeRevalidateSeconds: number;
+}): { expireSeconds?: number; revalidateSeconds: number } {
+  let revalidateSeconds = options.routeRevalidateSeconds;
+  const renderRevalidateSeconds = options.renderCacheControl?.revalidate;
+  // An indefinite nested cache lifetime does not tighten the route's own
+  // finite revalidation policy.
+  if (typeof renderRevalidateSeconds === "number") {
+    revalidateSeconds =
+      revalidateSeconds > 0
+        ? Math.min(revalidateSeconds, renderRevalidateSeconds)
+        : renderRevalidateSeconds;
+  }
+
+  return {
+    expireSeconds: options.renderCacheControl?.expire ?? options.expireSeconds,
+    revalidateSeconds,
+  };
+}
+
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
@@ -227,6 +251,7 @@ export function buildAppPageCachedResponse(
       mountedSlotsHeader: options.mountedSlotsHeader,
     });
     applyRscCompatibilityIdHeader(rscHeaders);
+    applyRscDeploymentIdHeader(rscHeaders);
 
     return new Response(cachedValue.rscData, {
       status,
@@ -273,6 +298,11 @@ async function serveAppPageCachedHtml(
   options: ServeAppPageCachedHtmlOptions,
   transformValue?: (value: CachedAppPageValue) => CachedAppPageValue,
 ): Promise<Response | null> {
+  if (options.cached?.isExpired) {
+    options.isrDebug?.("MISS (expired)", options.pathname);
+    return null;
+  }
+
   if (typeof options.cachedValue.html !== "string" || options.cachedValue.html.length === 0) {
     if (options.cached?.isStale) {
       options.scheduleRegeneration();
@@ -308,10 +338,15 @@ async function serveAppPageCachedHtml(
 export async function readAppPageCacheResponse(
   options: ReadAppPageCacheResponseOptions,
 ): Promise<Response | null> {
+  if (options.isRscRequest && options.mountedSlotsHeader) {
+    options.isrDebug?.("MISS (mounted slots RSC variant)", options.cleanPathname);
+    return null;
+  }
+
   const isrKey = options.isRscRequest
     ? options.isrRscKey(
         options.cleanPathname,
-        options.mountedSlotsHeader,
+        null,
         options.renderMode,
         options.interceptionContext,
       )
@@ -321,6 +356,17 @@ export async function readAppPageCacheResponse(
   try {
     const cached = await options.isrGet(isrKey);
     const cachedValue = getCachedAppPageValue(cached);
+
+    if (cached?.isExpired) {
+      recordAppPageCacheOutcome(options.recordCacheOutcome, {
+        artifact,
+        cacheKey: isrKey,
+        outcome: "miss",
+        reason: "expired",
+      });
+      options.isrDebug?.("MISS (expired)", options.cleanPathname);
+      return null;
+    }
 
     if (cached && !cachedValue) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {
@@ -395,9 +441,11 @@ export async function readAppPageCacheResponse(
       // reuse it instead of recomputing the hash.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
-        const revalidateSeconds =
-          revalidatedPage.cacheControl?.revalidate ?? options.revalidateSeconds;
-        const expireSeconds = revalidatedPage.cacheControl?.expire ?? options.expireSeconds;
+        const cachePolicy = resolveRegeneratedAppPageCachePolicy({
+          expireSeconds: options.expireSeconds,
+          renderCacheControl: revalidatedPage.cacheControl,
+          routeRevalidateSeconds: options.revalidateSeconds,
+        });
         const writes = [
           options.isrSet(
             // For an RSC request `isrKey` is already the RSC variant key, so
@@ -407,7 +455,7 @@ export async function readAppPageCacheResponse(
               ? isrKey
               : options.isrRscKey(
                   options.cleanPathname,
-                  options.mountedSlotsHeader,
+                  null,
                   options.renderMode,
                   options.interceptionContext,
                 ),
@@ -417,9 +465,9 @@ export async function readAppPageCacheResponse(
               200,
               revalidatedPage.rscRenderObservation,
             ),
-            revalidateSeconds,
+            cachePolicy.revalidateSeconds,
             revalidatedPage.tags,
-            expireSeconds,
+            cachePolicy.expireSeconds,
           ),
         ];
 
@@ -438,9 +486,9 @@ export async function readAppPageCacheResponse(
                 revalidatedPage.htmlRenderObservation,
                 revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
               ),
-              revalidateSeconds,
+              cachePolicy.revalidateSeconds,
               revalidatedPage.tags,
-              expireSeconds,
+              cachePolicy.expireSeconds,
             ),
           );
         }

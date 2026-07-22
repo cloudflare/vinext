@@ -7,7 +7,7 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { createRequire } from "node:module";
 
 // ─── CJS Config Handling ─────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ function walkUpUntil<T>(start: string, check: (dir: string) => T | null): T | nu
 
 // ─── Package Manager Detection ───────────────────────────────────────────────
 
-type PackageManagerName = "pnpm" | "yarn" | "bun" | "npm";
+export type PackageManagerName = "pnpm" | "yarn" | "bun" | "npm";
 
 function parsePackageManagerName(value: string | undefined): PackageManagerName | null {
   if (!value) return null;
@@ -601,14 +601,10 @@ export function getMissingDeps(
  * Return the first candidate directory (resolved against `root`) that exists,
  * or null. Used to locate conventional `app`/`pages` directories that may live
  * at the root or under `src/`.
- *
- * `root` and `candidates` must be forward-slash, and the returned path is
- * forward-slash too: the candidate is joined with `path.posix.join`, which only
- * stays canonical when its inputs already are.
  */
 export function findDir(root: string, ...candidates: string[]): string | null {
   for (const candidate of candidates) {
-    const full = path.posix.join(root, candidate);
+    const full = path.join(root, candidate);
     try {
       if (fs.statSync(full).isDirectory()) return full;
     } catch {
@@ -620,8 +616,6 @@ export function findDir(root: string, ...candidates: string[]): string | null {
 
 /**
  * Check if the project uses App Router (has an app/ directory).
- *
- * `root` must be forward-slash — it is passed straight to `findDir`.
  */
 export function hasAppDir(root: string): boolean {
   return findDir(root, "app", "src/app") !== null;

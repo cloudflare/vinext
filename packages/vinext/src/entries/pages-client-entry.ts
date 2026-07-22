@@ -23,7 +23,7 @@ import type {
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
 import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 
 /**
@@ -65,6 +65,7 @@ export async function generateClientEntry(
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   const hasApp = appFilePath !== null;
   const appPrefetchRoutes = options.appPrefetchRoutes ?? [];
   const pagesPrefetchRoutes: VinextPagesLinkPrefetchRoute[] = [
@@ -95,15 +96,20 @@ export async function generateClientEntry(
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
   // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
   const loaderEntries = pageRoutes.map((r: Route) => {
-    const absPath = normalizePathSeparators(r.filePath);
+    const absPath = r.filePath;
     const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
     // JSON.stringify safely escapes quotes, backslashes, and special chars in
     // both the route pattern and the absolute file path.
     // lgtm[js/bad-code-sanitization]
     return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
   });
+  loaderEntries.push(
+    errorFilePath !== null
+      ? `  "/_error": () => import(${JSON.stringify(errorFilePath)})`
+      : '  "/_error": () => import("next/error")',
+  );
 
-  const appFileBase = appFilePath ? normalizePathSeparators(appFilePath) : undefined;
+  const appFileBase = appFilePath ?? undefined;
 
   // Refs #1474: Side-effect-import the user's `instrumentation-client.{ts,js}`
   // (when present at project root or in `src/`) BEFORE any other module so its
@@ -120,10 +126,19 @@ export async function generateClientEntry(
   // makes the contract explicit: bare side-effect imports are always
   // preserved by Vite/Rolldown's import-analysis pipeline.
   const userInstrumentationImport = instrumentationClientPath
-    ? `import ${JSON.stringify(normalizePathSeparators(instrumentationClientPath))};\n`
+    ? `import ${JSON.stringify(toSlash(instrumentationClientPath))};\n`
     : "";
   const reactPreambleImport =
     options.reactPreamble === false ? "" : 'import "@vitejs/plugin-react/preamble";\n';
+
+  // Pages Router React Strict Mode flag. Next.js resolves the `null`/unset
+  // default to OFF for the Pages Router (`reactStrictMode === null ? false` in
+  // .nextjs-ref/packages/next/src/build/define-env.ts), so the wrap is enabled
+  // only when the option is explicitly `true`. The actual <React.StrictMode>
+  // wrap lives in `wrapWithRouterContext` (next/router), which runs for both
+  // the initial hydration here and every client-side navigation — mirroring
+  // Next.js's `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`.
+  const reactStrictModeEnabled = nextConfig.reactStrictMode === true;
 
   return `${userInstrumentationImport}${reactPreambleImport}
 import "vinext/instrumentation-client";
@@ -161,6 +176,9 @@ const appLoader = undefined;
 // can iterate in order and trust the first match.
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
+// reactStrictMode flag — read by wrapWithRouterContext (next/router) so the
+// <React.StrictMode> wrap is applied on initial hydration and every navigation.
+window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictModeEnabled)};
 window.__VINEXT_PAGES_SSG_PATTERNS__ = ${JSON.stringify(pagesSsgPatterns)};
 window.__VINEXT_PAGES_SSP_PATTERNS__ = ${JSON.stringify(pagesSspPatterns)};
 window.__VINEXT_MIDDLEWARE_MATCHER__ = ${JSON.stringify(options.middlewareMatcher)};
@@ -244,7 +262,6 @@ async function hydrate() {
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: Router,
     });
   } catch {
@@ -262,6 +279,9 @@ async function hydrate() {
   });
 
   // Wrap with RouterContext.Provider so next/router and next/compat/router work during hydration.
+  // When reactStrictMode is enabled, wrapWithRouterContext also wraps the tree
+  // in <React.StrictMode> (see next/router) — applied here and on every
+  // navigation render, matching Next.js.
   element = wrapWithRouterContext(element, resolveHydrationCommit);
 
   const container = document.getElementById("__next");
@@ -280,9 +300,11 @@ async function hydrate() {
   window.__NEXT_HYDRATED_CB?.();
 
   if (nextData.isFallback) {
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const routeUrl = nextData.__vinext?.routeUrl;
     await Router.replace(
-      window.location.pathname + window.location.search + window.location.hash,
-      undefined,
+      routeUrl || currentUrl,
+      routeUrl ? currentUrl : undefined,
       { _h: 1, scroll: false },
     );
   }

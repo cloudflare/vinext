@@ -24,9 +24,10 @@
 
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { preprocessCSS, type PreprocessCSSResult, type ResolvedConfig } from "vite";
+import { markCssUrlAssetReferences, rebaseCssUrlAssetReferences } from "../build/css-url-assets.js";
 
 type AdditionalData = string | ((source: string, filename: string) => string | Promise<string>);
 
@@ -126,6 +127,118 @@ export function createSassTildeImporter(root: string): { findFileUrl(url: string
         return null;
       }
     },
+  };
+}
+
+type SassLoadedStylesheet = {
+  contents: string;
+  syntax: "scss" | "indented" | "css";
+};
+
+function sassStylesheetCandidates(importPath: string): string[] {
+  const extension = path.extname(importPath);
+  const directory = path.dirname(importPath);
+  const basename = path.basename(importPath, extension);
+  const candidates: string[] = [];
+  const extensions = extension ? [extension] : [".scss", ".sass", ".css"];
+
+  for (const candidateExtension of extensions) {
+    const basePath = extension ? importPath : `${importPath}${candidateExtension}`;
+    candidates.push(basePath);
+    candidates.push(path.join(directory, `_${basename}${candidateExtension}`));
+  }
+  for (const candidateExtension of extensions) {
+    candidates.push(path.join(importPath, `index${candidateExtension}`));
+    candidates.push(path.join(importPath, `_index${candidateExtension}`));
+  }
+  return candidates;
+}
+
+function deriveSassNamespace(importUrl: string): string {
+  const normalized = toSlash(importUrl).replace(/\/$/, "");
+  const parts = normalized.split("/");
+  let basename = parts.pop() ?? "stylesheet";
+  basename = basename.replace(/^_/, "").replace(/\..*$/, "");
+  if (basename === "index" && parts.length > 0) {
+    basename = (parts.pop() ?? basename).replace(/^_/, "").replace(/\..*$/, "");
+  }
+  return basename;
+}
+
+/**
+ * Preserve source-asset provenance for `url()` references inside imported Sass
+ * partials. Vite's transform hook only sees the entry stylesheet after Sass has
+ * flattened its imports, at which point relative URLs from a partial have lost
+ * the partial's source filename. Marking the partial before compilation keeps
+ * byte-identical assets associated with their original basenames.
+ */
+export function createSassCssUrlAssetImporter(): {
+  canonicalize(url: string): URL | null;
+  load(canonicalUrl: URL): SassLoadedStylesheet | null;
+  rewriteImports(source: string, filename: string): string;
+} {
+  const markedStylesheets = new Map<string, SassLoadedStylesheet>();
+  const importUrlPrefix = "vinext-css-url-asset:";
+
+  const prepareStylesheet = (
+    filename: string,
+    entryDirectory: string,
+  ): SassLoadedStylesheet | null => {
+    const contents = fs.readFileSync(filename, "utf8");
+    const rebased =
+      rebaseCssUrlAssetReferences(contents, path.dirname(filename), entryDirectory) ?? contents;
+    const marked = markCssUrlAssetReferences(rebased, filename);
+    if (marked === null) return null;
+    const extension = path.extname(filename).toLowerCase();
+    return {
+      contents: rewriteImports(marked, filename, entryDirectory),
+      syntax: extension === ".sass" ? "indented" : extension === ".css" ? "css" : "scss",
+    };
+  };
+
+  const rewriteImports = (
+    source: string,
+    filename: string,
+    entryDirectory = path.dirname(filename),
+  ): string =>
+    source.replace(
+      /(@(import|use|forward)\s+)(["'])(\.[^"']+)\3([^;]*;?)/g,
+      (
+        match,
+        prefix: string,
+        rule: "import" | "use" | "forward",
+        quote: string,
+        importUrl: string,
+        suffix: string,
+      ) => {
+        const importPath = path.resolve(path.dirname(filename), importUrl);
+        for (const candidate of sassStylesheetCandidates(importPath)) {
+          if (!fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) continue;
+          const prepared = prepareStylesheet(candidate, entryDirectory);
+          if (prepared === null) return match;
+          const canonicalUrl = pathToFileURL(candidate);
+          markedStylesheets.set(canonicalUrl.href, prepared);
+          const namespace =
+            rule === "use" && !/\bas\s+(?:\*|[-\w]+)/.test(suffix)
+              ? ` as ${deriveSassNamespace(importUrl)}`
+              : "";
+          return `${prefix}${quote}${importUrlPrefix}${encodeURIComponent(candidate)}${quote}${namespace}${suffix}`;
+        }
+        return match;
+      },
+    );
+
+  return {
+    canonicalize(url) {
+      if (!url.startsWith(importUrlPrefix)) return null;
+      return pathToFileURL(decodeURIComponent(url.slice(importUrlPrefix.length)));
+    },
+
+    load(canonicalUrl) {
+      return markedStylesheets.get(canonicalUrl.href) ?? null;
+    },
+
+    rewriteImports,
   };
 }
 

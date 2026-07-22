@@ -7,13 +7,14 @@
  *
  * Extracted from index.ts.
  */
+import { readFile } from "node:fs/promises";
 import { resolveEntryPath } from "./runtime-entry-module.js";
-import { normalizePathSeparators } from "../utils/path.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { hasExportedName } from "../build/report.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -25,6 +26,14 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
+const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
+
+async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
+  const source = await readFile(filePath, "utf8");
+  if (hasExportedName(source, "getStaticProps")) return "static";
+  if (hasExportedName(source, "getServerSideProps")) return "server";
+  return "none";
+}
 
 /**
  * Generate the virtual SSR server entry module.
@@ -42,21 +51,21 @@ export async function generateServerEntry(
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
-  const pageImports = pageRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `import * as page_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const pageImports = pageRoutes.map(
+    (r: Route, i: number) => `import * as page_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
-  const apiImports = apiRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `import * as api_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const apiImports = apiRoutes.map(
+    (r: Route, i: number) => `import * as api_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
   // Build the route table — include filePath for SSR manifest lookup
-  const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
-  });
+  const pageRouteEntries = await Promise.all(
+    pageRoutes.map(async (r: Route, i: number) => {
+      const dataKind = await getPagesDataKind(r.filePath);
+      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
+    }),
+  );
 
   const apiRouteEntries = apiRoutes.map(
     (r: Route, i: number) =>
@@ -87,7 +96,7 @@ export async function generateServerEntry(
   const errorImportCode =
     errorFilePath !== null
       ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
-      : `const ErrorPageModule = null;`;
+      : `import * as ErrorPageModule from "next/error";`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -113,6 +122,7 @@ export async function generateServerEntry(
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
+    allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys ?? [],
     cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
     htmlLimitedBots: nextConfig?.htmlLimitedBots,
     i18n: nextConfig?.i18n ?? null,
@@ -142,7 +152,7 @@ export async function generateServerEntry(
   // The onRequestError handler is stored on globalThis so it is visible across
   // all code within the Worker (same global scope).
   const instrumentationImportCode = instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};`
+    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};`
     : "";
 
   const instrumentationInitCode = instrumentationPath
@@ -161,7 +171,7 @@ if (typeof _instrumentation.onRequestError === "function") {
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};`
+    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
     : "";
 
   // The matcher config is read from the middleware module at request time.
@@ -174,7 +184,7 @@ export async function runMiddleware(request, ctx, options) {
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
-    filePath: ${JSON.stringify(normalizePathSeparators(middlewarePath))},
+    filePath: ${JSON.stringify(middlewarePath)},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
@@ -225,10 +235,16 @@ import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_p
 import { normalizePagesDataRequest as __normalizePagesDataRequest, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
+import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_isrCachePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
 ${instrumentationInitCode}
+
+// The outer Node production pipeline runs outside this generated bundle, so
+// it cannot safely validate against its own development fallback secret. Give
+// it a verifier closed over this entry's build-time-baked secret instead.
+export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
 
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};
@@ -238,7 +254,12 @@ const i18nConfig = ${i18nConfigJson};
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
 export function normalizeDataRequest(request) {
-  return __normalizePagesDataRequest(request, buildId);
+  return __normalizePagesDataRequest(
+    request,
+    buildId,
+    vinextConfig.basePath,
+    hasMiddleware && vinextConfig.trailingSlash,
+  );
 }
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
@@ -288,16 +309,14 @@ export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
-const _errorPageRoute = ErrorPageModule
-  ? {
-      pattern: "/_error",
-      patternParts: ["_error"],
-      isDynamic: false,
-      params: [],
-      module: ErrorPageModule,
-      filePath: ${errorAssetPathJson},
-    }
-  : null;
+const _errorPageRoute = {
+  pattern: "/_error",
+  patternParts: ["_error"],
+  isDynamic: false,
+  params: [],
+  module: ErrorPageModule,
+  filePath: ${errorAssetPathJson},
+};
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
@@ -307,8 +326,8 @@ const _apiRouteTrie = _buildRouteTrie(apiRoutes);
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
-  // the entry point. Decoding again would create a double-decode vector.
+  // Static route selection uses raw encoded identity (/%61bout must not
+  // select /about). _trieMatch decodes dynamic captures exactly once.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
   const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
   return _trieMatch(trie, urlParts);
@@ -378,6 +397,7 @@ const _renderPage = __createPagesPageHandler({
       : null,
   setI18nContext: typeof setI18nContext === "function" ? setI18nContext : null,
   wrapWithRouterContext: typeof wrapWithRouterContext === "function" ? wrapWithRouterContext : null,
+  router: Router,
   resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
   getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
   setDocumentInitialHead: typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
@@ -414,7 +434,6 @@ const _renderPage = __createPagesPageHandler({
       ? React.createElement(AppComponent, {
           ...props,
           Component: PageComponent,
-          pageProps: rawPageProps,
           router: Router,
         })
       : React.createElement(PageComponent, pageProps);
@@ -432,7 +451,6 @@ const _renderPage = __createPagesPageHandler({
       ? React.createElement(FinalApp, {
           ...props,
           Component: FinalComp,
-          pageProps: rawPageProps,
           router: Router,
         })
       : React.createElement(FinalComp, pageProps);
@@ -449,7 +467,7 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 
-export async function handleApiRoute(request, url, ctx) {
+export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin) {
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
@@ -457,6 +475,7 @@ export async function handleApiRoute(request, url, ctx) {
     match,
     nextConfig: vinextConfig,
     request,
+    trustedRevalidateOrigin,
     url,
     reportRequestError(error, routePattern) {
       console.error("[vinext] API error:", error);

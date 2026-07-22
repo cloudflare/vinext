@@ -40,6 +40,9 @@ export default {
         "src/server/app-browser-entry.ts",
         "src/server/app-browser-server-action-client.ts",
         "src/server/app-ssr-entry.ts",
+        // Forked as a child process by prerender-server-pool.ts via a path
+        // constant (child_process.fork), so knip can't trace it as imported.
+        "src/build/prerender-server-entry.ts",
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/server/app-middleware.ts",
@@ -91,10 +94,27 @@ export default {
       entry: [...entriesFromPackageJson("packages/cloudflare/package.json")],
       project: ["src/**/*.{ts,tsx}"],
     },
+    "packages/create-vinext-app": {
+      entry: [...entriesFromPackageJson("packages/create-vinext-app/package.json")],
+      project: ["src/**/*.{ts,tsx}"],
+      ignoreDependencies: [
+        // create-vinext-app bundles vinext init helpers into dist. These are
+        // imported by the bundled helper modules, not by src/index.ts directly.
+        "am-i-vibing",
+        "magic-string",
+        // Kept as an explicit package-local Vite+ toolchain dependency.
+        "vite",
+      ],
+    },
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
   ignoreDependencies: [
-    "@typescript/native-preview",
+    // Imported only by declarations vendored from Next.js. @next/env and
+    // sharp are covered by ambient stubs in @vinext/types; server-only is a
+    // marker import supplied by compatible runtimes.
+    "@next/env",
+    "server-only",
+    "sharp",
 
     // Declared at root package.json but imported from workspace/example code:
     //   @mdx-js/react — no direct imports; retained for MDX runtime resolution.
@@ -122,6 +142,7 @@ export default {
     "taskkill",
     "eslint",
     "gh",
+    "jq",
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",

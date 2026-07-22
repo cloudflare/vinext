@@ -11,6 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
+import type { Params } from "@vinext/types/next/upstream/dist/server/request/params";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
@@ -32,6 +33,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   stripRscCacheBustingSearchParam,
+  stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "../server/app-rsc-cache-busting.js";
@@ -40,22 +42,22 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../server/headers.js";
-import {
-  isAbsoluteOrProtocolRelativeUrl,
-  toBrowserNavigationHref,
-  toSameOriginAppPath,
-  withBasePath,
-} from "./url-utils.js";
+import { toBrowserNavigationHref, toSameOriginAppPath, withBasePath } from "./url-utils.js";
 import { navigationPlanner } from "../server/navigation-planner.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
-import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
+import {
+  resolveDirectHybridClientRouteOwner,
+  type HybridClientOwner,
+} from "./internal/hybrid-client-route-owner-direct.js";
 import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
@@ -73,6 +75,36 @@ import {
   registerServerInsertedHTMLCallback,
   type NavigationContext,
 } from "./navigation-context-state.js";
+import {
+  releaseAppPrefetchFetchSlot,
+  scheduleAppPrefetchFetch,
+} from "./internal/app-prefetch-fetch-queue.js";
+
+const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
+let hybridClientRouteOwnerModule: HybridClientRouteOwnerModule | null = null;
+let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
+
+/** Load rewrite-aware hybrid route ownership before navigation becomes interactive. */
+export async function preloadHybridClientRouteOwner(): Promise<void> {
+  if (hybridClientRouteOwnerModule) return;
+  hybridClientRouteOwnerModulePromise ??= import("./internal/hybrid-client-route-owner.js");
+  hybridClientRouteOwnerModule = await hybridClientRouteOwnerModulePromise;
+}
+
+export function resolveLoadedHybridClientRewriteHref(
+  href: string,
+  basePath: string,
+): string | null {
+  return hybridClientRouteOwnerModule?.resolveHybridClientRewriteHref(href, basePath) ?? null;
+}
+
+function resolveHybridClientRouteOwner(href: string): HybridClientOwner | null {
+  if (!HAS_PAGES_ROUTER) return null;
+  return hybridClientRouteOwnerModule
+    ? hybridClientRouteOwnerModule.resolveHybridClientRouteOwner(href, __basePath)
+    : resolveDirectHybridClientRouteOwner(href, __basePath);
+}
 
 export {
   type NavigationContext,
@@ -197,8 +229,9 @@ export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 // RSC prefetch cache utilities (shared between link.tsx and browser entry)
 // ---------------------------------------------------------------------------
 
-/** Maximum number of entries in the RSC prefetch cache. */
-export const MAX_PREFETCH_CACHE_SIZE = 50;
+/** Maximum buffered bytes in the RSC prefetch cache. Mirrors Next.js' 50 MB LRU. */
+export const MAX_PREFETCH_CACHE_SIZE = 50 * 1024 * 1024;
+const PREFETCH_CACHE_EVICTION_TARGET_SIZE = MAX_PREFETCH_CACHE_SIZE * 0.9;
 
 /**
  * TTL for prefetch cache entries in ms.
@@ -240,6 +273,7 @@ export type CachedRscResponse = {
   expiresAt?: number;
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
+  renderedPathAndSearch: string | null;
   url: string;
 };
 
@@ -247,6 +281,8 @@ export type PrefetchOptions = {
   kind?: unknown;
   onInvalidate?: () => void;
 };
+
+export type PrefetchCacheKind = "loading-shell" | "navigation" | "route-tree";
 
 export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
@@ -257,7 +293,11 @@ export type PrefetchCacheEntry = {
   optimisticRouteShell?: boolean;
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
+  cacheKeys?: Set<string>;
   pending?: Promise<void>;
+  prefetchKind?: PrefetchCacheKind;
+  searchAgnosticShell?: boolean;
+  size?: number;
   timestamp: number;
 };
 
@@ -396,6 +436,15 @@ function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
   }
 }
 
+function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
+  try {
+    const url = new URL(rscUrl, "http://vinext.local");
+    return stripRscSuffix(url.pathname);
+  } catch {
+    return null;
+  }
+}
+
 function parsePrefetchCacheKey(cacheKey: string): {
   interceptionContext: string | null;
   rscUrl: string;
@@ -431,28 +480,37 @@ function findPrefetchCacheEntryForNavigation(
   rscUrl: string,
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
+  additionalRscUrls: readonly string[] = [],
 ): { cacheKey: string; entry: PrefetchCacheEntry } | null {
-  const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
-  const exactEntry = cache.get(exactCacheKey);
-  if (
-    exactEntry &&
-    exactEntry.cacheForNavigation !== false &&
-    isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
-  ) {
-    return { cacheKey: exactCacheKey, entry: exactEntry };
+  const rscUrls = [rscUrl, ...additionalRscUrls];
+
+  for (const lookupRscUrl of rscUrls) {
+    const exactCacheKey = AppElementsWire.encodeCacheKey(lookupRscUrl, interceptionContext);
+    const exactEntry = cache.get(exactCacheKey);
+    if (
+      exactEntry &&
+      exactEntry.cacheForNavigation !== false &&
+      isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
+    ) {
+      return { cacheKey: exactCacheKey, entry: exactEntry };
+    }
   }
 
-  const normalizedTarget = normalizeRscCacheLookupUrl(rscUrl);
-  if (normalizedTarget === null) return null;
+  const normalizedTargets = new Set(
+    rscUrls
+      .map((lookupRscUrl) => normalizeRscCacheLookupUrl(lookupRscUrl))
+      .filter((lookupRscUrl): lookupRscUrl is string => lookupRscUrl !== null),
+  );
+  if (normalizedTargets.size === 0) return null;
 
   for (const [cacheKey, entry] of cache) {
-    if (cacheKey === exactCacheKey) continue;
     if (entry.cacheForNavigation === false) continue;
 
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
-    if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    const normalizedSource = normalizeRscCacheLookupUrl(source.rscUrl);
+    if (normalizedSource === null || !normalizedTargets.has(normalizedSource)) continue;
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
 
     return { cacheKey, entry };
@@ -465,17 +523,24 @@ export function hasPrefetchCacheEntryForNavigation(
   rscUrl: string,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
-  options: { notifyInvalidation?: boolean } = {},
+  options: { additionalRscUrls?: readonly string[]; notifyInvalidation?: boolean } = {},
 ): boolean {
   const match = findPrefetchCacheEntryForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
+    options.additionalRscUrls,
   );
   if (match === null) return false;
 
-  if (match.entry.pending !== undefined) return true;
-  if (resolvePrefetchCacheEntryExpiresAt(match.entry) > Date.now()) return true;
+  if (match.entry.pending !== undefined) {
+    touchPrefetchCacheEntry(getPrefetchCache(), match.cacheKey, match.entry);
+    return true;
+  }
+  if (resolvePrefetchCacheEntryExpiresAt(match.entry) > Date.now()) {
+    touchPrefetchCacheEntry(getPrefetchCache(), match.cacheKey, match.entry);
+    return true;
+  }
 
   deletePrefetchCacheEntry(
     getPrefetchCache(),
@@ -487,13 +552,85 @@ export function hasPrefetchCacheEntryForNavigation(
   return false;
 }
 
+export function hasSearchAgnosticPrefetchShellForRoute(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+): boolean {
+  const normalizedTargetPathname = normalizeRscCacheLookupPathname(rscUrl);
+  if (normalizedTargetPathname === null) return false;
+
+  const cache = getPrefetchCache();
+  for (const [cacheKey, entry] of cache) {
+    if (entry.searchAgnosticShell !== true) continue;
+
+    const source = parsePrefetchCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (normalizeRscCacheLookupPathname(source.rscUrl) !== normalizedTargetPathname) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+
+    if (entry.pending !== undefined) return true;
+    if (resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) return true;
+
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  }
+
+  return false;
+}
+
+function getPrefetchCacheEntrySize(entry: PrefetchCacheEntry): number {
+  return entry.snapshot?.buffer.byteLength ?? entry.size ?? 0;
+}
+
+let trackedPrefetchCache: Map<string, PrefetchCacheEntry> | null = null;
+let trackedPrefetchCacheByteSize = 0;
+
+function getPrefetchCacheByteSize(cache: Map<string, PrefetchCacheEntry>): number {
+  if (trackedPrefetchCache === cache) {
+    return trackedPrefetchCacheByteSize;
+  }
+
+  let total = 0;
+  const seen = new Set<PrefetchCacheEntry>();
+  for (const entry of cache.values()) {
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    total += getPrefetchCacheEntrySize(entry);
+  }
+  trackedPrefetchCache = cache;
+  trackedPrefetchCacheByteSize = total;
+  return total;
+}
+
+function adjustPrefetchCacheByteSize(cache: Map<string, PrefetchCacheEntry>, delta: number): void {
+  if (trackedPrefetchCache !== cache) return;
+  trackedPrefetchCacheByteSize = Math.max(0, trackedPrefetchCacheByteSize + delta);
+}
+
+function touchPrefetchCacheEntry(
+  cache: Map<string, PrefetchCacheEntry>,
+  cacheKey: string,
+  entry: PrefetchCacheEntry,
+): void {
+  if (cache.get(cacheKey) !== entry) return;
+  cache.delete(cacheKey);
+  cache.set(cacheKey, entry);
+  for (const key of entry.cacheKeys ?? []) {
+    if (key === cacheKey || cache.get(key) !== entry) continue;
+    cache.delete(key);
+    cache.set(key, entry);
+  }
+}
+
 /**
- * Evict prefetch cache entries if at capacity.
- * First sweeps expired entries, then falls back to FIFO eviction.
+ * Evict prefetch cache entries if buffered payloads exceed the byte budget.
+ * Sweeps expired entries only after the cheap byte-budget check says cleanup is
+ * needed, then evicts least-recently-used entries down to the target size.
  */
 function evictPrefetchCacheIfNeeded(): void {
   const cache = getPrefetchCache();
-  if (cache.size < MAX_PREFETCH_CACHE_SIZE) return;
+  let totalSize = getPrefetchCacheByteSize(cache);
+  if (totalSize <= MAX_PREFETCH_CACHE_SIZE) return;
 
   const now = Date.now();
   const prefetched = getPrefetchedUrls();
@@ -504,15 +641,28 @@ function evictPrefetchCacheIfNeeded(): void {
     }
   }
 
-  while (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+  totalSize = getPrefetchCacheByteSize(cache);
+  if (totalSize <= MAX_PREFETCH_CACHE_SIZE) return;
+
+  let inspectedEntries = 0;
+  while (totalSize > PREFETCH_CACHE_EVICTION_TARGET_SIZE && inspectedEntries < cache.size) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) {
       const entry = cache.get(oldest);
       if (entry) {
+        const entrySize = getPrefetchCacheEntrySize(entry);
+        if (entry.pending !== undefined && entrySize === 0) {
+          touchPrefetchCacheEntry(cache, oldest, entry);
+          inspectedEntries += 1;
+          continue;
+        }
+        totalSize -= entrySize;
         deletePrefetchCacheEntry(cache, prefetched, oldest, entry, true);
+        inspectedEntries = 0;
       } else {
         cache.delete(oldest);
         prefetched.delete(oldest);
+        inspectedEntries += 1;
       }
     } else {
       break;
@@ -553,8 +703,15 @@ function deletePrefetchCacheEntry(
   entry: PrefetchCacheEntry,
   notify: boolean,
 ): void {
-  cache.delete(cacheKey);
-  prefetched.delete(cacheKey);
+  adjustPrefetchCacheByteSize(cache, -getPrefetchCacheEntrySize(entry));
+  const cacheKeys = entry.cacheKeys ?? new Set([cacheKey]);
+  for (const key of cacheKeys) {
+    if (cache.get(key) === entry) {
+      cache.delete(key);
+    }
+    prefetched.delete(key);
+  }
+  entry.cacheKeys = undefined;
   if (notify) {
     notifyPrefetchInvalidated(entry);
   } else {
@@ -629,19 +786,22 @@ export function seedPrefetchResponseSnapshot(
   if (existing) {
     deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, existing, false);
   }
-  evictPrefetchCacheIfNeeded();
   const timestamp = Date.now();
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: true,
+    cacheKeys: new Set([cacheKey]),
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,
   };
   cache.set(cacheKey, entry);
+  adjustPrefetchCacheByteSize(cache, snapshot.buffer.byteLength);
   getPrefetchedUrls().add(cacheKey);
   schedulePrefetchInvalidation(cacheKey, entry);
+  evictPrefetchCacheIfNeeded();
 }
 
 export function deletePrefetchResponseSnapshot(
@@ -679,8 +839,14 @@ export function storePrefetchResponse(
   options?: PrefetchOptions,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  evictPrefetchCacheIfNeeded();
+  const cache = getPrefetchCache();
+  const prefetched = getPrefetchedUrls();
+  const existing = cache.get(cacheKey);
+  if (existing) {
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
+  }
   const entry: PrefetchCacheEntry = {
+    cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader: null,
     outcome: "pending",
     timestamp: Date.now(),
@@ -688,25 +854,31 @@ export function storePrefetchResponse(
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.pending = snapshotRscResponse(response)
     .then((snapshot) => {
+      if (cache.get(cacheKey) !== entry) return;
+      const previousSize = getPrefetchCacheEntrySize(entry);
       entry.mountedSlotsHeader = snapshot.mountedSlotsHeader ?? null;
       entry.snapshot = snapshot;
+      entry.size = snapshot.buffer.byteLength;
+      adjustPrefetchCacheByteSize(cache, entry.size - previousSize);
       entry.expiresAt = resolveCachedRscResponseExpiresAt(
         entry.timestamp,
         snapshot,
         PREFETCH_CACHE_TTL,
       );
+      evictPrefetchCacheIfNeeded();
     })
     .catch(() => {
-      deletePrefetchCacheEntry(getPrefetchCache(), getPrefetchedUrls(), cacheKey, entry, false);
+      deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
     })
     .finally(() => {
+      if (cache.get(cacheKey) !== entry) return;
       entry.pending = undefined;
       if (entry.snapshot) {
         entry.outcome = "cache-seeded";
         schedulePrefetchInvalidation(cacheKey, entry);
       }
     });
-  getPrefetchCache().set(cacheKey, entry);
+  cache.set(cacheKey, entry);
 }
 
 export function createCachedRscResponseSnapshot(
@@ -724,8 +896,21 @@ export function createCachedRscResponseSnapshot(
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
+    renderedPathAndSearch: parseRenderedPathAndSearchHeader(
+      response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+    ),
     url: responseUrl ?? response.url,
   };
+}
+
+function parseRenderedPathAndSearchHeader(value: string | null): string | null {
+  if (value === null || value === "") return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded.startsWith("/") ? decoded : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -733,7 +918,11 @@ export function createCachedRscResponseSnapshot(
  * Consumes the response body and stores it with content-type and URL metadata.
  */
 export async function snapshotRscResponse(response: Response): Promise<CachedRscResponse> {
-  return createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+  try {
+    return createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+  } finally {
+    releaseAppPrefetchFetchSlot(response);
+  }
 }
 
 /**
@@ -765,6 +954,12 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   if (cached.paramsHeader != null) {
     headers.set(VINEXT_PARAMS_HEADER, cached.paramsHeader);
   }
+  if (cached.renderedPathAndSearch != null) {
+    headers.set(
+      VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+      encodeURIComponent(cached.renderedPathAndSearch),
+    );
+  }
 
   return new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
     status: 200,
@@ -789,18 +984,29 @@ export function prefetchRscResponse(
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
     optimisticRouteShell?: boolean;
+    prefetchKind?: PrefetchCacheKind;
+    searchAgnosticShell?: boolean;
   } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
   const now = Date.now();
+  const existing = cache.get(cacheKey);
+  if (existing) {
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
+  }
 
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: behavior.cacheForNavigation ?? true,
+    cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
+    prefetchKind:
+      behavior.prefetchKind ??
+      (behavior.optimisticRouteShell === true ? "loading-shell" : "navigation"),
+    searchAgnosticShell: behavior.searchAgnosticShell === true,
     timestamp: now,
   };
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
@@ -808,13 +1014,21 @@ export function prefetchRscResponse(
   entry.pending = fetchPromise
     .then(async (response) => {
       if (response.ok) {
-        entry.snapshot = await snapshotRscResponse(response);
+        const snapshot = await snapshotRscResponse(response);
+        if (cache.get(cacheKey) !== entry) return;
+        const previousSize = getPrefetchCacheEntrySize(entry);
+        entry.snapshot = snapshot;
+        entry.size = snapshot.buffer.byteLength;
+        adjustPrefetchCacheByteSize(cache, entry.size - previousSize);
         entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
           entry.timestamp,
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
         );
+        addRenderedPathAndSearchPrefetchAlias(cache, prefetched, cacheKey, entry);
+        evictPrefetchCacheIfNeeded();
       } else {
+        releaseAppPrefetchFetchSlot(response);
         deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
       }
     })
@@ -822,6 +1036,7 @@ export function prefetchRscResponse(
       deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
     })
     .finally(() => {
+      if (cache.get(cacheKey) !== entry) return;
       entry.pending = undefined;
       if (entry.snapshot) {
         entry.outcome = "cache-seeded";
@@ -834,6 +1049,62 @@ export function prefetchRscResponse(
   // entries inserted before it are candidates for removal.
   cache.set(cacheKey, entry);
   evictPrefetchCacheIfNeeded();
+}
+
+function addRenderedPathAndSearchPrefetchAlias(
+  cache: Map<string, PrefetchCacheEntry>,
+  prefetched: Set<string>,
+  primaryCacheKey: string,
+  entry: PrefetchCacheEntry,
+): void {
+  if (entry.cacheForNavigation === false) return;
+  const renderedPathAndSearch = entry.snapshot?.renderedPathAndSearch;
+  if (!renderedPathAndSearch) return;
+
+  const source = parsePrefetchCacheKey(primaryCacheKey);
+  const aliasCacheKey = AppElementsWire.encodeCacheKey(
+    renderedPathAndSearch,
+    source.interceptionContext,
+  );
+  if (aliasCacheKey === primaryCacheKey) return;
+
+  const existing = cache.get(aliasCacheKey);
+  if (existing && existing !== entry) {
+    deletePrefetchCacheEntry(cache, prefetched, aliasCacheKey, existing, false);
+  }
+
+  entry.cacheKeys ??= new Set([primaryCacheKey]);
+  entry.cacheKeys.add(aliasCacheKey);
+  cache.set(aliasCacheKey, entry);
+  prefetched.add(aliasCacheKey);
+}
+
+export function peekPrefetchResponseForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+): CachedRscResponse | null {
+  const match = findPrefetchCacheEntryForNavigation(
+    rscUrl,
+    interceptionContext,
+    mountedSlotsHeader,
+  );
+  if (!match) return null;
+
+  const { cacheKey, entry } = match;
+  if (entry.pending || entry.outcome !== "cache-seeded") return null;
+  if (entry.cacheForNavigation === false || !entry.snapshot) return null;
+  if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
+    deletePrefetchCacheEntry(getPrefetchCache(), getPrefetchedUrls(), cacheKey, entry, true);
+    return null;
+  }
+  if (entry.expiresAt !== undefined || entry.snapshot.expiresAt !== undefined) {
+    return {
+      ...entry.snapshot,
+      expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
+    };
+  }
+  return entry.snapshot;
 }
 
 /**
@@ -865,12 +1136,20 @@ export function consumePrefetchResponse(
   if (!match) return null;
   const { cacheKey, entry } = match;
 
+  return consumeMatchedPrefetchResponse(cacheKey, entry, mountedSlotsHeader);
+}
+
+function consumeMatchedPrefetchResponse(
+  cacheKey: string,
+  entry: PrefetchCacheEntry,
+  mountedSlotsHeader: string | null,
+): CachedRscResponse | null {
   // Skip in-flight snapshots and error-path residue where pending cleared
   // without a successful transition to a cache-seeded entry.
   if (entry.pending || entry.outcome !== "cache-seeded") return null;
   if (entry.cacheForNavigation === false) return null;
 
-  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
+  deletePrefetchCacheEntry(getPrefetchCache(), getPrefetchedUrls(), cacheKey, entry, false);
 
   if (entry.snapshot) {
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) {
@@ -905,6 +1184,7 @@ export function consumePrefetchResponse(
  * one in-flight network request that navigation should share.
  */
 type ConsumePrefetchResponseForNavigationOptions = {
+  additionalRscUrls?: readonly string[];
   shouldConsume?: () => boolean;
 };
 
@@ -919,6 +1199,7 @@ export async function consumePrefetchResponseForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
+    options?.additionalRscUrls,
   );
   if (!match) return null;
   const { cacheKey, entry } = match;
@@ -930,7 +1211,7 @@ export async function consumePrefetchResponseForNavigation(
 
   if (options?.shouldConsume?.() === false) return null;
 
-  return consumePrefetchResponse(rscUrl, interceptionContext, mountedSlotsHeader);
+  return consumeMatchedPrefetchResponse(cacheKey, entry, mountedSlotsHeader);
 }
 
 // ---------------------------------------------------------------------------
@@ -1357,7 +1638,7 @@ function subscribeToNavigation(cb: () => void): () => void {
  * Returns the current pathname.
  * Server: from request context. Client: from window.location.
  */
-export function usePathname(): string | null {
+export function usePathname(): string {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
     // During SSR of "use client" components, the navigation context may not be set.
@@ -1366,7 +1647,10 @@ export function usePathname(): string | null {
     if (ctx) return ctx.pathname;
     // Pages Router compat shim: derive pathname from the Pages Router state.
     const pagesCtx = _getPagesNavigationContext();
-    return pagesCtx ? pagesCtx.pathname : "/";
+    // The standalone next/navigation declaration returns string, while the
+    // Pages Router compatibility runtime intentionally yields null before
+    // router readiness (matching Next.js' Pages Router adapter behavior).
+    return pagesCtx ? (pagesCtx.pathname as string) : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
@@ -1381,9 +1665,9 @@ export function usePathname(): string | null {
   // fall through to useSyncExternalStore so user pushState/replaceState
   // calls are immediately reflected.
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
-    return renderSnapshot.pathname;
+    return renderSnapshot.pathname as string;
   }
-  return pathname;
+  return pathname as string;
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
@@ -1415,9 +1699,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
 /**
  * Returns the dynamic params for the current route.
  */
-export function useParams<
-  T extends Record<string, string | string[]> = Record<string, string | string[]>,
->(): T | null {
+export function useParams<T extends Params = Params>(): T | null {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
     // During SSR for "use client" components, the navigation context may not be set.
@@ -1436,13 +1718,6 @@ export function useParams<
   return params;
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
-
-/**
- * Check if a href is an external URL (any URL scheme per RFC 3986, or protocol-relative).
- */
-function isExternalUrl(href: string): boolean {
-  return isAbsoluteOrProtocolRelativeUrl(href);
-}
 
 // ---------------------------------------------------------------------------
 // History method wrappers — suppress notifications for internal updates
@@ -1701,7 +1976,7 @@ export async function navigateClientSide(
   // requests) or render the App catch-all's path array. This is the
   // programmatic equivalent of the link click / prefetch check in
   // `link.tsx`.
-  const hybridOwner = resolveHybridClientRouteOwner(normalizedHref, __basePath);
+  const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
     const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
     notifyAppRouterTransitionStart(fullHref, mode);
@@ -1937,7 +2212,7 @@ const _appRouter: AppRouterInstance = {
       // origins so we don't pollute the prefetch cache with a same-path .rsc on
       // the current origin. Mirrors Link's prefetchUrl and navigateClientSide.
       let prefetchHref = href;
-      if (isAbsoluteOrProtocolRelativeUrl(href)) {
+      if (isExternalUrl(href)) {
         const localPath = toSameOriginAppPath(href, __basePath);
         if (localPath == null) return;
         prefetchHref = localPath;
@@ -1949,7 +2224,7 @@ const _appRouter: AppRouterInstance = {
       // an unusable cache entry. The matching `push`/`replace` call will
       // hard-navigate via `window.location`, so a no-op here is correct —
       // the document prefetch the link shim emits on hover still runs.
-      const hybridOwner = resolveHybridClientRouteOwner(prefetchHref, __basePath);
+      const hybridOwner = resolveHybridClientRouteOwner(prefetchHref);
       if (hybridOwner === "pages" || hybridOwner === "document") {
         return;
       }
@@ -1974,11 +2249,15 @@ const _appRouter: AppRouterInstance = {
       prefetched.add(cacheKey);
       prefetchRscResponse(
         rscUrl,
-        fetch(rscUrl, {
-          headers,
-          credentials: "include",
-          priority: "low" as RequestInit["priority"],
-        }),
+        scheduleAppPrefetchFetch(
+          () =>
+            fetch(rscUrl, {
+              headers,
+              credentials: "include",
+              priority: "low" as RequestInit["priority"],
+            }),
+          "low",
+        ),
         interceptionContext,
         mountedSlotsHeader,
         options,
@@ -2014,7 +2293,7 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     // inline check exists to *no-op* on external hrefs instead of falling
     // through to its hard window.location.assign.
     let appHref = href;
-    if (isAbsoluteOrProtocolRelativeUrl(href)) {
+    if (isExternalUrl(href)) {
       const localPath = toSameOriginAppPath(href, __basePath);
       if (localPath === null) return;
       appHref = localPath;

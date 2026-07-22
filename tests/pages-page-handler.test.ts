@@ -11,6 +11,20 @@ import {
   shouldEmitPagesClientTraceMetadata,
 } from "../packages/vinext/src/server/pages-page-handler.js";
 import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/server/pages-page-handler.js";
+import {
+  PAGES_PREVIEW_CACHE_CONTROL,
+  setPagesPreviewData,
+} from "../packages/vinext/src/server/pages-preview.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  getRevalidateSecret,
+  PRERENDER_REVALIDATE_HEADER,
+} from "../packages/vinext/src/server/isr-cache.js";
+import { after } from "../packages/vinext/src/shims/server.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -18,6 +32,24 @@ import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/serve
 
 function makeRequest(pathname = "/", method = "GET"): Request {
   return new Request(`http://localhost${pathname}`, { method });
+}
+
+function makePreviewCookieHeader(data: object | string): string {
+  const headers = new Map<string, string | string[]>();
+  setPagesPreviewData(
+    {
+      getHeader(name) {
+        return headers.get(name.toLowerCase());
+      },
+      setHeader(name, value) {
+        headers.set(name.toLowerCase(), value as string | string[]);
+      },
+    },
+    data,
+  );
+  const cookies = headers.get("set-cookie");
+  if (!Array.isArray(cookies)) throw new Error("expected preview cookies");
+  return cookies.map((cookie) => cookie.split(";", 1)[0]).join("; ");
 }
 
 function makePageModule(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -122,6 +154,35 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
   });
 });
 
+describe("createPagesPageHandler — after() lifecycle", () => {
+  it("runs callbacks only after the response body closes", async () => {
+    let callbackRan = false;
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async () => {
+                after(() => {
+                  callbackRan = true;
+                });
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(callbackRan).toBe(false);
+
+    await response.text();
+    await vi.waitFor(() => expect(callbackRan).toBe(true));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------
@@ -151,6 +212,97 @@ describe("createPagesPageHandler — route miss", () => {
     const res = await handler(makeRequest("/nonexistent"), "/nonexistent", null, null, null);
     // Custom 404 renders successfully (200 body, 404 status via override)
     expect(res.status).toBe(404);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const direct = await handler(makeRequest("/404"), "/404", null, null, null);
+    expect(direct.status).toBe(404);
+    expect(direct.headers.get("cache-control")).toBeNull();
+  });
+
+  it("replaces the inner /404 CDN policy with the source notFound policy", async () => {
+    const edgeAdapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+      buildResponseHeaders(input) {
+        if (/(?:private|no-store|no-cache)/i.test(input.cacheControl)) {
+          return {
+            "Cache-Control": "no-store",
+            "CDN-Cache-Control": null,
+            "Cache-Tag": null,
+          };
+        }
+        return {
+          "Cache-Control": "no-store",
+          "CDN-Cache-Control": input.cacheControl,
+          "Cache-Tag": input.tags?.join(",") ?? null,
+        };
+      },
+    };
+    setCdnCacheAdapter(edgeAdapter);
+    try {
+      const sourceRoute = makeRoute(
+        "/source",
+        makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+      );
+      const notFoundRoute = makeRoute(
+        "/404",
+        makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+      );
+      const handler = createPagesPageHandler(
+        makeOpts({ pageRoutes: [sourceRoute, notFoundRoute] }),
+      );
+
+      const sourceResponse = await handler(makeRequest("/source"), "/source", null, null, null);
+      expect(sourceResponse.headers.get("cache-control")).toBe("no-store");
+      expect(sourceResponse.headers.get("cdn-cache-control")).toBe(
+        "s-maxage=7, stale-while-revalidate",
+      );
+      expect(sourceResponse.headers.get("cache-tag")).toBe("_N_T_/source");
+
+      const genericResponse = await handler(makeRequest("/missing"), "/missing", null, null, null);
+      expect(genericResponse.headers.get("cache-control")).toBe("no-store");
+      expect(genericResponse.headers.get("cdn-cache-control")).toBeNull();
+      expect(genericResponse.headers.get("cache-tag")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  // Ported from Next.js: test/e2e/no-page-props/no-page-props.test.ts
+  // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/no-page-props/no-page-props.test.ts
+  it("preserves a custom App initial-props envelope without pageProps on _error", async () => {
+    const renderedProps: Record<string, unknown>[] = [];
+    const errorComponent = Object.assign(() => null, {
+      getInitialProps: ({ res }: { res: { statusCode: number } }) => ({
+        statusCode: res.statusCode,
+      }),
+    });
+    const errorRoute = makeRoute("/_error", makePageModule({ default: errorComponent }));
+    const AppComponent = Object.assign(() => null, {
+      getInitialProps: async () => ({ initialProps: {} }),
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [],
+        errorPageRoute: errorRoute,
+        AppComponent,
+        createPageElement: (_PageComponent, _AppComponent, props) => {
+          renderedProps.push(props);
+          return null;
+        },
+      }),
+    );
+
+    const res = await handler(makeRequest("/missing"), "/missing", null, null, null);
+
+    expect(res.status).toBe(404);
+    expect(renderedProps).toContainEqual({ initialProps: {} });
   });
 
   it("returns _next/data 404 JSON on data request route miss", async () => {
@@ -159,6 +311,29 @@ describe("createPagesPageHandler — route miss", () => {
     expect(res.status).toBe(404);
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
+  });
+});
+
+describe("createPagesPageHandler — on-demand terminal responses", () => {
+  it("does not leave a contradictory vinext MISS beside REVALIDATED", async () => {
+    const route = makeRoute(
+      "/redirect",
+      makePageModule({
+        getStaticProps: async () => ({
+          redirect: { destination: "/target", permanent: false },
+          revalidate: 60,
+        }),
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const request = new Request("http://localhost/redirect", {
+      headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+    });
+
+    const response = await handler(request, "/redirect", null, null, null);
+
+    expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
   });
 });
 
@@ -207,6 +382,278 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(res.status).toBe(404);
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
+  });
+
+  it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
+    // Next.js derives Pages data resolvedUrl/asPath from the parsed data
+    // pathname. The trailingSlash data-path adjustment is middleware-only.
+    const setSSRContext = vi.fn();
+    const routes = [
+      makeRoute(
+        "/about",
+        makePageModule({
+          getServerSideProps: async ({ resolvedUrl }: { resolvedUrl: string }) => ({
+            props: { resolvedUrl },
+          }),
+        }),
+      ),
+    ];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: routes,
+        setSSRContext,
+        vinextConfig: {
+          basePath: "",
+          assetPrefix: "",
+          trailingSlash: true,
+          disableOptimizedLoading: true,
+        },
+      }),
+    );
+
+    const dataUrl = "/_next/data/test-build-id/about.json?x=1";
+    const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pageProps: { resolvedUrl: string } };
+    expect(body.pageProps.resolvedUrl).toBe("/about?x=1");
+
+    const context = setSSRContext.mock.calls.find((call) => call[0] !== null)?.[0] as
+      | { asPath?: string }
+      | undefined;
+    expect(context?.asPath).toBe("/about?x=1");
+  });
+
+  it("marks preview data and forces private no-store caching", async () => {
+    const routeModule = makePageModule({
+      getStaticProps: async ({ previewData }: { previewData: unknown }) => ({
+        props: { previewData },
+      }),
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute("/about", routeModule)] }),
+    );
+    const dataUrl = "/_next/data/test-build-id/about.json";
+    const request = new Request(`http://localhost${dataUrl}`, {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+
+    const response = await handler(request, dataUrl, null, null, null);
+
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(await response.json()).toMatchObject({
+      __N_PREVIEW: true,
+      pageProps: { previewData: { draft: true } },
+    });
+  });
+});
+
+describe("createPagesPageHandler — preview responses", () => {
+  it("does not activate preview on pages without static or server props", async () => {
+    const setSSRContext = vi.fn();
+    const handler = createPagesPageHandler(makeOpts({ setSSRContext }));
+    const request = new Request("http://localhost/", {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+
+    const response = await handler(request, "/", null, null, null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).not.toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(setSSRContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isPreview: false,
+        nextData: expect.not.objectContaining({ isPreview: true }),
+      }),
+    );
+  });
+
+  it("activates preview on pages with server props", async () => {
+    const setSSRContext = vi.fn();
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({ getServerSideProps: async () => ({ props: { preview: true } }) }),
+          ),
+        ],
+        setSSRContext,
+      }),
+    );
+    const request = new Request("http://localhost/", {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+
+    const response = await handler(request, "/", null, null, null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(setSSRContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isPreview: true,
+        nextData: expect.objectContaining({ isPreview: true }),
+      }),
+    );
+  });
+
+  it("clears both cookies when preview data is tampered on a preview-capable page", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute("/", makePageModule({ getServerSideProps: async () => ({ props: {} }) })),
+        ],
+      }),
+    );
+    const cookie = makePreviewCookieHeader({ draft: true }).replace(
+      /(__next_preview_data=)([^;])([^;]*)/,
+      (_match, prefix: string, first: string, rest: string) =>
+        `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+    );
+
+    const response = await handler(
+      new Request("http://localhost/", { headers: { cookie } }),
+      "/",
+      null,
+      null,
+      null,
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
+    ]);
+  });
+
+  it("preserves unrelated response cookies while clearing tampered preview cookies", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async ({
+                res,
+              }: {
+                res: { setHeader(name: string, value: string | string[]): void };
+              }) => {
+                res.setHeader("Set-Cookie", [
+                  "user-session=active; Path=/; HttpOnly",
+                  "__prerender_bypass=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=/draft",
+                ]);
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+    const cookie = makePreviewCookieHeader({ draft: true }).replace(
+      /(__next_preview_data=)([^;])([^;]*)/,
+      (_match, prefix: string, first: string, rest: string) =>
+        `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+    );
+
+    const response = await handler(
+      new Request("http://localhost/", { headers: { cookie } }),
+      "/",
+      null,
+      null,
+      null,
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([
+      "user-session=active; Path=/; HttpOnly",
+      "__prerender_bypass=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=/draft",
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
+    ]);
+  });
+
+  it("clears tampered preview cookies once when notFound renders the 404 page", async () => {
+    const pageRoute = makeRoute("/missing", {
+      ...makePageModule(),
+      getStaticProps: async () => ({ notFound: true }),
+    });
+    const notFoundRoute = makeRoute("/404");
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [pageRoute, notFoundRoute],
+        matchRoute: (url, routes) => {
+          const pathname = url.split("?")[0];
+          const route = routes.find((candidate) => candidate.pattern === pathname);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+    const cookie = makePreviewCookieHeader({ draft: true }).replace(
+      /(__next_preview_data=)([^;])([^;]*)/,
+      (_match, prefix: string, first: string, rest: string) =>
+        `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+    );
+
+    const response = await handler(
+      new Request("http://localhost/missing", { headers: { cookie } }),
+      "/missing",
+      null,
+      null,
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
+    ]);
+  });
+
+  it("does not expose preview notFound responses to shared CDN caching", async () => {
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    );
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+    const request = new Request("http://localhost/missing", {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+    const middlewareHeaders = new Headers({
+      "CDN-Cache-Control": "s-maxage=6000",
+      "Cloudflare-CDN-Cache-Control": "s-maxage=6000",
+      "Cache-Tag": "draft-404",
+    });
+
+    const response = await handler(request, "/missing", null, middlewareHeaders, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-tag")).toBeNull();
+  });
+
+  it("keeps nonce-bearing source notFound HTML out of shared caches", async () => {
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    );
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+    const request = new Request("http://localhost/missing", {
+      headers: { "content-security-policy": "script-src 'nonce-test-nonce'" },
+    });
+
+    const response = await handler(request, "/missing", null, null, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cache-control")).not.toContain("s-maxage");
   });
 });
 
@@ -422,6 +869,37 @@ describe("createPagesPageHandler — SSR context", () => {
     expect(setSSRContext).toHaveBeenCalled();
     const ctx = setSSRContext.mock.calls[0][0] as Record<string, unknown>;
     expect(ctx.pathname).toBe("/about");
+  });
+
+  it("strips the active locale prefix from the initial asPath", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    const setSSRContext = vi.fn();
+    const routes = [makeRoute("/about")];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: routes,
+        i18nConfig: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+        },
+        setSSRContext,
+        matchRoute: (url, routeList) => {
+          const route = routeList.find((item) => item.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+
+    await handler(makeRequest("/en/about?hello=world"), "/en/about?hello=world", null, null, {
+      asPath: "/en/about?hello=world",
+    });
+
+    const ctx = setSSRContext.mock.calls.find((call) => call[0] !== null)?.[0] as
+      | { asPath?: string }
+      | undefined;
+    expect(ctx?.asPath).toBe("/about?hello=world");
   });
 });
 

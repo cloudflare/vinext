@@ -47,6 +47,8 @@ const {
   setCurrentFetchCacheMode,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
+  setRefreshStaleFetchesInForeground,
+  runWithFetchDedupe,
   getOriginalFetch,
   _resetPendingRefetches,
   consumeDynamicFetchObservations,
@@ -782,7 +784,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     // Invalidate via tag
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Should re-fetch after tag invalidation
@@ -805,7 +807,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Invalidate only "posts"
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Posts should re-fetch
@@ -822,6 +824,69 @@ describe("fetch cache shim", () => {
     const userData = await userRes.json();
     expect(userData.count).toBe(2); // Still the cached version
     expect(fetchMock).toHaveBeenCalledTimes(3); // Only posts re-fetched
+  });
+
+  it("bypasses a stored tagged fetch while its request-local invalidation is pending", async () => {
+    const previousHandler = getCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+
+    let getCalls = 0;
+    setCacheHandler({
+      async get() {
+        getCalls++;
+        if (getCalls === 1) return null;
+        return {
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ count: 1 }),
+              url: "https://api.example.com/pending-tag",
+            },
+            tags: ["posts"],
+            revalidate: 60,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+      },
+    });
+
+    try {
+      await runWithRequestContext(createRequestContext(), () =>
+        runWithFetchDedupe(async () => {
+          const initialResponse = await fetch("https://api.example.com/pending-tag", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await initialResponse.json()).count).toBe(1);
+
+          expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
+          await invalidationStarted;
+
+          // The current call deliberately omits `next.tags`: the stored entry's
+          // tags must reject it and bypass the pre-invalidation request dedupe.
+          const response = await fetch("https://api.example.com/pending-tag", {
+            next: { revalidate: 60 },
+          });
+          expect((await response.json()).count).toBe(2);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        }),
+      );
+    } finally {
+      releaseInvalidation();
+      setCacheHandler(previousHandler);
+    }
   });
 
   // ── TTL expiry (stale-while-revalidate) ─────────────────────────────
@@ -851,6 +916,107 @@ describe("fetch cache shim", () => {
     // Wait for background refetch
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fetchMock).toHaveBeenCalledTimes(2); // Original + background refetch
+  });
+
+  it("refreshes stale fetch entries when foreground fetch refresh is enabled", async () => {
+    const res1 = await fetch("https://api.example.com/foreground-stale", {
+      next: { revalidate: 1 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-stale", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
+    const res1 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
+      next: { revalidate: 60 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.lastModified = Date.now() - 2_000;
+      entry.revalidateAt = Date.now() + 58_000;
+    }
+    startNewFetchCacheScope();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes in the background when a shorter current revalidate makes a fetch stale", async () => {
+    const res1 = await fetch("https://api.example.com/background-shorter-revalidate", {
+      next: { revalidate: 60 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.lastModified = Date.now() - 2_000;
+      entry.revalidateAt = Date.now() + 58_000;
+    }
+    startNewFetchCacheScope();
+
+    const res2 = await fetch("https://api.example.com/background-shorter-revalidate", {
+      next: { revalidate: 1 },
+    });
+    expect((await res2.json()).count).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not clone the upstream response body for stale background revalidation", async () => {
+    const res1 = await fetch("https://api.example.com/background-no-returned-clone", {
+      next: { revalidate: 1 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    const cloneSpy = vi.spyOn(Response.prototype, "clone");
+    try {
+      const res2 = await fetch("https://api.example.com/background-no-returned-clone", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(cloneSpy).not.toHaveBeenCalled();
+    } finally {
+      cloneSpy.mockRestore();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("preserves Request bodies for stale background revalidation", async () => {
@@ -1404,7 +1570,7 @@ describe("fetch cache shim", () => {
     const data1 = await res1.json();
     expect(data1.count).toBe(1);
 
-    await revalidatePath("/posts/hello");
+    await Promise.resolve(revalidatePath("/posts/hello"));
     startNewFetchCacheScope();
     setCurrentFetchSoftTags(["_N_T_/posts/hello"]);
 

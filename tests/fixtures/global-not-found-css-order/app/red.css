@@ -1,0 +1,4 @@
+body {
+  --shared-red-css: shared-red;
+  background-color: red;
+}

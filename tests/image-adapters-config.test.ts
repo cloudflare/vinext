@@ -68,6 +68,9 @@ describe("generateImageAdaptersModule", () => {
     const code = generateImageAdaptersModule({
       optimizer: { adapter: "@vinext/cloudflare/images/images-optimizer" },
     });
+    expect(code).toContain(
+      "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
+    );
     expect(code).toContain("if (__vinextImageOptimizerRegistered) return;");
     expect(code).toContain("__vinextImageOptimizerRegistered = true;");
   });

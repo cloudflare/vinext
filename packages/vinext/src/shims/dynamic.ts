@@ -21,37 +21,41 @@
  */
 import React, { type ComponentType } from "react";
 import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
+import type {
+  DynamicOptions,
+  DynamicOptionsLoadingProps,
+  LoadableComponent,
+  LoadableFn,
+  LoadableGeneratedOptions,
+  LoadableOptions,
+  Loader,
+  LoaderComponent,
+  LoaderMap,
+} from "@vinext/types/next/upstream/dynamic";
 
-type DynamicLoadingProps = {
-  error?: Error | null;
-  isLoading?: boolean;
-  pastDelay?: boolean;
-  retry?: () => void;
-  timedOut?: boolean;
+export type {
+  DynamicOptions,
+  DynamicOptionsLoadingProps,
+  LoadableComponent,
+  LoadableFn,
+  LoadableGeneratedOptions,
+  LoadableOptions,
+  Loader,
+  LoaderComponent,
+  LoaderMap,
 };
 
-type ComponentModule<P> = { default: ComponentType<P> };
-type LoaderComponent<P> = Promise<ComponentModule<P> | ComponentType<P>>;
+type ComponentModule<P = {}> = { default: ComponentType<P> };
 type LoaderFn<P> = () => LoaderComponent<P>;
 
-type DynamicOptions<P> = {
-  loading?: ComponentType<DynamicLoadingProps>;
-  loader?: Loader<P>;
-  loadableGenerated?: {
-    modules?: readonly string[];
-  };
-  modules?: readonly string[];
-  ssr?: boolean;
-};
-
-type Loader<P> = LoaderFn<P> | LoaderComponent<P>;
 type DynamicInput<P> = DynamicOptions<P> | Loader<P>;
+type VinextLoadableModules = string[] | ((this: void) => LoaderMap);
 
 const noopRetry = () => {};
 
 function createDynamicLoadingProps(
-  overrides: Partial<DynamicLoadingProps> = {},
-): DynamicLoadingProps {
+  overrides: Partial<DynamicOptionsLoadingProps> = {},
+): DynamicOptionsLoadingProps {
   return {
     error: null,
     isLoading: true,
@@ -68,14 +72,14 @@ function hasDefaultExport<P>(
   return (typeof mod === "object" || typeof mod === "function") && mod !== null && "default" in mod;
 }
 
-function normalizeLoader<P extends object>(loader: Loader<P>): LoaderFn<P> {
+function normalizeLoader<P>(loader: Loader<P>): LoaderFn<P> {
   if (typeof loader === "function") {
     return loader;
   }
   return () => loader;
 }
 
-function normalizeDynamicOptions<P extends object>(
+function normalizeDynamicOptions<P>(
   dynamicInput: DynamicInput<P>,
   options?: DynamicOptions<P>,
 ): DynamicOptions<P> {
@@ -93,7 +97,7 @@ function normalizeDynamicOptions<P extends object>(
   };
 }
 
-function createLazyComponent<P extends object>(loader: LoaderFn<P>) {
+function createLazyComponent<P>(loader: LoaderFn<P>) {
   return React.lazy(async () => {
     const mod = await loader();
     if (hasDefaultExport(mod)) return mod;
@@ -101,7 +105,7 @@ function createLazyComponent<P extends object>(loader: LoaderFn<P>) {
   });
 }
 
-function useRetryableLazyComponent<P extends object>(
+function useRetryableLazyComponent<P>(
   loader: LoaderFn<P>,
   initialLazyComponent: ReturnType<typeof createLazyComponent<P>>,
 ) {
@@ -114,8 +118,12 @@ function useRetryableLazyComponent<P extends object>(
   return { LazyComponent, retry, retryKey };
 }
 
+function createElementWithProps<P>(Component: ComponentType<P>, props: P): React.ReactElement {
+  return React.createElement(Component as ComponentType<object>, props as object);
+}
+
 type DynamicErrorBoundaryProps = {
-  fallback: ComponentType<DynamicLoadingProps>;
+  fallback: ComponentType<DynamicOptionsLoadingProps>;
   retry: () => void;
   resetKey: number;
   children?: React.ReactNode;
@@ -193,19 +201,31 @@ export function flushPreloads(): Promise<void[]> {
   return Promise.all(pending);
 }
 
-function dynamic<P extends object = object>(
+function dynamic<P = {}>(
   dynamicInput: DynamicInput<P>,
   options?: DynamicOptions<P>,
 ): ComponentType<P> {
+  const normalizedOptions = normalizeDynamicOptions(dynamicInput, options);
   const {
     loader: dynamicLoader,
     loadableGenerated,
     loading: LoadingComponent,
-    modules,
     ssr = true,
-  } = normalizeDynamicOptions(dynamicInput, options);
+  } = normalizedOptions;
+  if (dynamicLoader && typeof dynamicLoader === "object" && !(dynamicLoader instanceof Promise)) {
+    throw new Error("next/dynamic loader maps are not supported by vinext");
+  }
   const loader = dynamicLoader ? normalizeLoader(dynamicLoader) : () => Promise.resolve(() => null);
-  const preloadModuleIds = loadableGenerated?.modules ?? modules;
+  // vinext's transform emits the already-resolved module id array, while
+  // Next's public type also permits the legacy modules() loader map.
+  const generatedModules = (
+    loadableGenerated as unknown as { modules?: VinextLoadableModules } | undefined
+  )?.modules;
+  const optionModules = (normalizedOptions as unknown as { modules?: VinextLoadableModules })
+    .modules;
+  const configuredModules = generatedModules ?? optionModules;
+  const preloadModuleIds =
+    typeof configuredModules === "function" ? Object.keys(configuredModules()) : configuredModules;
 
   // ssr: false — render nothing on the server, lazy-load on client
   if (!ssr) {
@@ -244,7 +264,7 @@ function dynamic<P extends object = object>(
       const fallback = LoadingComponent
         ? React.createElement(LoadingComponent, createDynamicLoadingProps({ retry }))
         : null;
-      const lazyElement = React.createElement(LazyComponent, props);
+      const lazyElement = createElementWithProps(LazyComponent, props);
       let content: React.ReactNode = lazyElement;
       if (LoadingComponent) {
         const ErrorBoundary = getDynamicErrorBoundary();
@@ -280,7 +300,7 @@ function dynamic<P extends object = object>(
           "default" in mod
             ? (mod as { default: ComponentType<P> }).default
             : (mod as ComponentType<P>);
-        return React.createElement(Component, props);
+        return createElementWithProps(Component, props);
       };
       AsyncServerDynamic.displayName = "DynamicAsyncServer";
       // Cast is safe: async components are natively supported by the RSC renderer,
@@ -296,7 +316,7 @@ function dynamic<P extends object = object>(
       const fallback = LoadingComponent
         ? React.createElement(LoadingComponent, createDynamicLoadingProps())
         : null;
-      const lazyElement = React.createElement(LazyServer, props);
+      const lazyElement = createElementWithProps(LazyServer, props);
       // Wrap with error boundary so loader rejections render the loading
       // component with the error instead of propagating uncaught.
       let content: React.ReactNode = lazyElement;
@@ -332,7 +352,7 @@ function dynamic<P extends object = object>(
     const fallback = LoadingComponent
       ? React.createElement(LoadingComponent, createDynamicLoadingProps({ retry }))
       : null;
-    const lazyElement = React.createElement(LazyComponent, props);
+    const lazyElement = createElementWithProps(LazyComponent, props);
     let content: React.ReactNode = lazyElement;
     if (LoadingComponent) {
       const ErrorBoundary = getDynamicErrorBoundary();
@@ -349,6 +369,31 @@ function dynamic<P extends object = object>(
 
   ClientDynamic.displayName = "DynamicClient";
   return ClientDynamic;
+}
+
+export function noSSR<P = {}>(
+  LoadableInitializer: LoadableFn<P>,
+  loadableOptions: DynamicOptions<P>,
+): React.ComponentType<P> {
+  // Match Next's legacy helper: prevent react-loadable metadata from
+  // preloading, and never invoke the initializer during server rendering.
+  delete loadableOptions.webpack;
+  delete loadableOptions.modules;
+
+  if (!isServer) {
+    return LoadableInitializer(loadableOptions);
+  }
+
+  const Loading = loadableOptions.loading!;
+  const NoSSR = () =>
+    React.createElement(Loading, {
+      error: null,
+      isLoading: true,
+      pastDelay: false,
+      timedOut: false,
+    });
+  NoSSR.displayName = "NoSSR";
+  return NoSSR;
 }
 
 export default dynamic;

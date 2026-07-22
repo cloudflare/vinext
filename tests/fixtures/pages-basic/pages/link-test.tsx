@@ -36,6 +36,17 @@ export default function LinkTestPage() {
           As Prop Dynamic Link
         </Link>
 
+        {/* object href with query-backed dynamic segments */}
+        <Link
+          href={{
+            pathname: "/link-dynamic/[a]/[b]/c",
+            query: { a: "a", b: "b", q: "q" },
+          }}
+          data-testid="link-object-dynamic"
+        >
+          Object Dynamic Link
+        </Link>
+
         {/* onClick with preventDefault */}
         <Link
           href="/about"

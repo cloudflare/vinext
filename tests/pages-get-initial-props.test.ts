@@ -78,7 +78,7 @@ describe("loadDevAppInitialProps", () => {
     expect(result).toEqual({
       kind: "render",
       pageProps: {},
-      renderProps: { appProp: "from-app", pageProps: undefined },
+      renderProps: { appProp: "from-app" },
     });
   });
 
@@ -125,7 +125,12 @@ describe("loadDevAppInitialProps", () => {
     expect(received).toMatchObject({
       Component: expect.any(Function),
       AppTree: expect.any(Function),
-      router: { pathname: "/posts/[slug]", query: { slug: "post" }, asPath: "/posts/post" },
+      router: {
+        route: "/posts/[slug]",
+        pathname: "/posts/[slug]",
+        query: { slug: "post" },
+        asPath: "/posts/post",
+      },
       ctx: {
         pathname: "/posts/[slug]",
         query: { slug: "post" },
@@ -134,6 +139,30 @@ describe("loadDevAppInitialProps", () => {
         locales: ["en", "fr"],
         defaultLocale: "en",
       },
+    });
+  });
+
+  // Next.js passes its ServerRouter to App.getInitialProps. Its `route` is the
+  // route pattern, not the concrete URL: packages/next/src/server/render.tsx.
+  it("provides the route pattern to App.getInitialProps router consumers", async () => {
+    const appComponent = Object.assign(
+      function App() {
+        return null;
+      },
+      {
+        getInitialProps({ router }: { router: { route: string } }) {
+          return {
+            pageProps: { routeTag: router.route.replaceAll("/", "_") },
+          };
+        },
+      },
+    );
+
+    const result = await loadDevAppInitialProps(createContext({ appComponent }));
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { routeTag: "_posts_[slug]" },
     });
   });
 });

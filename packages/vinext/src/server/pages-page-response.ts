@@ -3,7 +3,11 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  BROWSER_REVALIDATE_CACHE_CONTROL,
+  shouldUseNextDeployCacheControl,
+} from "./cache-control.js";
 import {
   buildMissIsrCacheControl,
   ISR_NEVER_CACHE_CONTROL,
@@ -23,37 +27,23 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { NEXTJS_CACHE_HEADER } from "./headers.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
 //
-// Mirrors Next.js's packages/next/src/shared/lib/router/utils/html-bots.ts
-// and is-bot.ts. These bots cannot parse streamed HTML correctly (they may
-// read metadata only from the initial <head> flush), so we buffer the full
-// response and emit it in a single chunk, identical to the Node.js path.
+// These bots cannot parse streamed HTML correctly (they may read metadata
+// only from the initial <head> flush), so we buffer the full response and emit
+// it in a single chunk, identical to the Node.js path.
 // ---------------------------------------------------------------------------
-
-/**
- * Crawlers that cannot handle streamed HTML: they read metadata only from
- * the first network chunk, so streaming would give them an incomplete <head>.
- * Pattern sourced from Next.js html-bots.ts (updated to match the canary).
- */
-const HTML_LIMITED_BOT_UA_RE =
-  /[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight/i;
-
-/**
- * Googlebot (the main search crawler) executes JavaScript via a headless
- * browser, so it too cannot safely handle mid-stream HTML mutations.
- * Matches "Googlebot" but NOT suffixed variants like "Googlebot-Image".
- */
-const HEADLESS_BROWSER_BOT_UA_RE = /Googlebot(?!-)|Googlebot$/i;
 
 /**
  * Returns true when the User-Agent belongs to a bot or crawler that cannot
  * reliably consume a streamed HTML response.
  */
 export function isPagesStreamingBot(userAgent: string): boolean {
-  return HEADLESS_BROWSER_BOT_UA_RE.test(userAgent) || HTML_LIMITED_BOT_UA_RE.test(userAgent);
+  return isBotUserAgent(userAgent);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,13 +97,20 @@ type PagesFontPreload = {
 /**
  * The `__NEXT_DATA__` fields beyond the always-present core that the Pages
  * renderer serializes: the `__vinext` block plus the readiness flags
- * (gssp/gsp/gip/appGip/autoExport/isExperimentalCompile) the client uses to
+ * (gssp/gsp/gip/appGip/autoExport/nextExport/isExperimentalCompile) the client uses to
  * recompute the initial `router.isReady`. Shared by every render path
  * (initial, ISR regeneration) so they emit identical readiness state.
  */
 export type PagesNextDataExtras = Pick<
   VinextNextData,
-  "__vinext" | "appGip" | "autoExport" | "gip" | "gsp" | "gssp" | "isExperimentalCompile"
+  | "__vinext"
+  | "appGip"
+  | "autoExport"
+  | "gip"
+  | "gsp"
+  | "gssp"
+  | "isExperimentalCompile"
+  | "nextExport"
 >;
 
 export type PagesI18nRenderContext = {
@@ -174,12 +171,17 @@ type RenderPagesPageResponseOptions = {
   documentReqRes?: PagesDocumentReqRes | null;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
+  /** Filesystem-route identity used for ISR persistence and cache tags. */
+  isrCachePathname?: string;
   expireSeconds?: number;
-  isrRevalidateSeconds: number | null;
+  isrRevalidateSeconds: number | false | null;
+  /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
+  isOnDemandRevalidate?: boolean;
+  isStaticPropsRoute?: boolean;
   isrSet: (
     key: string,
     data: CachedPagesValue,
-    revalidateSeconds: number,
+    revalidateSeconds: number | false,
     tags?: string[],
     expireSeconds?: number,
   ) => Promise<void>;
@@ -243,7 +245,9 @@ function buildPagesFontHeadHtml(
   }
 
   for (const preload of fontPreloads) {
-    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
+    // Font files are content-hashed immutable assets. Keep the preload URL
+    // byte-identical to the @font-face source so the browser consumes it.
+    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
   }
 
   if (fontStyles.length > 0) {
@@ -273,7 +277,10 @@ export function buildPagesNextDataScript(
   const nextDataPayload: Record<string, unknown> = {
     props: options.props ?? { pageProps: options.pageProps },
     page: options.routePattern,
-    query: options.params,
+    // Next.js fallback:true shells intentionally omit the matched route
+    // params. The live slug is published by the hydration query update after
+    // the fallback data request resolves.
+    query: options.isFallback === true ? {} : options.params,
     buildId: options.buildId,
     isFallback: options.isFallback === true,
   };
@@ -405,38 +412,38 @@ async function reportPagesIsrCacheWriteError(
   }
 }
 
-function schedulePagesIsrCacheWrite(options: {
+async function writePagesIsrCache(options: {
   cacheKey: string;
   expireSeconds?: number;
   pageData: Record<string, unknown>;
-  revalidateSeconds: number;
+  revalidateSeconds: number | false;
   routePattern: string;
   shellPrefix: string;
   shellSuffix: string;
   status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
-}): void {
-  const cacheWritePromise = readStreamAsText(options.stream)
-    .then((bodyHtml) =>
-      options.setCache(
-        options.cacheKey,
-        {
-          kind: "PAGES",
-          html: options.shellPrefix + bodyHtml + options.shellSuffix,
-          pageData: options.pageData,
-          headers: undefined,
-          status: options.status,
-        },
-        options.revalidateSeconds,
-        undefined,
-        options.expireSeconds,
-      ),
-    )
-    .catch((error: unknown) =>
-      reportPagesIsrCacheWriteError(error, options.cacheKey, options.routePattern),
-    );
+}): Promise<void> {
+  const bodyHtml = await readStreamAsText(options.stream);
+  await options.setCache(
+    options.cacheKey,
+    {
+      kind: "PAGES",
+      html: options.shellPrefix + bodyHtml + options.shellSuffix,
+      pageData: options.pageData,
+      headers: undefined,
+      status: options.status,
+    },
+    options.revalidateSeconds,
+    undefined,
+    options.expireSeconds,
+  );
+}
 
+function schedulePagesIsrCacheWrite(options: Parameters<typeof writePagesIsrCache>[0]): void {
+  const cacheWritePromise = writePagesIsrCache(options).catch((error: unknown) =>
+    reportPagesIsrCacheWriteError(error, options.cacheKey, options.routePattern),
+  );
   getRequestExecutionContext()?.waitUntil(cacheWritePromise);
 }
 
@@ -467,7 +474,7 @@ function applyGsspHeaders(
       headers.set(key, String(value));
     }
   }
-  headers.set("Content-Type", "text/html");
+  headers.set("Content-Type", "text/html; charset=utf-8");
   return statusCode ?? gsspRes.statusCode;
 }
 
@@ -600,7 +607,7 @@ export async function renderPagesPageResponse(
   const markerIndex = shellHtml.indexOf(bodyMarker);
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
-  const responseHeaders = new Headers({ "Content-Type": "text/html" });
+  const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
     options.gsspRes ?? options.documentReqRes?.res ?? null,
@@ -613,18 +620,21 @@ export async function renderPagesPageResponse(
     // later matches the cached __NEXT_DATA__ block via a bare <script> marker.
     !options.scriptNonce &&
     options.isrRevalidateSeconds !== null &&
-    options.isrRevalidateSeconds > 0
+    (options.isrRevalidateSeconds === false || options.isrRevalidateSeconds > 0)
   ) {
     const cacheBodyStreamPair = bodyStream.tee();
     responseBodyStream = cacheBodyStreamPair[0];
     const cacheBodyStream = cacheBodyStreamPair[1];
-    const isrPathname = options.routeUrl.split("?")[0];
+    const isrPathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", isrPathname);
 
-    schedulePagesIsrCacheWrite({
+    const cacheWriteOptions = {
       cacheKey,
       expireSeconds: options.expireSeconds,
-      pageData: options.pageProps,
+      // The Pages data route serializes the complete App props envelope, not
+      // the pageProps object by itself. Keeping the same shape in the ISR
+      // entry makes HTML-first and data-first cache population equivalent.
+      pageData: options.props ?? { pageProps: options.pageProps },
       revalidateSeconds: options.isrRevalidateSeconds,
       routePattern: options.routePattern,
       setCache: options.isrSet,
@@ -632,7 +642,15 @@ export async function renderPagesPageResponse(
       shellSuffix,
       status: finalStatus,
       stream: cacheBodyStream,
-    });
+    };
+    if (options.isOnDemandRevalidate) {
+      // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.
+      // Do the equivalent here so `await res.revalidate()` cannot resolve
+      // before the regenerated HTML is fully rendered and persisted.
+      await writePagesIsrCache(cacheWriteOptions);
+    } else {
+      schedulePagesIsrCacheWrite(cacheWriteOptions);
+    }
   }
 
   const compositeStream = await buildPagesCompositeStream(
@@ -652,17 +670,23 @@ export async function renderPagesPageResponse(
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
-  } else if (options.isrRevalidateSeconds) {
+  } else if (options.isrRevalidateSeconds !== null) {
     // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
     // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
     // which Pages Router invalidation uses) while the default emits Cache-Control.
-    const isrPathname = options.routeUrl.split("?")[0];
+    const isrPathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
     applyCdnResponseHeaders(responseHeaders, {
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
       tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
     });
-    setCacheStateHeaders(responseHeaders, "MISS");
+    if (options.isOnDemandRevalidate) {
+      responseHeaders.set(NEXTJS_CACHE_HEADER, "REVALIDATED");
+    } else {
+      setCacheStateHeaders(responseHeaders, "MISS");
+    }
+  } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {
+    responseHeaders.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
   } else if (options.gsspRes && !userSetCacheControl) {
     // Default for getServerSideProps responses, matching Next.js
     // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
