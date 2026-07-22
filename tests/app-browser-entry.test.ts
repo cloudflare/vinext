@@ -808,7 +808,7 @@ describe("app browser entry navigation scheduling", () => {
     ).toBe("/rewrite?_rsc=visible-digest");
   });
 
-  it("preserves the prefetch response URL for an exact settled match", () => {
+  it("preserves the prefetch response digest and canonicalizes same-origin URLs", () => {
     expect(
       resolvePrefetchNavigationResponseUrl({
         additionalRscUrls: ["/source?_rsc=source-digest"],
@@ -816,7 +816,18 @@ describe("app browser entry navigation scheduling", () => {
         responseUrl: "https://example.com/rewrite?_rsc=prefetch-digest",
         visibleRscUrl: "/rewrite?_rsc=visible-digest",
       }),
-    ).toBe("https://example.com/rewrite?_rsc=prefetch-digest");
+    ).toBe("/rewrite?_rsc=prefetch-digest");
+  });
+
+  it("preserves cross-origin prefetch response URLs for navigation validation", () => {
+    expect(
+      resolvePrefetchNavigationResponseUrl({
+        additionalRscUrls: [],
+        origin: "https://example.com",
+        responseUrl: "https://other.example/rewrite?_rsc=prefetch-digest",
+        visibleRscUrl: "/rewrite?_rsc=visible-digest",
+      }),
+    ).toBe("https://other.example/rewrite?_rsc=prefetch-digest");
   });
 
   it("hard-navigates RSC responses when the response compatibility ID is missing or stale", () => {

@@ -14,6 +14,19 @@ function normalizeBrowserRscUrlForReuse(
   }
 }
 
+function canonicalizeBrowserRscResponseUrl(responseUrl: string, origin: string): string {
+  try {
+    const parsed = new URL(responseUrl, origin);
+    if (parsed.origin === new URL(origin).origin) {
+      return `${parsed.pathname}${parsed.search}`;
+    }
+  } catch {
+    // Preserve the original value so the normal navigation response
+    // validation can decide whether it requires a hard navigation.
+  }
+  return responseUrl;
+}
+
 export function resolvePrefetchNavigationResponseUrl(options: {
   additionalRscUrls: readonly string[];
   origin: string;
@@ -27,5 +40,7 @@ export function resolvePrefetchNavigationResponseUrl(options: {
       (additionalRscUrl) =>
         normalizeBrowserRscUrlForReuse(additionalRscUrl, options.origin) === normalizedResponseUrl,
     );
-  return matchedAlternate ? options.visibleRscUrl : options.responseUrl;
+  return matchedAlternate
+    ? options.visibleRscUrl
+    : canonicalizeBrowserRscResponseUrl(options.responseUrl, options.origin);
 }
