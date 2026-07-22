@@ -339,7 +339,10 @@ const __loadSsrModuleInProduction = __memoizeModuleLoader(() =>
   import.meta.viteRsc.loadModule("ssr", "index"),
 );
 function __loadSsrModule() {
-  if (process.env.NODE_ENV !== "production") {
+  // Gate on the Vite serve/build mode rather than NODE_ENV: projects may
+  // define NODE_ENV as "production" while running vite dev, where the
+  // module runner must still re-import so HMR invalidations are picked up.
+  if (!import.meta.env.PROD) {
     return import.meta.viteRsc.loadModule("ssr", "index");
   }
   return __loadSsrModuleInProduction();

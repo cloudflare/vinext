@@ -770,7 +770,9 @@ function loadRscModule(): Promise<RscEntryModule> {
   // RSC entry (which bundles user code) are picked up. In production the
   // target module is immutable, so memoize to avoid a dynamic import() on
   // every request (each one round-trips through registered ESM loader hooks).
-  if (process.env.NODE_ENV !== "production") {
+  // Gated on the Vite serve/build mode rather than NODE_ENV, which projects
+  // may define as "production" while still running the dev server.
+  if (!import.meta.env.PROD) {
     return import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index");
   }
   return loadRscModuleInProduction();
