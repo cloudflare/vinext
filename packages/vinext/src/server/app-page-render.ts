@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
-import type { NavigationContext } from "vinext/shims/navigation";
+import type {
+  NavigationContext,
+  StaticGenerationNavigationDecision,
+} from "vinext/shims/navigation";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
@@ -12,6 +15,7 @@ import {
 } from "./app-page-cache-finalizer.js";
 import {
   buildAppPageFontLinkHeader,
+  observeAppPageBinaryStreamCompletion,
   readAppPageBinaryStream,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
@@ -621,6 +625,43 @@ function wrapRscResponseForDevErrorReporting(
   });
 }
 
+export function shouldUseStaticGenerationNavigationSemantics(
+  observation: AppPageRenderObservationState | undefined,
+  dynamicUsageDetected = false,
+): boolean {
+  return (
+    !dynamicUsageDetected &&
+    (observation === undefined ||
+      (observation.dynamicFetches.length === 0 && observation.requestApis.length === 0))
+  );
+}
+
+function createStaticGenerationNavigationDecision(
+  result: Promise<boolean>,
+): StaticGenerationNavigationDecision {
+  let settledValue: boolean | undefined;
+  const settled = result.then(
+    (value) => {
+      settledValue = value;
+    },
+    () => {
+      settledValue = false;
+    },
+  );
+
+  return {
+    peek() {
+      return settledValue;
+    },
+    read() {
+      if (settledValue === undefined) {
+        throw settled;
+      }
+      return settledValue;
+    },
+  };
+}
+
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
@@ -759,7 +800,7 @@ export async function renderAppPageLifecycle(
   const shouldCaptureRscForCacheMetadata =
     options.isProgressiveActionRender !== true &&
     (options.isProduction || options.isPrerender === true) &&
-    (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
+    (revalidateSeconds === null || revalidateSeconds > 0) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCacheForSkipTransport;
@@ -781,6 +822,8 @@ export async function renderAppPageLifecycle(
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
   const rscForResponse = rscCapture.ssrStream;
+  let rscSideStream = rscCapture.sideStream;
+  let staticGenerationNavigationDecision: StaticGenerationNavigationDecision | undefined;
 
   // When the fused tee (#981) is active, the sideStream carries both the embed
   // transform AND the raw RSC byte accumulation. For RSC requests, we consume
@@ -788,8 +831,24 @@ export async function renderAppPageLifecycle(
   // transform from it and fills capturedRscDataRef. The ref object is threaded
   // through so .value is read lazily after handleSsr completes.
   const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
-  if (rscCapture.sideStream && options.isRscRequest) {
-    capturedRscDataRef.value = readAppPageBinaryStream(rscCapture.sideStream);
+  if (rscSideStream && options.isRscRequest) {
+    capturedRscDataRef.value = readAppPageBinaryStream(rscSideStream);
+  } else if (
+    rscSideStream &&
+    options.isProduction &&
+    options.isPrerender !== true &&
+    shouldCaptureRscForCacheMetadata
+  ) {
+    const observedSideStream = observeAppPageBinaryStreamCompletion(rscSideStream);
+    const observationResult = observedSideStream.completion.then(() =>
+      shouldUseStaticGenerationNavigationSemantics(
+        options.peekRenderObservationState?.(),
+        options.peekDynamicUsage?.() ?? peekDynamicUsage(),
+      ),
+    );
+    staticGenerationNavigationDecision =
+      createStaticGenerationNavigationDecision(observationResult);
+    rscSideStream = observedSideStream.stream;
   }
 
   if (options.isRscRequest) {
@@ -977,8 +1036,17 @@ export async function renderAppPageLifecycle(
         formState: options.formState ?? null,
         rscStream: rscForResponse,
         scriptNonce: options.scriptNonce,
-        sideStream: rscCapture.sideStream,
+        sideStream: rscSideStream,
         ssrHandler,
+        isStaticGeneration: shouldCaptureRscForCacheMetadata
+          ? options.isPrerender === true
+            ? true
+            : (staticGenerationNavigationDecision ??
+              shouldUseStaticGenerationNavigationSemantics(
+                options.peekRenderObservationState?.(),
+                options.peekDynamicUsage?.() ?? peekDynamicUsage(),
+              ))
+          : false,
         fallbackToErrorDocumentOnShellError:
           options.isPrerender === true && options.isSpeculativePrerender === true
             ? false

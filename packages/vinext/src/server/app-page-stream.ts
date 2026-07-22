@@ -1,6 +1,9 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { ReactFormState } from "react-dom/client";
-import type { NavigationContext } from "vinext/shims/navigation";
+import type {
+  NavigationContext,
+  StaticGenerationNavigationDecision,
+} from "vinext/shims/navigation";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
@@ -183,6 +186,8 @@ type RenderAppPageHtmlStreamOptions = {
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
+  /** When true, client navigation hooks use static-generation semantics. */
+  isStaticGeneration?: boolean | StaticGenerationNavigationDecision;
   /** Override the default shell-error recovery decision passed to handleSsr. */
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
@@ -263,9 +268,13 @@ export async function renderAppPageHtmlStream(
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
   };
 
+  const navigationContext =
+    options.navigationContext === null || options.isStaticGeneration === false
+      ? options.navigationContext
+      : { ...options.navigationContext, isStaticGeneration: options.isStaticGeneration };
   const rawResult = await options.ssrHandler.handleSsr(
     options.rscStream,
-    options.navigationContext,
+    navigationContext,
     options.fontData,
     ssrOptions,
   );

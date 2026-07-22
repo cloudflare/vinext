@@ -3,6 +3,7 @@ import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import {
   createNavigationRuntimeRscMetadataScript,
+  createNavigationRuntimeRscSearchParamsDecisionScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
   fixPreloadAs,
@@ -19,7 +20,38 @@ it("serializes dynamic stale time into the hydration bootstrap", () => {
   ).toContain("dynamicStaleTimeSeconds:30");
 });
 
+it("coordinates pending search-param metadata with browser hydration", () => {
+  const metadata = createNavigationRuntimeRscMetadataScript(
+    {},
+    {
+      pathname: "/search",
+      searchParams: [["value", "rewritten"]],
+      searchParamsDecisionPending: true,
+    },
+  );
+  expect(metadata).toContain("searchParamsDecision??=new Promise");
+  expect(metadata).toContain('"searchParamsDecisionPending":true');
+
+  const resolution = createNavigationRuntimeRscSearchParamsDecisionScript(false);
+  expect(resolution).toContain("delete b.nav.searchParamsDecisionPending");
+  expect(resolution).toContain("delete b.nav.useLocationSearchParams");
+  expect(resolution).toContain("b.resolveSearchParamsDecision?.()");
+});
+
 describe("App SSR stream helpers", () => {
+  it("marks static bailout hydration metadata to read search params from location", () => {
+    expect(
+      createNavigationRuntimeRscMetadataScript(
+        {},
+        {
+          pathname: "/search",
+          searchParams: [],
+          useLocationSearchParams: true,
+        },
+      ),
+    ).toContain('"useLocationSearchParams":true');
+  });
+
   describe("fixPreloadAs", () => {
     it('replaces as="stylesheet" with as="style" for preload links', () => {
       expect(
@@ -466,6 +498,56 @@ describe("createTickBufferedTransform pre-head splice", () => {
     // it's a small, bounded number rather than per-chunk.
     expect(calls).toBeGreaterThanOrEqual(1);
     expect(calls).toBeLessThan(10);
+  });
+});
+
+describe("createTickBufferedTransform final insertion", () => {
+  it("emits async final metadata before the RSC done script", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const rsc = {
+      flush: () => "",
+      finalize: async () => '<script data-rsc-done="1"></script>',
+      getRawBuffer: async () => new ArrayBuffer(0),
+    };
+    const source = createTextStream([
+      "<!DOCTYPE html><html><head></head><body><p>fallback</p></body></html>",
+    ]);
+    const reader = source
+      .pipeThrough(
+        createTickBufferedTransform(rsc, "", "", undefined, "", "", undefined, async () => {
+          await pending;
+          return '<script data-decision="1"></script>';
+        }),
+      )
+      .getReader();
+
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    const firstHtml = new TextDecoder().decode(first.value);
+    expect(firstHtml).toContain("<p>fallback</p>");
+
+    const outputPromise = (async (): Promise<string> => {
+      let output = "";
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) return output;
+        output += new TextDecoder().decode(chunk.value);
+      }
+    })();
+
+    let settled = false;
+    void outputPromise.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    release();
+    const output = firstHtml + (await outputPromise);
+    expect(output.indexOf('data-decision="1"')).toBeLessThan(output.indexOf('data-rsc-done="1"'));
   });
 });
 

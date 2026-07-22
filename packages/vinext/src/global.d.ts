@@ -259,7 +259,13 @@ declare global {
    * preserve duplicate keys (e.g. `?tag=a&tag=b`).
    */
   // oxlint-disable-next-line no-var
-  var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
+  var __VINEXT_RSC_NAV__:
+    | {
+        pathname: string;
+        searchParams: [string, string][];
+        useLocationSearchParams?: boolean;
+      }
+    | undefined;
 
   /**
    * Maps emitted CSS asset hrefs to file contents when next.config enables

@@ -5,7 +5,18 @@ import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state
 export type NavigationRuntimeSnapshot = {
   pathname: string;
   searchParams: [string, string][];
+  searchParamsDecisionPending?: boolean;
+  useLocationSearchParams?: boolean;
 };
+
+export function resolveNavigationRuntimeSearchParams(
+  snapshot: NavigationRuntimeSnapshot,
+  locationSearch: string,
+): URLSearchParams {
+  return new URLSearchParams(
+    snapshot.useLocationSearchParams === true ? locationSearch : snapshot.searchParams,
+  );
+}
 
 export type NavigationRuntimeRscChunk = string | [3, string];
 
@@ -15,7 +26,9 @@ export type NavigationRuntimeRscBootstrap = {
   initialCacheKind?: "dynamic" | "static";
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
+  resolveSearchParamsDecision?: () => void;
   rsc: NavigationRuntimeRscChunk[];
+  searchParamsDecision?: Promise<void>;
 };
 
 type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
@@ -131,8 +144,13 @@ function isNavigationRuntimeSnapshot(value: unknown): value is NavigationRuntime
   if (!isUnknownRecord(value)) return false;
   const pathname = Reflect.get(value, "pathname");
   const searchParams = Reflect.get(value, "searchParams");
+  const searchParamsDecisionPending = Reflect.get(value, "searchParamsDecisionPending");
+  const useLocationSearchParams = Reflect.get(value, "useLocationSearchParams");
   return (
     typeof pathname === "string" &&
+    (searchParamsDecisionPending === undefined ||
+      typeof searchParamsDecisionPending === "boolean") &&
+    (useLocationSearchParams === undefined || typeof useLocationSearchParams === "boolean") &&
     Array.isArray(searchParams) &&
     searchParams.every(
       (entry): entry is [string, string] =>
@@ -160,7 +178,9 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   const initialCacheKind = Reflect.get(value, "initialCacheKind");
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
+  const resolveSearchParamsDecision = Reflect.get(value, "resolveSearchParamsDecision");
   const rsc = Reflect.get(value, "rsc");
+  const searchParamsDecision = Reflect.get(value, "searchParamsDecision");
   // getNavigationRuntime() runs at bootstrap/read boundaries, not per chunk.
   // Keep full validation here so malformed ambient state is rejected before
   // hydration consumes it instead of caching a stale validation result.
@@ -175,6 +195,11 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
       initialCacheKind === "static") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
+    (resolveSearchParamsDecision === undefined ||
+      typeof resolveSearchParamsDecision === "function") &&
+    (searchParamsDecision === undefined ||
+      (isUnknownRecord(searchParamsDecision) &&
+        typeof Reflect.get(searchParamsDecision, "then") === "function")) &&
     Array.isArray(rsc) &&
     rsc.every(isNavigationRuntimeRscChunk)
   );

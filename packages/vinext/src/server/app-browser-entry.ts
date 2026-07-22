@@ -59,6 +59,7 @@ import {
   getNavigationRuntime,
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
+  resolveNavigationRuntimeSearchParams,
   type NavigationRuntimeNavigate,
   type NavigationRuntimeVisibleCommitMode,
   type NavigationRuntimeRscBootstrap,
@@ -190,7 +191,6 @@ import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-cap
 
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
-type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
 
 type ServerActionResult = AppBrowserServerActionResult<AppWireElements>;
@@ -1224,13 +1224,16 @@ function BrowserRoot({
 }
 
 function restoreHydrationNavigationContext(
-  pathname: string,
-  searchParams: SearchParamInput,
+  snapshot: {
+    pathname: string;
+    searchParams: [string, string][];
+    useLocationSearchParams?: boolean;
+  },
   params: Record<string, string | string[]>,
 ): void {
   setNavigationContext({
-    pathname,
-    searchParams: new URLSearchParams(searchParams),
+    pathname: snapshot.pathname,
+    searchParams: resolveNavigationRuntimeSearchParams(snapshot, window.location.search),
     params,
   });
 }
@@ -1350,6 +1353,9 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
     clearHardNavigationLoopGuard();
 
     if (runtimeRsc) {
+      if (runtimeRsc.nav?.searchParamsDecisionPending) {
+        await runtimeRsc.searchParamsDecision;
+      }
       applyRuntimeRscBootstrap(runtimeRsc);
       if (runtimeRsc.done) {
         registerNavigationRuntimeBootstrap({ rsc: undefined });
@@ -1365,11 +1371,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
       applyClientParams(vinext.__VINEXT_RSC_PARAMS__);
     }
     if (vinext.__VINEXT_RSC_NAV__) {
-      restoreHydrationNavigationContext(
-        vinext.__VINEXT_RSC_NAV__.pathname,
-        vinext.__VINEXT_RSC_NAV__.searchParams,
-        params,
-      );
+      restoreHydrationNavigationContext(vinext.__VINEXT_RSC_NAV__, params);
     }
 
     return createProgressiveRscStream();
@@ -1419,7 +1421,14 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
     }
   }
 
-  restoreHydrationNavigationContext(window.location.pathname, window.location.search, params);
+  restoreHydrationNavigationContext(
+    {
+      pathname: window.location.pathname,
+      searchParams: [...new URLSearchParams(window.location.search).entries()],
+      useLocationSearchParams: true,
+    },
+    params,
+  );
 
   return rscResponse.body;
 }
@@ -1430,7 +1439,7 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
     applyClientParams(rsc.params);
   }
   if (rsc.nav) {
-    restoreHydrationNavigationContext(rsc.nav.pathname, rsc.nav.searchParams, params);
+    restoreHydrationNavigationContext(rsc.nav, params);
   }
 }
 

@@ -645,6 +645,88 @@ export async function readAppPageBinaryStream(
   return buffer.buffer;
 }
 
+export async function drainAppPageBinaryStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done } = await reader.read();
+      if (done) {
+        return;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Observe EOF without adding an eager reader. The returned stream pulls exactly
+ * once from the source for each downstream pull, so completion can drive
+ * render-finalization decisions without defeating tee backpressure.
+ */
+export function observeAppPageBinaryStreamCompletion(stream: ReadableStream<Uint8Array>): {
+  completion: Promise<void>;
+  stream: ReadableStream<Uint8Array>;
+} {
+  const reader = stream.getReader();
+  let resolveCompletion!: () => void;
+  let rejectCompletion!: (reason?: unknown) => void;
+  let cancellationRequested = false;
+  let settled = false;
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+
+  const complete = (): void => {
+    if (settled) return;
+    settled = true;
+    reader.releaseLock();
+    resolveCompletion();
+  };
+  const fail = (error: unknown): void => {
+    if (settled) return;
+    settled = true;
+    reader.releaseLock();
+    rejectCompletion(error);
+  };
+
+  return {
+    completion,
+    stream: new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          try {
+            const result = await reader.read();
+            if (result.done) {
+              if (cancellationRequested) return;
+              complete();
+              controller.close();
+              return;
+            }
+            controller.enqueue(result.value);
+          } catch (error) {
+            fail(error);
+            controller.error(error);
+          }
+        },
+        async cancel(reason) {
+          cancellationRequested = true;
+          const cancellationError = reason ?? new Error("App page binary stream was cancelled");
+          try {
+            await reader.cancel(reason);
+            fail(cancellationError);
+          } catch (error) {
+            fail(error);
+            throw error;
+          }
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+  };
+}
+
 export async function bufferAppPageBinaryStream(
   stream: ReadableStream<Uint8Array>,
 ): Promise<ReadableStream<Uint8Array>> {

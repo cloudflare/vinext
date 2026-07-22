@@ -3,6 +3,8 @@ import {
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
+  drainAppPageBinaryStream,
+  observeAppPageBinaryStreamCompletion,
   probeAppPageComponent,
   probeAppPageLayouts,
   resolveAppPageSpecialError,
@@ -295,6 +297,92 @@ describe("app page execution helpers", () => {
     expect(pullCount).toBe(3);
     await expect(readStreamAsText(replay)).resolves.toBe("firstsecond");
     expect(pullCount).toBe(3);
+  });
+
+  it("drains a binary stream to EOF without producing a retained copy", async () => {
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount < 3) {
+          controller.enqueue(new Uint8Array(1024));
+        } else {
+          controller.close();
+        }
+      },
+    });
+
+    await expect(drainAppPageBinaryStream(source)).resolves.toBeUndefined();
+    expect(pullCount).toBe(3);
+  });
+
+  it("observes completion without reading ahead of the downstream consumer", async () => {
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pullCount += 1;
+          if (pullCount <= 2) {
+            controller.enqueue(new TextEncoder().encode(`chunk-${pullCount}`));
+          } else {
+            controller.close();
+          }
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const observed = observeAppPageBinaryStreamCompletion(source);
+    const reader = observed.stream.getReader();
+
+    await Promise.resolve();
+    expect(pullCount).toBe(0);
+
+    await expect(reader.read()).resolves.toEqual({
+      done: false,
+      value: new TextEncoder().encode("chunk-1"),
+    });
+    await Promise.resolve();
+    expect(pullCount).toBe(1);
+
+    await expect(reader.read()).resolves.toEqual({
+      done: false,
+      value: new TextEncoder().encode("chunk-2"),
+    });
+    await Promise.resolve();
+    expect(pullCount).toBe(2);
+
+    let completionSettled = false;
+    void observed.completion.then(() => {
+      completionSettled = true;
+    });
+    await Promise.resolve();
+    expect(completionSettled).toBe(false);
+
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    await expect(observed.completion).resolves.toBeUndefined();
+    expect(pullCount).toBe(3);
+  });
+
+  it("rejects completion when cancellation races a pending source read", async () => {
+    const sourceCancel = vi.fn();
+    const source = new ReadableStream<Uint8Array>({
+      pull() {
+        // Leave the downstream read pending until cancellation resolves it.
+      },
+      cancel: sourceCancel,
+    });
+    const observed = observeAppPageBinaryStreamCompletion(source);
+    const reader = observed.stream.getReader();
+    const pendingRead = reader.read();
+    const cancellation = new Error("client disconnected");
+    const completionResult = observed.completion.catch((error) => error);
+
+    await Promise.resolve();
+    await reader.cancel(cancellation);
+
+    await expect(pendingRead).resolves.toEqual({ done: true, value: undefined });
+    await expect(completionResult).resolves.toBe(cancellation);
+    expect(sourceCancel).toHaveBeenCalledWith(cancellation);
   });
 
   it("appends pending cookies (cookies().set during render) to redirect responses", async () => {

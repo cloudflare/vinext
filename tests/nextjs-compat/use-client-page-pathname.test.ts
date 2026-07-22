@@ -26,8 +26,7 @@ let _server: ViteDevServer;
 let _baseUrl: string;
 
 const ROUTE = "/use-client-page-pathname";
-const RSC_BOOTSTRAP_PREFIX =
-  'Object.assign(((self[Symbol.for("vinext.navigationRuntime")]??={bootstrap:{routeManifest:null},functions:{}}).bootstrap.rsc??={rsc:[]}),{params:';
+const RSC_BOOTSTRAP_PREFIX = "(b=>Object.assign(b,{params:";
 
 function extractRscBootstrap(html: string): {
   nav: { pathname: string; searchParams: [string, string][] };
@@ -38,7 +37,7 @@ function extractRscBootstrap(html: string): {
   const paramsStart = start + RSC_BOOTSTRAP_PREFIX.length;
   const navSeparator = html.indexOf(",nav:", paramsStart);
   expect(navSeparator, "navigation runtime nav payload not found").toBeGreaterThan(-1);
-  const end = html.indexOf("})</script>", navSeparator);
+  const end = html.indexOf("}))(", navSeparator);
   expect(end, "navigation runtime RSC bootstrap script was not closed").toBeGreaterThan(-1);
   return {
     params: JSON.parse(html.slice(paramsStart, navSeparator)),

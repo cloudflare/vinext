@@ -59,6 +59,7 @@ import {
   type HybridClientOwner,
 } from "./internal/hybrid-client-route-owner-direct.js";
 import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
+import { BailoutToCSRError } from "./navigation-errors.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -72,6 +73,7 @@ import {
   getBfcacheSegmentIdContext,
   getLayoutSegmentContext,
   getNavigationContext,
+  readStaticGenerationNavigationContext,
   registerServerInsertedHTMLCallback,
   type NavigationContext,
 } from "./navigation-context-state.js";
@@ -109,6 +111,7 @@ function resolveHybridClientRouteOwner(href: string): HybridClientOwner | null {
 export {
   type NavigationContext,
   type NavigationStateAccessors,
+  type StaticGenerationNavigationDecision,
   type SegmentMap,
   GLOBAL_ACCESSORS_KEY,
   ServerInsertedHTMLContext,
@@ -119,6 +122,8 @@ export {
   getBfcacheSegmentIdContext,
   getLayoutSegmentContext,
   getNavigationContext,
+  isStaticGenerationNavigationContext,
+  readStaticGenerationNavigationContext,
   renderServerInsertedHTML,
   setNavigationContext,
 } from "./navigation-context-state.js";
@@ -1678,6 +1683,14 @@ export function usePathname(): string {
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
+    const navigationContext = getNavigationContext();
+    if (navigationContext && readStaticGenerationNavigationContext(navigationContext)) {
+      if (navigationContext.isForceStatic === true) {
+        return getServerSearchParamsSnapshot();
+      }
+      navigationContext.didSearchParamsBailout = true;
+      throw new BailoutToCSRError("useSearchParams()");
+    }
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerSearchParamsSnapshot also covers the Pages Router compat shim.
     return getServerSearchParamsSnapshot();

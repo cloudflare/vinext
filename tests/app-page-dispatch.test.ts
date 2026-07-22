@@ -6,6 +6,8 @@ import {
   AppElementsWire,
 } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { drainAppPageBinaryStream } from "../packages/vinext/src/server/app-page-execution.js";
+import { shouldUseStaticGenerationNavigationSemantics } from "../packages/vinext/src/server/app-page-render.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import type { AppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
@@ -37,6 +39,11 @@ import { after, connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import {
+  isStaticGenerationNavigationContext,
+  readStaticGenerationNavigationContext,
+  type NavigationContext,
+} from "../packages/vinext/src/shims/navigation.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { appPagePprRuntime } from "../packages/vinext/src/server/app-page-ppr-runtime.js";
 import {
@@ -1601,6 +1608,167 @@ describe("app page dispatch", () => {
     }
   });
 
+  it("caches the nearest search params Suspense fallback on an ordinary production miss", async () => {
+    let currentNavigationContext: NavigationContext | null = null;
+    let capturedNavigationContext: NavigationContext | null = null;
+    let capturedWaitForAllReady: boolean | undefined;
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      getNavigationContext: () => currentNavigationContext,
+      isProduction: true,
+      isrGet: vi.fn(async () => null),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, navigationContext, _fontData, captureOptions) {
+          capturedNavigationContext = navigationContext;
+          capturedWaitForAllReady = captureOptions?.waitForAllReady;
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fallback-flight").buffer,
+            );
+          }
+          if (captureOptions?.sideStream) {
+            await drainAppPageBinaryStream(captureOptions.sideStream);
+          }
+          try {
+            readStaticGenerationNavigationContext(navigationContext);
+          } catch (pendingDecision) {
+            await pendingDecision;
+          }
+          return createStream([
+            navigationContext?.isStaticGeneration !== false &&
+            navigationContext?.isForceStatic !== true
+              ? "<html>nearest search params fallback</html>"
+              : "<html>search params content</html>",
+          ]);
+        },
+      }),
+      revalidateSeconds: 60,
+      renderToReadableStream() {
+        return createStream(["flight"]);
+      },
+      setNavigationContext(context) {
+        currentNavigationContext = context;
+      },
+    });
+
+    const response = await runWithExecutionContext(executionContext, () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("<html>nearest search params fallback</html>");
+    await Promise.all(waitUntilPromises);
+    expect(capturedWaitForAllReady).toBe(false);
+    expect(capturedNavigationContext).toEqual(
+      expect.objectContaining({
+        pathname: "/posts/hello",
+        searchParams: new URLSearchParams(),
+        params: { slug: "hello" },
+        isForceStatic: false,
+      }),
+    );
+    expect(isStaticGenerationNavigationContext(capturedNavigationContext)).toBe(true);
+    expect(isrSet).toHaveBeenCalledWith(
+      "html:/posts/hello",
+      expect.objectContaining({
+        html: "<html>nearest search params fallback</html>",
+        kind: "APP_PAGE",
+      }),
+      60,
+      expect.any(Array),
+      undefined,
+    );
+  });
+
+  it("classifies navigation bailout semantics from observed request APIs", () => {
+    expect(
+      shouldUseStaticGenerationNavigationSemantics({
+        dynamicFetches: [],
+        requestApis: ["searchParams"],
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseStaticGenerationNavigationSemantics({
+        dynamicFetches: [],
+        requestApis: ["headers"],
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseStaticGenerationNavigationSemantics({
+        dynamicFetches: ["https://example.test/dynamic"],
+        requestApis: [],
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseStaticGenerationNavigationSemantics(
+        {
+          dynamicFetches: [],
+          requestApis: [],
+        },
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it("finalizes RSC observations before deciding search params bailout semantics", async () => {
+    let currentNavigationContext: NavigationContext | null = null;
+    let capturedNavigationContext: NavigationContext | null = null;
+    const { options } = createDispatchOptions({
+      getNavigationContext: () => currentNavigationContext,
+      isProduction: true,
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, navigationContext, _fontData, captureOptions) {
+          capturedNavigationContext = navigationContext;
+          expect(navigationContext?.isStaticGeneration).toEqual(
+            expect.objectContaining({ peek: expect.any(Function), read: expect.any(Function) }),
+          );
+          const sideConsumption = captureOptions?.sideStream
+            ? drainAppPageBinaryStream(captureOptions.sideStream)
+            : Promise.resolve();
+          try {
+            readStaticGenerationNavigationContext(navigationContext);
+          } catch (pendingDecision) {
+            await pendingDecision;
+            readStaticGenerationNavigationContext(navigationContext);
+          }
+          await sideConsumption;
+          return createStream(["<html>dynamic content</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+      renderToReadableStream() {
+        let emitted = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (emitted) {
+              controller.close();
+              return;
+            }
+            emitted = true;
+            markRenderRequestApiUsage("headers");
+            controller.enqueue(new TextEncoder().encode("flight"));
+          },
+        });
+      },
+      setNavigationContext(context) {
+        currentNavigationContext = context;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("<html>dynamic content</html>");
+    expect(isStaticGenerationNavigationContext(capturedNavigationContext)).toBe(false);
+  });
+
   it("does not write query-invariant cache entries when loading-boundary render awaits searchParams", async () => {
     async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
       const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
@@ -2673,6 +2841,7 @@ describe("app page dispatch", () => {
     };
     let capturedWaitForAllReady: boolean | undefined;
     let capturedFallbackToErrorDocument: boolean | undefined;
+    let capturedNavigationContext: NavigationContext | null = null;
     let capturedServeStreamingMetadata: boolean | undefined;
     let afterRan = false;
     const isrSet = vi.fn(async () => {});
@@ -2692,7 +2861,8 @@ describe("app page dispatch", () => {
       isrSet,
       hasCustomGlobalError: false,
       loadSsrHandler: async () => ({
-        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+        async handleSsr(_rscStream, navigationContext, _fontData, captureOptions) {
+          capturedNavigationContext = navigationContext;
           capturedWaitForAllReady = captureOptions?.waitForAllReady;
           capturedFallbackToErrorDocument = captureOptions?.fallbackToErrorDocumentOnShellError;
           if (captureOptions?.capturedRscDataRef) {
@@ -2724,6 +2894,12 @@ describe("app page dispatch", () => {
     await scheduledRender();
 
     expect(capturedWaitForAllReady).toBe(true);
+    expect(capturedNavigationContext).toEqual({
+      pathname: "/posts/hello",
+      searchParams: new URLSearchParams(),
+      params: { slug: "hello" },
+      isStaticGeneration: true,
+    });
     expect(capturedServeStreamingMetadata).toBe(false);
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
@@ -2836,6 +3012,65 @@ describe("app page dispatch", () => {
       ).toEqual(["observed", "observed"]);
     },
   );
+
+  it("preserves force-static navigation context during stale cache regeneration", async () => {
+    const route = createRoute({ pattern: "/static", routeSegments: ["static"] });
+    let scheduledRender: unknown = null;
+    let capturedNavigationContext: NavigationContext | null = null;
+    let currentNavigationContext: NavigationContext | null = null;
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => React.createElement("main", null, "fresh"),
+      cleanPathname: "/static",
+      dynamicConfig: "force-static",
+      getNavigationContext: () => currentNavigationContext,
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, navigationContext, _fontData, captureOptions) {
+          capturedNavigationContext = navigationContext;
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream() {
+        return createStream(["flight"]);
+      },
+      revalidateSeconds: 60,
+      route,
+      params: {},
+      request: new Request("https://example.test/static"),
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+      setNavigationContext(context) {
+        currentNavigationContext = context;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    expect(capturedNavigationContext).toEqual({
+      pathname: "/static",
+      searchParams: new URLSearchParams(),
+      params: {},
+      isForceStatic: true,
+      isStaticGeneration: true,
+    });
+  });
 
   it("preserves stale HTML when SSR shell rendering fails during regeneration", async () => {
     const route = createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] });

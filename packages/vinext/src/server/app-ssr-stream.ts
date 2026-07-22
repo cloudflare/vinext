@@ -20,6 +20,7 @@ type RscEmbedTransform = {
 };
 
 type HtmlInsertion = string | (() => string);
+type AsyncHtmlInsertion = () => string | Promise<string>;
 type InlineCssManifest = Record<string, string>;
 export type InitialNavigationCacheMetadata = {
   kind: "dynamic" | "static";
@@ -47,20 +48,45 @@ export function navigationRuntimeRscBootstrapExpression(): string {
 
 export function createNavigationRuntimeRscMetadataScript(
   params: Record<string, string | string[]>,
-  nav: { pathname: string; searchParams: [string, string][] },
+  nav: {
+    pathname: string;
+    searchParams: [string, string][];
+    searchParamsDecisionPending?: boolean;
+    useLocationSearchParams?: boolean;
+  },
   dynamicStaleTimeSeconds?: number,
 ): string {
-  return (
-    "Object.assign(" +
-    navigationRuntimeRscBootstrapExpression() +
-    ",{params:" +
+  const bootstrap = navigationRuntimeRscBootstrapExpression();
+  const assignment =
+    "Object.assign(b,{params:" +
     safeJsonStringify(params) +
     ",nav:" +
     safeJsonStringify(nav) +
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +
-    "})"
+    "})";
+  if (nav.searchParamsDecisionPending !== true) {
+    return `(b=>${assignment})(${bootstrap})`;
+  }
+  return (
+    `(b=>{${assignment};` +
+    "b.searchParamsDecision??=new Promise(resolve=>{b.resolveSearchParamsDecision=resolve})" +
+    `})(${bootstrap})`
+  );
+}
+
+export function createNavigationRuntimeRscSearchParamsDecisionScript(
+  useLocationSearchParams: boolean,
+): string {
+  const bootstrap = navigationRuntimeRscBootstrapExpression();
+  return (
+    "(b=>{if(b.nav){delete b.nav.searchParamsDecisionPending;" +
+    (useLocationSearchParams
+      ? "b.nav.useLocationSearchParams=true"
+      : "delete b.nav.useLocationSearchParams") +
+    "}b.resolveSearchParamsDecision?.();delete b.resolveSearchParamsDecision" +
+    `})(${bootstrap})`
   );
 }
 
@@ -433,6 +459,9 @@ const DOCUMENT_CLOSE_SUFFIX = "</body></html>";
  *    happen before resource hints to be useful, so the safer behaviour is
  *    to no-op and let the user-rendered Script (in its source-order
  *    position) ship as-is.
+ *  - `finalizeHTML` runs after the RSC embed stream reaches EOF and before its
+ *    final scripts are emitted. Earlier HTML batches remain independently
+ *    readable while this insertion is pending.
  */
 export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
@@ -442,6 +471,7 @@ export function createTickBufferedTransform(
   inlineCssPrependCss = "",
   inlineCssPrependFallbackHTML = "",
   inlineCssScriptNonce?: string,
+  finalizeHTML?: AsyncHtmlInsertion,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -621,6 +651,10 @@ export function createTickBufferedTransform(
       }
 
       const finalScripts = await rscEmbed.finalize();
+      const finalInsertion = await finalizeHTML?.();
+      if (finalInsertion) {
+        controller.enqueue(encoder.encode(finalInsertion));
+      }
       if (finalScripts) {
         controller.enqueue(encoder.encode(finalScripts));
       }

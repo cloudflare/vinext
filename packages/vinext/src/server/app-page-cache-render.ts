@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
-import type { NavigationContext } from "vinext/shims/navigation";
+import type {
+  NavigationContext,
+  StaticGenerationNavigationDecision,
+} from "vinext/shims/navigation";
 import type { RootParams } from "vinext/shims/root-params";
 import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import type { CacheControlMetadata } from "vinext/shims/cache-handler";
@@ -51,6 +54,7 @@ export type RenderAppPageCacheArtifactsOptions = {
   ) => ReadableStream<Uint8Array>;
   rootParams?: RootParams;
   route: AppPageCacheRoute;
+  isStaticGeneration: boolean | StaticGenerationNavigationDecision;
   waitForAllReady?: boolean;
 };
 
@@ -80,9 +84,12 @@ export async function renderAppPageCacheArtifacts(
   const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
   const fontPreloads = options.getFontPreloads();
   const ssrHandler = await options.loadSsrHandler();
+  const navigationContext = options.getNavigationContext();
   const htmlResult = await ssrHandler.handleSsr(
     rscCapture.ssrStream,
-    options.getNavigationContext(),
+    navigationContext === null || options.isStaticGeneration === false
+      ? navigationContext
+      : { ...navigationContext, isStaticGeneration: options.isStaticGeneration },
     {
       links: options.getFontLinks(),
       styles: options.getFontStyles(),

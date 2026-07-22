@@ -93,6 +93,34 @@ describe("app page stream helpers", () => {
     );
   });
 
+  it("marks the SSR navigation context as static from the explicit generation signal", async () => {
+    const ssrHandler = vi.fn(async () => createStream(["<html>static</html>"]));
+
+    const { htmlStream } = await renderAppPageHtmlStream({
+      fontData: createAppPageFontData({
+        getLinks: () => [],
+        getPreloads: () => [],
+        getStyles: () => [],
+      }),
+      navigationContext: {
+        pathname: "/static",
+        searchParams: new URLSearchParams(),
+        params: {},
+      },
+      rscStream: createStream(["flight"]),
+      isStaticGeneration: true,
+      ssrHandler: { handleSsr: ssrHandler },
+    });
+
+    await expect(new Response(htmlStream).text()).resolves.toBe("<html>static</html>");
+    expect(ssrHandler).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ isStaticGeneration: true }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it("forwards the PPR fallback-shell abort signal to the SSR handler", async () => {
     const abortController = new AbortController();
     const ssrHandler = vi.fn(async () => createStream(["<html>fallback-shell</html>"]));

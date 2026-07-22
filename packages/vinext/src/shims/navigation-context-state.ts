@@ -19,7 +19,25 @@ export type NavigationContext = {
   pathname: string;
   searchParams: URLSearchParams;
   params: Record<string, string | string[]>;
+  isStaticGeneration?: boolean | StaticGenerationNavigationDecision;
+  isForceStatic?: boolean;
+  didSearchParamsBailout?: boolean;
 };
+
+export type StaticGenerationNavigationDecision = {
+  peek(): boolean | undefined;
+  read(): boolean;
+};
+
+export function isStaticGenerationNavigationContext(context: NavigationContext | null): boolean {
+  const value = context?.isStaticGeneration;
+  return typeof value === "object" ? value.peek() === true : value === true;
+}
+
+export function readStaticGenerationNavigationContext(context: NavigationContext | null): boolean {
+  const value = context?.isStaticGeneration;
+  return typeof value === "object" ? value.read() : value === true;
+}
 
 type NavigationContextsGlobal = typeof globalThis & {
   [LAYOUT_SEGMENT_CONTEXT_KEY]?: React.Context<SegmentMap> | null;

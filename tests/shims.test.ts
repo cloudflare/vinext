@@ -23203,6 +23203,53 @@ describe("next/navigation enhancements", () => {
     }
   });
 
+  it("useSearchParams bails out to the nearest Suspense boundary during static generation", async () => {
+    const { getNavigationContext, isBailoutToCSRError, setNavigationContext, useSearchParams } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    setNavigationContext({
+      pathname: "/static",
+      searchParams: new URLSearchParams(),
+      params: {},
+      isStaticGeneration: true,
+    });
+
+    try {
+      expect(() => useSearchParams()).toThrowError(
+        expect.objectContaining({
+          message: "Bail out to client-side rendering: useSearchParams()",
+        }),
+      );
+      try {
+        useSearchParams();
+      } catch (error) {
+        expect(isBailoutToCSRError(error)).toBe(true);
+      }
+      expect(getNavigationContext()?.didSearchParamsBailout).toBe(true);
+    } finally {
+      setNavigationContext(null);
+    }
+  });
+
+  it("useSearchParams returns empty params during force-static generation", async () => {
+    const { setNavigationContext, useSearchParams } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    setNavigationContext({
+      pathname: "/force-static",
+      searchParams: new URLSearchParams(),
+      params: {},
+      isStaticGeneration: true,
+      isForceStatic: true,
+    });
+
+    try {
+      expect(useSearchParams().toString()).toBe("");
+    } finally {
+      setNavigationContext(null);
+    }
+  });
+
   it("useSearchParams reuses the same readonly wrapper for the same server context", async () => {
     const { setNavigationContext, useSearchParams } =
       await import("../packages/vinext/src/shims/navigation.js");
