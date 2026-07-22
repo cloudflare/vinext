@@ -95,6 +95,7 @@ function createCommonOptions() {
       buildId: "build-123",
       clearSsrContext,
       createPageElement,
+      disableOptimizedLoading: false,
       DocumentComponent: function TestDocument() {
         return null;
       },
@@ -382,38 +383,64 @@ describe("pages page response", () => {
 
   // Ported from Next.js: test/e2e/app-document/rendering.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-document/rendering.test.ts
-  it("keeps Head and NextScript crossOrigin ownership separate", async () => {
-    const common = createCommonOptions();
-    common.renderDocumentToString.mockResolvedValue(
-      '<!DOCTYPE html><html><head data-vinext-head-nonce="test-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="test-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
-    );
+  it.each([
+    {
+      label: "Head when optimized loading is enabled",
+      disableOptimizedLoading: false,
+      frameworkNonce: "head-nonce",
+      frameworkCrossOrigin: "use-credentials",
+    },
+    {
+      label: "NextScript when optimized loading is disabled",
+      disableOptimizedLoading: true,
+      frameworkNonce: "next-script-nonce",
+      frameworkCrossOrigin: "anonymous",
+    },
+  ])(
+    "keeps framework script ownership with $label",
+    async ({ disableOptimizedLoading, frameworkNonce, frameworkCrossOrigin }) => {
+      const common = createCommonOptions();
+      common.renderDocumentToString.mockResolvedValue(
+        '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+      );
 
-    const response = await renderPagesPageResponse({
-      ...common.options,
-      assetTags:
-        '<link rel="modulepreload" href="/entry.js" />\n' +
-        '<script type="module" src="/entry.js"></script>',
-      crossOrigin: "anonymous",
-    });
+      const response = await renderPagesPageResponse({
+        ...common.options,
+        assetTags:
+          '<link rel="modulepreload" href="/entry.js" />\n' +
+          '<script type="module" src="/entry.js"></script>',
+        crossOrigin: "anonymous",
+        disableOptimizedLoading,
+      });
 
-    const html = await response.text();
-    expect(html).not.toContain("data-vinext-head-nonce");
-    expect(html).not.toContain("data-vinext-script-nonce");
-    for (const tag of getStartTags(html, "script")) {
-      expect(tag).toContain('nonce="test-nonce"');
-      expect(tag).toContain('crossorigin="anonymous"');
-    }
-    const scriptPreloads = getStartTags(html, "link").filter(
-      (tag) => tag.includes('rel="modulepreload"') || tag.includes('as="script"'),
-    );
-    for (const tag of scriptPreloads) {
-      expect(tag).toContain('nonce="test-nonce"');
-      expect(tag).toContain('crossorigin="use-credentials"');
-    }
-    const fontPreload = getStartTags(html, "link").find((tag) => tag.includes('as="font"'));
-    expect(fontPreload).toContain('crossorigin="anonymous"');
-    expect(fontPreload).not.toContain("nonce=");
-  });
+      const html = await response.text();
+      expect(html).not.toContain("data-vinext-head-nonce");
+      expect(html).not.toContain("data-vinext-script-nonce");
+
+      const frameworkScript = getStartTags(html, "script").find((tag) =>
+        tag.includes('src="/entry.js"'),
+      );
+      expect(frameworkScript).toContain(`nonce="${frameworkNonce}"`);
+      expect(frameworkScript).toContain(`crossorigin="${frameworkCrossOrigin}"`);
+
+      const nextDataScript = getStartTags(html, "script").find((tag) =>
+        tag.includes('id="__NEXT_DATA__"'),
+      );
+      expect(nextDataScript).toContain('nonce="next-script-nonce"');
+      expect(nextDataScript).toContain('crossorigin="anonymous"');
+
+      const scriptPreloads = getStartTags(html, "link").filter(
+        (tag) => tag.includes('rel="modulepreload"') || tag.includes('as="script"'),
+      );
+      for (const tag of scriptPreloads) {
+        expect(tag).toContain('nonce="head-nonce"');
+        expect(tag).toContain('crossorigin="use-credentials"');
+      }
+      const fontPreload = getStartTags(html, "link").find((tag) => tag.includes('as="font"'));
+      expect(fontPreload).toContain('crossorigin="anonymous"');
+      expect(fontPreload).not.toContain("nonce=");
+    },
+  );
 
   it("does not apply configured crossOrigin to user next/head assets", async () => {
     const common = createCommonOptions();

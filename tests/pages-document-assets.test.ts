@@ -35,23 +35,48 @@ function assertDocumentAssetProps(html: string, requirePreloads: boolean): void 
   expect(html).not.toContain("data-vinext-script-nonce");
   expect(html).not.toContain("data-vinext-document-authored-asset");
 
-  const scripts = getStartTags(html, "script").filter((tag) => tag.includes('nonce="test-nonce"'));
+  const scripts = getStartTags(html, "script");
   const preloads = getStartTags(html, "link").filter(
     (tag) =>
       (tag.includes('rel="preload"') || tag.includes('rel="modulepreload"')) &&
-      !tag.includes('id="user-preload"'),
+      !tag.includes('id="user-preload"') &&
+      !tag.includes('as="font"'),
   );
-  expect(scripts.length).toBeGreaterThan(0);
   if (requirePreloads) expect(preloads.length).toBeGreaterThan(0);
 
-  for (const tag of scripts) {
-    expect(tag).toContain('nonce="test-nonce"');
+  for (const tag of preloads) {
+    expect(tag).toContain('nonce="head-nonce"');
     expect(tag).toContain('crossorigin="use-credentials"');
   }
-  for (const tag of preloads) {
-    expect(tag).toContain('nonce="test-nonce"');
-    expect(tag).toContain('crossorigin="anonymous"');
+
+  const nextDataScript = scripts.find((tag) => tag.includes('id="__NEXT_DATA__"'));
+  expect(nextDataScript).toContain('nonce="next-script-nonce"');
+  expect(nextDataScript).toContain('crossorigin="anonymous"');
+
+  const viteClientScript = scripts.find((tag) => tag.includes('src="/@vite/client"'));
+  if (viteClientScript) {
+    const generatedScripts = scripts.filter((tag) => !tag.includes('id="user-script"'));
+    for (const tag of generatedScripts) {
+      expect(tag).toContain('nonce="next-script-nonce"');
+      expect(tag).toContain('crossorigin="anonymous"');
+    }
+  } else {
+    const frameworkScripts = scripts.filter(
+      (tag) =>
+        tag.includes("src=") &&
+        !tag.includes('id="user-script"') &&
+        !tag.includes('id="__NEXT_DATA__"'),
+    );
+    expect(frameworkScripts.length).toBeGreaterThan(0);
+    for (const tag of frameworkScripts) {
+      expect(tag).toContain('nonce="head-nonce"');
+      expect(tag).toContain('crossorigin="use-credentials"');
+    }
   }
+
+  const fontPreload = getStartTags(html, "link").find((tag) => tag.includes('as="font"'));
+  expect(fontPreload).toContain('crossorigin="anonymous"');
+  expect(fontPreload).not.toContain("nonce=");
 
   const userScript = getStartTags(html, "script").find((tag) => tag.includes('id="user-script"'));
   expect(userScript).toContain('nonce="user-nonce"');
@@ -87,16 +112,23 @@ describe("Pages _document script and preload props", () => {
     );
     await fsp.writeFile(
       path.join(root, "pages", "index.tsx"),
-      "export default function Page() { return <main>ok</main>; }\n",
+      `import localFont from "next/font/local";
+const font = localFont({ src: "./local.woff2" });
+export default function Page() { return <main className={font.className}>ok</main>; }
+`,
+    );
+    await fsp.copyFile(
+      path.resolve(import.meta.dirname, "fixtures/font-google-pages/pages/local.woff2"),
+      path.join(root, "pages", "local.woff2"),
     );
     await fsp.writeFile(
       path.join(root, "pages", "_document.tsx"),
       `import { Html, Head, Main, NextScript } from "next/document";
 export default function Document() {
-  return <Html><Head nonce="test-nonce" crossOrigin="anonymous">
+  return <Html><Head nonce="head-nonce" crossOrigin="use-credentials">
     <script id="user-script" src="/user.js" nonce="user-nonce" crossOrigin="use-credentials" />
     <link id="user-preload" rel="preload" href="/user.js" as="script" nonce="user-preload-nonce" crossOrigin="use-credentials" />
-  </Head><body><Main /><NextScript nonce="test-nonce" crossOrigin="use-credentials" /></body></Html>;
+  </Head><body><Main /><NextScript nonce="next-script-nonce" crossOrigin="anonymous" /></body></Html>;
 }
 `,
     );
@@ -156,8 +188,8 @@ export default function Document() {
     );
     expect(viteScripts.length).toBeGreaterThan(0);
     for (const tag of viteScripts) {
-      expect(tag).toContain('nonce="test-nonce"');
-      expect(tag).toContain('crossorigin="use-credentials"');
+      expect(tag).toContain('nonce="next-script-nonce"');
+      expect(tag).toContain('crossorigin="anonymous"');
     }
   });
 

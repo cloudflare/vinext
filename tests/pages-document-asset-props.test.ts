@@ -2,8 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
-  markDocumentAuthoredAssetTags,
-  stripDocumentAuthoredAssetMarkers,
+  markDocumentAssetPropsProtectedTags,
+  stripDocumentAssetPropsProtectionMarkers,
 } from "../packages/vinext/src/server/pages-document-asset-props.js";
 
 describe("Pages Document asset props", () => {
@@ -42,7 +42,7 @@ describe("Pages Document asset props", () => {
       ' data-vinext-script-nonce="text-value"' +
       "</div>";
     const markerAttribute = "data-vinext-document-authored-test-token";
-    const marked = markDocumentAuthoredAssetTags(source, markerAttribute);
+    const marked = markDocumentAssetPropsProtectedTags(source, markerAttribute);
     const applied = applyDocumentAssetProps(
       marked,
       {
@@ -51,10 +51,29 @@ describe("Pages Document asset props", () => {
         scriptNonce: "framework-script-nonce",
         scriptCrossOrigin: "use-credentials",
       },
-      undefined,
-      markerAttribute,
+      { protectedAssetMarker: markerAttribute },
     );
 
-    expect(stripDocumentAuthoredAssetMarkers(applied, markerAttribute)).toBe(source);
+    expect(stripDocumentAssetPropsProtectionMarkers(applied, markerAttribute)).toBe(source);
+  });
+
+  it("uses Head props for framework scripts emitted by Head", () => {
+    const source =
+      '<link rel="modulepreload" href="/entry.js" />' +
+      '<script type="module" src="/entry.js"></script>';
+    const applied = applyDocumentAssetProps(
+      source,
+      {
+        headNonce: "head-nonce",
+        headCrossOrigin: "use-credentials",
+        scriptNonce: "next-script-nonce",
+        scriptCrossOrigin: "anonymous",
+      },
+      { scriptOwner: "head" },
+    );
+
+    expect(applied).toContain('nonce="head-nonce"');
+    expect(applied).toContain('crossorigin="use-credentials"');
+    expect(applied).not.toContain("next-script-nonce");
   });
 });

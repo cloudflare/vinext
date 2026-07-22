@@ -32,8 +32,8 @@ import {
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
-  markDocumentAuthoredAssetTags,
-  stripDocumentAuthoredAssetMarkers,
+  markDocumentAssetPropsProtectedTags,
+  stripDocumentAssetPropsProtectionMarkers,
   type DocumentAssetProps,
 } from "./pages-document-asset-props.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
@@ -503,8 +503,20 @@ async function streamPageToResponse(
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
   let documentAssetProps: DocumentAssetProps = {};
-  const documentAuthoredAssetMarker = `data-vinext-document-authored-${randomUUID()}`;
-
+  const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
+  const protectAssetTags = (html: string): string =>
+    markDocumentAssetPropsProtectedTags(html, protectedAssetMarker);
+  const applyGeneratedAssetProps = (
+    html: string,
+    props: DocumentAssetProps,
+    scriptOwner: "head" | "next-script",
+  ): string =>
+    protectAssetTags(
+      applyDocumentAssetProps(html, props, {
+        configuredCrossOrigin: crossOrigin,
+        scriptOwner,
+      }),
+    );
   if (DocumentComponent) {
     // When the renderPage path already invoked getInitialProps, reuse its
     // resolved props instead of calling it a second time.
@@ -518,12 +530,16 @@ async function streamPageToResponse(
       : React.createElement(DocumentComponent);
     const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
     documentAssetProps = renderedDocument.props;
-    let docHtml = markDocumentAuthoredAssetTags(renderedDocument.html, documentAuthoredAssetMarker);
-    const generatedScripts = applyDocumentAssetProps(scripts, renderedDocument.props, crossOrigin);
-    const generatedAssetHeadHTML = applyDocumentAssetProps(
+    let docHtml = protectAssetTags(renderedDocument.html);
+    const generatedScripts = applyGeneratedAssetProps(
+      scripts,
+      renderedDocument.props,
+      "next-script",
+    );
+    const generatedAssetHeadHTML = applyGeneratedAssetProps(
       assetHeadHTML,
       renderedDocument.props,
-      crossOrigin,
+      "next-script",
     );
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
@@ -531,7 +547,7 @@ async function streamPageToResponse(
     if (headHTML || fontHeadHTML || generatedAssetHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `  ${fontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}\n  ${generatedAssetHeadHTML}\n</head>`,
+        `  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -544,16 +560,17 @@ async function streamPageToResponse(
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
     // canonical ordering. Don't duplicate them here.
-    const generatedAssetHeadHTML = applyDocumentAssetProps(assetHeadHTML, {}, crossOrigin);
+    const generatedScripts = applyGeneratedAssetProps(scripts, {}, "next-script");
+    const generatedAssetHeadHTML = applyGeneratedAssetProps(assetHeadHTML, {}, "next-script");
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${fontHeadHTML}${markDocumentAuthoredAssetTags(headHTML, documentAuthoredAssetMarker)}
+  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}
   ${generatedAssetHeadHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
-  ${scripts}
+  ${generatedScripts}
 </body>
 </html>`;
   }
@@ -561,14 +578,15 @@ async function streamPageToResponse(
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
   let transformedShell = await server.transformIndexHtml(url, shellTemplate);
-  transformedShell = stripDocumentAuthoredAssetMarkers(
-    applyDocumentAssetProps(
-      transformedShell,
-      documentAssetProps,
-      crossOrigin,
-      documentAuthoredAssetMarker,
-    ),
-    documentAuthoredAssetMarker,
+  transformedShell = stripDocumentAssetPropsProtectionMarkers(
+    applyDocumentAssetProps(transformedShell, documentAssetProps, {
+      configuredCrossOrigin: crossOrigin,
+      protectedAssetMarker,
+      // Vite's dev client is the analogue of Next.js buildManifest.devFiles,
+      // which NextScript owns independently of optimized page scripts.
+      scriptOwner: "next-script",
+    }),
+    protectedAssetMarker,
   );
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
@@ -1654,7 +1672,6 @@ export function createSSRHandler(
           `window.__VINEXT_PAGE_PATTERNS__=${safeJsonStringify(pagePatterns)}`,
           scriptNonce,
         );
-
         const allScripts = `${nextDataScript}\n  ${pagePatternsScript}\n  ${hydrationScript}`;
 
         // Build response headers: start with gSSP headers, then apply the
@@ -2056,7 +2073,6 @@ async function renderErrorPage(
         setPagePatternsFromNextData: true,
       });
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
-
       if (DocumentComponent) {
         await streamPageToResponse(res, element, {
           url,
@@ -2095,7 +2111,18 @@ async function renderErrorPage(
         });
       } else {
         const bodyHtml = await renderToStringAsync(element);
-        const documentAuthoredAssetMarker = `data-vinext-document-authored-${randomUUID()}`;
+        const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
+        const protectAssetTags = (assetHtml: string): string =>
+          markDocumentAssetPropsProtectedTags(assetHtml, protectedAssetMarker);
+        const protectedErrorScripts = protectAssetTags(
+          applyDocumentAssetProps(
+            errorScripts,
+            {},
+            {
+              configuredCrossOrigin: context.crossOrigin,
+            },
+          ),
+        );
         const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -2104,18 +2131,20 @@ async function renderErrorPage(
   ${assetHeadHTML}
 </head>
 <body>
-  <div id="__next">${markDocumentAuthoredAssetTags(bodyHtml, documentAuthoredAssetMarker)}</div>
-  ${errorScripts}
+  <div id="__next">${protectAssetTags(bodyHtml)}</div>
+  ${protectedErrorScripts}
 </body>
 </html>`;
-        const transformedHtml = stripDocumentAuthoredAssetMarkers(
+        const transformedHtml = stripDocumentAssetPropsProtectionMarkers(
           applyDocumentAssetProps(
             await server.transformIndexHtml(url, html),
             {},
-            context.crossOrigin,
-            documentAuthoredAssetMarker,
+            {
+              configuredCrossOrigin: context.crossOrigin,
+              protectedAssetMarker,
+            },
           ),
-          documentAuthoredAssetMarker,
+          protectedAssetMarker,
         );
         res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
         res.end(transformedHtml);

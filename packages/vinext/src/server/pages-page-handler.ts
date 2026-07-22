@@ -1061,6 +1061,7 @@ export function createPagesPageHandler(
           safeJsonStringify,
           scriptNonce,
           crossOrigin: vinextConfig.crossOrigin,
+          disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,

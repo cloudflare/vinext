@@ -209,6 +209,7 @@ type RenderPagesPageResponseOptions = {
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
   crossOrigin?: string;
+  disableOptimizedLoading: boolean;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
@@ -321,7 +322,7 @@ async function buildPagesShellHtml(
   nextDataScript: string,
   options: Pick<
     RenderPagesPageResponseOptions,
-    "assetTags" | "DocumentComponent" | "renderDocumentToString"
+    "assetTags" | "disableOptimizedLoading" | "DocumentComponent" | "renderDocumentToString"
   > & {
     ssrHeadHTML: string;
     /**
@@ -344,15 +345,16 @@ async function buildPagesShellHtml(
       await options.renderDocumentToString(docElement),
     );
     let html = renderedDocument.html;
-    const generatedAssetTags = applyDocumentAssetProps(
-      options.assetTags,
-      renderedDocument.props,
-      options.crossOrigin,
-    );
+    const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
+      configuredCrossOrigin: options.crossOrigin,
+      // Next.js emits optimized framework scripts from Head. When optimized
+      // loading is disabled, NextScript owns those same script tags instead.
+      scriptOwner: options.disableOptimizedLoading ? "next-script" : "head",
+    });
     const generatedNextDataScript = applyDocumentAssetProps(
       nextDataScript,
       renderedDocument.props,
-      options.crossOrigin,
+      { configuredCrossOrigin: options.crossOrigin },
     );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
     if (options.ssrHeadHTML || generatedAssetTags || fontHeadHTML) {
@@ -371,8 +373,20 @@ async function buildPagesShellHtml(
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
   // defaultHead seeds them with data-next-head=""), matching Next.js's
   // canonical ordering. Don't duplicate them here.
-  const generatedAssetTags = applyDocumentAssetProps(options.assetTags, {}, options.crossOrigin);
-  const generatedNextDataScript = applyDocumentAssetProps(nextDataScript, {}, options.crossOrigin);
+  const generatedAssetTags = applyDocumentAssetProps(
+    options.assetTags,
+    {},
+    {
+      configuredCrossOrigin: options.crossOrigin,
+    },
+  );
+  const generatedNextDataScript = applyDocumentAssetProps(
+    nextDataScript,
+    {},
+    {
+      configuredCrossOrigin: options.crossOrigin,
+    },
+  );
   return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
     `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
@@ -614,6 +628,7 @@ export async function renderPagesPageResponse(
   }
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
+    disableOptimizedLoading: options.disableOptimizedLoading,
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
     ssrHeadHTML,

@@ -7,6 +7,12 @@ export type DocumentAssetProps = {
   scriptCrossOrigin?: string;
 };
 
+type ApplyDocumentAssetPropsOptions = {
+  configuredCrossOrigin?: string;
+  protectedAssetMarker?: string;
+  scriptOwner?: "head" | "next-script";
+};
+
 const HEAD_NONCE_ATTR = "data-vinext-head-nonce";
 const HEAD_CROSS_ORIGIN_ATTR = "data-vinext-head-cross-origin";
 const SCRIPT_NONCE_ATTR = "data-vinext-script-nonce";
@@ -67,12 +73,11 @@ function hasAttribute(tag: string, name: string | undefined): boolean {
 }
 
 /**
- * Protect user-authored `_document` and `next/head` asset tags while Vite runs
- * its HTML transforms. Tags injected by Vite after this marker pass remain
- * unmarked, so the framework props can be applied to them without overwriting
- * explicit attributes on user tags.
+ * Protect asset tags whose attributes already have a more specific owner while
+ * Vite runs its HTML transforms. Tags injected by Vite after this marker pass
+ * remain unmarked, so Document/config props can still be applied to them.
  */
-export function markDocumentAuthoredAssetTags(html: string, markerAttribute: string): string {
+export function markDocumentAssetPropsProtectedTags(html: string, markerAttribute: string): string {
   return html
     .replace(/<script\b[^>]*>/gi, (tag) => addAttribute(tag, markerAttribute, ""))
     .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, (tag) =>
@@ -80,7 +85,10 @@ export function markDocumentAuthoredAssetTags(html: string, markerAttribute: str
     );
 }
 
-export function stripDocumentAuthoredAssetMarkers(html: string, markerAttribute: string): string {
+export function stripDocumentAssetPropsProtectionMarkers(
+  html: string,
+  markerAttribute: string,
+): string {
   const stripMarker = (tag: string) => removeAttributes(tag, [markerAttribute]);
   return html
     .replace(/<script\b[^>]*>/gi, stripMarker)
@@ -90,17 +98,19 @@ export function stripDocumentAuthoredAssetMarkers(html: string, markerAttribute:
 export function applyDocumentAssetProps(
   html: string,
   props: DocumentAssetProps,
-  configuredCrossOrigin?: string,
-  documentAuthoredAssetMarker?: string,
+  options: ApplyDocumentAssetPropsOptions = {},
 ): string {
-  const scriptNonce = props.scriptNonce;
+  const scriptOwner = options.scriptOwner ?? "next-script";
+  const scriptNonce = scriptOwner === "head" ? props.headNonce : props.scriptNonce;
   const preloadNonce = props.headNonce;
-  const scriptCrossOrigin = props.scriptCrossOrigin ?? configuredCrossOrigin;
-  const preloadCrossOrigin = props.headCrossOrigin ?? configuredCrossOrigin;
+  const scriptCrossOrigin =
+    (scriptOwner === "head" ? props.headCrossOrigin : props.scriptCrossOrigin) ??
+    options.configuredCrossOrigin;
+  const preloadCrossOrigin = props.headCrossOrigin ?? options.configuredCrossOrigin;
 
   return html
     .replace(/<script\b[^>]*>/gi, (tag) => {
-      if (hasAttribute(tag, documentAuthoredAssetMarker)) return tag;
+      if (hasAttribute(tag, options.protectedAssetMarker)) return tag;
       return addAttribute(
         addAttribute(tag, "nonce", scriptNonce, true),
         "crossorigin",
@@ -109,7 +119,7 @@ export function applyDocumentAssetProps(
       );
     })
     .replace(/<link\b[^>]*\brel="(?:preload|modulepreload)"[^>]*>/gi, (tag) => {
-      if (hasAttribute(tag, documentAuthoredAssetMarker)) return tag;
+      if (hasAttribute(tag, options.protectedAssetMarker)) return tag;
       return addAttribute(
         addAttribute(tag, "nonce", preloadNonce, true),
         "crossorigin",
