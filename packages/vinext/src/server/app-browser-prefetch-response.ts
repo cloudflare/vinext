@@ -14,6 +14,14 @@ function normalizeBrowserRscUrlForReuse(
   }
 }
 
+function isSameOriginBrowserRscUrl(url: string, origin: string): boolean {
+  try {
+    return new URL(url, origin).origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+
 function canonicalizeBrowserRscResponseUrl(responseUrl: string, origin: string): string {
   try {
     const parsed = new URL(responseUrl, origin);
@@ -36,6 +44,7 @@ export function resolvePrefetchNavigationResponseUrl(options: {
   const normalizedResponseUrl = normalizeBrowserRscUrlForReuse(options.responseUrl, options.origin);
   const matchedAlternate =
     normalizedResponseUrl !== null &&
+    isSameOriginBrowserRscUrl(options.responseUrl, options.origin) &&
     options.additionalRscUrls.some(
       (additionalRscUrl) =>
         normalizeBrowserRscUrlForReuse(additionalRscUrl, options.origin) === normalizedResponseUrl,

@@ -2288,8 +2288,8 @@ function bootstrapHydration(
               PREFETCH_CACHE_TTL,
               mountedSlotsHeader,
             );
-          } else if (committedState !== null) {
-            const state = committedState as AppRouterState;
+          } else {
+            const state = committedState;
             const committedElements = {
               ...state.elements,
               [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
@@ -2298,9 +2298,8 @@ function bootstrapHydration(
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
             } satisfies AppElements;
             // The committed router state is the post-merge tree, including named
-            // parallel-slot state. Skip-pruned wire payloads without a committed
-            // tree stay on the fallback path below and are not replayed as full
-            // visited responses.
+            // parallel-slot state. Rebuild a complete payload so skip-pruned wire
+            // responses remain replayable after their visible commit.
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
               rscUrl,
@@ -2310,15 +2309,6 @@ function bootstrapHydration(
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
               committedElements,
-            );
-          } else {
-            if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
-            seedPrefetchResponseSnapshot(
-              rscUrl,
-              snapshot,
-              interceptionContext,
-              mountedSlotsHeader,
-              DYNAMIC_NAVIGATION_CACHE_TTL,
             );
           }
         } catch {

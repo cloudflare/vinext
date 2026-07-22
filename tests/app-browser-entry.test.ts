@@ -822,7 +822,7 @@ describe("app browser entry navigation scheduling", () => {
   it("preserves cross-origin prefetch response URLs for navigation validation", () => {
     expect(
       resolvePrefetchNavigationResponseUrl({
-        additionalRscUrls: [],
+        additionalRscUrls: ["/rewrite?_rsc=source-digest"],
         origin: "https://example.com",
         responseUrl: "https://other.example/rewrite?_rsc=prefetch-digest",
         visibleRscUrl: "/rewrite?_rsc=visible-digest",
