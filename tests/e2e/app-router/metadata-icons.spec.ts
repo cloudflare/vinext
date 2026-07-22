@@ -219,6 +219,21 @@ test.describe("Next.js compat: streamed metadata icons", () => {
     expect(consoleErrors).toEqual([]);
   });
 
+  test("preserves descriptor order before client hydration", async ({ page }) => {
+    await page.route("**/*", async (route) => {
+      if (route.request().resourceType() === "script") {
+        await route.abort();
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/metadata-icons-stream/star", { waitUntil: "domcontentloaded" });
+
+    await expect(page.locator("body link[data-vinext-streamed-icon]")).toHaveCount(0);
+    await expect.poll(() => ownedIcons(page)).toEqual(starIcons);
+  });
+
   test("replaces all icon relations repeatedly and preserves manual links", async ({
     page,
     consoleErrors,

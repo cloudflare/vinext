@@ -663,7 +663,7 @@ function createStreamedIconKey(pathname: string, metadataHtml: string): string {
   return `${pathname}:${(hash >>> 0).toString(36)}`;
 }
 
-const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el));document.querySelectorAll('body link[data-vinext-streamed-icon]:not([rel="icon"]):not([rel="apple-touch-icon"])').forEach(el => document.head.appendChild(el))`;
+const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el));const a='data-vinext-streamed-icon',o=el=>{const m=el.getAttribute(a),i=m.lastIndexOf(':');return Number(m.slice(i+1))};[...document.querySelectorAll('link['+a+']')].sort((l,r)=>o(l)-o(r)).forEach(el=>document.head.appendChild(el))`;
 
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,

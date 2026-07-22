@@ -3501,9 +3501,8 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     expect(html).toContain(
       `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`,
     );
-    expect(html).toContain(
-      `body link[data-vinext-streamed-icon]:not([rel="icon"]):not([rel="apple-touch-icon"])`,
-    );
+    expect(html).toContain(`const a='data-vinext-streamed-icon'`);
+    expect(html).toContain(`.sort((l,r)=>o(l)-o(r)).forEach(el=>document.head.appendChild(el))`);
     expect(html).toMatch(/<script>document\.querySelectorAll[\s\S]*<\/script><\/div>$/);
   });
 
