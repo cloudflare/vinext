@@ -83,6 +83,9 @@ function hasLoadingBoundary(route: AppRoute, hasSiblingInterceptLoading: boolean
     route.loadingPath !== null ||
     (route.loadingPaths?.some((_, index) => (route.loadingTreePositions?.[index] ?? 0) > 0) ??
       false) ||
+    // Position 0 is already shared only for the main route tree. For a parallel
+    // slot or intercepted subtree it is that subtree's local root and must
+    // still be advertised as a loading shell.
     route.parallelSlots.some(
       (slot) =>
         slot.loadingPath !== null ||

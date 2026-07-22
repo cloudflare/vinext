@@ -379,6 +379,38 @@ describe("App Router generated manifest construction", () => {
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(false);
   });
 
+  it("advertises a parallel slot root loading boundary because it is not shared", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/parallel",
+      patternParts: ["parallel"],
+      parallelSlots: [
+        {
+          id: "slot:modal:/parallel",
+          key: "modal@parallel/@modal",
+          name: "modal",
+          ownerDir: "/tmp/test/app/parallel/@modal",
+          ownerTreePath: "/parallel",
+          ownerTreePosition: 1,
+          hasPage: false,
+          pagePath: null,
+          defaultPath: "/tmp/test/app/parallel/@modal/default.tsx",
+          layoutPath: null,
+          loadingPath: null,
+          loadingPaths: ["/tmp/test/app/parallel/@modal/loading.tsx"],
+          loadingTreePositions: [0],
+          errorPath: null,
+          interceptingRoutes: [],
+          layoutIndex: 0,
+          routeSegments: null,
+        },
+      ],
+      routeSegments: ["parallel"],
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+  });
+
   it("advertises sibling-intercept loading only on the target route", () => {
     const sourceRoute = {
       ...minimalAppRoutes[0],
