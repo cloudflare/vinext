@@ -355,6 +355,36 @@ describe("prefetch cache eviction", () => {
     expect(prefetched.has(rscUrl)).toBe(true);
   });
 
+  it("keeps optimistic loading-shell prefetch responses out of navigation consumption even if promoted", async () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const rscUrl = "/metadata-await-promise/nested.rsc?_rsc=navigation";
+    const shellRscUrl = "/metadata-await-promise/nested.rsc?_rsc=prefetch-loading-shell";
+    const snapshot = {
+      buffer: new TextEncoder().encode("loading-shell-flight").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: shellRscUrl,
+    };
+
+    cache.set(shellRscUrl, {
+      cacheForNavigation: true,
+      optimisticRouteShell: true,
+      outcome: "cache-seeded",
+      snapshot,
+      timestamp: Date.now(),
+    });
+    prefetched.add(shellRscUrl);
+
+    expect(hasPrefetchCacheEntryForNavigation(rscUrl, null, null)).toBe(false);
+    expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
+    await expect(consumePrefetchResponseForNavigation(rscUrl, null, null)).resolves.toBeNull();
+    expect(cache.has(shellRscUrl)).toBe(true);
+    expect(prefetched.has(shellRscUrl)).toBe(true);
+  });
+
   it("keeps route-tree prefetch responses out of navigation consumption", async () => {
     const routeTreeUrl = "/dashboard.rsc?_rsc=tree";
     const deferred = createDeferredResponse();

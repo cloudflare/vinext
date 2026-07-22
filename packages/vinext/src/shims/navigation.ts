@@ -495,6 +495,10 @@ function isPrefetchCacheEntryCompatibleWithMountedSlots(
   return (entry.snapshot?.mountedSlotsHeader ?? null) === mountedSlotsHeader;
 }
 
+function isPrefetchCacheEntryConsumableForNavigation(entry: PrefetchCacheEntry): boolean {
+  return entry.cacheForNavigation !== false && entry.optimisticRouteShell !== true;
+}
+
 function findPrefetchCacheEntryForNavigation(
   rscUrl: string,
   interceptionContext: string | null,
@@ -509,7 +513,7 @@ function findPrefetchCacheEntryForNavigation(
     const exactEntry = cache.get(exactCacheKey);
     if (
       exactEntry &&
-      exactEntry.cacheForNavigation !== false &&
+      isPrefetchCacheEntryConsumableForNavigation(exactEntry) &&
       isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
     ) {
       return { cacheKey: exactCacheKey, entry: exactEntry };
@@ -524,7 +528,7 @@ function findPrefetchCacheEntryForNavigation(
   if (normalizedTargets.size === 0) return null;
 
   for (const [cacheKey, entry] of cache) {
-    if (entry.cacheForNavigation === false) continue;
+    if (!isPrefetchCacheEntryConsumableForNavigation(entry)) continue;
 
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
@@ -1179,7 +1183,7 @@ export function consumePrefetchResponse(
   const exactEntry = cache.get(exactCacheKey);
   if (
     exactEntry &&
-    exactEntry.cacheForNavigation !== false &&
+    isPrefetchCacheEntryConsumableForNavigation(exactEntry) &&
     !isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
   ) {
     deletePrefetchCacheEntry(cache, getPrefetchedUrls(), exactCacheKey, exactEntry, false);
@@ -1206,7 +1210,7 @@ function consumeMatchedPrefetchResponse(
   // Skip in-flight snapshots and error-path residue where pending cleared
   // without a successful transition to a cache-seeded entry.
   if (entry.pending || entry.outcome !== "cache-seeded") return null;
-  if (entry.cacheForNavigation === false) return null;
+  if (!isPrefetchCacheEntryConsumableForNavigation(entry)) return null;
 
   if (entry.snapshot) {
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) {
@@ -2045,6 +2049,11 @@ export async function navigateClientSide(
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
+    }
+    const externalNavigate = getNavigationRuntime()?.functions.navigateExternal;
+    if (externalNavigate) {
+      await externalNavigate(fullHref, mode);
+      return;
     }
     hardNavigateTo(fullHref, mode);
     await new Promise<void>(() => {});

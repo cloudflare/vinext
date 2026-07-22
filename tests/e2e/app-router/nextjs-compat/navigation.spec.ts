@@ -21,6 +21,55 @@ import {
 const BASE = "http://localhost:4174";
 
 test.describe("Next.js compat: navigation (browser)", () => {
+  test.describe("hash", () => {
+    // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+    test("scrolls to the specified hash and fetches RSC for query changes", async ({ page }) => {
+      const rscRequestUrls = new Set<string>();
+      page.on("request", (request) => {
+        if (request.headers()["rsc"]) {
+          rscRequestUrls.add(request.url());
+        }
+      });
+
+      await page.goto(`${BASE}/nextjs-compat/hash`);
+      await waitForAppRouterHydration(page);
+      await page.waitForLoadState("networkidle");
+      rscRequestUrls.clear();
+
+      const targetOffset = async (val: number) =>
+        page.locator(`#hash-${val}`).evaluate((element) => (element as HTMLElement).offsetTop);
+      const checkLink = async (val: number | string, expectedScroll: number) => {
+        await page.locator(`#link-to-${val.toString()}`).click();
+        await expect.poll(() => page.evaluate(() => window.pageYOffset)).toBe(expectedScroll);
+      };
+
+      // app-basic has a root template above every route, unlike the standalone
+      // upstream fixture. Assert the same target-position contract against this
+      // fixture's concrete offsets instead of weakening the scroll check.
+      await checkLink(6, await targetOffset(6));
+      await checkLink(50, await targetOffset(50));
+      await checkLink(160, await targetOffset(160));
+      await checkLink(300, await targetOffset(300));
+      await checkLink(500, await targetOffset(500));
+      await checkLink("top", 0);
+      await checkLink("non-existent", 0);
+
+      const hasQueryParamRscRequestBeforeQueryChange = Array.from(rscRequestUrls).some((url) =>
+        url.includes("with-query-param"),
+      );
+      expect(hasQueryParamRscRequestBeforeQueryChange).toBe(false);
+
+      await checkLink("query-param", await targetOffset(160));
+      await page.waitForLoadState("networkidle");
+
+      const hasQueryParamRscRequest = Array.from(rscRequestUrls).some((url) =>
+        url.includes("with-query-param"),
+      );
+      expect(hasQueryParamRscRequest).toBe(true);
+    });
+  });
+
   // Next.js: 'should redirect in a server component'
   // Source: navigation.test.ts#L168-L174
   test("server component redirect lands on result page", async ({ page }) => {
@@ -190,6 +239,44 @@ test.describe("Next.js compat: navigation (browser)", () => {
       timeout: 10_000,
     });
     expect(page.url()).toContain("/notfound-test");
+  });
+
+  test.describe("navigating to a page with async metadata", () => {
+    const resolveMetadataDuration = 5000;
+    const route = "/nextjs-compat/metadata-await-promise";
+    const nestedRoute = `${route}/nested`;
+
+    // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+    test("shows a fallback when prefetch was pending", async ({ page }) => {
+      await page.goto(`${BASE}${route}`);
+      await waitForAppRouterHydration(page);
+
+      await page.locator(`[href='${nestedRoute}']`).click();
+      await page.waitForTimeout(resolveMetadataDuration + 500);
+
+      await expect(page.locator("#page-content")).toHaveText("Content");
+      await expect(page).toHaveTitle("Async Title");
+    });
+
+    // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+    test("shows a fallback when prefetch completed", async ({ page }) => {
+      await page.goto(`${BASE}${route}`);
+      await waitForAppRouterHydration(page);
+
+      await page.waitForTimeout(resolveMetadataDuration + 500);
+      await page.locator(`[href='${nestedRoute}']`).click();
+
+      // The upstream deploy-suite assertion uses `resolveMetadataDuration + 500`.
+      // This local Playwright fixture runs through Vite dev transforms, which
+      // adds enough route-compile variance to make that exact wall-clock budget
+      // flaky; the upstream deploy file remains the exact timing contract.
+      await expect(page).toHaveTitle("Async Title", {
+        timeout: resolveMetadataDuration + 2500,
+      });
+      await expect(page.locator("#page-content")).toHaveText("Content");
+    });
   });
 
   // Back/forward navigation

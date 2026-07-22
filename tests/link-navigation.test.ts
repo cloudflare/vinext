@@ -604,6 +604,124 @@ describe("Link App Router navigation scheduling", () => {
     expect(transitionStates).toEqual([true]);
   });
 
+  it("uses the App Router MPA scheduler for Pages-owned targets", async () => {
+    const navigate = vi.fn();
+    const navigateExternal = vi.fn(() => new Promise<void>(() => {}));
+    const assign = vi.fn();
+    const replace = vi.fn();
+    const runtimeKey = Symbol.for("vinext.navigationRuntime");
+    const result = await renderIsolatedLink({
+      appNavigation: true,
+      href: "/slow-page",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      requireRef: false,
+      windowOverrides: {
+        [runtimeKey]: {
+          bootstrap: {
+            routeManifest: null,
+            rsc: undefined,
+          },
+          functions: {
+            navigate,
+            navigateExternal,
+          },
+        },
+        location: {
+          assign,
+          href: "https://example.com/mpa-nav-test",
+          origin: "https://example.com",
+          pathname: "/mpa-nav-test",
+          replace,
+          search: "",
+        },
+        __VINEXT_PAGES_LINK_PREFETCH_ROUTES__: [
+          { documentOnly: false, isDynamic: false, patternParts: ["slow-page"] },
+        ],
+      },
+    });
+
+    const onClick = result.capturedAnchorProps.onClick;
+    expect(onClick).toBeTypeOf("function");
+    if (onClick === undefined) {
+      throw new Error("Expected rendered Link anchor to expose an onClick handler");
+    }
+
+    await onClick({
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    });
+
+    expect(navigateExternal).toHaveBeenCalledWith("/slow-page", "push");
+    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(result.navigate).not.toHaveBeenCalled();
+  });
+
+  it("normalizes same-origin absolute Pages-owned targets before MPA scheduling", async () => {
+    const navigate = vi.fn();
+    const navigateExternal = vi.fn(() => new Promise<void>(() => {}));
+    const assign = vi.fn();
+    const replace = vi.fn();
+    const runtimeKey = Symbol.for("vinext.navigationRuntime");
+    const result = await renderIsolatedLink({
+      appNavigation: true,
+      href: "https://example.com/slow-page?from=app#details",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      requireRef: false,
+      windowOverrides: {
+        [runtimeKey]: {
+          bootstrap: {
+            routeManifest: null,
+            rsc: undefined,
+          },
+          functions: {
+            navigate,
+            navigateExternal,
+          },
+        },
+        location: {
+          assign,
+          href: "https://example.com/mpa-nav-test",
+          origin: "https://example.com",
+          pathname: "/mpa-nav-test",
+          replace,
+          search: "",
+        },
+        __VINEXT_PAGES_LINK_PREFETCH_ROUTES__: [
+          { documentOnly: false, isDynamic: false, patternParts: ["slow-page"] },
+        ],
+      },
+    });
+
+    const onClick = result.capturedAnchorProps.onClick;
+    expect(onClick).toBeTypeOf("function");
+    if (onClick === undefined) {
+      throw new Error("Expected rendered Link anchor to expose an onClick handler");
+    }
+
+    await onClick({
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    });
+
+    expect(navigateExternal).toHaveBeenCalledWith("/slow-page?from=app#details", "push");
+    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(result.navigate).not.toHaveBeenCalled();
+  });
+
   it("lets the browser handle native URI schemes without app-router navigation", async () => {
     const userOnClick = vi.fn();
     const hrefs = ["mailto:hello@example.com", "tel:+123456789", "sms:+123456789"];

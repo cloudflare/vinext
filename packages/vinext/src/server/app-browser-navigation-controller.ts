@@ -716,6 +716,57 @@ export function createAppBrowserNavigationController(
     lifecycleOptions?.onDiscardedRevalidation?.();
   }
 
+  function isSamePathSearchHashCommit(targetHref: string): boolean {
+    if (typeof window === "undefined") return false;
+
+    try {
+      const currentUrl = new URL(window.location.href);
+      const targetUrl = new URL(targetHref, currentUrl.href);
+      return (
+        targetUrl.origin === currentUrl.origin &&
+        targetUrl.pathname === currentUrl.pathname &&
+        targetUrl.search !== currentUrl.search &&
+        targetUrl.hash !== ""
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function shouldResolveWithoutCommitSignal(options: {
+    actionType: "navigate" | "replace" | "traverse";
+    historyUpdateMode: HistoryUpdateMode | undefined;
+    scrollIntent?: AppRouterScrollIntent | null;
+    targetHref: string;
+  }): boolean {
+    if (options.actionType === "traverse") return false;
+    if (options.historyUpdateMode === undefined) return false;
+    if (options.scrollIntent?.hash == null) return false;
+    return isSamePathSearchHashCommit(options.targetHref);
+  }
+
+  function drainAndResolveCommitWithoutSignal(renderId: number): void {
+    if (!pendingNavigationCommits.has(renderId)) return;
+    clearCommittedNavigationFailureTargets(renderId);
+    drainPrePaintEffects(renderId);
+    settleNavigationCommits(renderId, true);
+  }
+
+  function scheduleCommitSignalFallback(renderId: number): void {
+    const run = () => drainAndResolveCommitWithoutSignal(renderId);
+    const requestFrame =
+      typeof window === "undefined" ? undefined : window.requestAnimationFrame?.bind(window);
+
+    if (requestFrame) {
+      requestFrame(() => {
+        requestFrame(run);
+      });
+      return;
+    }
+
+    setTimeout(run, 0);
+  }
+
   async function renderNavigationPayload(
     options: BrowserNavigationPayloadOptions,
   ): Promise<NavigationPayloadOutcome> {
@@ -828,6 +879,9 @@ export function createAppBrowserNavigationController(
         options.pendingRouterState,
         options.visibleCommitMode ?? "transition",
       );
+      if (shouldResolveWithoutCommitSignal(options)) {
+        scheduleCommitSignalFallback(renderId);
+      }
     } catch (error) {
       pendingNavigationFailureTargets.delete(renderId);
       pendingNavigationPrePaintEffects.delete(renderId);

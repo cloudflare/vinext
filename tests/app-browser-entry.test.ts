@@ -80,6 +80,10 @@ import {
   type AppElementsSlotBinding,
 } from "../packages/vinext/src/server/app-elements.js";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
+import {
+  beginAppRouterScrollIntent,
+  clearAppRouterScrollIntent,
+} from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createHistoryStateWithNavigationMetadata,
@@ -3581,6 +3585,61 @@ describe("app browser navigation controller", () => {
       ]);
       expect(settled).toBe(false);
     } finally {
+      detach();
+    }
+  });
+
+  it("resolves same-path search and hash commits when the visible tree is unchanged", async () => {
+    const initialElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "hash page"),
+    });
+    const initialState = createState({
+      elements: initialElements,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/hash#non-existent",
+        {},
+      ),
+      routeId: "route:/hash",
+    });
+    const { controller, detach } = createControllerHarness(initialState);
+    const commitEffect = vi.fn();
+    const scrollIntent = beginAppRouterScrollIntent("#hash-160");
+
+    stubWindow("https://example.com/hash#non-existent");
+
+    try {
+      const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/hash?with-query-param#hash-160",
+          {},
+        ),
+        nextElements: Promise.resolve(initialElements),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/hash?with-query-param#hash-160",
+        navId,
+      });
+
+      const outcome = await Promise.race([
+        renderPromise,
+        new Promise<"timeout">((resolve) => {
+          setTimeout(() => resolve("timeout"), 50);
+        }),
+      ]);
+
+      expect(outcome).toBe("committed");
+      expect(commitEffect).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAppRouterScrollIntent();
       detach();
     }
   });
