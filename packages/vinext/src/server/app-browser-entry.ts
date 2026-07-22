@@ -2229,6 +2229,13 @@ function bootstrapHydration(
           visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
         });
         if (renderOutcome !== "committed") return;
+        // A transition commit can settle its layout-effect acknowledgement
+        // before the optional state observer is delivered. The committed
+        // outcome still guarantees that the controller's current state is the
+        // approved navigation state; capture it now so delayed cache
+        // publication stores replayable elements instead of a response-only
+        // fallback entry.
+        committedState ??= getBrowserRouterState();
         // Store the visited response only after renderNavigationPayload succeeds.
         // If we stored it before and renderNavigationPayload threw, a future
         // back/forward navigation could replay a snapshot from a navigation that

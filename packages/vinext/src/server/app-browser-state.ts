@@ -59,7 +59,6 @@ export {
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveHistoryTraversalIntent,
-  type BfcacheIdMap,
   type HistoryTraversalIntent,
 } from "./app-history-state.js";
 
