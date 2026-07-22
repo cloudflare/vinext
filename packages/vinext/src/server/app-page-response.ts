@@ -331,6 +331,7 @@ export function buildAppPageHtmlResponse(
   body: ReadableStream,
   options: BuildAppPageHtmlResponseOptions,
 ): Response {
+  body = tagConsumerCancellation(body);
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
     Vary: VINEXT_RSC_VARY_HEADER,

@@ -1468,9 +1468,7 @@ describe("App Router Production server (startProdServer)", () => {
     // Spec-compliant runtimes (Nitro/h3, Workers, Deno) cancel the response
     // body stream when the client disconnects mid-stream. Node's fromWeb +
     // pipeline path in prod-server does not, so exercise the entry directly.
-    const entryModule = await import(
-      pathToFileURL(path.join(outDir, "server", "index.js")).href
-    );
+    const entryModule = await import(pathToFileURL(path.join(outDir, "server", "index.js")).href);
     const entryHandler =
       typeof entryModule.default === "function"
         ? entryModule.default
@@ -1498,9 +1496,35 @@ describe("App Router Production server (startProdServer)", () => {
     expect(stateRes.status).toBe(200);
     const state = await stateRes.json();
 
-    expect(
-      state.errors.map((error: { message: string }) => error.message),
-    ).toEqual([]);
+    expect(state.errors.map((error: { message: string }) => error.message)).toEqual([]);
+  });
+
+  it("does not report client-aborted document renders via instrumentation", async () => {
+    const resetRes = await fetch(`${baseUrl}/api/instrumentation-test`, {
+      method: "DELETE",
+    });
+    expect(resetRes.status).toBe(200);
+
+    const entryModule = await import(pathToFileURL(path.join(outDir, "server", "index.js")).href);
+    const entryHandler =
+      typeof entryModule.default === "function"
+        ? entryModule.default
+        : entryModule.default.fetch.bind(entryModule.default);
+    const response: Response = await entryHandler(new Request(`${baseUrl}/slow-stream-abort-test`));
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const shellChunk = await reader.read();
+    expect(shellChunk.done).toBe(false);
+    await reader.cancel();
+
+    // Give the suspended section time to settle server-side after the abort.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    const stateRes = await fetch(`${baseUrl}/api/instrumentation-test`);
+    expect(stateRes.status).toBe(200);
+    const state = await stateRes.json();
+
+    expect(state.errors.map((error: { message: string }) => error.message)).toEqual([]);
   });
 
   it("reports server component render errors via instrumentation in production", async () => {
