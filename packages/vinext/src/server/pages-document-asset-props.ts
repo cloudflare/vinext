@@ -62,10 +62,12 @@ function addAttribute(
       ? tag.replace(attributePattern, ` ${name}="${escapeHtmlAttr(value)}"`)
       : tag;
   }
-  return tag.replace(/\s*\/?>$/, (ending) => {
-    const closing = ending.includes("/") ? " />" : ">";
-    return ` ${name}="${escapeHtmlAttr(value)}"${closing}`;
-  });
+  if (!tag.endsWith(">")) return tag;
+  const selfClosing = tag.endsWith("/>");
+  const closingStart = selfClosing ? tag.length - 2 : tag.length - 1;
+  const opening = tag.slice(0, closingStart).trimEnd();
+  const closing = selfClosing ? " />" : ">";
+  return `${opening} ${name}="${escapeHtmlAttr(value)}"${closing}`;
 }
 
 function hasAttribute(tag: string, name: string | undefined): boolean {
