@@ -102,6 +102,11 @@ type AppPageRouteWiringSlot<
   layout?: TModule | null;
   layoutIndex: number;
   loading?: TModule | null;
+  loadings?: readonly (TModule | null | undefined)[] | null;
+  loadingTreePositions?: readonly number[] | null;
+  ownerTreePosition?: number | null;
+  notFound?: TModule | null;
+  notFoundTreePosition?: number | null;
   page?: TModule | null;
   routeSegments?: readonly string[] | null;
   /**
@@ -127,11 +132,16 @@ export type AppPageRouteWiringRoute<
   layoutTreePositions?: readonly number[] | null;
   layouts: readonly (TModule | null | undefined)[];
   loading?: TModule | null;
+  loadings?: readonly (TModule | null | undefined)[] | null;
+  loadingTreePositions?: readonly number[] | null;
   notFound?: TModule | null;
   notFounds?: readonly (TModule | null | undefined)[] | null;
+  notFoundTreePosition?: number | null;
   forbidden?: TModule | null;
+  forbiddenTreePosition?: number | null;
   forbiddens?: readonly (TModule | null | undefined)[] | null;
   unauthorized?: TModule | null;
+  unauthorizedTreePosition?: number | null;
   unauthorizeds?: readonly (TModule | null | undefined)[] | null;
   routeSegments?: readonly string[];
   childrenRouteSegments?: readonly string[] | null;
@@ -165,6 +175,8 @@ export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> =
   branchSegments?: readonly string[] | null;
   layoutSegments?: readonly (readonly string[])[] | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
+  loadingModules?: readonly (TModule | null | undefined)[] | null;
+  loadingTreePositions?: readonly number[] | null;
   /**
    * The page module to render for this slot. Optional — when omitted, the
    * slot's existing `page` is used (e.g. when the override only changes the
@@ -203,6 +215,10 @@ type BuildAppPageRouteElementOptions<
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
+  streamingMetadata?: Promise<Metadata | null> | null;
+  streamingMetadataOutlet?: Promise<unknown> | null;
+  streamingMetadataOutletSuspended?: boolean;
+  streamingMetadataTags?: Promise<Metadata | null> | null;
   trailingSlash?: boolean;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
@@ -241,6 +257,11 @@ type AppPageTemplateEntry<TModule extends AppPageModule = AppPageModule> = {
 
 type AppPageErrorEntry<TErrorModule extends AppPageErrorModule = AppPageErrorModule> = {
   errorModule?: TErrorModule | null | undefined;
+  treePosition: number;
+};
+
+type AppPageLoadingEntry<TModule extends AppPageModule = AppPageModule> = {
+  loadingModule?: TModule | null | undefined;
   treePosition: number;
 };
 
@@ -417,6 +438,78 @@ function createAppPageErrorEntries<TErrorModule extends AppPageErrorModule>(
   });
 }
 
+function createAppPageLoadingEntries<TModule extends AppPageModule>(
+  route: Pick<AppPageRouteWiringRoute<TModule>, "loadings" | "loadingTreePositions">,
+): AppPageLoadingEntry<TModule>[] {
+  return (route.loadings ?? []).flatMap((loadingModule, index) => {
+    if (!loadingModule) return [];
+    const treePosition = route.loadingTreePositions?.[index];
+    if (treePosition === undefined) return [];
+    return [{ loadingModule, treePosition }];
+  });
+}
+
+function getPrefetchLoadingEntry<TModule extends AppPageModule>(
+  route: Pick<
+    AppPageRouteWiringRoute<TModule>,
+    "loading" | "loadings" | "loadingTreePositions" | "routeSegments"
+  >,
+): AppPageLoadingEntry<TModule> | null {
+  let firstEntry: AppPageLoadingEntry<TModule> | null = null;
+  for (const [index, loadingModule] of (route.loadings ?? []).entries()) {
+    if (!getDefaultExport(loadingModule)) continue;
+    const treePosition = route.loadingTreePositions?.[index];
+    if (treePosition === undefined) continue;
+    if (firstEntry === null || treePosition < firstEntry.treePosition) {
+      firstEntry = { loadingModule, treePosition };
+    }
+  }
+  if (firstEntry) return firstEntry;
+
+  // Legacy/eager route fixtures may only expose the leaf loading field.
+  return getDefaultExport(route.loading)
+    ? { loadingModule: route.loading, treePosition: route.routeSegments?.length ?? 0 }
+    : null;
+}
+
+function createAppPageSlotLoadingEntries<TModule extends AppPageModule>(
+  slot: Pick<AppPageRouteWiringSlot<TModule>, "loading" | "loadings" | "loadingTreePositions">,
+  override: Pick<AppPageSlotOverride<TModule>, "loadingModules" | "loadingTreePositions"> | null,
+): AppPageLoadingEntry<TModule>[] {
+  const entries: AppPageLoadingEntry<TModule>[] = [];
+  const slotLoadingModules =
+    (slot.loadings?.length ?? 0) > 0 ? slot.loadings! : slot.loading ? [slot.loading] : [];
+  const slotLoadingTreePositions =
+    (slot.loadingTreePositions?.length ?? 0) > 0 ? slot.loadingTreePositions! : [0];
+
+  for (const [index, loadingModule] of slotLoadingModules.entries()) {
+    const treePosition = slotLoadingTreePositions[index];
+    if (!getDefaultExport(loadingModule) || treePosition === undefined) continue;
+    // An interception replaces the slot's normal active branch. Only the slot
+    // root is necessarily shared; nested normal-branch loadings belong to a
+    // sibling subtree and must not wrap the intercepting page.
+    if (override && treePosition !== 0) continue;
+    entries.push({ loadingModule, treePosition });
+  }
+
+  for (const [index, loadingModule] of (override?.loadingModules ?? []).entries()) {
+    const treePosition = override?.loadingTreePositions?.[index];
+    if (!getDefaultExport(loadingModule) || treePosition === undefined) continue;
+    entries.push({ loadingModule, treePosition });
+  }
+
+  return entries;
+}
+
+function getFirstLoadingEntry<TModule extends AppPageModule>(
+  entries: readonly AppPageLoadingEntry<TModule>[],
+): AppPageLoadingEntry<TModule> | null {
+  return entries.reduce<AppPageLoadingEntry<TModule> | null>(
+    (first, entry) => (first === null || entry.treePosition < first.treePosition ? entry : first),
+    null,
+  );
+}
+
 function createAppPageParallelSlotEntries<
   TModule extends AppPageModule,
   TErrorModule extends AppPageErrorModule,
@@ -565,6 +658,51 @@ export function createAppPageRouteBodyMetadata(
   );
 }
 
+async function AppPageStreamingMetadata(props: {
+  metadata: Promise<Metadata | null>;
+  pathname: string;
+  trailingSlash?: boolean;
+}): Promise<ReactNode> {
+  try {
+    const metadata = await props.metadata;
+    return createAppPageRouteBodyMetadata(metadata, props.pathname, "body", props.trailingSlash);
+  } catch {
+    // The matching outlet below rethrows inside the route's error boundaries.
+    // Keeping the tag outlet successful lets already-flushed HTML remain valid.
+    return null;
+  }
+}
+AppPageStreamingMetadata.displayName = "Vinext.StreamingMetadata";
+
+async function AppPageMetadataOutlet(props: { metadata: Promise<unknown> }): Promise<null> {
+  await props.metadata;
+  return null;
+}
+AppPageMetadataOutlet.displayName = "Vinext.MetadataOutlet";
+
+function createAppPageStreamingMetadataOutlet(
+  elementId: string | null,
+  suspended = true,
+): ReactNode {
+  if (!elementId) return null;
+  const outlet = <Slot id={elementId} />;
+  return suspended ? <Suspense fallback={null}>{outlet}</Suspense> : outlet;
+}
+
+function createAppPageStreamingMetadataBody(elementId: string | null): ReactNode {
+  if (!elementId) return null;
+  return (
+    // React treats metadata tags as hoistable and otherwise waits for them
+    // before flushing the document. Next.js uses the same persistent hidden
+    // host boundary so the shell can flush while this Suspense branch is open.
+    <div hidden>
+      <Suspense fallback={null}>
+        <Slot id={elementId} />
+      </Suspense>
+    </div>
+  );
+}
+
 export function buildAppPageElements<
   TModule extends AppPageModule,
   TErrorModule extends AppPageErrorModule,
@@ -581,18 +719,55 @@ export function buildAppPageElements<
   const pageId =
     renderIdentity?.pageId ?? AppElementsWire.encodePageId(options.routePath, interceptionContext);
   const pageElementId = options.route.childrenSlot?.id ?? pageId;
+  const streamingMetadataBodyId = options.streamingMetadata
+    ? `__vinext_streaming_metadata_body:${routeId}`
+    : null;
+  const streamingMetadataOutletId = options.streamingMetadataOutlet
+    ? `__vinext_streaming_metadata_outlet:${routeId}`
+    : null;
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
+  const loadingEntries = createAppPageLoadingEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
+  const findNearestAncestorLoadingEntry = (
+    treePosition: number,
+  ): AppPageLoadingEntry<TModule> | undefined => {
+    for (let index = loadingEntries.length - 1; index >= 0; index--) {
+      if (loadingEntries[index].treePosition < treePosition) return loadingEntries[index];
+    }
+    return undefined;
+  };
+  const findNearestLoadingEntryAtOrAbove = (
+    treePosition: number,
+  ): AppPageLoadingEntry<TModule> | undefined => {
+    let nearest: AppPageLoadingEntry<TModule> | undefined;
+    for (const entry of loadingEntries) {
+      if (
+        entry.treePosition <= treePosition &&
+        (!nearest || entry.treePosition > nearest.treePosition)
+      ) {
+        nearest = entry;
+      }
+    }
+    return nearest;
+  };
+  const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+  const prefetchLoadingEntry = isPrefetchLoadingShell
+    ? getPrefetchLoadingEntry(options.route)
+    : null;
   const metadataPlacement = options.metadataPlacement ?? "head";
   const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
   const templateEntriesByTreePosition = new Map<number, AppPageTemplateEntry<TModule>>();
+  const loadingEntriesByTreePosition = new Map<number, AppPageLoadingEntry<TModule>>();
   const errorEntriesByTreePosition = new Map<number, AppPageErrorEntry<TErrorModule>>();
   for (const layoutEntry of layoutEntries) {
     layoutEntriesByTreePosition.set(layoutEntry.treePosition, layoutEntry);
   }
   for (const templateEntry of templateEntries) {
     templateEntriesByTreePosition.set(templateEntry.treePosition, templateEntry);
+  }
+  for (const loadingEntry of loadingEntries) {
+    loadingEntriesByTreePosition.set(loadingEntry.treePosition, loadingEntry);
   }
   for (const errorEntry of errorEntries) {
     errorEntriesByTreePosition.set(errorEntry.treePosition, errorEntry);
@@ -618,6 +793,7 @@ export function buildAppPageElements<
     new Set<number>([
       ...layoutEntries.map((entry) => entry.treePosition),
       ...templateEntries.map((entry) => entry.treePosition),
+      ...loadingEntries.map((entry) => entry.treePosition),
       ...errorEntries.map((entry) => entry.treePosition),
     ]),
   ).sort((left, right) => left - right);
@@ -635,6 +811,27 @@ export function buildAppPageElements<
 
     return undefined;
   };
+  const prefetchSlotLoadingEntries = isPrefetchLoadingShell
+    ? Object.entries(options.route.slots ?? {}).flatMap(([slotKey, slot]) => {
+        const override = resolveSlotOverride(slotKey, slot.name) ?? null;
+        const firstLoadingEntry = getFirstLoadingEntry(
+          createAppPageSlotLoadingEntries(slot, override),
+        );
+        return firstLoadingEntry ? [{ ownerTreePosition: slot.ownerTreePosition ?? 0 }] : [];
+      })
+    : [];
+  // The children spine must reach every slot owner whose branch has a loading
+  // boundary. A loading on the spine itself stops traversal first, matching
+  // Next.js's per-parallel-route pre-PPR component-tree walk.
+  const prefetchCutoffTreePosition = isPrefetchLoadingShell
+    ? (prefetchLoadingEntry?.treePosition ??
+      prefetchSlotLoadingEntries.reduce(
+        (deepest, entry) => Math.max(deepest, entry.ownerTreePosition),
+        0,
+      ))
+    : null;
+  const includesPrefetchTreePosition = (treePosition: number): boolean =>
+    prefetchCutoffTreePosition === null || treePosition <= prefetchCutoffTreePosition;
   const elements: Record<
     string,
     | ReactNode
@@ -667,10 +864,25 @@ export function buildAppPageElements<
   if (options.route.staticSiblings && options.route.staticSiblings.length > 0) {
     elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
   }
+  if (options.streamingMetadata && streamingMetadataBodyId) {
+    elements[streamingMetadataBodyId] = (
+      <AppPageStreamingMetadata
+        metadata={options.streamingMetadataTags ?? options.streamingMetadata}
+        pathname={options.resolvedMetadataPathname ?? options.routePath}
+        trailingSlash={options.trailingSlash}
+      />
+    );
+  }
+  if (options.streamingMetadataOutlet && streamingMetadataOutletId) {
+    elements[streamingMetadataOutletId] = (
+      <AppPageMetadataOutlet metadata={options.streamingMetadataOutlet} />
+    );
+  }
   const getEffectiveSlotParams = (slotKey: string, slotName: string): AppPageParams =>
     resolveSlotOverride(slotKey, slotName)?.params ?? options.matchedParams;
 
   for (const treePosition of orderedTreePositions) {
+    if (isPrefetchLoadingShell && !includesPrefetchTreePosition(treePosition)) continue;
     const layoutIndex = layoutIndicesByTreePosition.get(treePosition);
     if (layoutIndex !== undefined) {
       const layoutEntry = layoutEntries[layoutIndex];
@@ -696,8 +908,10 @@ export function buildAppPageElements<
   }
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
-  const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
-  const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell && routeLoadingComponent !== null;
+  const prefetchLoadingComponent = getDefaultExport(prefetchLoadingEntry?.loadingModule);
+  const shouldRenderPrefetchLoadingShell =
+    isPrefetchLoadingShell &&
+    (prefetchLoadingComponent !== null || prefetchSlotLoadingEntries.length > 0);
   if (shouldRenderPrefetchLoadingShell) {
     // Client loading components serialize as module references in Flight. Keep
     // a durable marker in the shell payload so external router tests and
@@ -711,13 +925,16 @@ export function buildAppPageElements<
     : renderAfterAppDependencies(options.element, pageDependencies);
 
   for (const templateEntry of templateEntries) {
+    if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
+      continue;
+    }
     const templateComponent = getDefaultExport(templateEntry.templateModule);
     if (!templateComponent) {
       continue;
     }
     const TemplateComponent = templateComponent;
     const templateDependency = templateDependenciesById.get(templateEntry.id);
-    const templateElement = templateDependency ? (
+    let templateElement: ReactNode = templateDependency ? (
       renderWithAppDependencyBarrier(
         <TemplateComponent>
           <Children />
@@ -729,6 +946,21 @@ export function buildAppPageElements<
         <Children />
       </TemplateComponent>
     );
+    const ancestorLoadingEntry = findNearestAncestorLoadingEntry(templateEntry.treePosition);
+    const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
+    if (ancestorLoadingComponent && ancestorLoadingEntry) {
+      const AncestorLoadingComponent = ancestorLoadingComponent;
+      const loadingResetKey = resolveAppPageSegmentStateKey(
+        routeSegments,
+        ancestorLoadingEntry.treePosition,
+        options.matchedParams,
+      );
+      templateElement = (
+        <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
+          {templateElement}
+        </Suspense>
+      );
+    }
     elements[templateEntry.id] = renderAfterAppDependencies(
       templateElement,
       templateDependenciesBeforeById.get(templateEntry.id) ?? [],
@@ -737,6 +969,9 @@ export function buildAppPageElements<
 
   for (let index = 0; index < layoutEntries.length; index++) {
     const layoutEntry = layoutEntries[index];
+    if (isPrefetchLoadingShell && !includesPrefetchTreePosition(layoutEntry.treePosition)) {
+      continue;
+    }
     const layoutComponent = getDefaultExport(layoutEntry.layoutModule);
     if (!layoutComponent) {
       continue;
@@ -772,7 +1007,7 @@ export function buildAppPageElements<
 
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
-    const layoutElement = layoutDependency ? (
+    let layoutElement: ReactNode = layoutDependency ? (
       renderWithAppDependencyBarrier(
         <LayoutComponent {...layoutProps}>
           <Children />
@@ -784,6 +1019,21 @@ export function buildAppPageElements<
         <Children />
       </LayoutComponent>
     );
+    const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
+    const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
+    if (ancestorLoadingComponent && ancestorLoadingEntry) {
+      const AncestorLoadingComponent = ancestorLoadingComponent;
+      const loadingResetKey = resolveAppPageSegmentStateKey(
+        routeSegments,
+        ancestorLoadingEntry.treePosition,
+        options.matchedParams,
+      );
+      layoutElement = (
+        <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
+          {layoutElement}
+        </Suspense>
+      );
+    }
     elements[layoutEntry.id] = renderAfterAppDependencies(
       layoutElement,
       layoutDependenciesBefore[index] ?? [],
@@ -793,6 +1043,20 @@ export function buildAppPageElements<
   for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
     const slotName = slot.name;
     const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+    const targetTreePosition = layoutEntries[targetIndex]?.treePosition ?? 0;
+    const ownerTreePosition = slot.ownerTreePosition ?? targetTreePosition;
+    const isOwnedAtRoutePrefetchCutoff =
+      isPrefetchLoadingShell &&
+      prefetchLoadingEntry !== null &&
+      ownerTreePosition === prefetchLoadingEntry.treePosition;
+    if (
+      isPrefetchLoadingShell &&
+      (prefetchLoadingEntry
+        ? ownerTreePosition > prefetchLoadingEntry.treePosition
+        : !includesPrefetchTreePosition(targetTreePosition))
+    ) {
+      continue;
+    }
     const treePath = layoutEntries[targetIndex]?.treePath ?? "/";
     const slotId = resolveAppPageSlotId(slot, treePath);
     const slotOverride = resolveSlotOverride(slotKey, slotName);
@@ -804,6 +1068,20 @@ export function buildAppPageElements<
       options.matchedParams,
     );
     const slotResetKey = resolveAppPageRouteStateKey(slotRouteSegments, slotParams);
+    const hasSlotTreeOverride =
+      slotOverride?.pageModule != null || slotOverride?.layoutModules !== undefined;
+    const slotLoadingEntries = createAppPageSlotLoadingEntries(
+      slot,
+      hasSlotTreeOverride ? (slotOverride ?? null) : null,
+    );
+    const prefetchSlotLoadingEntry = isOwnedAtRoutePrefetchCutoff
+      ? prefetchLoadingEntry
+      : isPrefetchLoadingShell
+        ? getFirstLoadingEntry(slotLoadingEntries)
+        : null;
+    if (isPrefetchLoadingShell && prefetchSlotLoadingEntry === null) {
+      continue;
+    }
     const overrideOrPageComponent =
       getDefaultExport(slotOverride?.pageModule) ?? getDefaultExport(slot.page);
     const defaultComponent = getDefaultExport(slot.default);
@@ -823,100 +1101,165 @@ export function buildAppPageElements<
 
     const slotComponent = overrideOrPageComponent ?? defaultComponent;
 
-    if (!slotComponent) {
+    if (!slotComponent && !isOwnedAtRoutePrefetchCutoff) {
       elements[slotId] = AppElementsWire.unmatchedSlotValue;
       continue;
     }
 
-    const slotThenableParams = options.makeThenableParams(slotParams);
-    const slotProps: Record<string, unknown> = {
-      params: slotThenableParams,
-    };
-    if (options.searchParams !== undefined) {
-      slotProps.searchParams = options.searchParams;
-    }
-    if (slotOverride?.props) {
-      Object.assign(slotProps, slotOverride.props);
-    }
-
-    let slotElement: ReactNode = options.createPageElement
-      ? options.createPageElement(slotComponent, slotProps)
-      : (() => {
-          const SlotComponent = slotComponent;
-          return <SlotComponent {...slotProps} />;
-        })();
-    const hasSlotTreeOverride =
-      slotOverride?.pageModule != null || slotOverride?.layoutModules !== undefined;
-    const interceptLayouts = slotOverride?.layoutModules ?? [];
-
-    for (let layoutIndex = interceptLayouts.length - 1; layoutIndex >= 0; layoutIndex--) {
-      const interceptLayoutComponent = getDefaultExport(interceptLayouts[layoutIndex]);
-      if (!interceptLayoutComponent) {
-        continue;
+    let slotElement: ReactNode;
+    if (prefetchSlotLoadingEntry) {
+      const PrefetchSlotLoadingComponent = getDefaultExport(
+        prefetchSlotLoadingEntry.loadingModule,
+      )!;
+      slotElement = <PrefetchSlotLoadingComponent />;
+    } else {
+      const slotThenableParams = options.makeThenableParams(slotParams);
+      const slotProps: Record<string, unknown> = {
+        params: slotThenableParams,
+      };
+      if (options.searchParams !== undefined) {
+        slotProps.searchParams = options.searchParams;
       }
-      const InterceptLayoutComponent = interceptLayoutComponent;
-      const interceptLayoutParams = resolveSlotLayoutParams(
-        slotOverride?.branchSegments ?? slotRouteSegments,
-        slotOverride?.layoutSegments?.[layoutIndex]?.length ?? slotRouteSegments.length,
-        slotParams,
-      );
-      slotElement = (
-        <InterceptLayoutComponent params={options.makeThenableParams(interceptLayoutParams)}>
-          {slotElement}
-        </InterceptLayoutComponent>
-      );
+      if (slotOverride?.props) {
+        Object.assign(slotProps, slotOverride.props);
+      }
+      slotElement = options.createPageElement
+        ? options.createPageElement(slotComponent!, slotProps)
+        : (() => {
+            const SlotComponent = slotComponent!;
+            return <SlotComponent {...slotProps} />;
+          })();
     }
+    const branchSegments = slotOverride?.branchSegments ?? slotRouteSegments;
+    const branchLayouts = new Map<
+      number,
+      { component: AppPageComponent; params: AppPageParams }[]
+    >();
+    const addBranchLayout = (
+      treePosition: number,
+      entry: { component: AppPageComponent; params: AppPageParams },
+    ) => {
+      const entries = branchLayouts.get(treePosition) ?? [];
+      entries.push(entry);
+      branchLayouts.set(treePosition, entries);
+    };
 
-    if (!hasSlotTreeOverride) {
-      for (
-        let layoutIndex = (slot.configLayouts?.length ?? 0) - 1;
-        layoutIndex >= 0;
-        layoutIndex--
-      ) {
-        const nestedLayoutComponent = getDefaultExport(slot.configLayouts?.[layoutIndex]);
-        if (!nestedLayoutComponent) continue;
-        const NestedLayoutComponent = nestedLayoutComponent;
-        const nestedLayoutParams = resolveSlotLayoutParams(
-          slotRouteSegments,
-          slot.configLayoutTreePositions?.[layoutIndex] ?? 0,
-          slotParams,
-        );
-        slotElement = (
-          <NestedLayoutComponent
-            params={options.makeThenableParams({ ...slotOwnerParams, ...nestedLayoutParams })}
-          >
-            {slotElement}
-          </NestedLayoutComponent>
-        );
+    if (hasSlotTreeOverride) {
+      for (const [layoutIndex, layoutModule] of (slotOverride?.layoutModules ?? []).entries()) {
+        const component = getDefaultExport(layoutModule);
+        if (!component) continue;
+        const treePosition =
+          slotOverride?.layoutSegments?.[layoutIndex]?.length ?? branchSegments.length;
+        addBranchLayout(treePosition, {
+          component,
+          params: resolveSlotLayoutParams(branchSegments, treePosition, slotParams),
+        });
+      }
+    } else {
+      for (const [layoutIndex, layoutModule] of (slot.configLayouts ?? []).entries()) {
+        const component = getDefaultExport(layoutModule);
+        if (!component) continue;
+        const treePosition = slot.configLayoutTreePositions?.[layoutIndex] ?? 0;
+        addBranchLayout(treePosition, {
+          component,
+          params: {
+            ...slotOwnerParams,
+            ...resolveSlotLayoutParams(slotRouteSegments, treePosition, slotParams),
+          },
+        });
       }
     }
 
     const slotLayoutComponent = overrideOrPageComponent ? getDefaultExport(slot.layout) : null;
     if (slotLayoutComponent) {
-      const SlotLayoutComponent = slotLayoutComponent;
-      slotElement = (
-        <SlotLayoutComponent params={options.makeThenableParams(slotOwnerParams)}>
-          {slotElement}
-        </SlotLayoutComponent>
-      );
+      const rootEntries = branchLayouts.get(0) ?? [];
+      branchLayouts.set(0, [
+        { component: slotLayoutComponent, params: slotOwnerParams },
+        ...rootEntries,
+      ]);
     }
 
-    const slotLoadingComponent = getDefaultExport(slot.loading);
-    if (slotLoadingComponent) {
-      const SlotLoadingComponent = slotLoadingComponent;
-      slotElement = (
-        <Suspense key={slotResetKey} fallback={<SlotLoadingComponent />}>
-          {slotElement}
-        </Suspense>
-      );
+    const branchLoadings = new Map<number, AppPageComponent[]>();
+    for (const entry of slotLoadingEntries) {
+      const component = getDefaultExport(entry.loadingModule);
+      if (!component) continue;
+      const components = branchLoadings.get(entry.treePosition) ?? [];
+      components.push(component);
+      branchLoadings.set(entry.treePosition, components);
     }
 
     const slotErrorComponent = getErrorBoundaryExport(slot.error);
-    if (slotErrorComponent) {
+    const branchTreePositions = Array.from(
+      new Set([
+        ...branchLayouts.keys(),
+        ...branchLoadings.keys(),
+        ...(slotErrorComponent ? [0] : []),
+      ]),
+    )
+      .filter(
+        (treePosition) =>
+          !prefetchSlotLoadingEntry ||
+          (!isOwnedAtRoutePrefetchCutoff && treePosition <= prefetchSlotLoadingEntry.treePosition),
+      )
+      .sort((left, right) => left - right);
+    for (let index = branchTreePositions.length - 1; index >= 0; index--) {
+      const treePosition = branchTreePositions[index];
+      const loadingComponents = prefetchSlotLoadingEntry
+        ? []
+        : (branchLoadings.get(treePosition) ?? []);
+      for (let loadingIndex = loadingComponents.length - 1; loadingIndex >= 0; loadingIndex--) {
+        const LoadingComponent = loadingComponents[loadingIndex];
+        const loadingResetKey = resolveAppPageSegmentStateKey(
+          branchSegments,
+          treePosition,
+          slotParams,
+        );
+        slotElement = (
+          <Suspense key={loadingResetKey || slotResetKey} fallback={<LoadingComponent />}>
+            {slotElement}
+          </Suspense>
+        );
+      }
+
+      if (treePosition === 0 && slotErrorComponent) {
+        slotElement = (
+          <ErrorBoundary resetKey={slotResetKey} fallback={slotErrorComponent}>
+            {slotElement}
+          </ErrorBoundary>
+        );
+      }
+
+      const layoutEntriesAtPosition = branchLayouts.get(treePosition) ?? [];
+      for (let layoutIndex = layoutEntriesAtPosition.length - 1; layoutIndex >= 0; layoutIndex--) {
+        const layoutEntry = layoutEntriesAtPosition[layoutIndex];
+        const LayoutComponent = layoutEntry.component;
+        slotElement = (
+          <LayoutComponent params={options.makeThenableParams(layoutEntry.params)}>
+            {slotElement}
+          </LayoutComponent>
+        );
+      }
+    }
+
+    // A loading convention on the owning segment applies to every parallel
+    // child slot, not only the flattened `children` branch. The slot payload is
+    // serialized as a separate element entry, so the boundary must wrap this
+    // entry directly rather than only the <Slot> placeholder in routeChildren.
+    const ownerLoadingEntry = isPrefetchLoadingShell
+      ? undefined
+      : findNearestLoadingEntryAtOrAbove(ownerTreePosition);
+    const ownerLoadingComponent = getDefaultExport(ownerLoadingEntry?.loadingModule);
+    if (ownerLoadingComponent && ownerLoadingEntry) {
+      const OwnerLoadingComponent = ownerLoadingComponent;
+      const ownerResetKey = resolveAppPageSegmentStateKey(
+        routeSegments,
+        ownerLoadingEntry.treePosition,
+        options.matchedParams,
+      );
       slotElement = (
-        <ErrorBoundary resetKey={slotResetKey} fallback={slotErrorComponent}>
+        <Suspense key={ownerResetKey || slotResetKey} fallback={<OwnerLoadingComponent />}>
           {slotElement}
-        </ErrorBoundary>
+        </Suspense>
       );
     }
 
@@ -927,12 +1270,18 @@ export function buildAppPageElements<
   }
 
   let routeChildren: ReactNode = (
-    <LayoutSegmentProvider
-      providerId={pageElementId}
-      segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
-    >
-      <Slot id={pageElementId} />
-    </LayoutSegmentProvider>
+    <>
+      <LayoutSegmentProvider
+        providerId={pageElementId}
+        segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
+      >
+        <Slot id={pageElementId} />
+      </LayoutSegmentProvider>
+      {createAppPageStreamingMetadataOutlet(
+        streamingMetadataOutletId,
+        options.streamingMetadataOutletSuspended,
+      )}
+    </>
   );
 
   if (isPrefetchLoadingShell) {
@@ -940,11 +1289,11 @@ export function buildAppPageElements<
     // so it intentionally does not mount AppRouterScrollTarget — the scroll/focus
     // effect belongs to the real render that replaces this shell (handled in the
     // else branch below).
-    if (routeLoadingComponent === null) {
+    if (prefetchLoadingComponent === null) {
       routeChildren = null;
     } else {
-      const RouteLoadingComponent = routeLoadingComponent;
-      routeChildren = <RouteLoadingComponent />;
+      const PrefetchLoadingComponent = prefetchLoadingComponent;
+      routeChildren = <PrefetchLoadingComponent />;
     }
   } else {
     // Wrap the page slot in a per-segment RedirectBoundary so that a
@@ -1038,8 +1387,11 @@ export function buildAppPageElements<
     );
   }
 
-  for (let index = orderedTreePositions.length - 1; index >= 0; index--) {
-    const treePosition = orderedTreePositions[index];
+  const renderedTreePositions = isPrefetchLoadingShell
+    ? orderedTreePositions.filter(includesPrefetchTreePosition)
+    : orderedTreePositions;
+  for (let index = renderedTreePositions.length - 1; index >= 0; index--) {
+    const treePosition = renderedTreePositions[index];
     const segmentResetKey = resolveAppPageSegmentStateKey(
       routeSegments,
       treePosition,
@@ -1048,11 +1400,28 @@ export function buildAppPageElements<
     let segmentChildren: ReactNode = routeChildren;
     const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
+    const loadingEntry = loadingEntriesByTreePosition.get(treePosition);
     const errorEntry = errorEntriesByTreePosition.get(treePosition);
 
-    // Next.js nesting per segment (outer to inner): Layout > Template > Error > Unauthorized > Forbidden > NotFound > children.
-    // Building bottom-up means NotFoundBoundary must wrap the leaf subtree first,
-    // then ErrorBoundary, then Template, with the Layout slot outermost.
+    // The leaf loading convention keeps using the route-level wrapper above so
+    // its ordering relative to page access/error boundaries and scroll handling
+    // remains unchanged. Ancestor segment boundaries are inserted here so they
+    // can suspend while a child layout entry renders.
+    if (!isPrefetchLoadingShell && treePosition < routeSegments.length) {
+      const segmentLoadingComponent = getDefaultExport(loadingEntry?.loadingModule);
+      if (segmentLoadingComponent) {
+        const SegmentLoadingComponent = segmentLoadingComponent;
+        segmentChildren = (
+          <Suspense key={segmentResetKey || routeResetKey} fallback={<SegmentLoadingComponent />}>
+            {segmentChildren}
+          </Suspense>
+        );
+      }
+    }
+
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > Unauthorized > Forbidden > NotFound > Loading > children.
+    // Building bottom-up means Loading must wrap the leaf subtree first, then
+    // access/error boundaries, Template, and finally the Layout slot.
     if (layoutEntry) {
       const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
       if (layoutNotFoundComponent) {
@@ -1192,6 +1561,7 @@ export function buildAppPageElements<
         metadataPlacement,
         options.trailingSlash,
       )}
+      {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
   );
 

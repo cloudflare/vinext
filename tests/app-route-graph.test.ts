@@ -1454,9 +1454,7 @@ describe("App Router route graph builder", () => {
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const route = findRoute(graph.routes, "/.well-known/openid-configuration");
 
-      expect(route.routePath).toBe(
-        path.posix.join(appDir, ".well-known/openid-configuration/route.ts"),
-      );
+      expect(route.routePath).toBe(canonical(appDir, ".well-known/openid-configuration/route.ts"));
       expect(route.ids.routeHandler).toBe("route-handler:/.well-known/openid-configuration");
       expect(graph.routeManifest.segmentGraph.routeHandlers.get(route.ids.routeHandler!)).toEqual({
         id: "route-handler:/.well-known/openid-configuration",

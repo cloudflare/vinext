@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Pass-rate over time. One point per recorded run, oldest left to newest right.
- * Pure SVG — no ECharts dependency. Hover shows date + pass rate.
+ * Supported-surface and overall pass rates over time. One point per recorded
+ * run, oldest left to newest right. Pure SVG — no ECharts dependency.
  *
  * The chart respects a router filter, owned by the parent (CompatibilityViews).
  * Each TrendPoint carries per-router rollups (`all` / `app` / `pages` / `both`
@@ -22,6 +22,8 @@ type SeriesCounts = {
   passed: number;
   failed: number;
   skipped: number;
+  supportedPassed: number;
+  supportedFailed: number;
 };
 
 export type TrendPoint = {
@@ -61,18 +63,16 @@ function formatDateTime(ms: number): string {
 }
 
 /**
- * Pass rate as a 0..1 ratio (NOT a percentage). Excludes skipped tests:
- * skipped → "not relevant", not "failure". Denominator is passed + failed
- * (the tests that actually ran a verdict). Returns 0 when nothing ran
- * (rather than NaN).
+ * Pass rate as a 0..1 ratio (NOT a percentage). Excludes skipped tests and
+ * returns 0 when nothing ran (rather than NaN).
  *
  * Distinct name from `bucketPassRate` (in router-buckets.ts) which returns
  * 0..100 — the chart needs a ratio for plotting Y coordinates, while the
  * stat cards need a percentage for display.
  */
-function computePassRateRatio(c: SeriesCounts): number {
-  const denom = c.passed + c.failed;
-  return denom > 0 ? c.passed / denom : 0;
+function computePassRateRatio(passed: number, failed: number): number {
+  const denom = passed + failed;
+  return denom > 0 ? passed / denom : 0;
 }
 
 export function CompatibilityLineChart({
@@ -88,14 +88,18 @@ export function CompatibilityLineChart({
 }) {
   const [hover, setHover] = useState<{ index: number; x: number; y: number } | null>(null);
 
-  // Reduce TrendPoint → { createdAt, counts, passRate } for the selected
-  // filter. Recomputed when filter changes, but that's a cheap O(n) over
-  // ≤90 points so no measurable cost.
+  // Reduce TrendPoint to both pass-rate definitions for the selected router.
+  // Recomputed when filter changes, but that's a cheap O(n) over <=90 points.
   const series = useMemo(
     () =>
       points.map((p) => {
         const counts = p.byRouter[filter];
-        return { createdAt: p.createdAt, counts, passRate: computePassRateRatio(counts) };
+        return {
+          createdAt: p.createdAt,
+          counts,
+          overallPassRate: computePassRateRatio(counts.passed, counts.failed),
+          supportedPassRate: computePassRateRatio(counts.supportedPassed, counts.supportedFailed),
+        };
       }),
     [points, filter],
   );
@@ -113,8 +117,9 @@ export function CompatibilityLineChart({
         series.length === 1
           ? PADDING.left + plotW / 2
           : PADDING.left + ((p.createdAt - minX) / xRange) * plotW;
-      const y = PADDING.top + (1 - p.passRate) * plotH;
-      return { x, y, index: i };
+      const overallY = PADDING.top + (1 - p.overallPassRate) * plotH;
+      const supportedY = PADDING.top + (1 - p.supportedPassRate) * plotH;
+      return { x, overallY, supportedY, index: i };
     });
     return { xy, minX, maxX, plotW, plotH };
   }, [series]);
@@ -127,7 +132,12 @@ export function CompatibilityLineChart({
     );
   }
 
-  const path = view.xy.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const supportedPath = view.xy
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.supportedY}`)
+    .join(" ");
+  const overallPath = view.xy
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.overallY}`)
+    .join(" ");
 
   // Y-axis ticks at 0, 25, 50, 75, 100%.
   const yTicks = [0, 0.25, 0.5, 0.75, 1];
@@ -137,7 +147,7 @@ export function CompatibilityLineChart({
     <div className="relative">
       <svg
         role="img"
-        aria-label="Compatibility pass rate over time"
+        aria-label="Supported and overall compatibility pass rates over time"
         viewBox={`0 0 ${W} ${H}`}
         width="100%"
         style={{ maxWidth: "100%", display: "block" }}
@@ -190,20 +200,29 @@ export function CompatibilityLineChart({
             );
           })}
 
-        {/* Line */}
-        <path d={path} fill="none" stroke="#2da44e" strokeWidth={2} strokeLinejoin="round" />
+        {/* Overall raw rate, including deferred and out-of-scope files. */}
+        <path d={overallPath} fill="none" stroke="#0969da" strokeWidth={2} strokeLinejoin="round" />
+
+        {/* Supported-surface rate. */}
+        <path
+          d={supportedPath}
+          fill="none"
+          stroke="#2da44e"
+          strokeWidth={2}
+          strokeLinejoin="round"
+        />
 
         {/* Points */}
         {view.xy.map((p, i) => (
           <circle
             key={series[i].createdAt}
             cx={p.x}
-            cy={p.y}
+            cy={p.supportedY}
             r={4}
             fill="#2da44e"
             stroke="var(--color-kumo-base, #fff)"
             strokeWidth={1.5}
-            onMouseEnter={() => setHover({ index: i, x: p.x, y: p.y })}
+            onMouseEnter={() => setHover({ index: i, x: p.x, y: p.supportedY })}
             onMouseLeave={() => setHover(null)}
             style={{ cursor: "pointer" }}
           />
@@ -221,22 +240,37 @@ export function CompatibilityLineChart({
         >
           {(() => {
             const p = series[hover.index];
-            // Pass rate is computed against tests that ran a verdict, so
-            // the denominator the user sees should match: passed + failed.
-            const denom = p.counts.passed + p.counts.failed;
-            const parts = [`${p.counts.passed}/${denom} passed`];
-            if (p.counts.failed > 0) parts.push(`${p.counts.failed} failed`);
-            if (p.counts.skipped > 0) parts.push(`${p.counts.skipped} skipped`);
+            const supportedDenom = p.counts.supportedPassed + p.counts.supportedFailed;
+            const overallDenom = p.counts.passed + p.counts.failed;
             return (
               <>
-                <div className="font-medium">{(p.passRate * 100).toFixed(1)}% pass rate</div>
+                <div className="font-medium">
+                  {(p.supportedPassRate * 100).toFixed(1)}% supported
+                </div>
+                <div className="text-kumo-subtle">
+                  {p.counts.supportedPassed}/{supportedDenom} supported tests passed
+                </div>
+                <div className="mt-1 font-medium">
+                  {(p.overallPassRate * 100).toFixed(1)}% overall
+                </div>
+                <div className="text-kumo-subtle">
+                  {p.counts.passed}/{overallDenom} tests passed
+                  {p.counts.skipped > 0 ? `, ${p.counts.skipped} skipped` : ""}
+                </div>
                 <div className="mt-1 text-kumo-subtle">{formatDateTime(p.createdAt)}</div>
-                <div className="text-kumo-subtle">{parts.join(", ")}</div>
               </>
             );
           })()}
         </div>
       ) : null}
+      <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-kumo-subtle">
+        <span className="flex items-center gap-2">
+          <span className="h-0.5 w-5 bg-[#2da44e]" aria-hidden="true" /> Supported
+        </span>
+        <span className="flex items-center gap-2">
+          <span className="h-0.5 w-5 bg-[#0969da]" aria-hidden="true" /> Overall
+        </span>
+      </div>
     </div>
   );
 }

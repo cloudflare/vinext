@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 // a blocking 307, and RSC navigation requests receive the redirect in the
 // flight payload.
 export async function generateMetadata() {
+  await new Promise((resolve) => setTimeout(resolve, 100));
   redirect("/about");
 }
 

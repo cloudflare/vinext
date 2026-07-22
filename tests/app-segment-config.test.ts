@@ -226,6 +226,21 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toBe(false);
   });
 
+  it("ignores route groups when assigning layout config to a dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{}, { dynamicParams: false, generateStaticParams: () => [{ region: "SE" }] }],
+        layoutTreePositions: [0, 2],
+        page: { dynamic: "force-dynamic" },
+        routeSegments: ["[region]", "(default)", "static-prefetch"],
+      }),
+    ).toEqual({
+      dynamicConfig: "force-dynamic",
+      dynamicParamsConfig: false,
+      revalidateSeconds: 0,
+    });
+  });
+
   it("resolves revalidate = false as Infinity (cache indefinitely)", () => {
     expect(
       resolveAppPageSegmentConfig({

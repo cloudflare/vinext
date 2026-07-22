@@ -13,6 +13,7 @@ import {
   nodeArray,
   type AstRecord,
 } from "./ast-utils.js";
+import { createTransformCache } from "./transform-cache.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -884,6 +885,8 @@ function transformVeryDynamicRequests(code: string, id: string) {
 export function createIgnoreDynamicRequestsPlugin(
   getTranspiledPackages: () => readonly string[] = () => [],
 ): Plugin {
+  const cached = createTransformCache<undefined, ReturnType<typeof transformVeryDynamicRequests>>();
+
   return {
     name: "vinext:ignore-dynamic-requests",
     enforce: "pre",
@@ -914,7 +917,7 @@ export function createIgnoreDynamicRequestsPlugin(
         ) {
           return null;
         }
-        return transformVeryDynamicRequests(code, id);
+        return cached(id, code, undefined, () => transformVeryDynamicRequests(code, id));
       },
     },
   };

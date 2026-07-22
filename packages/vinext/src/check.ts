@@ -212,6 +212,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "server actions via 'use server' directive",
   },
+  "experimental.allowedRevalidateHeaderKeys": {
+    status: "supported",
+    detail: "forwards explicitly allowed request headers during Pages Router revalidation",
+  },
   "experimental.prefetchInlining": {
     status: "partial",
     detail:
@@ -376,6 +380,20 @@ function findSourceFiles(
     }
   }
   return results;
+}
+
+/**
+ * Find files that can contribute to the application compatibility surface.
+ * Test modules and test-runner configuration are executed by their own runners
+ * rather than bundled into the vinext application, so reporting their imports
+ * or CJS globals as migration blockers produces false positives.
+ */
+function findRuntimeSourceFiles(root: string): string[] {
+  return findSourceFiles(root).filter((file) => {
+    const basename = path.basename(file);
+    const isTestRunnerConfig = /^(?:jest|playwright|vitest)\.config\.[cm]?[jt]sx?$/.test(basename);
+    return !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(basename) && !isTestRunnerConfig;
+  });
 }
 
 function isIdentStart(c: string): boolean {
@@ -610,7 +628,7 @@ export function hasFreeCjsGlobal(content: string): boolean {
  * Scan source files for `import ... from 'next/...'` statements.
  */
 export function scanImports(root: string): CheckItem[] {
-  const files = findSourceFiles(root);
+  const files = findRuntimeSourceFiles(root);
   const importUsage = new Map<string, string[]>();
 
   const importRegex = /(?:import\s+(?:[\w{},\s*]+\s+from\s+)?|require\s*\()['"]([^'"]+)['"]\)?/g;
@@ -1078,7 +1096,7 @@ export function checkConventions(root: string): CheckItem[] {
   // For __dirname/__filename we use hasFreeCjsGlobal(), a single-pass scanner that
   // skips string literals, template literals, and comments before testing for the
   // identifier, so tokens inside those contexts are never matched.
-  const allSourceFiles = findSourceFiles(root);
+  const allSourceFiles = findRuntimeSourceFiles(root);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];

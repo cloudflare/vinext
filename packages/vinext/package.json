@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "1.0.0-beta.0",
+  "version": "1.0.0-beta.3",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
   "repository": {
@@ -24,6 +24,12 @@
     "./cache": {
       "types": "./dist/cache.d.ts",
       "import": "./dist/cache.js"
+    },
+    "./types": {
+      "types": "./dist/shims/next-shims-public.d.ts"
+    },
+    "./types/augmentations": {
+      "types": "./dist/shims/next-shims-augmentations.d.ts"
     },
     "./shims/*": {
       "types": "./dist/shims/*.d.ts",
@@ -152,16 +158,21 @@
     "./internal/utils/prerender-output-paths": {
       "types": "./dist/utils/prerender-output-paths.d.ts",
       "import": "./dist/utils/prerender-output-paths.js"
+    },
+    "./internal/utils/hash": {
+      "types": "./dist/utils/hash.d.ts",
+      "import": "./dist/utils/hash.js"
     }
   },
   "scripts": {
     "build": "vp pack",
-    "prepack": "cp ../../README.md README.md && vp run build",
+    "prepack": "node -e \"require('node:fs').copyFileSync('../../README.md', 'README.md')\" && vp run build",
     "dev": "vp pack --watch"
   },
   "dependencies": {
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
+    "@vinext/types": "workspace:^",
     "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",

@@ -1,5 +1,10 @@
 import { defineConfig } from "vite-plus";
 
+const typescriptPackageUrl = import.meta.resolve("typescript/package.json");
+const { default: getTscPath } = await import(
+  new URL("lib/getExePath.js", typescriptPackageUrl).href
+);
+
 /**
  * Keep third-party bare specifiers external — even when imported dynamically.
  *
@@ -83,7 +88,21 @@ export default defineConfig({
       entryFileNames: renameBundledDepsOutput,
       chunkFileNames: renameBundledDepsOutput,
     },
-    dts: true,
+    dts: {
+      tsgo: { path: getTscPath() },
+    },
+    copy: [
+      {
+        from: "src/shims/next-shims-public.d.ts",
+        to: "dist/shims",
+        flatten: true,
+      },
+      {
+        from: "src/shims/next-shims-augmentations.d.ts",
+        to: "dist/shims",
+        flatten: true,
+      },
+    ],
     fixedExtension: false,
     format: "esm",
     unbundle: true,

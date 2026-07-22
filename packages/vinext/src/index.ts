@@ -58,19 +58,19 @@ import {
   generateImageAdaptersModule,
   type VinextImageConfig,
 } from "./image/image-adapters-virtual.js";
-import {
-  generateBrowserEntry,
-  isLinkPrefetchRoute,
-  toDocumentOnlyAppRoute,
-  toLinkPrefetchRoute,
-} from "./entries/app-browser-entry.js";
+import { generateBrowserEntry, toLinkPrefetchRoutes } from "./entries/app-browser-entry.js";
 import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
-import { extractMiddlewareMatcherConfig, hasExportedName } from "./build/report.js";
+import {
+  extractMiddlewareMatcherConfig,
+  extractMiddlewareMatcherConfigValue,
+  hasExportedName,
+} from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
+import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -85,10 +85,13 @@ import {
 import { mergeServerExternalPackages } from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
+import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
 import {
+  encodeUrlParserIgnoredCharacters,
   isNextDataPathname,
   normalizeNextDataPagePathname,
   parseNextDataPathname,
+  urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
@@ -96,11 +99,13 @@ import {
   MIDDLEWARE_REWRITE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import {
+  canonicalizeRequestUrlPathname,
   filterInternalHeaders,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
@@ -118,6 +123,7 @@ import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
+import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 
 import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
@@ -165,6 +171,10 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+// Keep this source-relative: resolving through vinext's package export can read
+// a stale built copy while developing or testing the source tree.
+// oxlint-disable-next-line vinext-local/prefer-import-alias
+import publicNextShimMapJson from "./shims/public-shim-map.json" with { type: "json" };
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
@@ -185,6 +195,11 @@ import {
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
+import {
+  createPreviewBuildCredentials,
+  getPreviewBuildCredentials,
+  type PreviewBuildCredentials,
+} from "./build/preview-credentials.js";
 import { createModuleDependencyCache } from "./build/module-dependency-cache.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
@@ -232,11 +247,12 @@ import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
+import { createTransformCache } from "./plugins/transform-cache.js";
 import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
-import { escapeRegExp } from "./utils/regex.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
@@ -278,9 +294,106 @@ installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
-function getCacheDirPrefix(cacheDir: string): string {
-  const normalizedCacheDir = toSlash(cacheDir);
-  return normalizedCacheDir.endsWith("/") ? normalizedCacheDir : `${normalizedCacheDir}/`;
+type UseCacheAstNode = Record<string, unknown> & { type: string };
+
+function isUseCacheAstNode(value: unknown): value is UseCacheAstNode {
+  return (
+    typeof value === "object" && value !== null && typeof Reflect.get(value, "type") === "string"
+  );
+}
+
+function hasInlineUseCacheDirective(node: UseCacheAstNode): boolean {
+  const body =
+    isUseCacheAstNode(node.body) && node.body.type === "BlockStatement" ? node.body : null;
+  if (!body || !Array.isArray(body.body)) return false;
+
+  return body.body.some((statement) => {
+    if (!isUseCacheAstNode(statement) || statement.type !== "ExpressionStatement") return false;
+    const expression = isUseCacheAstNode(statement.expression) ? statement.expression : null;
+    return (
+      expression?.type === "Literal" &&
+      typeof expression.value === "string" &&
+      /^use cache(:\s*\w+)?$/.test(expression.value)
+    );
+  });
+}
+
+function functionAcceptsSecondArgument(node: UseCacheAstNode): boolean {
+  const params = Array.isArray(node.params) ? node.params : [];
+  if (params.length >= 2) return true;
+  return params.some((param) => isUseCacheAstNode(param) && param.type === "RestElement");
+}
+
+function collectInlineUseCacheSecondArgumentUsage(value: unknown): boolean[] {
+  const usage: boolean[] = [];
+
+  function walk(node: unknown): void {
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child);
+      return;
+    }
+    if (!isUseCacheAstNode(node)) return;
+
+    if (
+      (node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression") &&
+      hasInlineUseCacheDirective(node)
+    ) {
+      usage.push(functionAcceptsSecondArgument(node));
+    }
+
+    for (const [key, child] of Object.entries(node)) {
+      if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "parent") {
+        continue;
+      }
+      walk(child);
+    }
+  }
+
+  walk(value);
+  return usage;
+}
+
+function collectFileUseCacheSecondArgumentUsage(body: unknown[]): Map<string, boolean> {
+  const localFunctions = new Map<string, boolean>();
+
+  function collectDeclaration(value: unknown): void {
+    if (!isUseCacheAstNode(value)) return;
+    if (value.type === "FunctionDeclaration") {
+      const id = isUseCacheAstNode(value.id) ? value.id : null;
+      if (id?.type === "Identifier" && typeof id.name === "string") {
+        localFunctions.set(id.name, functionAcceptsSecondArgument(value));
+      }
+      return;
+    }
+    if (value.type !== "VariableDeclaration" || !Array.isArray(value.declarations)) return;
+
+    for (const declaration of value.declarations) {
+      if (!isUseCacheAstNode(declaration) || declaration.type !== "VariableDeclarator") continue;
+      const id = isUseCacheAstNode(declaration.id) ? declaration.id : null;
+      const init = isUseCacheAstNode(declaration.init) ? declaration.init : null;
+      if (
+        id?.type === "Identifier" &&
+        typeof id.name === "string" &&
+        init &&
+        (init.type === "FunctionExpression" || init.type === "ArrowFunctionExpression")
+      ) {
+        localFunctions.set(id.name, functionAcceptsSecondArgument(init));
+      }
+    }
+  }
+
+  for (const statement of body) {
+    if (!isUseCacheAstNode(statement)) continue;
+    collectDeclaration(
+      statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration"
+        ? statement.declaration
+        : statement,
+    );
+  }
+
+  return localFunctions;
 }
 
 function isInsideDirectory(dir: string, filePath: string): boolean {
@@ -858,20 +971,26 @@ function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Reco
   return Object.fromEntries(Object.entries(aliases).sort((a, b) => b[0].length - a[0].length));
 }
 
-function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
-  if (_tsconfigAliasCache.has(projectRoot)) {
-    return _tsconfigAliasCache.get(projectRoot)!;
+function resolveTsconfigAliases(
+  projectRoot: string,
+  configuredPath?: string,
+): Record<string, string> {
+  const configPath = configuredPath ? path.resolve(projectRoot, configuredPath) : undefined;
+  const cacheKey = configPath ?? projectRoot;
+  if (_tsconfigAliasCache.has(cacheKey)) {
+    return _tsconfigAliasCache.get(cacheKey)!;
   }
 
   let aliases: Record<string, string> = {};
-  for (const name of TSCONFIG_FILES) {
-    const candidate = path.join(projectRoot, name);
+  for (const candidate of configPath
+    ? [configPath]
+    : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
     if (!fs.existsSync(candidate)) continue;
     aliases = sortTsconfigAliasesBySpecificity(loadTsconfigPathAliases(candidate, projectRoot));
     break;
   }
 
-  _tsconfigAliasCache.set(projectRoot, aliases);
+  _tsconfigAliasCache.set(cacheKey, aliases);
   return aliases;
 }
 
@@ -1126,15 +1245,22 @@ function generateRootParamsModule(rootParamNames: Iterable<string>): string {
  *
  * To add a new react-server shim:
  *   1. Create `<name>.react-server.ts` in src/shims/
- *   2. Add entries here for each import specifier.
+ *   2. Add it to public-shim-map.json with `reactServer: true`.
  */
-const _reactServerShims = new Map<string, string>([
-  ["next/navigation", "navigation"],
-  ["next/navigation.js", "navigation"],
-  ["next/dist/client/components/navigation", "navigation"],
-  ["next/error", "error"],
-  ["next/error.js", "error"],
-]);
+type PublicNextShimDefinition = {
+  shim: string;
+  types: "upstream" | "vinext";
+  reactServer?: boolean;
+};
+
+const _publicNextShimMap = publicNextShimMapJson as Record<string, PublicNextShimDefinition>;
+const _reactServerShims = new Map<string, string>();
+for (const [specifier, definition] of Object.entries(_publicNextShimMap)) {
+  if (!definition.reactServer) continue;
+  _reactServerShims.set(specifier, definition.shim);
+  _reactServerShims.set(`${specifier}.js`, definition.shim);
+}
+_reactServerShims.set("next/dist/client/components/navigation", "navigation");
 
 const clientManualChunks = createClientManualChunks(_shimsDir);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
@@ -1301,7 +1427,8 @@ type NitroSetupContext = {
 };
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
-  assertSupportedViteVersion();
+  const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
+    assertSupportedViteVersion();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
   let root: string;
   let pagesDir: string;
@@ -1331,16 +1458,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
   let rscCompatibilityId: string | undefined;
-  const draftModeSecret = randomUUID();
+  let draftModeSecret = getPagesPreviewModeId();
+  let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
   // `configResolved` binds the resolved config, so multiple vinext builds in
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
-
-  // Populated from the resolved Vite config before transform filters are
-  // compiled, while keeping the filter object referenced by the plugin stable.
-  const typeofWindowIdFilter = { exclude: /(?!)/ };
 
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in renderChunk to patch the generated
@@ -1415,9 +1539,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
     // #1526 for the Next.js parity rationale.
     const appPrefetchRoutes = hasAppDir
-      ? (await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)).map((route) =>
-          isLinkPrefetchRoute(route) ? toLinkPrefetchRoute(route) : toDocumentOnlyAppRoute(route),
-        )
+      ? toLinkPrefetchRoutes(await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
       : [];
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
@@ -1430,10 +1552,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   async function writeRouteTypes(): Promise<void> {
-    if (!hasAppDir) return;
     await generateRouteTypes({
       root,
-      appDir,
+      appDir: hasAppDir ? appDir : null,
       pageExtensions: nextConfig.pageExtensions,
     });
   }
@@ -1674,6 +1795,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   };
 
+  const cachedTypeofWindowTransform = createTransformCache<
+    ReturnType<typeof getTypeofWindowReplacement>,
+    ReturnType<typeof replaceTypeofWindow>
+  >();
+
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
@@ -1850,21 +1976,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         isServeCommand = env.command === "serve";
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
-        const shouldEnableNativeTsconfigPaths = userResolve?.tsconfigPaths === undefined;
-        const tsconfigPathAliases = resolveTsconfigAliases(root);
+        let tsconfigPathAliases: Record<string, string> = {};
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
-
-        // tsconfig-derived alias entries carry a customResolver, which Vite 8
-        // reports as deprecated during config resolution. Filter that warning
-        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
-        // config.customLogger (rather than returning it) keeps mergeConfig
-        // from deep-cloning the logger and flattening its hasWarned getter.
-        if (Object.keys(tsconfigPathAliases).length > 0) {
-          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
-            config.customLogger ??
-              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
-          );
-        }
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -1891,8 +2004,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           resolvedNodeEnv = "development";
         }
         if (process.env.NODE_ENV !== resolvedNodeEnv) {
-          process.env.NODE_ENV = resolvedNodeEnv;
+          // Next.js's vendored global declarations mark NODE_ENV readonly even
+          // though Node permits updating process.env at runtime.
+          Reflect.set(process.env, "NODE_ENV", resolvedNodeEnv);
         }
+        if (env?.command === "build") {
+          previewBuildCredentials = getPreviewBuildCredentials() ?? createPreviewBuildCredentials();
+        }
+        draftModeSecret = previewBuildCredentials?.id ?? getPagesPreviewModeId();
 
         // Resolve the base directory for app/pages detection.
         // If appDir is provided, resolve it (supports both relative and absolute paths).
@@ -1924,6 +2043,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
+
+        // Route scans are cached at module scope so the generated entries and
+        // request handlers can share them. A Vite restart can create a new
+        // server in the same Node process, however, so those caches may belong
+        // to the previous server and no watcher exists to invalidate files
+        // added while it was stopped. Start every config lifecycle from a
+        // fresh filesystem snapshot; watcher events keep it fresh afterward.
+        invalidateRouteCache(pagesDir);
+        invalidateAppRouteCache();
 
         // Load next.config.js if present (always from project root, not src/),
         // unless vinext({ nextConfig }) explicitly overrides it.
@@ -1981,6 +2109,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
         }
+        const configuredTsconfigPath = isRecord(nextConfig.typescript)
+          ? typeof nextConfig.typescript.tsconfigPath === "string"
+            ? nextConfig.typescript.tsconfigPath
+            : undefined
+          : undefined;
+        tsconfigPathAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
+        // Vite's native option discovers tsconfig.json and cannot receive Next's
+        // typescript.tsconfigPath. Only auto-enable it for the default config;
+        // an explicit user resolve.tsconfigPaths value remains untouched.
+        const shouldAutoEnableNativeTsconfigPaths =
+          userResolve?.tsconfigPaths === undefined && configuredTsconfigPath === undefined;
+
+        // tsconfig-derived alias entries carry a customResolver, which Vite 8
+        // reports as deprecated during config resolution. Filter that warning
+        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
+        // config.customLogger (rather than returning it) keeps mergeConfig
+        // from deep-cloning the logger and flattening its hasWarned getter.
+        if (Object.keys(tsconfigPathAliases).length > 0) {
+          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
+            config.customLogger ??
+              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
+          );
+        }
         // RSC-compat ID coordination across plugin instances — same rationale as
         // the build ID above. createRscCompatibilityId() falls back to a random
         // UUID per instance when no deploymentId is pinned, so a hybrid app+pages
@@ -2007,6 +2158,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? path.join(root, "src")
             : root;
         middlewarePath = findMiddlewareFile(root, fileMatcher, middlewareConventionDir);
+        if (middlewarePath) {
+          const staticMatcher = extractMiddlewareMatcherConfigValue(middlewarePath);
+          if (staticMatcher !== undefined) {
+            validateMiddlewareMatcherPatterns(staticMatcher);
+          }
+        }
         const instrumentationClientInjects = nextConfig.instrumentationClientInject.map((spec) =>
           spec.startsWith("./") || spec.startsWith("../") ? path.resolve(root, spec) : spec,
         );
@@ -2042,6 +2199,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Let shared client shims compile out Pages-only behavior in pure App
         // Router builds while retaining it for Pages and hybrid applications.
         defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesDir));
+        defines["process.env.__VINEXT_HAS_CLIENT_REWRITES"] = JSON.stringify(
+          String(
+            nextConfig.rewrites.beforeFiles.length > 0 ||
+              nextConfig.rewrites.afterFiles.length > 0 ||
+              nextConfig.rewrites.fallback.length > 0,
+          ),
+        );
+        defines["process.env.__VINEXT_HAS_CONFIG_HEADERS"] = JSON.stringify(
+          String(nextConfig.headers.length > 0),
+        );
+        defines["process.env.__VINEXT_HAS_CONFIG_REDIRECTS"] = JSON.stringify(
+          String(nextConfig.redirects.length > 0),
+        );
+        defines["process.env.__VINEXT_HAS_CONFIG_REWRITES"] = JSON.stringify(
+          String(
+            nextConfig.rewrites.beforeFiles.length > 0 ||
+              nextConfig.rewrites.afterFiles.length > 0 ||
+              nextConfig.rewrites.fallback.length > 0,
+          ),
+        );
         // Expose experimental.staleTimes to client-side code so full prefetches
         // and committed dynamic navigations use Next.js' distinct freshness
         // windows. Values are in seconds; matches Next.js' define-env plumbing.
@@ -2228,32 +2405,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // vinext's shim instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
-            "next/link": path.join(shimsDir, "link"),
-            "next/head": path.join(shimsDir, "head"),
-            "next/router": path.join(shimsDir, "router"),
-            "next/compat/router": path.join(shimsDir, "compat-router"),
-            "next/image": path.join(shimsDir, "image"),
-            "next/legacy/image": path.join(shimsDir, "legacy-image"),
-            "next/dynamic": path.join(shimsDir, "dynamic"),
-            "next/app": path.join(shimsDir, "app"),
-            "next/document": path.join(shimsDir, "document"),
-            "next/config": path.join(shimsDir, "config"),
-            "next/script": path.join(shimsDir, "script"),
-            "next/server": path.join(shimsDir, "server"),
-            // "next/navigation" is NOT here — it's in _reactServerShims and
-            // handled by the resolveId hook for per-environment control (#834).
-            "next/headers": path.join(shimsDir, "headers"),
-            "next/font/google": path.join(shimsDir, "font-google"),
-            "next/font/local": path.join(shimsDir, "font-local"),
-            "next/cache": path.join(shimsDir, "cache"),
-            "next/form": path.join(shimsDir, "form"),
-            "next/og": path.join(shimsDir, "og"),
-            "next/web-vitals": path.join(shimsDir, "web-vitals"),
-            "next/amp": path.join(shimsDir, "amp"),
-            "next/offline": path.join(shimsDir, "offline"),
-            // "next/error" is NOT here — it's in _reactServerShims so Server
-            // Components receive Next.js's client-only throwing stub.
-            "next/constants": path.join(shimsDir, "constants"),
+            ...Object.fromEntries(
+              Object.entries(_publicNextShimMap)
+                .filter(([, definition]) => !definition.reactServer)
+                .map(([specifier, definition]) => [
+                  specifier,
+                  path.join(shimsDir, definition.shim),
+                ]),
+            ),
             // Internal next/dist/* paths used by popular libraries
             // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
             "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
@@ -2700,7 +2859,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // causing cryptic "Invalid hook call" errors. This is a no-op
             // when only one copy exists.
             dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
-            ...(shouldEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
+            ...(shouldAutoEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
           },
           // NOTE: top-level optimizeDeps is now set below (after capturing
           // incoming values from earlier plugins) so both Pages Router and
@@ -3271,7 +3430,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // `.cjs`/`.cts` if they need extensionless imports of CJS config files.
         const extensions =
           configuredExtensions === null
-            ? buildViteResolveExtensions(nextConfig.pageExtensions, config.resolve?.extensions)
+            ? buildViteResolveExtensions(config.resolve?.extensions)
             : normalizeViteResolveExtensions(configuredExtensions);
         config.resolve ??= {};
         config.resolve.extensions = extensions;
@@ -3279,8 +3438,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
-        const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
-        typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }
@@ -4100,6 +4257,11 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        server.middlewares.use((req, _res, next) => {
+          req.__vinextOriginalEncodedUrl ??= req.url;
+          next();
+        });
+
         // Watch route files for additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
 
@@ -4120,6 +4282,22 @@ export const loadServerActionClient = ${
         // fully registered before we inspect them. We prefer "ssr", then any
         // non-"rsc" environment, then whatever is available.
         let pagesRunner: import("vite/module-runner").ModuleRunner | null = null;
+        const getTrustedDevRevalidateOrigin = () => {
+          const resolved = server.resolvedUrls?.local[0];
+          if (resolved) {
+            try {
+              return new URL(resolved).origin;
+            } catch {
+              // Fall through to the HTTP server address below.
+            }
+          }
+          const address = server.httpServer?.address();
+          const port =
+            typeof address === "object" && address
+              ? address.port
+              : (server.config.server.port ?? 3000);
+          return `http://localhost:${port}`;
+        };
         // Reuse the Pages SSR handler across requests. Every createSSRHandler
         // input is stable for the dev session (server, runner, config,
         // middlewarePath) except `routes`, which is the cached pagesRouter array
@@ -4697,9 +4875,22 @@ export const loadServerActionClient = ${
                 res.end("Forbidden");
                 return;
               }
+              let revalidationHostname: string | null = null;
+              if (req.headers[VINEXT_REVALIDATE_HOST_HEADER] !== undefined) {
+                const revalidationHeaders = new Headers();
+                for (const [name, value] of Object.entries(req.headers)) {
+                  if (value === undefined || name.startsWith(":")) continue;
+                  revalidationHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
+                }
+                revalidationHostname = readTrustedRevalidationHostname(
+                  revalidationHeaders,
+                  nextConfig?.i18n,
+                );
+              }
               const requestHost =
-                (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
-                "localhost";
+                revalidationHostname ??
+                ((Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
+                  "localhost");
               const requestOrigin = `http://${requestHost}`;
               const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
 
@@ -4726,6 +4917,19 @@ export const loadServerActionClient = ${
                 return;
               }
 
+              // Preserve the pre-Vite URL for middleware/config identity, but
+              // first apply the same WHATWG dot-segment canonicalization as the
+              // Request constructor. Other percent escapes remain untouched.
+              const originalEncodedUrl = req.__vinextOriginalEncodedUrl ?? url;
+              const originalEncodedPathname = originalEncodedUrl.split("?")[0];
+              if (isOpenRedirectShaped(originalEncodedPathname)) {
+                res.writeHead(404);
+                res.end("This page could not be found");
+                return;
+              }
+              const canonicalOriginalUrl = canonicalizeRequestUrlPathname(originalEncodedUrl);
+              url = canonicalizeRequestUrlPathname(url);
+
               // Vite's built-in middleware may rewrite "/" to "/index.html".
               // Normalize it back so our router can match correctly.
               const rawPathname = url.split("?")[0];
@@ -4736,6 +4940,19 @@ export const loadServerActionClient = ${
                 url = url.replace(/\.html(?=\?|$)/, "");
               }
 
+              // Preserve the original request URL for NextRequest. Vite may
+              // rewrite extensionless paths to `.html`, while an actual
+              // `.html` request must remain distinguishable to middleware.
+              let middlewareUrl = canonicalOriginalUrl;
+              let routeUrl = middlewareUrl;
+              {
+                const routePathname = routeUrl.split("?")[0];
+                if (routePathname.endsWith("/index.html")) {
+                  routeUrl = routeUrl.replace("/index.html", "/");
+                } else if (routePathname.endsWith(".html")) {
+                  routeUrl = routeUrl.replace(/\.html(?=\?|$)/, "");
+                }
+              }
               let pathname = url.split("?")[0];
 
               // Guard against protocol-relative URL open redirects.
@@ -4761,6 +4978,15 @@ export const loadServerActionClient = ${
                 res.end("Bad Request");
                 return;
               }
+              if (urlParserCreatesPagesDataPath(pathname)) {
+                res.writeHead(404);
+                res.end("This page could not be found");
+                return;
+              }
+
+              // Preserve parser-ignored bytes until route param decoding. The
+              // literal characters would otherwise disappear in new URL().
+              pathname = encodeUrlParserIgnoredCharacters(pathname);
               // Keep url in sync with the normalized pathname so the pipeline
               // receives the decoded path for config rule matching.
               {
@@ -4780,17 +5006,38 @@ export const loadServerActionClient = ${
               // strip it (for robustness) but don't reject paths that don't start
               // with basePath — Vite has already done the filtering.
               const bp = nextConfig?.basePath ?? "";
-              if (bp && pathname.startsWith(bp)) {
-                const stripped = pathname.slice(bp.length) || "/";
-                const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-                url = stripped + qs;
-                pathname = stripped;
+              const viteBase = server.config.base;
+              const viteBasePath =
+                viteBase.startsWith("/") && viteBase !== "/" ? viteBase.replace(/\/+$/, "") : "";
+              const routingBasePath = bp || viteBasePath;
+              if (routingBasePath) {
+                if (hasBasePath(pathname, routingBasePath)) {
+                  const stripped = stripBasePath(pathname, routingBasePath);
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  url = stripped + qs;
+                  pathname = stripped;
+                }
+                const middlewarePathname = middlewareUrl.split("?")[0];
+                if (hasBasePath(middlewarePathname, routingBasePath)) {
+                  const middlewareQs = middlewareUrl.includes("?")
+                    ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
+                    : "";
+                  middlewareUrl = stripBasePath(middlewarePathname, routingBasePath) + middlewareQs;
+                }
+                const routePathname = routeUrl.split("?")[0];
+                if (hasBasePath(routePathname, routingBasePath)) {
+                  const routeQs = routeUrl.includes("?")
+                    ? routeUrl.slice(routeUrl.indexOf("?"))
+                    : "";
+                  routeUrl = stripBasePath(routePathname, routingBasePath) + routeQs;
+                }
               }
+              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], routingBasePath);
 
               if (nextConfig) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 const trailingSlashRedirect = normalizeTrailingSlash(
-                  pathname,
+                  routeUrl.split("?")[0],
                   bp,
                   nextConfig.trailingSlash,
                   qs,
@@ -4839,7 +5086,10 @@ export const loadServerActionClient = ${
                     capturedMiddlewarePath !== null && nextConfig?.trailingSlash === true,
                   );
                   url = pagePathname + qs;
+                  middlewareUrl = url;
+                  routeUrl = url;
                   pathname = pagePathname;
+                  configMatchPathname = pagePathname;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
                   req.url = url;
@@ -4928,6 +5178,7 @@ export const loadServerActionClient = ${
               // Both the middleware Request (built below) and the SSR handler
               // (which reads req.headers directly) must see clean headers.
               const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
+              if (revalidationHostname) nodeRequestHeaders.set("host", revalidationHostname);
               for (const header of INTERNAL_HEADERS) {
                 delete req.headers[header];
               }
@@ -4940,7 +5191,7 @@ export const loadServerActionClient = ${
               // proxying external rewrites; that case is handled via
               // proxyNodeReqExternal in pipelineDeps below.
               const method = req.method ?? "GET";
-              const webRequest = new Request(new URL(url, requestOrigin), {
+              const webRequest = new Request(new URL(routeUrl, requestOrigin), {
                 method,
                 headers: nodeRequestHeaders,
               });
@@ -4973,7 +5224,7 @@ export const loadServerActionClient = ${
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
                       const mwOrigin = `${mwProto}://${requestHost}`;
-                      const middlewareRequest = new Request(new URL(url, mwOrigin), {
+                      const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
                         method: req.method,
                         headers: nodeRequestHeaders,
                       });
@@ -4985,6 +5236,7 @@ export const loadServerActionClient = ${
                         nextConfig?.basePath,
                         nextConfig?.trailingSlash,
                         opts.isDataRequest,
+                        pathname,
                       );
 
                       // Forward middleware context to the RSC entry so it can
@@ -5059,6 +5311,7 @@ export const loadServerActionClient = ${
                 hasMiddleware: capturedMiddlewarePath !== null,
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
+                configMatchPathname,
                 runMiddleware: devRunMiddlewareAdapter,
                 matchPageRoute: (resolvedPathname, request) => {
                   const routeUrl = nextConfig?.i18n
@@ -5201,6 +5454,8 @@ export const loadServerActionClient = ${
                   {
                     basePath: nextConfig?.basePath,
                     i18n: nextConfig?.i18n,
+                    trustedRevalidateOrigin: getTrustedDevRevalidateOrigin(),
+                    allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
                   },
                 );
@@ -5262,6 +5517,7 @@ export const loadServerActionClient = ${
                       nextConfig?.clientTraceMetadata,
                       nextConfig?.htmlLimitedBots,
                       nextConfig?.reactStrictMode === true,
+                      nextConfig?.expireTime,
                     ),
                   };
                 }
@@ -5429,23 +5685,41 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Fold `typeof window` like Next.js before Rolldown resolves imports. This
-    // removes browser-only dynamic imports from server bundles before package
-    // conditional exports are evaluated.
     {
       name: "vinext:typeof-window",
+      configEnvironment(_name, environment) {
+        if (!useNativeTypeofWindowFolding) return null;
+        return {
+          define: {
+            "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
+          },
+        };
+      },
+    },
+    // Toolchains before Vite 8.1.4 / Rolldown 1.1.4 can run native define
+    // folding too late to prune dead imports, so retain the custom fold for
+    // every build. Newer toolchains only need it for plugin-RSC's write-less
+    // analysis builds, which replace modules with lexer-discovered imports
+    // before native folding runs.
+    {
+      name: "vinext:typeof-window-scan",
+      apply(_config, environment) {
+        return !useNativeTypeofWindowFolding || environment.command === "build";
+      },
       enforce: "post",
       transform: {
-        filter: {
-          id: typeofWindowIdFilter,
-          code: /typeof\s+window/,
-        },
+        filter: { code: /\btypeof\s+window\b/ },
         handler(code, id) {
-          const cacheDirPrefix = getCacheDirPrefix(this.environment.config.cacheDir);
-          if (toSlash(id).startsWith(cacheDirPrefix)) {
+          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
             return null;
           }
-          return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
+          const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
+          if (toSlash(id).startsWith(cacheDir)) return null;
+
+          const replacement = getTypeofWindowReplacement(this.environment);
+          return cachedTypeofWindowTransform(id, code, replacement, () =>
+            replaceTypeofWindow(code, replacement, id),
+          );
         },
       },
     },
@@ -5500,6 +5774,17 @@ export const loadServerActionClient = ${
         if (sharedRevalidateSecret) {
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
             JSON.stringify(sharedRevalidateSecret);
+        }
+        if (previewBuildCredentials) {
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] = JSON.stringify(
+            previewBuildCredentials.id,
+          );
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY"] = JSON.stringify(
+            previewBuildCredentials.signingKey,
+          );
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY"] = JSON.stringify(
+            previewBuildCredentials.encryptionKey,
+          );
         }
 
         return { define: serverDefines };
@@ -5828,60 +6113,13 @@ export const loadServerActionClient = ${
               node.expression.value.startsWith("use cache"),
           );
 
-          // Check for function-level "use cache" directives by walking function bodies.
-          // Accepts any function-like node: FunctionDeclaration/Expression, ArrowFunctionExpression,
-          // or MethodDefinition. MethodDefinition stores its FunctionExpression in `.value`, not
-          // `.body`, so we unwrap it here rather than at each call site to keep the callee safe.
-          function nodeHasInlineCacheDirective(node: ASTNode): boolean {
-            if (!node || typeof node !== "object") return false;
-            // MethodDefinition wraps its FunctionExpression in .value; unwrap to reach .body.
-            const fn = node.type === "MethodDefinition" ? node.value : node;
-            // fn.body is a BlockStatement node ({type:"BlockStatement", body:Statement[]}), not
-            // a raw array. Unwrap it. Arrow functions with expression bodies have a non-array
-            // .body — the BlockStatement check handles that case (body.body would be undefined).
-            const stmts: ASTNode[] | null =
-              // oxlint-disable-next-line typescript/no-explicit-any
-              (fn as any)?.body?.type === "BlockStatement" ? (fn as any).body.body : null;
-            if (Array.isArray(stmts)) {
-              for (const stmt of stmts) {
-                if (
-                  stmt?.type === "ExpressionStatement" &&
-                  stmt.expression?.type === "Literal" &&
-                  typeof stmt.expression?.value === "string" &&
-                  /^use cache(:\s*\w+)?$/.test(stmt.expression.value)
-                ) {
-                  return true;
-                }
-              }
-            }
-            return false;
-          }
-          function astHasInlineCache(nodes: ASTNode[]): boolean {
-            for (const node of nodes) {
-              if (!node || typeof node !== "object") continue;
-              if (
-                (node.type === "FunctionDeclaration" ||
-                  node.type === "FunctionExpression" ||
-                  node.type === "ArrowFunctionExpression" ||
-                  node.type === "MethodDefinition") &&
-                nodeHasInlineCacheDirective(node)
-              ) {
-                return true;
-              }
-              // Walk into variable declarations, export declarations, etc.
-              for (const key of Object.keys(node)) {
-                if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
-                const child = node[key as keyof typeof node] as ASTNode;
-                if (Array.isArray(child) && child.some((c) => c && typeof c === "object")) {
-                  if (astHasInlineCache(child)) return true;
-                } else if (child && typeof child === "object" && child.type) {
-                  if (astHasInlineCache([child])) return true;
-                }
-              }
-            }
-            return false;
-          }
-          const hasInlineCache = !cacheDirective && astHasInlineCache(ast.body);
+          // Keep the declaration shape because Function.length drops default and
+          // rest parameters. Next.js's cache transform likewise records declared
+          // arguments so metadata resolution can decide whether to pass `parent`.
+          const inlineCacheSecondArgumentUsage = cacheDirective
+            ? []
+            : collectInlineUseCacheSecondArgumentUsage(ast.body);
+          const hasInlineCache = inlineCacheSecondArgumentUsage.length > 0;
 
           if (!cacheDirective && !hasInlineCache) return null;
 
@@ -5924,11 +6162,22 @@ export const loadServerActionClient = ${
             const runtimeModuleUrl = pathToFileURL(
               resolveShimModulePath(shimsDir, "cache-runtime"),
             ).href;
+            const secondArgumentUsage = collectFileUseCacheSecondArgumentUsage(ast.body);
             const result = transformWrapExport(code, ast, {
               runtime: (value: string, name: string) => {
-                const pageOptions =
-                  name === "default" && isAppPageModule ? `, { appPageDefaultExport: true }` : "";
-                return `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${pageOptions})`;
+                const runtimeOptions: string[] = [];
+                // A local declaration gives us its exact parameter shape. For
+                // opaque exports (for example `export { fn } from "./impl"`),
+                // match Next.js's unknown-signature behavior and conservatively
+                // treat every argument as used.
+                const acceptsSecondArgument = secondArgumentUsage.get(value) ?? true;
+                runtimeOptions.push(`acceptsSecondArgument: ${acceptsSecondArgument}`);
+                if (name === "default" && isAppPageModule) {
+                  runtimeOptions.push("appPageDefaultExport: true");
+                }
+                const optionsArgument =
+                  runtimeOptions.length > 0 ? `, { ${runtimeOptions.join(", ")} }` : "";
+                return `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${optionsArgument})`;
               },
               rejectNonAsyncFunction: false,
               filter: (name: string, meta: { isFunction?: boolean }) => {
@@ -5979,6 +6228,7 @@ export const loadServerActionClient = ${
             ).href;
 
             try {
+              let transformedFunctionIndex = 0;
               const result = transformHoistInlineDirective(code, ast, {
                 directive: /^use cache(:\s*\w+)?$/,
                 runtime: (value: string, name: string, meta: { directiveMatch: string[] }) => {
@@ -5987,7 +6237,13 @@ export const loadServerActionClient = ${
                     directiveMatch === "use cache"
                       ? ""
                       : directiveMatch.replace("use cache:", "").trim();
-                  return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
+                  const acceptsSecondArgument =
+                    inlineCacheSecondArgumentUsage[transformedFunctionIndex++];
+                  const optionsArgument =
+                    acceptsSecondArgument === undefined
+                      ? ""
+                      : `, { acceptsSecondArgument: ${acceptsSecondArgument} }`;
+                  return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${optionsArgument})`;
                 },
                 rejectNonAsyncFunction: false,
               });

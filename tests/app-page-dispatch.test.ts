@@ -33,7 +33,7 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
-import { connection } from "../packages/vinext/src/shims/server.js";
+import { after, connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -43,6 +43,10 @@ import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
@@ -64,6 +68,8 @@ type TestRoute = {
   layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
   layoutTreePositions?: readonly number[];
   loading?: { default?: unknown } | null;
+  loadings?: readonly ({ default?: unknown } | null | undefined)[];
+  loadingTreePositions?: readonly number[];
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
   params: readonly string[];
   pattern: string;
@@ -73,6 +79,9 @@ type TestRoute = {
       string,
       {
         default?: { default?: unknown } | null;
+        loading?: { default?: unknown } | null;
+        loadings?: readonly ({ default?: unknown } | null | undefined)[] | null;
+        loadingTreePositions?: readonly number[] | null;
         page?: { default?: unknown; generateMetadata?: unknown } | null;
         slotParamNames?: readonly string[] | null;
         slotPatternParts?: readonly string[] | null;
@@ -293,6 +302,7 @@ type CreateDispatchOptionsOverrides = {
   mountedSlotsHeader?: string | null;
   params?: Record<string, string | string[]>;
   pprFallbackCacheShells?: DispatchOptions["pprFallbackCacheShells"];
+  pprFallbackShell?: DispatchOptions["pprFallbackShell"];
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
@@ -386,6 +396,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     mountedSlotsHeader: overrides.mountedSlotsHeader,
     params,
     pprFallbackCacheShells: overrides.pprFallbackCacheShells,
+    pprFallbackShell: overrides.pprFallbackShell,
     pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
@@ -569,6 +580,64 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
+  it("does not probe layouts below an active ancestor loading boundary", async () => {
+    const probeLayoutAt = vi.fn((_layoutIndex: number) => null);
+    const probePage = vi.fn(() => null);
+    const route = createRoute({
+      layouts: [{}, {}, {}],
+      layoutTreePositions: [0, 1, 2],
+      loading: null,
+      loadings: [{ default: () => null }],
+      loadingTreePositions: [1],
+      routeSegments: ["parent", "slow"],
+    });
+    const { options } = createDispatchOptions({ probeLayoutAt, probePage, route });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+
+    // The loading at position 1 catches descendants, but not a layout at the
+    // same position. Probe the root and co-located layout only.
+    expect(probeLayoutAt.mock.calls.map(([layoutIndex]) => layoutIndex)).toEqual([1, 0]);
+    expect(probePage).not.toHaveBeenCalled();
+  });
+
+  it("disables streaming metadata while producing prerendered HTML", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({ buildPageElement });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      serveStreamingMetadata: false,
+    });
+  });
+
+  it("preserves request-time metadata placement for PPR fallback-shell prerenders", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      serveStreamingMetadata: true,
+    });
+  });
+
   it("does not run a speculative connection() page probe for HTML renders", async () => {
     const probePage = vi.fn(async () => {
       await connection();
@@ -1055,6 +1124,111 @@ describe("app page dispatch", () => {
       expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");
     },
   );
+
+  it("preserves deferred metadata dynamic usage across a concurrent layout probe", async () => {
+    let releaseMetadata!: () => void;
+    const metadataGate = new Promise<void>((resolve) => {
+      releaseMetadata = resolve;
+    });
+    let metadataObserved!: () => void;
+    const metadataObservedPromise = new Promise<void>((resolve) => {
+      metadataObserved = resolve;
+    });
+    const layoutModule = {
+      default: ({ children }: { children?: React.ReactNode }) => children ?? null,
+    };
+    const pageModule = {
+      default: () => React.createElement("h1", null, "metadata body"),
+      async generateMetadata(props: { searchParams: Promise<Record<string, unknown>> }) {
+        await metadataGate;
+        await props.searchParams;
+        metadataObserved();
+        return { title: "deferred metadata" };
+      },
+    };
+    const route = createRoute({
+      layouts: [layoutModule],
+      layoutTreePositions: [0],
+      pattern: "/deferred-metadata-proof",
+      routeSegments: ["deferred-metadata-proof"],
+    });
+    const cache = new Map<string, ISRCacheEntry>();
+    const isrGet = vi.fn(async (key: string) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+      cache.set(key, {
+        isStale: false,
+        value: { lastModified: Date.now(), value: data },
+      });
+    });
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess,
+      buildOptions,
+    ) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: true,
+          mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request("https://example.test/deferred-metadata-proof"),
+          searchParams,
+          serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
+        },
+        route: {
+          // The lightweight renderer below consumes only the page slot. Keep
+          // the layout on the dispatch route, where it drives the real probe,
+          // without adding an unconsumed layout dependency to the wire payload.
+          layouts: [],
+          page: pageModule,
+          pattern: "/deferred-metadata-proof",
+          routeSegments: ["deferred-metadata-proof"],
+        },
+        routePath: "/deferred-metadata-proof",
+      }).then(toDispatchElementRecord);
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/deferred-metadata-proof",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet,
+      isrSet,
+      async probeLayoutAt() {
+        releaseMetadata();
+        await metadataObservedPromise;
+        return null;
+      },
+      probePage() {
+        return null;
+      },
+      renderToReadableStream: renderPagePayloadToStream,
+      revalidateSeconds: 60,
+      route,
+    });
+
+    const response = await runWithExecutionContext(executionContext, () =>
+      runWithRequestContext(createRequestContext(), () => dispatchAppPage(options)),
+    );
+    await response.text();
+    await Promise.all(waitUntilPromises);
+
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(cache.has("rsc:/deferred-metadata-proof")).toBe(false);
+  });
 
   it("does not reuse loading-boundary RSC when the page reads searchParams", async () => {
     async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
@@ -1917,12 +2091,11 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("This page could not be found");
   });
 
-  // Ported from Next.js: test/e2e/app-dir/app-prefetch-static/app-prefetch-static.test.ts
-  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch-static/app-prefetch-static.test.ts
-  it("admits generated params using default case-insensitive route matching", async () => {
-    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+  it("rejects generated scalar params with different casing", async () => {
     const { options } = createDispatchOptions({
-      buildPageElement,
+      async buildPageElement() {
+        throw new Error("case-mismatched static params should not render the page");
+      },
       async generateStaticParams() {
         return [{ region: "SE" }, { region: "DE" }];
       },
@@ -1935,21 +2108,14 @@ describe("app page dispatch", () => {
       dynamicParamsConfig: false,
     });
 
-    expect(response.status).toBe(200);
-    expect(buildPageElement).toHaveBeenCalledWith(
-      expect.anything(),
-      { region: "se" },
-      undefined,
-      expect.any(URLSearchParams),
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(response.status).toBe(404);
   });
 
-  it("admits generated catch-all params using default case-insensitive route matching", async () => {
-    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+  it("rejects generated catch-all params with different casing", async () => {
     const { options } = createDispatchOptions({
-      buildPageElement,
+      async buildPageElement() {
+        throw new Error("case-mismatched static params should not render the page");
+      },
       async generateStaticParams() {
         return [{ slug: ["Docs", "Getting-Started"] }];
       },
@@ -1961,6 +2127,25 @@ describe("app page dispatch", () => {
       ...options,
       dynamicParamsConfig: false,
     });
+
+    expect(response.status).toBe(404);
+  });
+
+  it('skips generated-param enforcement for production dynamic = "force-dynamic" routes', async () => {
+    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      dynamicConfig: "force-dynamic",
+      dynamicParamsConfig: false,
+      async generateStaticParams() {
+        return [{ region: "SE" }, { region: "DE" }];
+      },
+      isProduction: true,
+      params: { region: "FR" },
+      route: createRoute({ isDynamic: true, params: ["region"] }),
+    });
+
+    const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
     expect(buildPageElement).toHaveBeenCalled();
@@ -2042,9 +2227,11 @@ describe("app page dispatch", () => {
     const currentRoute = createRoute({ params: ["id"], pattern: "/photos/[id]" });
     const middlewareHeaders = new Headers({ "x-from-middleware": "yes" });
     const setNavigationContext = vi.fn();
+    let capturedInterceptOpts: Parameters<DispatchOptions["buildPageElement"]>[2];
     const { options } = createDispatchOptions({
       cleanPathname: "/photos/123",
       async buildPageElement(route, params, opts) {
+        capturedInterceptOpts = opts;
         return `${route.pattern}:${JSON.stringify(params)}:${opts?.interceptSlotKey ?? "direct"}`;
       },
       isRscRequest: true,
@@ -2067,7 +2254,10 @@ describe("app page dispatch", () => {
       ...options,
       findIntercept() {
         return {
+          interceptBranchSegments: ["(.)photos", "[id]"],
           matchedParams: { id: "123" },
+          notFound: { default: "modal-not-found" },
+          notFoundTreePosition: 2,
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 1,
@@ -2082,6 +2272,11 @@ describe("app page dispatch", () => {
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
+    expect(capturedInterceptOpts).toMatchObject({
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptNotFound: { default: "modal-not-found" },
+      interceptNotFoundTreePosition: 2,
+    });
     expect(setNavigationContext).toHaveBeenLastCalledWith({
       params: { id: "123", catchAll: ["photos", "123"] },
       pathname: "/photos/123",
@@ -2407,7 +2602,11 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("popular");
     expect(buildOptions).toEqual([
-      { observeMetadataSearchParamsAccess: true, observePageSearchParamsAccess: true },
+      {
+        observeMetadataSearchParamsAccess: true,
+        observePageSearchParamsAccess: true,
+        serveStreamingMetadata: true,
+      },
     ]);
   });
 
@@ -2474,9 +2673,17 @@ describe("app page dispatch", () => {
     };
     let capturedWaitForAllReady: boolean | undefined;
     let capturedFallbackToErrorDocument: boolean | undefined;
+    let capturedServeStreamingMetadata: boolean | undefined;
+    let afterRan = false;
     const isrSet = vi.fn(async () => {});
     const { options } = createDispatchOptions({
-      buildPageElement: async () => React.createElement("main", null, "fresh"),
+      buildPageElement: async (_route, _params, _opts, _searchParams, _layout, buildOptions) => {
+        capturedServeStreamingMetadata = buildOptions?.serveStreamingMetadata;
+        after(() => {
+          afterRan = true;
+        });
+        return React.createElement("main", null, "fresh");
+      },
       cleanPathname: "/posts/hello",
       isProduction: true,
       isrGet: vi.fn(async () =>
@@ -2517,8 +2724,10 @@ describe("app page dispatch", () => {
     await scheduledRender();
 
     expect(capturedWaitForAllReady).toBe(true);
+    expect(capturedServeStreamingMetadata).toBe(false);
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
+    expect(afterRan).toBe(true);
   });
 
   it.each(["page", "metadata"] as const)(

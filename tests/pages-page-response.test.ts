@@ -131,6 +131,8 @@ describe("isPagesStreamingBot", () => {
   it("detects other known HTML-limited bots", () => {
     expect(isPagesStreamingBot("Bingbot/2.0")).toBe(true);
     expect(isPagesStreamingBot("facebookexternalhit/1.1")).toBe(true);
+    expect(isPagesStreamingBot("meta-externalagent/1.1")).toBe(true);
+    expect(isPagesStreamingBot("meta-externalfetcher/1.1")).toBe(true);
     expect(isPagesStreamingBot("Twitterbot/1.0")).toBe(true);
     expect(isPagesStreamingBot("Slackbot-LinkExpanding 1.0")).toBe(true);
   });
@@ -242,11 +244,35 @@ describe("pages page response", () => {
       expect.objectContaining({
         kind: "PAGES",
         html: expect.stringContaining("<div>live-body</div>"),
-        pageData: { title: "hello" },
+        pageData: { pageProps: { title: "hello" } },
       }),
       60,
       undefined,
       300,
+    );
+  });
+
+  it("persists indefinite Pages results while formatting a static response policy", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: null,
+      getSSRHeadHTML: undefined,
+      isrRevalidateSeconds: false,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
+    await response.text();
+    await settleMicrotasks();
+
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({ kind: "PAGES" }),
+      false,
+      undefined,
+      undefined,
     );
   });
 

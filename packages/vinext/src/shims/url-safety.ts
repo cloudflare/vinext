@@ -67,9 +67,12 @@ export function reportBlockedDangerousNavigation(): void {
   console.error(DANGEROUS_URL_BLOCK_MESSAGE);
 }
 
-export function assertSafeNavigationUrl(url: string): void {
+export function assertSafeNavigationUrl(
+  url: string,
+  ErrorConstructor: new (message: string) => Error = Error,
+): void {
   if (isDangerousScheme(url)) {
     reportBlockedDangerousNavigation();
-    throw new Error(DANGEROUS_URL_BLOCK_MESSAGE);
+    throw new ErrorConstructor(DANGEROUS_URL_BLOCK_MESSAGE);
   }
 }

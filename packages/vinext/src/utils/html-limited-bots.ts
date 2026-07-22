@@ -1,6 +1,19 @@
 // Matches Next.js's default html-limited bot list:
 // packages/next/src/shared/lib/router/utils/html-bots.ts
-const HTML_LIMITED_BOT_UA_RE_STRING = String.raw`[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight`;
+//
+// Deliberate, documented divergence from Next.js (per AGENTS.md "behave
+// differently is OK when deliberate"): `meta-externalagent` and
+// `meta-externalfetcher` are appended to the default list. They are Meta's
+// current crawler UAs (introduced 2024 — see
+// https://developers.facebook.com/docs/sharing/webmasters/web-crawlers/) and,
+// like every Meta crawler, they don't execute JavaScript. With streaming
+// metadata, tags land at the end of `<body>` for UAs outside this list, so
+// these crawlers see a page without `og:*`/`title` — broken WhatsApp/IG/FB
+// link previews and blank AI-indexing snippets (observed in production).
+// Next.js's list predates Meta's UA migration and still only carries the
+// legacy `facebookexternalhit`. Users can still override via the
+// `htmlLimitedBots` config, which replaces this default entirely.
+const HTML_LIMITED_BOT_UA_RE_STRING = String.raw`[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|meta-externalagent|meta-externalfetcher|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight`;
 
 // Headless browser bot (executes JS). Mirrors Next.js
 // `HEADLESS_BROWSER_BOT_UA_RE` in

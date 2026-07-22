@@ -245,6 +245,17 @@ function extractStringFromConstInitializer(initializer: Expression | null): stri
 export function extractMiddlewareMatcherConfig(
   filePath: string,
 ): StaticMiddlewareMatcher | undefined {
+  const value = extractMiddlewareMatcherConfigValue(filePath);
+  return isStaticMiddlewareMatcher(value) ? value : undefined;
+}
+
+/**
+ * Extract the statically analyzable `config.matcher` value without first
+ * narrowing it to vinext's runtime matcher type. Build validation needs the
+ * raw value so malformed matcher objects are rejected instead of disappearing
+ * as though no matcher had been configured.
+ */
+export function extractMiddlewareMatcherConfigValue(filePath: string): unknown {
   let code: string;
   try {
     code = fs.readFileSync(filePath, "utf8");
@@ -261,7 +272,7 @@ export function extractMiddlewareMatcherConfig(
   if (!matcherExpression) return undefined;
 
   const value = extractStaticJsonValue(matcherExpression);
-  return isStaticMiddlewareMatcher(value) ? value : undefined;
+  return value === UNSUPPORTED_STATIC_VALUE ? undefined : value;
 }
 
 function objectPropertyValue(object: ObjectExpression, key: string): Expression | null {

@@ -25,7 +25,7 @@ jobs:
       CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
       CNA_CLOUDFLARE_EXPECTED_TEXT: Get started
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -36,6 +36,8 @@ jobs:
       - name: Pack vinext packages for local install
         working-directory: packages/vinext
         run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
           vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../cloudflare
           vp pm pack --pack-destination "${{ runner.temp }}"
@@ -69,8 +71,8 @@ jobs:
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: |
-          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
-          vp add "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Run Cloudflare init
         working-directory: ${{ runner.temp }}/cna-cloudflare

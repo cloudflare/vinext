@@ -80,6 +80,11 @@ export async function readAppRouteHandlerCacheResponse(
     const cached = await options.isrGet(routeKey);
     const cachedValue = getCachedAppRouteValue(cached);
 
+    if (cached?.isExpired) {
+      options.isrDebug?.("MISS (expired route)", options.cleanPathname);
+      return null;
+    }
+
     if (cachedValue && !cached?.isStale) {
       options.isrDebug?.("HIT (route)", options.cleanPathname);
       options.clearRequestContext();

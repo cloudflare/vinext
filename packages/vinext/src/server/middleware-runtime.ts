@@ -14,7 +14,7 @@ import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
-import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
+import { matchesMiddleware, type MatcherConfig } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
@@ -224,7 +224,6 @@ function resolveMiddlewarePathname(request: Request): string | Response {
 
 function createNextRequest(
   request: Request,
-  normalizedPathname: string,
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
   trailingSlash?: boolean,
@@ -234,20 +233,18 @@ function createNextRequest(
   // Middleware gets an isolated body branch; downstream routing keeps owning
   // the original request body.
   let mwRequest = request.body && !request.bodyUsed ? request.clone() : request;
-  // NextURL._stripBasePath only recognises basePath when the URL's pathname
-  // actually starts with the basePath prefix. normalizedPathname may already
-  // be basePath-stripped (App Router passes cleanPathname, the dev server
-  // receives Vite-stripped URLs), so for in-basePath requests we re-add the
-  // basePath prefix here to mirror the un-stripped URL that Next.js's
-  // middleware adapter always receives. NextURL will strip it back during
-  // construction, and request.nextUrl.basePath will correctly reflect the
-  // configured value. Out-of-basePath ("absolute path") requests must stay
-  // un-prefixed so the middleware observes nextUrl.basePath === "" (Next.js
-  // getNextPathnameInfo semantics).
+  // NextURL._stripBasePath only recognises basePath when the request URL's
+  // pathname actually starts with the configured prefix. Dev requests may
+  // arrive after Vite has stripped that prefix, so restore it for requests
+  // known to have crossed the basePath boundary. NextURL strips it again
+  // during construction and preserves nextUrl.basePath. Out-of-basePath
+  // ("absolute path") requests stay unprefixed so middleware observes
+  // nextUrl.basePath === "" (Next.js getNextPathnameInfo semantics).
+  const requestPathname = url.pathname;
   const mwPathname =
-    basePath && hadBasePath
-      ? addBasePathToPathname(normalizedPathname, basePath)
-      : normalizedPathname;
+    basePath && hadBasePath && !hasBasePath(requestPathname, basePath)
+      ? addBasePathToPathname(requestPathname, basePath)
+      : requestPathname;
   if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
     mwUrl.pathname = mwPathname;
@@ -315,7 +312,6 @@ export async function executeMiddleware(
 
   const nextRequest = createNextRequest(
     options.request,
-    normalizedPathname,
     options.i18nConfig,
     options.basePath,
     options.trailingSlash,

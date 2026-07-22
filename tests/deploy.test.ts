@@ -63,6 +63,7 @@ import {
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
 import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
+import { parseWorkerDeploymentUrl } from "../packages/cloudflare/src/worker-deployment-url.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -114,6 +115,15 @@ function readVinextPackageExports(): Record<string, unknown> {
     throw new Error("packages/vinext/package.json must define an exports object");
   }
   return parsed.exports;
+}
+
+function readCloudflarePackagePeerDependencies(): Record<string, unknown> {
+  const packageJsonPath = path.resolve("packages/cloudflare/package.json");
+  const parsed: unknown = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+  if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed.peerDependencies)) {
+    throw new Error("packages/cloudflare/package.json must define peerDependencies");
+  }
+  return parsed.peerDependencies;
 }
 
 function hasPackageExport(exportsMap: Record<string, unknown>, subpath: string): boolean {
@@ -497,6 +507,25 @@ describe("resolveWranglerBin", () => {
     stderrWrite.mockRestore();
   });
 
+  it("returns a custom domain from Wrangler deployment output", async () => {
+    writeWranglerPackage();
+    const child = new EventEmitter() as ChildProcess;
+    const childStdout = new PassThrough();
+    child.stdout = childStdout;
+    child.stderr = new PassThrough();
+    const execute = vi.fn(() => child) as unknown as typeof spawn;
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    const deployment = runWranglerDeploy(tmpDir, {}, execute);
+    childStdout.write(
+      "Uploaded example-worker\nDeployed example-worker triggers\n  app.example.com (custom domain)\n",
+    );
+    child.emit("close", 0, null);
+
+    await expect(deployment).resolves.toBe("https://app.example.com");
+    stdoutWrite.mockRestore();
+  });
+
   it("does not execute metacharacters in a real subprocess", () => {
     const argvPath = path.join(tmpDir, "argv.json");
     const pwnedPath = path.join(tmpDir, "vinext-pwned.txt");
@@ -513,6 +542,30 @@ describe("resolveWranglerBin", () => {
 
     expect(JSON.parse(fs.readFileSync(argvPath, "utf-8"))).toEqual(["deploy", "--env", payload]);
     expect(fs.existsSync(pwnedPath)).toBe(false);
+  });
+});
+
+describe("parseWorkerDeploymentUrl", () => {
+  it.each([
+    "app.example.com (custom domain - zone id: 023e105f4ecef8ad9ca31a8372d0c353)",
+    "app.example.com (custom domain - zone name: example.com)",
+    "app.example.com (custom domain) [enabled, previews: disabled]",
+  ])("parses Wrangler custom-domain target variants: %s", (target) => {
+    expect(parseWorkerDeploymentUrl(`Deployed app triggers\n  ${target}\n`)).toBe(
+      "https://app.example.com",
+    );
+  });
+
+  it("does not report an ordinary route pattern as a canonical URL", () => {
+    expect(parseWorkerDeploymentUrl("Deployed app triggers\n  app.example.com/*\n")).toBeNull();
+  });
+
+  it("does not report a disabled custom domain", () => {
+    expect(
+      parseWorkerDeploymentUrl(
+        "Deployed app triggers\n  app.example.com (custom domain) [disabled]\n",
+      ),
+    ).toBeNull();
   });
 });
 
@@ -1344,7 +1397,7 @@ describe("readPagesRouterEntrySource", () => {
     // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
     expect(content).toContain("handleApi:");
     expect(content).toContain('typeof handleApiRoute === "function"');
-    expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
+    expect(content).toContain("handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1412,6 +1465,11 @@ describe("readPagesRouterEntrySource", () => {
       true,
     );
     expect(hasPackageExport(exportsMap, "./internal/utils/project")).toBe(true);
+  });
+
+  it("publishes a vinext peer range that includes matching prereleases", () => {
+    const peerDependencies = readCloudflarePackagePeerDependencies();
+    expect(peerDependencies.vinext).toBe("workspace:^");
   });
 
   it("merges middleware and config headers into responses with correct precedence", () => {

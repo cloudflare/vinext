@@ -18,7 +18,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -43,7 +43,7 @@ jobs:
         shardIndex: [1, 2, 3]
         shardTotal: [3]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -70,7 +70,7 @@ jobs:
         shardIndex: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         shardTotal: [10]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -124,7 +124,7 @@ jobs:
     needs: [test-integration]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -157,15 +157,18 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - name: Build plugin
         run: vp run build
 
-      - name: Pack vinext for local install
-        run: vp pm pack --pack-destination "${{ runner.temp }}"
+      - name: Pack vinext packages for local install
+        run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
 
       - name: Scaffold a fresh create-next-app project
@@ -212,7 +215,9 @@ jobs:
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
-        run: vp add "${{ runner.temp }}"/vinext-*.tgz
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
 
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
@@ -267,7 +272,7 @@ jobs:
       # Public test namespace already used by examples/workers-cache.
       CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -277,6 +282,8 @@ jobs:
       - name: Pack vinext packages for local install
         working-directory: packages/vinext
         run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
           vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../cloudflare
           vp pm pack --pack-destination "${{ runner.temp }}"
@@ -310,8 +317,8 @@ jobs:
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: |
-          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
-          vp add "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Run Cloudflare init
         working-directory: ${{ runner.temp }}/cna-cloudflare
@@ -353,7 +360,7 @@ jobs:
       # Public test namespace already used by examples/workers-cache.
       CVA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -364,22 +371,19 @@ jobs:
         working-directory: packages/vinext
         run: |
           vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../cloudflare
           vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../create-vinext-app
           vp pm pack --pack-destination "${{ runner.temp }}"
 
-      - name: Install packed create-vinext-app runner
-        run: |
-          mkdir -p "${{ runner.temp }}/cva-runner"
-          cd "${{ runner.temp }}/cva-runner"
-          node -e 'require("fs").writeFileSync("package.json", JSON.stringify({ private: true, type: "module" }, null, 2) + "\n")'
-          vp add "${{ runner.temp }}"/create-vinext-app-*.tgz
-
       - name: Scaffold a fresh create-vinext-app project
-        working-directory: ${{ runner.temp }}/cva-runner
+        working-directory: ${{ runner.temp }}
         run: >-
-          vp exec create-vinext-app "${{ runner.temp }}/cva-cloudflare"
+          npx --yes
+          --package "${{ runner.temp }}"/create-vinext-app-*.tgz
+          create-vinext-app "${{ runner.temp }}/cva-cloudflare"
           --yes
           --skip-install
           --disable-git
@@ -414,6 +418,7 @@ jobs:
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Configure generated Cloudflare deployment
@@ -480,6 +485,10 @@ jobs:
             label: app-router 3/3
             shardIndex: 3
             shardTotal: 3
+          - project: app-router-isr-prod
+            label: app-router-isr-prod
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router-client-cache
             label: app-router-client-cache
             shardIndex: 1
@@ -549,7 +558,7 @@ jobs:
             shardIndex: 1
             shardTotal: 1
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup

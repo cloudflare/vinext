@@ -174,6 +174,26 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
+  for (const [linkId, encodedId, expectedId] of [
+    ["feed-photo-double-encoded-link", "%2561", "%2561"],
+    ["feed-photo-encoded-slash-link", "a%2Fb", "a%2Fb"],
+    ["feed-photo-unicode-link", "%e2%9c%93", "%E2%9C%93"],
+  ] as const) {
+    test(`intercepted navigation preserves canonical App Page param ${encodedId}`, async ({
+      page,
+    }) => {
+      await page.goto(`${BASE}/feed`);
+      await waitForAppRouterHydration(page);
+
+      await page.click(`#${linkId}`);
+
+      await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+      await expect(page.locator('[data-testid="photo-modal"]')).toContainText(
+        `Viewing photo ${expectedId} in modal`,
+      );
+    });
+  }
+
   test("intercepted payload cache is reused for repeated source-page navigations", async ({
     page,
   }) => {

@@ -4,6 +4,7 @@
  * Ported from: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts
  *
  * Browser-level tests for metadata behavior:
+ * - generateMetadata errors activate local/global boundaries after hydration
  * - document.title updates on client-side navigation
  * - Meta tags present in the DOM after hydration
  * - Title template applied in browser
@@ -15,6 +16,80 @@ import { waitForAppRouterHydration } from "../../helpers";
 const BASE = "http://localhost:4174";
 
 test.describe("Next.js compat: metadata (browser)", () => {
+  // Next.js: global-error/basic metadata error coverage
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/global-error/basic/index.test.ts#L135-L176
+  test("generateMetadata error activates the local error boundary after hydration", async ({
+    page,
+  }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/metadata-error-with-boundary`);
+
+    expect(response?.status()).toBe(200);
+    await expect(page.locator("#error")).toHaveText("Local error boundary");
+    await expect(page.getByTestId("global-error")).toHaveCount(0);
+  });
+
+  test("generateMetadata error activates the local boundary during client navigation", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("metadata-error-with-boundary-link").click();
+
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/metadata-error-with-boundary`);
+    await expect(page.locator("#error")).toHaveText("Local error boundary");
+    await expect(page.getByTestId("global-error")).toHaveCount(0);
+  });
+
+  test("generateMetadata error activates global-error after hydration", async ({ page }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/metadata-error-without-boundary`);
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId("global-error")).toBeVisible();
+    await expect(page.getByTestId("global-error-message")).toContainText(
+      "Sensitive metadata error detail",
+    );
+  });
+
+  test("layout generateMetadata error activates the local error boundary after hydration", async ({
+    page,
+  }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/layout-metadata-error-with-boundary`);
+
+    expect(response?.status()).toBe(200);
+    await expect(page.locator("#error")).toHaveText("Local layout metadata error boundary");
+    await expect(page.getByTestId("global-error")).toHaveCount(0);
+  });
+
+  test("layout generateMetadata error activates global-error after hydration", async ({ page }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/layout-metadata-error-without-boundary`,
+    );
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId("global-error")).toBeVisible();
+    await expect(page.getByTestId("global-error-message")).toContainText("Layout metadata error");
+  });
+
+  test("layout generateViewport error activates the local error boundary after hydration", async ({
+    page,
+  }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/layout-viewport-error-with-boundary`);
+
+    expect(response?.status()).toBe(200);
+    await expect(page.locator("#error")).toHaveText("Local layout viewport error boundary");
+    await expect(page.getByTestId("global-error")).toHaveCount(0);
+  });
+
+  test("layout generateViewport error activates global-error after hydration", async ({ page }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/layout-viewport-error-without-boundary`,
+    );
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId("global-error")).toBeVisible();
+    await expect(page.getByTestId("global-error-message")).toContainText("Layout viewport error");
+  });
+
   // Next.js: 'should support title and description'
   // Source: metadata.test.ts#L25-L32
   test("document.title matches metadata export", async ({ page }) => {

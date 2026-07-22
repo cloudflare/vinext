@@ -1,4 +1,5 @@
 import {
+  _drainPendingRevalidations,
   getAndClearActionRevalidationKind,
   type ActionRevalidationKind,
 } from "vinext/shims/cache-request-state";
@@ -21,7 +22,7 @@ import {
   runWithRootParamsScope,
   runWithRootParamsUsage,
 } from "vinext/shims/root-params";
-import { isExternalUrl } from "../config/config-matchers.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
@@ -243,6 +244,10 @@ export type HandleServerActionRscRequestOptions<
   cleanPathname: string;
   clearRequestContext: () => void;
   contentType: string;
+  /** Route selected at the request boundary before action execution. */
+  currentRouteMatch: AppServerActionMatch<TRoute> | null;
+  /** Request-aware pathname identity used for current-route interception lookup. */
+  currentRoutePathname: string;
   createNotFoundElement: (routeId: string) => TElement;
   createPayloadRouteId: (pathname: string, interceptionContext: string | null) => string;
   createRscOnErrorHandler: (
@@ -914,6 +919,11 @@ export async function handleProgressiveServerActionRequest(
       if (actionThrew) rootParamsUsage.transitionToRender();
     }
 
+    // Next.js applies cache invalidations before the action's follow-up render
+    // so updateTag() provides read-your-own-writes semantics even though its
+    // public return type is void.
+    await _drainPendingRevalidations();
+
     if (!actionRedirect) {
       if (!actionThrew) rootParamsUsage.transitionToRender();
       // Capture cookies/headers set during action execution so the caller can
@@ -1226,6 +1236,10 @@ export async function handleServerActionRscRequest<
       if (actionThrew && !actionWasForwarded) rootParamsUsage.transitionToRender();
     }
 
+    // Keep the synchronous next/cache API surface while ensuring the Flight
+    // rerender cannot observe data that its action just invalidated.
+    await _drainPendingRevalidations();
+
     if (actionRedirect) {
       const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
       const actionDraftCookie = options.getDraftModeCookieHeader();
@@ -1281,7 +1295,7 @@ export async function handleServerActionRscRequest<
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
-      const currentMatch = options.matchRoute(options.cleanPathname);
+      const currentMatch = options.currentRouteMatch;
       // Hydrate the current route before resolving its runtime below.
       if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
 
@@ -1417,14 +1431,14 @@ export async function handleServerActionRscRequest<
 
     if (!actionThrew) rootParamsUsage.transitionToRender();
 
-    const match = options.matchRoute(options.cleanPathname);
+    const match = options.currentRouteMatch;
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
     const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
       const actionRerenderTarget = await resolveAppPageActionRerenderTarget({
-        cleanPathname: options.cleanPathname,
+        cleanPathname: options.currentRoutePathname,
         currentParams: actionParams,
         currentRoute: actionRoute,
         findIntercept: options.findIntercept,

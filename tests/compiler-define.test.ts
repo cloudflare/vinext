@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import os from "node:os";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { runWithPreviewBuildCredentials } from "../packages/vinext/src/build/preview-credentials.js";
 
 // Standard `@types/...` for these Node built-ins live in the workspace, so
 // the imports above are fully typed without explicit casts.
@@ -26,6 +27,24 @@ type VinextPlugin = {
     env: { command: string },
   ) => { define?: Record<string, string> } | null | void;
 };
+
+const PREVIEW_DEFINE_NAMES = [
+  "process.env.__VINEXT_PREVIEW_MODE_ID",
+  "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY",
+  "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY",
+] as const;
+
+function getPreviewDefines(define: Record<string, string> | undefined) {
+  const previewDefines = Object.fromEntries(
+    PREVIEW_DEFINE_NAMES.map((name) => [name, define?.[name]]),
+  );
+  expect(previewDefines).toEqual({
+    "process.env.__VINEXT_PREVIEW_MODE_ID": expect.stringMatching(/^"[0-9a-f]{32}"$/),
+    "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY": expect.stringMatching(/^"[0-9a-f]{64}"$/),
+    "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY": expect.stringMatching(/^"[0-9a-f]{64}"$/),
+  });
+  return previewDefines as Record<(typeof PREVIEW_DEFINE_NAMES)[number], string>;
+}
 
 async function setupTmpProject(nextConfigBody: string): Promise<string> {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-compiler-define-"));
@@ -147,15 +166,18 @@ describe("compiler.define forwarding to Vite", () => {
 
       // NEXT_RUNTIME is always injected for server environments in addition to
       // user-configured defineServer entries.
+      const previewDefines = getPreviewDefines(rscResult?.define);
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        ...previewDefines,
       });
       expect(ssrResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        ...previewDefines,
       });
       // Client environment must never receive server-only defines.
       expect(clientResult).toBeNull();
@@ -296,9 +318,11 @@ describe("compiler.define forwarding to Vite", () => {
       // always returns a define object (never null) even without user defineServer.
       expect(rscResult).not.toBeNull();
       expect(rscResult?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
-      // No other keys should be present when neither defineServer nor revalidate
-      // secret are configured.
-      expect(Object.keys(rscResult!.define!)).toEqual(["process.env.NEXT_RUNTIME"]);
+      expect(Object.keys(rscResult!.define!)).toEqual([
+        "process.env.NEXT_RUNTIME",
+        ...PREVIEW_DEFINE_NAMES,
+      ]);
+      getPreviewDefines(rscResult?.define);
     } finally {
       if (prev === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
       else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prev;
@@ -366,5 +390,81 @@ describe("build-time revalidate secret define (security: server-only)", () => {
     // (defensively) the absence of the key in any returned define.
     expect(clientResult).toBeNull();
     expect(clientResult?.define?.["process.env.__VINEXT_REVALIDATE_SECRET"]).toBeUndefined();
+  }, 15000);
+});
+
+describe("build-time preview credentials (security: separated and server-only)", () => {
+  async function getServerDefinePlugin(): Promise<VinextPlugin> {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+    );
+    const serverDefinePlugin = plugins.find(
+      (plugin) => plugin.name === "vinext:compiler-define-server",
+    );
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      await mainPlugin!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build" },
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+    return serverDefinePlugin!;
+  }
+
+  it("bakes three independent preview values into server environments", async () => {
+    const plugin = await getServerDefinePlugin();
+    const result = plugin.configEnvironment!("ssr", {}, { command: "build" });
+    const previewDefines = getPreviewDefines(result?.define);
+    expect(new Set(Object.values(previewDefines)).size).toBe(3);
+  }, 15000);
+
+  it("never exposes preview credentials to the client environment", async () => {
+    const plugin = await getServerDefinePlugin();
+    const result = plugin.configEnvironment!("client", {}, { command: "build" });
+    expect(result).toBeNull();
+    for (const key of PREVIEW_DEFINE_NAMES) {
+      expect(result?.define?.[key]).toBeUndefined();
+    }
+  }, 15000);
+
+  it("shares credentials within one build and rotates independent builds", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await setupTmpProject(`export default {};`);
+    const createBuild = () => {
+      const plugins = vinext() as VinextPlugin[];
+      const config = plugins.find(
+        (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      const define = plugins.find((plugin) => plugin.name === "vinext:compiler-define-server");
+      return async () => {
+        await config!.config!(
+          { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+          { command: "build" },
+        );
+        return getPreviewDefines(
+          define!.configEnvironment!("ssr", {}, { command: "build" })?.define,
+        );
+      };
+    };
+    try {
+      const configureFirst = createBuild();
+      const configureSecond = createBuild();
+      const [sharedFirst, sharedSecond] = await runWithPreviewBuildCredentials(async () =>
+        Promise.all([configureFirst(), configureSecond()]),
+      );
+      expect(sharedSecond).toEqual(sharedFirst);
+
+      const configureIndependently = createBuild();
+      const independentFirst = await configureIndependently();
+      const independentSecond = await configureIndependently();
+      expect(independentFirst).not.toEqual(sharedFirst);
+      expect(independentSecond).not.toEqual(independentFirst);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
   }, 15000);
 });

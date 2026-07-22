@@ -256,6 +256,46 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
   });
 
+  it("does not serve or background-regenerate hard-expired app pages", async () => {
+    const scheduleBackgroundRegeneration = vi.fn();
+    const cacheOutcomes: AppPageCacheOutcomeMetric[] = [];
+    const expiredEntry: ISRCacheEntry = {
+      ...buildISRCacheEntry(buildCachedAppPageValue("<h1>expired</h1>"), true),
+      isExpired: true,
+    };
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/expired",
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      isrGet: vi.fn(async () => expiredEntry),
+      isrHtmlKey(pathname) {
+        return `html:${pathname}`;
+      },
+      isrRscKey(pathname) {
+        return `rsc:${pathname}`;
+      },
+      isrSet: vi.fn(async () => {}),
+      recordCacheOutcome(metric) {
+        cacheOutcomes.push(metric);
+      },
+      revalidateSeconds: 60,
+      renderFreshPageForCache: vi.fn(),
+      scheduleBackgroundRegeneration,
+    });
+
+    expect(response).toBeNull();
+    expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(cacheOutcomes).toEqual([
+      {
+        artifact: "html",
+        cacheKey: "html:/expired",
+        outcome: "miss",
+        reason: "expired",
+      },
+    ]);
+  });
+
   it("falls back to 200 for falsy cached status values", () => {
     const response = buildAppPageCachedResponse(
       buildCachedAppPageValue("<h1>cached</h1>", undefined, 0),
@@ -779,6 +819,33 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("x-from-middleware")).toBe("yes");
     await expect(response?.text()).resolves.toContain("rewritten stale shell");
     expect(debugCalls).toContainEqual(["STALE (fallback shell)", "/en/blog/[slug]"]);
+  });
+
+  it("does not serve a hard-expired static fallback shell", async () => {
+    const clearRequestContext = vi.fn();
+    const response = await readAppPageFallbackShellCacheResponse({
+      clearRequestContext,
+      async isrGet() {
+        return {
+          ...buildISRCacheEntry(
+            buildCachedAppPageValue("<html><head></head><body>expired shell</body></html>"),
+            true,
+          ),
+          isExpired: true,
+        };
+      },
+      isrHtmlKey(pathname) {
+        return `html:${pathname}`;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      revalidateSeconds: 60,
+      rewriteHtml(html) {
+        return html;
+      },
+    });
+
+    expect(response).toBeNull();
+    expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
   it("falls through when a cached fallback shell requires request-time resume", async () => {

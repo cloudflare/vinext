@@ -139,6 +139,92 @@ describe("KVCacheHandler", () => {
     expect(result!.value).toBeNull();
   });
 
+  describe("KV key length guard", () => {
+    const pageValue = {
+      kind: "PAGES" as const,
+      html: "<html></html>",
+      pageData: {},
+      headers: undefined,
+      status: 200,
+    };
+
+    it("keeps short fully-prefixed entry keys unchanged", async () => {
+      const prefixedHandler = new KVCacheHandler(kv as any, { appPrefix: "docs" });
+
+      await prefixedHandler.set("short", pageValue);
+
+      expect(kv.put).toHaveBeenCalledWith(
+        "docs:cache:short",
+        expect.any(String),
+        expect.any(Object),
+      );
+    });
+
+    it("hashes a logical key when the complete prefixed entry key exceeds 512 bytes", async () => {
+      const prefixedHandler = new KVCacheHandler(kv as any, { appPrefix: "docs" });
+      // This mirrors buildUseCacheKey's former boundary bug: the readable
+      // scoped key consumed 480 bytes before a 24-byte args hash was appended.
+      const logicalKey = `use-cache:${"m".repeat(470)}:__hash:${"a".repeat(16)}`;
+
+      await prefixedHandler.set(logicalKey, pageValue);
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
+      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{16}$/);
+
+      kv.get.mockClear();
+      expect(await prefixedHandler.get(logicalKey)).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledWith(storedKey);
+    });
+
+    it("measures multibyte logical keys by UTF-8 byte length", async () => {
+      const logicalKey = "🔥".repeat(130);
+
+      await handler.set(logicalKey, pageValue);
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{16}$/);
+      expect(await handler.get(logicalKey)).not.toBeNull();
+    });
+
+    it("normalizes an oversized app prefix while preserving entry listing", async () => {
+      const prefixedHandler = new KVCacheHandler(kv as any, {
+        appPrefix: "🚀".repeat(130),
+      });
+
+      await prefixedHandler.set("short", pageValue);
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
+      expect(storedKey).toMatch(/^__app:[0-9a-f]{16}:cache:short$/);
+
+      await prefixedHandler.revalidateByPathPrefix!("/");
+      expect(kv.list).toHaveBeenCalledWith(
+        expect.objectContaining({ prefix: storedKey.slice(0, -"short".length) }),
+      );
+    });
+
+    it("uses the same bounded storage key for multibyte tag writes and reads", async () => {
+      const tag = "é".repeat(256);
+      await handler.revalidateTag(tag);
+
+      const tagKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(tagKey).length).toBeLessThanOrEqual(512);
+      expect(tagKey).toMatch(/^__tag:__hash:[0-9a-f]{16}$/);
+
+      store.set(
+        "cache:tagged-with-long-tag",
+        validEntry(pageValue, { tags: [tag], lastModified: Date.now() + 1_000 }),
+      );
+      const freshHandler = new KVCacheHandler(kv as any);
+      kv.get.mockClear();
+
+      expect(await freshHandler.get("tagged-with-long-tag")).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledWith(tagKey);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Schema validation (H12)
   // -------------------------------------------------------------------------
@@ -1344,7 +1430,7 @@ describe("KVCacheHandler", () => {
       expect((beforeHit!.value as any).html).toBe("<html>foo</html>");
 
       // Public revalidatePath API call (no type → bare _N_T_/foo tag).
-      await revalidatePath("/foo");
+      await Promise.resolve(revalidatePath("/foo"));
 
       // The cached entry must now be a hard miss.
       handler.resetRequestCache();
@@ -1355,7 +1441,7 @@ describe("KVCacheHandler", () => {
       await seedAppPage("/blog/hello", "<html>hello</html>");
       await seedAppPage("/blog/world", "<html>world</html>");
 
-      await revalidatePath("/blog/hello");
+      await Promise.resolve(revalidatePath("/blog/hello"));
 
       handler.resetRequestCache();
       expect(await handler.get("/blog/hello")).toBeNull();
@@ -1366,7 +1452,7 @@ describe("KVCacheHandler", () => {
     it("invalidates the root page after revalidatePath('/')", async () => {
       await seedAppPage("/", "<html>home</html>");
 
-      await revalidatePath("/");
+      await Promise.resolve(revalidatePath("/"));
 
       handler.resetRequestCache();
       expect(await handler.get("/")).toBeNull();
@@ -1378,7 +1464,7 @@ describe("KVCacheHandler", () => {
       // /dashboard/layout tag is included in the page's cache tags by
       // buildAppPageCacheTags. revalidatePath('/dashboard', 'layout') should
       // therefore invalidate this nested entry.
-      await revalidatePath("/dashboard", "layout");
+      await Promise.resolve(revalidatePath("/dashboard", "layout"));
 
       handler.resetRequestCache();
       expect(await handler.get("/dashboard/settings")).toBeNull();
@@ -1388,7 +1474,7 @@ describe("KVCacheHandler", () => {
       await seedAppPage("/about", "<html>about</html>");
       await seedAppPage("/about/team", "<html>team</html>");
 
-      await revalidatePath("/about", "page");
+      await Promise.resolve(revalidatePath("/about", "page"));
 
       handler.resetRequestCache();
       expect(await handler.get("/about")).toBeNull();
@@ -1429,7 +1515,7 @@ describe("KVCacheHandler", () => {
       const beforeHit = await handler.get("/seeded");
       expect(beforeHit).not.toBeNull();
 
-      await revalidatePath("/seeded");
+      await Promise.resolve(revalidatePath("/seeded"));
 
       handler.resetRequestCache();
       expect(await handler.get("/seeded")).toBeNull();
@@ -1455,7 +1541,7 @@ describe("KVCacheHandler", () => {
         { revalidateSeconds: 60 },
       );
 
-      await revalidatePath("/legacy-seeded");
+      await Promise.resolve(revalidatePath("/legacy-seeded"));
 
       handler.resetRequestCache();
       // Entry remains because it has no tags to match against the

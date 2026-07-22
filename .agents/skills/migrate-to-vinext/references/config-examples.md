@@ -50,30 +50,26 @@ export default defineConfig({
 
 ## App Router — Cloudflare Workers
 
-Full manual config with explicit RSC plugin registration and Cloudflare multi-environment setup:
+Cloudflare multi-environment setup. RSC plugin registration stays automatic — do **not** add an explicit
+`rsc()` call, or the build fails with `[vinext] Duplicate @vitejs/plugin-rsc detected`.
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import rsc from "@vitejs/plugin-rsc";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
   plugins: [
     vinext(),
-    rsc({
-      entries: {
-        rsc: "virtual:vinext-rsc-entry",
-        ssr: "virtual:vinext-app-ssr-entry",
-        client: "virtual:vinext-app-browser-entry",
-      },
-    }),
     cloudflare({
       viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
     }),
   ],
 });
 ```
+
+`@vitejs/plugin-rsc` is an optional peer dependency: it must be installed in the project, but vinext
+registers it for you. Only register it yourself after passing `rsc: false` to `vinext()`.
 
 In most cases `npx @vinext/cloudflare deploy` generates this automatically. Only use manual config when customizing the worker entry or adding bindings.
 

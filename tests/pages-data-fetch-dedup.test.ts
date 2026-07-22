@@ -38,6 +38,25 @@ afterEach(() => {
 });
 
 describe("dedupedPagesDataFetch", () => {
+  it("does not share in-flight requests across the preview boundary", async () => {
+    const previousWindow = (globalThis as { window?: unknown }).window;
+    const fetchSpy = vi.fn(() => new Promise<Response>(() => {}));
+    (globalThis as unknown as { fetch: unknown }).fetch = fetchSpy;
+    (globalThis as unknown as { window: unknown }).window = {
+      location: { href: "https://example.test/" },
+      __NEXT_DATA__: { isPreview: false },
+    };
+
+    try {
+      void dedupedPagesDataFetch("/_next/data/id/page.json");
+      (globalThis as any).window.__NEXT_DATA__.isPreview = true;
+      void dedupedPagesDataFetch("/_next/data/id/page.json");
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      (globalThis as { window?: unknown }).window = previousWindow;
+    }
+  });
+
   it("shares a single fetch across concurrent calls for the same URL", async () => {
     // Hold the fetch open so all 10 callers race the same in-flight Promise.
     let resolveFetch: (res: Response) => void = () => {};

@@ -45,7 +45,7 @@ import {
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
-import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "./headers.js";
+import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import {
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
@@ -56,6 +56,7 @@ import {
   notFoundStaticAssetResponse,
 } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -84,8 +85,18 @@ export default {
 async function handleRequest(
   request: Request,
   env: WorkerAssetEnv | undefined,
-  ctx: ExecutionContextLike | undefined,
+  platformCtx: ExecutionContextLike | undefined,
 ): Promise<Response> {
+  // The Node production server calls this Worker-style entry with a
+  // server-owned loopback origin and must retain its HTTP revalidation path.
+  // Cloudflare requests instead receive an in-process dispatcher so the
+  // credential never leaves the Worker isolate.
+  const ctx = platformCtx?.trustedRevalidateOrigin
+    ? platformCtx
+    : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
+        handleRequest(internalRequest, env, internalCtx),
+      );
+
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
@@ -136,7 +147,10 @@ async function handleRequest(
   // Builds a new Headers — Request.headers is immutable in Workers.
   {
     const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
-    const filteredHeaders = filterInternalHeaders(request.headers);
+    const filteredHeaders = ctx.isInternalPagesRevalidation
+      ? new Headers(request.headers)
+      : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
       prerenderRouteParamsPayload,
     );

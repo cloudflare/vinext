@@ -456,7 +456,7 @@ describe("vinext:local-fonts plugin", () => {
     });
     expect(result.className).toBeDefined();
     // variable returns a class name, not the variable name
-    expect(result.variable).toMatch(/^__variable_local_\d+$/);
+    expect(result.variable).toMatch(/^__variable_local_[0-9a-f]+$/);
   });
 
   it("uses the transform-provided binding name as the class font-family", () => {

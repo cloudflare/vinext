@@ -77,7 +77,7 @@ declare global {
     __VINEXT_APP__:
       | React.ComponentType<{
           Component: React.ComponentType<Record<string, unknown>>;
-          pageProps: unknown;
+          pageProps?: unknown;
           router?: unknown;
           [key: string]: unknown;
         }>
@@ -298,7 +298,7 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_DOMAIN_LOCALES__:
-    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
+    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: true }>
     | undefined;
 
   /**
@@ -412,6 +412,9 @@ declare global {
        * standalone code paths.
        */
       __VINEXT_SHARED_REVALIDATE_SECRET?: string;
+      __VINEXT_PREVIEW_MODE_ID?: string;
+      __VINEXT_PREVIEW_MODE_SIGNING_KEY?: string;
+      __VINEXT_PREVIEW_MODE_ENCRYPTION_KEY?: string;
 
       /**
        * Deployment ID string injected via Vite `define` when
@@ -486,6 +489,8 @@ declare module "node:http" {
      * the final response status.
      */
     __vinextMiddlewareStatus?: number;
+    /** Encoded request URL captured before Vite normalizes the pathname. */
+    __vinextOriginalEncodedUrl?: string;
   }
 }
 

@@ -1,5 +1,37 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.3
+
+### Bug Fixes
+
+- **Cloudflare:** report custom-domain deploy URLs (#2630)
+
+### Contributors
+
+- @NathanDrake2406
+
+## 1.0.0-beta.2
+
+### Bug Fixes
+
+- **Cache:** guard 'use cache' key against Cloudflare KV's 512-byte limit (#2606)
+- **Create:** make create-vinext-app work with npm and npx (#2618)
+
+### Contributors
+
+- @blitss
+- @james-elicx
+
+## 1.0.0-beta.1
+
+### Bug Fixes
+
+- **Build:** honor inline next config for static export (#2543)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.0
 
 ### Features

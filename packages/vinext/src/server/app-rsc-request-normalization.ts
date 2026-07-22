@@ -32,6 +32,8 @@ export type NormalizedRscRequest = {
   pathname: string;
   /** Pathname with `.rsc` suffix removed. Used for route matching and navigation context. */
   cleanPathname: string;
+  /** Original encoded request pathname with basePath and `.rsc` removed. */
+  requestCleanPathname: string;
   /** True when the request targets a canonical `.rsc` payload URL. */
   isRscRequest: boolean;
   /** Sanitized X-Vinext-Interception-Context header (null bytes stripped). null when absent. */
@@ -100,6 +102,7 @@ export function normalizeRscRequest(
 
   // Step 4: Collapse double-slashes and resolve . / .. segments.
   let pathname = normalizePath(decoded);
+  let requestPathname = url.pathname;
   let hadBasePath = true;
 
   // Step 5: basePath check and strip.
@@ -107,16 +110,20 @@ export function normalizeRscRequest(
   // /__vinext/ prefix bypasses the check for internal prerender endpoints
   // that must be reachable regardless of basePath configuration.
   if (basePath) {
-    hadBasePath = hasBasePath(pathname, basePath);
+    hadBasePath = hasBasePath(requestPathname, basePath);
     if (!hadBasePath && !pathname.startsWith("/__vinext/") && !allowOutsideBasePath) {
       return notFoundResponse();
     }
-    if (hadBasePath) pathname = stripBasePath(pathname, basePath);
+    if (hadBasePath) {
+      pathname = stripBasePath(pathname, basePath);
+      requestPathname = stripBasePath(requestPathname, basePath);
+    }
   }
 
   // Steps 6-7: RSC detection and cleanPathname.
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1";
   const cleanPathname = stripRscSuffix(pathname);
+  const requestCleanPathname = stripRscSuffix(requestPathname);
 
   // Step 8: Validate and sanitize X-Vinext-Interception-Context.
   //
@@ -146,6 +153,7 @@ export function normalizeRscRequest(
     url,
     pathname,
     cleanPathname,
+    requestCleanPathname,
     isRscRequest,
     interceptionContextHeader,
     mountedSlotsHeader,

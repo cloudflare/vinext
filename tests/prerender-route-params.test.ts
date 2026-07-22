@@ -20,6 +20,11 @@ describe("prerenderRouteParamsPayloadMatchesRoute", () => {
     ).toBe(true);
     expect(
       prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
+        id: "sticks%20%26%20stones",
+      }),
+    ).toBe(true);
+    expect(
+      prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
         id: "sticks-and-stones",
       }),
     ).toBe(false);
@@ -39,6 +44,11 @@ describe("prerenderRouteParamsPayloadMatchesRoute", () => {
     expect(
       prerenderRouteParamsPayloadMatchesRoute(payload, "/docs/:slug+", {
         slug: ["sticks & stones", "more words"],
+      }),
+    ).toBe(true);
+    expect(
+      prerenderRouteParamsPayloadMatchesRoute(payload, "/docs/:slug+", {
+        slug: ["sticks%20%26%20stones", "more%20words"],
       }),
     ).toBe(true);
     expect(

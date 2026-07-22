@@ -52,10 +52,11 @@ const staticDataSources = new Map<string, Promise<Response>>();
 
 function getStaticDataKey(dataHref: string): string {
   if (typeof window === "undefined") return dataHref;
+  const previewVariant = window.__NEXT_DATA__?.isPreview === true ? "preview" : "normal";
   try {
-    return new URL(dataHref, window.location.href).href;
+    return `${new URL(dataHref, window.location.href).href}\n${previewVariant}`;
   } catch {
-    return dataHref;
+    return `${dataHref}\n${previewVariant}`;
   }
 }
 
@@ -146,7 +147,11 @@ function getInflightKey(dataHref: string, init?: RequestInit): string {
   }
 
   const deploymentId = new Headers(init?.headers).get(NEXT_DEPLOYMENT_ID_HEADER) ?? "";
-  return `${resolvedHref}\n${deploymentId}`;
+  const previewVariant =
+    typeof window !== "undefined" && window.__NEXT_DATA__?.isPreview === true
+      ? "preview"
+      : "normal";
+  return `${resolvedHref}\n${deploymentId}\n${previewVariant}`;
 }
 
 function cloneSharedResponse(

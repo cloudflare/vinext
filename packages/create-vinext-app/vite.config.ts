@@ -1,5 +1,10 @@
 import { defineConfig } from "vite-plus";
 
+const typescriptPackageUrl = import.meta.resolve("typescript/package.json");
+const { default: getTscPath } = await import(
+  new URL("lib/getExePath.js", typescriptPackageUrl).href
+);
+
 const bundledDeps = [
   "@jridgewell/sourcemap-codec",
   "am-i-vibing",
@@ -31,12 +36,15 @@ export default defineConfig({
       neverBundle: (id) =>
         id.includes("node_modules") && !bundledDeps.some((dep) => id.includes(dep)),
     },
-    dts: true,
+    dts: {
+      tsgo: { path: getTscPath() },
+    },
     fixedExtension: false,
     format: "esm",
     inputOptions: {
       external: externalizeBareThirdPartySpecifiers,
     },
+    tsconfig: "../../tsconfig.create-vinext-app-dts.json",
     unbundle: true,
   },
 });

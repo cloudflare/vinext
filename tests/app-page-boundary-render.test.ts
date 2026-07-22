@@ -145,8 +145,10 @@ function GlobalErrorBoundaryWithStack({ error }: { error: Error }) {
 
 type TestModule = {
   default: React.ComponentType<any>;
+  generateMetadata?: (props: any) => unknown;
+  generateViewport?: (props: any) => unknown;
   metadata?: { description?: string; title?: string };
-  viewport?: { themeColor: string };
+  viewport?: Record<string, unknown>;
 };
 
 const rootLayoutModule = {
@@ -350,6 +352,178 @@ describe("app page boundary render helpers", () => {
     const html = await response?.text();
     expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
     expect(html).toContain("<title>notfound title</title>");
+  });
+
+  it("uses mirrored-slot params and branch-local metadata and viewport for blocking 404s", async () => {
+    const common = createCommonOptions();
+    const applyMetadata = vi.fn(
+      async (metadata: Parameters<typeof applyFileBasedMetadata>[0]) => metadata,
+    );
+    const metadataParams: unknown[] = [];
+    const viewportParams: unknown[] = [];
+    const primaryNotFound = {
+      default: NotFoundBoundary,
+      viewport: { width: "primary-only" },
+    } satisfies TestModule;
+    const slotNotFound = {
+      default: NotFoundBoundary,
+      async generateMetadata({ params }: { params: Promise<unknown> }) {
+        metadataParams.push(await params);
+        return { title: "slot blocking metadata" };
+      },
+      async generateViewport({ params }: { params: Promise<unknown> }) {
+        viewportParams.push(await params);
+        return { themeColor: "#abcdef" };
+      },
+    } satisfies TestModule;
+    const route = {
+      layouts: [],
+      notFound: primaryNotFound,
+      notFoundTreePosition: 3,
+      pattern: "/distinct/[id]/[...rest]",
+      routeSegments: ["distinct", "[id]", "[...rest]"],
+      slots: {
+        mirrored: {
+          layoutIndex: -1,
+          name: "mirrored",
+          notFound: slotNotFound,
+          notFoundTreePosition: 3,
+          routeSegments: ["distinct", "[name]", "[...catchAll]"],
+          slotParamNames: ["name", "catchAll"],
+          slotPatternParts: ["distinct", ":name", ":catchAll+"],
+        },
+      },
+    } as const;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      applyFileBasedMetadata: applyMetadata,
+      basePath: "/base",
+      matchedParams: { id: "alice", rest: ["tail"] },
+      metadataRoutes: [
+        {
+          contentType: "image/png",
+          filePath: "/tmp/app/icon.png",
+          isDynamic: false,
+          routePrefix: "/",
+          servedUrl: "/icon.png",
+          type: "icon",
+        },
+      ],
+      request: new Request("https://example.com/base/distinct/alice/tail"),
+      requestUrl: "https://example.com/base/distinct/alice/tail",
+      route,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toContain("<title>slot blocking metadata</title>");
+    expect(html).toContain('name="theme-color" content="#abcdef"');
+    expect(html).toContain("width=primary-only");
+    expect(metadataParams).toEqual([
+      { catchAll: ["tail"], name: "alice" },
+      { catchAll: ["tail"], name: "alice" },
+    ]);
+    expect(viewportParams).toEqual([{ catchAll: ["tail"], name: "alice" }]);
+    expect(applyMetadata).toHaveBeenCalledTimes(1);
+
+    metadataParams.length = 0;
+    viewportParams.length = 0;
+    const rscResponse = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      basePath: "/base",
+      isRscRequest: true,
+      matchedParams: { id: "alice", rest: ["tail"] },
+      renderToReadableStream: renderWirePayloadToStream,
+      request: new Request("https://example.com/base/distinct/alice/tail.rsc"),
+      requestUrl: "https://example.com/base/distinct/alice/tail.rsc",
+      route,
+      statusCode: 404,
+    });
+    expect(rscResponse?.status).toBe(404);
+    expect(metadataParams).toEqual([
+      { catchAll: ["tail"], name: "alice" },
+      { catchAll: ["tail"], name: "alice" },
+    ]);
+    expect(viewportParams).toEqual([{ catchAll: ["tail"], name: "alice" }]);
+  });
+
+  it("scopes an explicitly selected ancestor not-found boundary to its layout params", async () => {
+    const common = createCommonOptions();
+    const seenParams: unknown[] = [];
+    const ancestorNotFound = {
+      default: NotFoundBoundary,
+      async generateMetadata({ params }: { params: Promise<unknown> }) {
+        seenParams.push(await params);
+        return { title: "ancestor not found" };
+      },
+    } satisfies TestModule;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      boundaryModule: ancestorNotFound,
+      matchedParams: { locale: "en", slug: "missing" },
+      route: {
+        layoutTreePositions: [1, 3],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        notFoundTreePosition: 3,
+        notFounds: [ancestorNotFound, null],
+        pattern: "/[locale]/posts/[slug]",
+        routeSegments: ["[locale]", "posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(seenParams).toEqual([{ locale: "en" }]);
+  });
+
+  it("uses loader-tree head traversal for blocking auth fallbacks", async () => {
+    const common = createCommonOptions();
+    const seenParams: unknown[] = [];
+    const forbiddenModule = {
+      default: NotFoundBoundary,
+      async generateMetadata({ params }: { params: Promise<unknown> }) {
+        seenParams.push(await params);
+        return { title: "forbidden metadata" };
+      },
+    } satisfies TestModule;
+    const slotLayout = {
+      default: RootLayout,
+      metadata: { description: "active slot description" },
+      viewport: { themeColor: "#403403" },
+    } satisfies TestModule;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { locale: "en", slug: "private" },
+      route: {
+        forbidden: forbiddenModule,
+        forbiddenTreePosition: 1,
+        layoutTreePositions: [1],
+        layouts: [rootLayoutModule],
+        pattern: "/[locale]/posts/[slug]",
+        routeSegments: ["[locale]", "posts", "[slug]"],
+        slots: {
+          sidebar: {
+            layout: slotLayout,
+            layoutIndex: 0,
+            name: "sidebar",
+            routeSegments: ["[locale]", "posts", "[slug]"],
+          },
+        },
+      },
+      statusCode: 403,
+    });
+
+    expect(response?.status).toBe(403);
+    const html = await response?.text();
+    expect(html).toContain("<title>forbidden metadata</title>");
+    expect(html).toContain('content="active slot description"');
+    expect(html).toContain('name="theme-color" content="#403403"');
+    expect(seenParams).toEqual([{ locale: "en" }, { locale: "en" }]);
   });
 
   it("does not inject child route file metadata into layout-level HTTP access fallbacks", async () => {

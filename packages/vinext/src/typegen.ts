@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
+import os from "node:os";
 import path from "pathslash";
 import { isInvisibleSegment } from "./routing/app-route-graph.js";
 import { appRouteGraph } from "./routing/app-router.js";
@@ -13,37 +15,116 @@ type GenerateRouteTypesOptions = {
   pageExtensions?: readonly string[];
 };
 
+export type GenerateRouteTypesResult = {
+  routeTypesPath: string;
+  nextEnvPath: string;
+  nextEnvStatus: "created" | "updated" | "unchanged";
+};
+
 type ParamShape = Map<string, "string" | "string[]" | "string[]?">;
 
-const NEXT_ENV_FILE_CONTENT = `/// <reference types="next" />
+export function nextEnvFileContent(hasNext: boolean, hasAppDir: boolean, eol = "\n"): string {
+  const typeReference = hasNext
+    ? `/// <reference types="next" />
 /// <reference types="next/image-types/global" />
-import "./.next/types/routes.d.ts";
-
-// NOTE: This file should not be edited
-// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
+import "vinext/types/augmentations";
+`
+    : `import "vinext/types";
 `;
 
-export async function generateRouteTypes(options: GenerateRouteTypesOptions): Promise<string> {
+  return `${typeReference}import "./.next/types/routes.d.ts";
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/${hasAppDir ? "app" : "pages"}/api-reference/config/typescript for more information.
+`.replaceAll("\n", eol);
+}
+
+export async function generateRouteTypes(
+  options: GenerateRouteTypesOptions,
+): Promise<GenerateRouteTypesResult> {
   const root = path.resolve(options.root);
-  const appDir = options.appDir ? path.resolve(options.appDir) : findDir(root, "app", "src/app");
+  const appDir =
+    options.appDir === null
+      ? null
+      : options.appDir
+        ? path.resolve(options.appDir)
+        : findDir(root, "app", "src/app");
   const outPath = path.join(root, ".next", "types", "routes.d.ts");
+  const pagesDir = findDir(root, "pages", "src/pages");
 
   const content = appDir
-    ? renderRouteTypes(await collectRouteTypeModel(appDir, options.pageExtensions))
-    : renderRouteTypes(emptyRouteTypeModel());
+    ? renderRouteTypes(
+        await collectRouteTypeModel(appDir, options.pageExtensions),
+        pagesDir !== null,
+      )
+    : renderRouteTypes(emptyRouteTypeModel(), false);
 
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   await fs.writeFile(outPath, content, "utf-8");
-  await ensureNextEnvFile(root);
-  return outPath;
+  const nextEnv = await ensureNextEnvFile(root, appDir !== null);
+  return {
+    routeTypesPath: outPath,
+    nextEnvPath: nextEnv.path,
+    nextEnvStatus: nextEnv.status,
+  };
 }
 
-async function ensureNextEnvFile(root: string): Promise<void> {
+async function ensureNextEnvFile(
+  root: string,
+  hasAppDir: boolean,
+): Promise<{ path: string; status: GenerateRouteTypesResult["nextEnvStatus"] }> {
   const envPath = path.join(root, "next-env.d.ts");
+  let eol = os.EOL;
+  let existing: string | undefined;
   try {
-    await fs.writeFile(envPath, NEXT_ENV_FILE_CONTENT, { encoding: "utf-8", flag: "wx" });
+    existing = await fs.readFile(envPath, "utf-8");
+    const newline = existing.indexOf("\n", 1);
+    if (newline !== -1) eol = existing[newline - 1] === "\r" ? "\r\n" : "\n";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const hasNext = await hasNextPackage(root);
+  const content = nextEnvFileContent(hasNext, hasAppDir, eol);
+  if (existing === content) return { path: envPath, status: "unchanged" };
+  await fs.writeFile(envPath, content, "utf-8");
+  return { path: envPath, status: existing === undefined ? "created" : "updated" };
+}
+
+async function hasNextPackage(root: string): Promise<boolean> {
+  const manifestPath = path.join(root, "package.json");
+  let declaresNext: boolean | undefined;
+  try {
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    declaresNext = [
+      "dependencies",
+      "devDependencies",
+      "peerDependencies",
+      "optionalDependencies",
+    ].some((field) => {
+      const dependencies = manifest[field];
+      return (
+        typeof dependencies === "object" &&
+        dependencies !== null &&
+        Object.hasOwn(dependencies, "next")
+      );
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  if (declaresNext === false) return false;
+
+  try {
+    const packageJsonPath = createRequire(manifestPath).resolve("next/package.json");
+    // Node caches successful resolution paths. Confirm the package still
+    // exists so a running dev process also handles Next.js being removed.
+    await fs.access(packageJsonPath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -139,12 +220,26 @@ async function collectRouteTypeModel(
   return model;
 }
 
-function renderRouteTypes(model: RouteTypeModel): string {
+function renderRouteTypes(model: RouteTypeModel, hasPagesCompat: boolean): string {
   const allRoutes = uniqueSorted([
     ...model.pageRoutes,
     ...model.layoutRoutes,
     ...model.routeHandlerRoutes,
   ]);
+
+  const navigationCompat = hasPagesCompat
+    ? `
+declare module "next/navigation" {
+  function useSearchParams(): import("next/navigation").ReadonlyURLSearchParams | null;
+  function usePathname(): string | null;
+  function useParams<
+    T extends Record<string, string | string[]> = Record<string, string | string[]>,
+  >(): T | null;
+  function useSelectedLayoutSegments(): string[] | null;
+  function useSelectedLayoutSegment(): string | null;
+}
+`
+    : "";
 
   return `// This file is generated by vinext. Do not edit.
 import type * as React from "react";
@@ -181,6 +276,8 @@ ${renderParamMap(allRoutes, model.params)}
 ${renderLayoutSlotMap(model.layoutRoutes, model.layoutSlots)}
   }
 }
+
+${navigationCompat}
 
 export {};
 `;

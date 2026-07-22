@@ -25,7 +25,7 @@ jobs:
       CVA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
       CVA_CLOUDFLARE_EXPECTED_TEXT: vinext + Cloudflare Workers
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -37,22 +37,19 @@ jobs:
         working-directory: packages/vinext
         run: |
           vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../cloudflare
           vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../create-vinext-app
           vp pm pack --pack-destination "${{ runner.temp }}"
 
-      - name: Install packed create-vinext-app runner
-        run: |
-          mkdir -p "${{ runner.temp }}/cva-runner"
-          cd "${{ runner.temp }}/cva-runner"
-          node -e 'require("fs").writeFileSync("package.json", JSON.stringify({ private: true, type: "module" }, null, 2) + "\n")'
-          vp add "${{ runner.temp }}"/create-vinext-app-*.tgz
-
       - name: Scaffold a fresh create-vinext-app project
-        working-directory: ${{ runner.temp }}/cva-runner
+        working-directory: ${{ runner.temp }}
         run: >-
-          vp exec create-vinext-app "${{ runner.temp }}/cva-cloudflare"
+          npx --yes
+          --package "${{ runner.temp }}"/create-vinext-app-*.tgz
+          create-vinext-app "${{ runner.temp }}/cva-cloudflare"
           --yes
           --skip-install
           --disable-git
@@ -87,6 +84,7 @@ jobs:
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Configure generated Cloudflare deployment

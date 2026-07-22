@@ -1,3 +1,5 @@
+import type { NextRouter } from "vinext/shims/router";
+
 type PagesGetInitialPropsContext = {
   req?: unknown;
   res?: unknown;
@@ -9,6 +11,34 @@ type PagesGetInitialPropsContext = {
   locales?: string[];
   defaultLocale?: string;
 } & Record<string, unknown>;
+
+export type PagesGetInitialPropsRouter = Omit<
+  Pick<NextRouter, "route" | "pathname" | "query" | "asPath">,
+  "query"
+> & {
+  query: Record<string, unknown>;
+};
+
+/**
+ * Build the URL-state subset of Next.js's ServerRouter used by isolated
+ * initial-props helpers. Real request handlers pass their full `next/router`
+ * instance; this fallback keeps direct helper callers and tests aligned with
+ * the same required fields.
+ */
+export function createPagesGetInitialPropsRouter(
+  pathname: string,
+  query: Record<string, unknown>,
+  asPath: string,
+): PagesGetInitialPropsRouter {
+  return {
+    // Mirrors Next.js ServerRouter: render.tsx removes one trailing slash and
+    // preserves `/` for the root route.
+    route: pathname.replace(/\/$/, "") || "/",
+    pathname,
+    query,
+    asPath,
+  };
+}
 
 type PagesGetInitialProps = (context: PagesGetInitialPropsContext) => unknown;
 
@@ -109,7 +139,7 @@ export type DevAppInitialPropsResult =
   | {
       kind: "render";
       pageProps: Record<string, unknown>;
-      renderProps: Record<string, unknown> & { pageProps: unknown };
+      renderProps: Record<string, unknown> & { pageProps?: unknown };
     };
 
 export type DevAppInitialPropsContext = {
@@ -126,6 +156,8 @@ export type DevAppInitialPropsContext = {
   pathname: string;
   query: Record<string, unknown>;
   asPath: string;
+  /** The request-scoped `next/router` server instance when available. */
+  router?: PagesGetInitialPropsRouter;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
@@ -151,7 +183,7 @@ export async function loadDevAppInitialProps(
   const initialProps = await loadPagesGetInitialProps(ctx.appComponent, {
     AppTree: ctx.appTree,
     Component: ctx.component,
-    router: { pathname: ctx.pathname, query: ctx.query, asPath: ctx.asPath },
+    router: ctx.router ?? createPagesGetInitialPropsRouter(ctx.pathname, ctx.query, ctx.asPath),
     ctx: {
       req: ctx.req,
       res: ctx.res,
@@ -174,8 +206,6 @@ export async function loadDevAppInitialProps(
   // only for merging data-function props and direct page rendering.
   const initialPageProps = isPropsObject(initialProps) ? initialProps.pageProps : undefined;
   const pageProps = isPropsObject(initialPageProps) ? initialPageProps : {};
-  const renderProps = isPropsObject(initialProps)
-    ? { ...initialProps, pageProps: initialPageProps }
-    : { pageProps: initialPageProps };
+  const renderProps = isPropsObject(initialProps) ? initialProps : {};
   return { kind: "render", pageProps, renderProps };
 }

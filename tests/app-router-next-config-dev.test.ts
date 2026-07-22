@@ -132,19 +132,20 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.redirected).toBe(false);
   });
 
-  // ── Percent-encoded paths should be decoded before config matching ──
+  // ── Config source literals retain raw request identity ──
+  // Next.js parity: resolve-routes.ts matches custom routes against curPathname.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
 
-  it("percent-encoded redirect path is decoded before config matching", async () => {
-    // /%6Fld-%61bout decodes to /old-about → /about (permanent redirect)
+  it("does not match a percent-encoded redirect source alias", async () => {
     const res = await fetch(`${baseUrl}/%6Fld-%61bout`, { redirect: "manual" });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toContain("/about");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
   });
 
-  it("percent-encoded header path is decoded before config matching", async () => {
-    // /%61bout decodes to /about → X-Page-Header: about-page
+  it("does not match a percent-encoded header source alias", async () => {
     const res = await fetch(`${baseUrl}/%61bout`);
-    expect(res.headers.get("x-page-header")).toBe("about-page");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-page-header")).toBeNull();
   });
 
   it("encoded slashes stay within a single segment for config header matching", async () => {
@@ -152,11 +153,9 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("x-custom-header")).toBeNull();
   });
 
-  it("percent-encoded rewrite path is decoded before config matching", async () => {
-    // /rewrite-%61bout decodes to /rewrite-about → /about (beforeFiles rewrite)
+  it("does not match a percent-encoded rewrite source alias", async () => {
     const res = await fetch(`${baseUrl}/rewrite-%61bout`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("About");
   });
 });

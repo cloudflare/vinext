@@ -401,6 +401,7 @@ import {
   isrGet as __isrGet,
   isrSet as __isrSet,
   isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage,
+  isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest,
   triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
 } from ${JSON.stringify(isrCachePath)};
 // Import server-only state module to register ALS-backed accessors.
@@ -617,6 +618,10 @@ function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
 }
 
+function matchRequestRoute(url) {
+  return __routeMatcher.matchRequestRoute(url);
+}
+
 /**
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
@@ -648,6 +653,8 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
 }
 
 const __i18nConfig = ${JSON.stringify(i18nConfig)};
+export { __i18nConfig };
+export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
@@ -743,6 +750,7 @@ export default createAppRscHandler({
     actionFailed,
     handlerStart,
     interceptionContext,
+    interceptionPathname,
     isProgressiveActionRender,
     isRscRequest,
     middlewareContext,
@@ -808,6 +816,8 @@ export default createAppRscHandler({
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
+          isProduction: process.env.NODE_ENV === "production",
         }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,
@@ -827,7 +837,10 @@ export default createAppRscHandler({
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       findIntercept(pathname) {
-        return findIntercept(pathname, interceptionContext);
+        return findIntercept(
+          pathname === cleanPathname ? interceptionPathname : pathname,
+          interceptionContext,
+        );
       },
       generateStaticParams: __generateStaticParams,
       getFontLinks: _getSSRFontLinks,
@@ -879,7 +892,7 @@ export default createAppRscHandler({
         });
       },
       async probePage(probeSearchParams = searchParams) {
-        const __probeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __probeIntercept = findIntercept(interceptionPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
         // component for dynamic bailout — matching the render path, which also
@@ -901,7 +914,7 @@ export default createAppRscHandler({
         }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {
-        const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
@@ -910,9 +923,10 @@ export default createAppRscHandler({
         }, errorOrigin);
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
-        const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
         return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+          routePathname: cleanPathname,
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
@@ -997,6 +1011,7 @@ export default createAppRscHandler({
     contentType,
     middlewareContext,
     request,
+    routeMatch,
   }) {
     const {
       handleProgressiveServerActionRequest: __handleProgressiveServerActionRequest,
@@ -1017,11 +1032,10 @@ export default createAppRscHandler({
       contentType,
       actionId,
     );
-    const __progressiveActionMatch = __isProgressiveAction ? matchRoute(cleanPathname) : null;
     const __hasPageRoute = Boolean(
-      __progressiveActionMatch &&
-        __progressiveActionMatch.route.__loadPage &&
-        !__progressiveActionMatch.route.__loadRouteHandler,
+      __isProgressiveAction &&
+        routeMatch?.route.__loadPage &&
+        !routeMatch.route.__loadRouteHandler,
     );
     return __handleProgressiveServerActionRequest({
       actionId,
@@ -1054,6 +1068,8 @@ export default createAppRscHandler({
     middlewareContext,
     mountedSlotsHeader,
     request,
+    routeMatch,
+    routePathname,
     searchParams,
   }) {
     const {
@@ -1061,7 +1077,7 @@ export default createAppRscHandler({
       readActionBodyWithLimit: __readBodyWithLimit,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
-    const __actionMatch = matchRoute(cleanPathname);
+    const __actionMatch = routeMatch;
     if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))
@@ -1101,6 +1117,8 @@ export default createAppRscHandler({
         __clearRequestContext();
       },
       contentType,
+      currentRouteMatch: __actionMatch,
+      currentRoutePathname: routePathname,
       createNotFoundElement(actionRouteId) {
         return {
           ...__AppElementsWire.createMetadataEntries({
@@ -1165,6 +1183,9 @@ export default createAppRscHandler({
           interceptLayouts: intercept.interceptLayouts,
           interceptLayoutSegments: intercept.interceptLayoutSegments,
           interceptBranchSegments: intercept.interceptBranchSegments,
+          interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
+          interceptNotFound: intercept.notFound,
+          interceptNotFoundTreePosition: intercept.notFoundTreePosition,
           interceptSlotId: intercept.slotId,
           interceptSlotKey: intercept.slotKey,
           interceptSourceMatchedUrl: interceptionContext,
@@ -1194,6 +1215,7 @@ export default createAppRscHandler({
       : ""
   }
   matchRoute,
+  matchRequestRoute,
   ${
     middlewarePath
       ? `runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, request }) {

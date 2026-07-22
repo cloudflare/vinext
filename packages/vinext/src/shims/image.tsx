@@ -15,16 +15,21 @@
 import React, { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as ReactDOM from "react-dom";
 import { Image as UnpicImage } from "@unpic/react";
+import type {
+  ImageLoader,
+  ImageProps as UpstreamImageProps,
+  ImgProps,
+  StaticImageData,
+  StaticImport,
+  StaticRequire,
+} from "@vinext/types/next/upstream/dist/shared/lib/get-img-props";
 import { getDeploymentId } from "../utils/deployment-id.js";
 import { hasRemoteMatch, isPrivateIp, type RemotePattern } from "./image-config.js";
 import { useMergedRef } from "./use-merged-ref.js";
 
-export type StaticImageData = {
-  src: string;
-  height: number;
-  width: number;
-  blurDataURL?: string;
-};
+export type { ImageLoader, StaticImageData, StaticRequire };
+export type ImageLoaderProps = Parameters<ImageLoader>[0];
+export type ImageProps = UpstreamImageProps;
 
 /**
  * Image config injected at build time via Vite define.
@@ -171,33 +176,6 @@ function createSyntheticLoadEvent(img: HTMLImageElement): React.SyntheticEvent<H
   };
 }
 
-type ImageProps = {
-  src: string | StaticImageData;
-  alt: string;
-  width?: number;
-  height?: number;
-  fill?: boolean;
-  preload?: boolean;
-  priority?: boolean;
-  quality?: number;
-  placeholder?: "blur" | "empty";
-  blurDataURL?: string;
-  loader?: (params: { src: string; width: number; quality?: number }) => string;
-  sizes?: string;
-  className?: string;
-  style?: React.CSSProperties;
-  onLoad?: React.ReactEventHandler<HTMLImageElement>;
-  /** @deprecated Use onLoad instead. Still supported for migration compat. */
-  onLoadingComplete?: (img: HTMLImageElement) => void;
-  onError?: React.ReactEventHandler<HTMLImageElement>;
-  onClick?: React.MouseEventHandler<HTMLImageElement>;
-  id?: string;
-  // Accept and ignore Next.js-specific props that don't apply
-  unoptimized?: boolean;
-  overrideSrc?: string;
-  loading?: "lazy" | "eager";
-};
-
 /**
  * Sanitize a blurDataURL to prevent CSS injection.
  *
@@ -260,16 +238,19 @@ function getFillStyle(
  * Shared by the Image component and getImageProps to keep behavior in sync.
  */
 function resolveImageSource(v: {
-  src: string | StaticImageData;
-  width?: number;
-  height?: number;
+  src: string | StaticImport;
+  width?: number | `${number}`;
+  height?: number | `${number}`;
   blurDataURL?: string;
 }): { src: string; width?: number; height?: number; blurDataURL?: string } {
-  const src = typeof v.src === "string" ? v.src : v.src.src;
-  const imgWidth = v.width ?? (typeof v.src === "object" ? v.src.width : undefined);
-  const imgHeight = v.height ?? (typeof v.src === "object" ? v.src.height : undefined);
+  const staticData = typeof v.src === "object" && "default" in v.src ? v.src.default : v.src;
+  const src = typeof staticData === "string" ? staticData : staticData.src;
+  const sourceWidth = v.width ?? (typeof staticData === "object" ? staticData.width : undefined);
+  const sourceHeight = v.height ?? (typeof staticData === "object" ? staticData.height : undefined);
+  const imgWidth = typeof sourceWidth === "string" ? Number(sourceWidth) : sourceWidth;
+  const imgHeight = typeof sourceHeight === "string" ? Number(sourceHeight) : sourceHeight;
   const imgBlurDataURL =
-    v.blurDataURL ?? (typeof v.src === "object" ? v.src.blurDataURL : undefined);
+    v.blurDataURL ?? (typeof staticData === "object" ? staticData.blurDataURL : undefined);
   return { src, width: imgWidth, height: imgHeight, blurDataURL: imgBlurDataURL };
 }
 
@@ -595,7 +576,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
-    const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: quality ?? 75 });
+    const resolvedQuality = typeof quality === "string" ? Number(quality) : (quality ?? 75);
+    const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: resolvedQuality });
     preloadImageResource({
       shouldPreload,
       src: resolvedSrc,
@@ -721,7 +703,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled, matching
   // Next.js behavior where .svg triggers unoptimized=true by default.
-  const imgQuality = quality ?? 75;
+  const imgQuality = typeof quality === "string" ? Number(quality) : (quality ?? 75);
   const isSvg = isSvgUrl(src);
   const skipOptimization = isSvg && !__dangerouslyAllowSVG;
 
@@ -797,9 +779,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
  * getImageProps — for advanced use cases (picture elements, background images).
  * Returns the props that would be passed to the underlying <img> element.
  */
-export function getImageProps(props: ImageProps): {
-  props: React.ImgHTMLAttributes<HTMLImageElement>;
-} {
+export function getImageProps(props: ImageProps): { props: ImgProps } {
   const {
     src: srcProp,
     alt,
@@ -845,21 +825,21 @@ export function getImageProps(props: ImageProps): {
             backgroundPosition: "center" as const,
           }
         : undefined;
-    return {
-      props: {
-        src: renderedSrc,
-        alt,
-        width: fill ? undefined : imgWidth,
-        height: fill ? undefined : imgHeight,
-        loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
-        fetchPriority: priority ? ("high" as const) : undefined,
-        decoding: "async" as const,
-        className,
-        "data-nimg": fill ? "fill" : "1",
-        style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
-        ...rest,
-      } as React.ImgHTMLAttributes<HTMLImageElement>,
+    const imageProps: ImgProps = {
+      src: renderedSrc,
+      alt,
+      width: fill ? undefined : imgWidth,
+      height: fill ? undefined : imgHeight,
+      loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
+      fetchPriority: priority ? ("high" as const) : undefined,
+      decoding: "async" as const,
+      className,
+      style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
+      ...rest,
+      sizes: sizes ?? (fill ? "100vw" : undefined),
+      srcSet: undefined,
     };
+    return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };
   }
 
   // Validate remote URLs against configured patterns
@@ -877,7 +857,7 @@ export function getImageProps(props: ImageProps): {
   }
 
   // Resolve src through custom loader if provided
-  const imgQuality = _quality ?? 75;
+  const imgQuality = typeof _quality === "string" ? Number(_quality) : (_quality ?? 75);
   const resolvedSrc = blockedInProd
     ? ""
     : loader
@@ -915,23 +895,21 @@ export function getImageProps(props: ImageProps): {
         }
       : undefined;
 
-  return {
-    props: {
-      src: optimizedSrc,
-      alt,
-      width: fill ? undefined : imgWidth,
-      height: fill ? undefined : imgHeight,
-      loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
-      fetchPriority: priority ? ("high" as const) : undefined,
-      decoding: "async" as const,
-      srcSet,
-      sizes: sizes ?? (fill ? "100vw" : undefined),
-      className,
-      "data-nimg": fill ? "fill" : "1",
-      style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
-      ...rest,
-    } as React.ImgHTMLAttributes<HTMLImageElement>,
+  const imageProps: ImgProps = {
+    src: optimizedSrc,
+    alt,
+    width: fill ? undefined : imgWidth,
+    height: fill ? undefined : imgHeight,
+    loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
+    fetchPriority: priority ? ("high" as const) : undefined,
+    decoding: "async" as const,
+    srcSet,
+    sizes: sizes ?? (fill ? "100vw" : undefined),
+    className,
+    style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
+    ...rest,
   };
+  return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };
 }
 
 export default Image;

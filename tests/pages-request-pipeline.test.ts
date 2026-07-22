@@ -7,6 +7,7 @@ import {
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
+import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 
 // Helpers
 
@@ -44,6 +45,50 @@ function makeRenderPage(status = 200, body = "ok") {
   );
 }
 
+describe("on-demand revalidation middleware bypass", () => {
+  it("uses the runtime adapter's authoritative credential verifier", async () => {
+    const runMiddleware = makeMiddleware({});
+    const authorizeOnDemandRevalidate = vi.fn((value: string | null) => value === "build-secret");
+    const request = makeRequest("/revalidate-target", {
+      [PRERENDER_REVALIDATE_HEADER]: "build-secret",
+    });
+
+    const result = await runPagesRequest(
+      request,
+      baseDeps({
+        authorizeOnDemandRevalidate,
+        hasMiddleware: true,
+        renderPage: makeRenderPage(),
+        runMiddleware,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(authorizeOnDemandRevalidate).toHaveBeenCalledWith("build-secret");
+    expect(runMiddleware).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass middleware when the authoritative verifier rejects the header", async () => {
+    const runMiddleware = makeMiddleware({});
+    const authorizeOnDemandRevalidate = vi.fn(() => false);
+    const request = makeRequest("/revalidate-target", {
+      [PRERENDER_REVALIDATE_HEADER]: "forged-secret",
+    });
+
+    await runPagesRequest(
+      request,
+      baseDeps({
+        authorizeOnDemandRevalidate,
+        hasMiddleware: true,
+        renderPage: makeRenderPage(),
+        runMiddleware,
+      }),
+    );
+
+    expect(runMiddleware).toHaveBeenCalledOnce();
+  });
+});
+
 // 1. Trailing-slash: /foo/ with trailingSlash: false → {type:"response"} with status 308
 describe("trailing slash normalization", () => {
   it("redirects /foo/ to /foo when trailingSlash is false", async () => {
@@ -61,6 +106,18 @@ describe("trailing slash normalization", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
+  });
+
+  it("preserves raw encoded spelling in trailing-slash redirects", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/%61bout"),
+      baseDeps({ trailingSlash: true }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(308);
+    expect(result.response.headers.get("Location")).toBe("/%61bout/");
   });
 });
 
@@ -141,6 +198,40 @@ describe("config redirects", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
+  });
+
+  it("uses raw request identity and captures for config redirects", async () => {
+    const encodedAlias = await runPagesRequest(
+      makeRequest("/old"),
+      baseDeps({
+        configMatchPathname: "/%6Fld",
+        configRedirects: [{ source: "/old", destination: "/new", permanent: false }],
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(encodedAlias.type).toBe("response");
+    if (encodedAlias.type !== "response") return;
+    expect(encodedAlias.response.status).toBe(200);
+    expect(encodedAlias.response.headers.get("Location")).toBeNull();
+
+    const rawCapture = await runPagesRequest(
+      makeRequest("/repeat/a%2Fb"),
+      baseDeps({
+        configMatchPathname: "/repeat/a%252Fb",
+        configRedirects: [
+          {
+            source: "/repeat/:id",
+            destination: "/target/:id/:id",
+            permanent: false,
+          },
+        ],
+      }),
+    );
+
+    expect(rawCapture.type).toBe("response");
+    if (rawCapture.type !== "response") return;
+    expect(rawCapture.response.headers.get("Location")).toBe("/target/a%252Fb/a%252Fb");
   });
 });
 
@@ -650,6 +741,20 @@ describe("config headers", () => {
     if (result.type !== "response") return;
     expect(result.response.headers.get("X-Custom")).toBe("test");
   });
+
+  it("does not match percent-encoded static aliases", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/%61bout"),
+      baseDeps({
+        configHeaders: [{ source: "/about", headers: [{ key: "X-Custom", value: "test" }] }],
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("X-Custom")).toBeNull();
+  });
 });
 
 // 8. External proxy after middleware rewrite
@@ -680,6 +785,30 @@ describe("external proxy", () => {
 
 // 9. beforeFiles rewrite with external URL → {type:"response"} from proxy
 describe("beforeFiles rewrites", () => {
+  it("does not match decoded literal aliases from the normalized route pathname", async () => {
+    const renderPage = makeRenderPage();
+    const result = await runPagesRequest(
+      makeRequest("/alias"),
+      baseDeps({
+        configMatchPathname: "/%61lias",
+        configRewrites: {
+          beforeFiles: [{ source: "/alias", destination: "/about" }],
+          afterFiles: [],
+          fallback: [],
+        },
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/alias",
+      undefined,
+      expect.any(Headers),
+    );
+  });
+
   it("beforeFiles external rewrite proxies the request", async () => {
     const req = makeRequest("/proxy-me");
     const mockFetch = vi
