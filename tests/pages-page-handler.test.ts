@@ -269,6 +269,58 @@ describe("createPagesPageHandler — route miss", () => {
       expect(genericResponse.headers.get("cache-control")).toBe("no-store");
       expect(genericResponse.headers.get("cdn-cache-control")).toBeNull();
       expect(genericResponse.headers.get("cache-tag")).toBeNull();
+      await sourceResponse.text();
+      await genericResponse.text();
+      await Promise.resolve();
+      await Promise.resolve();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("keeps query-varying rewrite notFound error renders out of shared caches", async () => {
+    const originGet = vi.fn(async () => null);
+    const originSet = vi.fn(async () => {});
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      get: originGet,
+      set: originSet,
+      async revalidateTag() {},
+      buildResponseHeaders(input) {
+        return { "Cache-Control": input.cacheControl };
+      },
+    });
+    try {
+      const sourceRoute = makeRoute(
+        "/source",
+        makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+      );
+      const notFoundRoute = makeRoute(
+        "/404",
+        makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+      );
+      const handler = createPagesPageHandler(
+        makeOpts({ pageRoutes: [sourceRoute, notFoundRoute] }),
+      );
+
+      const response = await handler(
+        makeRequest("/middleware-source"),
+        "/source?from=middleware",
+        null,
+        null,
+        { hasMiddlewareRewrite: true },
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-tag")).toBeNull();
+      await response.text();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(originGet).not.toHaveBeenCalled();
+      expect(originSet).not.toHaveBeenCalled();
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }
@@ -444,6 +496,97 @@ describe("createPagesPageHandler — _next/data", () => {
       __N_PREVIEW: true,
       pageProps: { previewData: { draft: true } },
     });
+  });
+
+  it("keeps query-varying middleware rewrite SSG data misses private", async () => {
+    const originGet = vi.fn(async () => null);
+    const originSet = vi.fn(async () => {});
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      get: originGet,
+      set: originSet,
+      buildResponseHeaders() {
+        return {};
+      },
+      async revalidateTag() {},
+    });
+    const routeModule = makePageModule({
+      getStaticProps: async () => ({ props: { message: "rewritten" }, revalidate: 60 }),
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute("/static-gsp", routeModule)] }),
+    );
+    const dataUrl = "/_next/data/test-build-id/source.json";
+
+    try {
+      const response = await handler(
+        makeRequest(dataUrl),
+        "/static-gsp?variant=middleware",
+        null,
+        null,
+        { isDataReq: true, hasMiddlewareRewrite: true, originalUrl: dataUrl },
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(await response.json()).toMatchObject({ pageProps: { message: "rewritten" } });
+      expect(originGet).not.toHaveBeenCalled();
+      expect(originSet).not.toHaveBeenCalled();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  // Ported from Next.js's config-rewrite GSP hydration contract in:
+  // packages/next/src/client/index.tsx
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/index.tsx
+  it("shares config-rewritten GSP HTML without serializing source captures", async () => {
+    const routePath = `/config-rewrite-gsp-${Date.now()}`;
+    const getStaticProps = vi.fn(async () => ({
+      props: { message: "shared destination" },
+      revalidate: 60,
+    }));
+    const setSSRContext = vi.fn();
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute(routePath, makePageModule({ getStaticProps }))],
+        hasRewrites: true,
+        setSSRContext,
+      }),
+    );
+
+    const first = await handler(
+      makeRequest("/article/first"),
+      `${routePath}?slug=first`,
+      null,
+      null,
+      undefined,
+    );
+    const firstHtml = await first.text();
+    const second = await handler(
+      makeRequest("/article/second"),
+      `${routePath}?slug=second`,
+      null,
+      null,
+      undefined,
+    );
+    const secondHtml = await second.text();
+
+    expect(getStaticProps).toHaveBeenCalledOnce();
+    expect(first.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(second.headers.get("x-nextjs-cache")).toBe("HIT");
+    expect(secondHtml).toBe(firstHtml);
+    expect(firstHtml).not.toContain('"slug":"first"');
+    expect(secondHtml).not.toContain('"slug":"second"');
+    const renderContexts = setSSRContext.mock.calls
+      .map((call) => call[0])
+      .filter(
+        (value): value is { asPath: string; query: Record<string, unknown> } => value !== null,
+      );
+    expect(renderContexts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ asPath: routePath, query: {} })]),
+    );
   });
 });
 
@@ -901,6 +1044,64 @@ describe("createPagesPageHandler — SSR context", () => {
       | undefined;
     expect(ctx?.asPath).toBe("/about?hello=world");
   });
+
+  it.each([
+    {
+      label: "plain source URL",
+      i18nConfig: null,
+      requestUrl: "/source/?browser=one",
+      rewrittenUrl: "/posts/first?from=middleware",
+      expectedAsPath: "/source/?browser=one",
+    },
+    {
+      label: "locale-prefixed trailing-slash source URL",
+      i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+      requestUrl: "/en/source/?browser=one",
+      rewrittenUrl: "/en/posts/first?from=middleware",
+      expectedAsPath: "/source/?browser=one",
+    },
+  ])(
+    "preserves the $label as asPath for a static middleware rewrite",
+    async ({ i18nConfig, requestUrl, rewrittenUrl, expectedAsPath }) => {
+      const setSSRContext = vi.fn();
+      const route = makeRoute(
+        "/posts/:id",
+        makePageModule({
+          getStaticProps: async () => ({ props: { message: "rewritten" } }),
+        }),
+      );
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: [route],
+          i18nConfig,
+          setSSRContext,
+          vinextConfig: {
+            basePath: "",
+            assetPrefix: "",
+            trailingSlash: true,
+            disableOptimizedLoading: true,
+          },
+          matchRoute: (url) =>
+            url.split("?")[0] === "/posts/first" ? { route, params: { id: "first" } } : null,
+        }),
+      );
+
+      await handler(makeRequest(requestUrl), rewrittenUrl, null, null, {
+        asPath: requestUrl,
+        hasMiddlewareRewrite: true,
+        originalUrl: requestUrl,
+      });
+
+      const ctx = setSSRContext.mock.calls.find((call) => call[0] !== null)?.[0] as
+        | { pathname?: string; query?: Record<string, unknown>; asPath?: string }
+        | undefined;
+      expect(ctx).toMatchObject({
+        pathname: "/posts/[id]",
+        query: { from: "middleware", id: "first" },
+        asPath: expectedAsPath,
+      });
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

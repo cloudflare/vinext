@@ -31,6 +31,8 @@ export function getCurrentBrowserLocale({
   return (
     detectDomainLocale(domainLocales, hostname ?? undefined)?.defaultLocale ??
     window.__VINEXT_LOCALE__ ??
-    window.__VINEXT_DEFAULT_LOCALE__
+    window.__NEXT_DATA__?.locale ??
+    window.__VINEXT_DEFAULT_LOCALE__ ??
+    window.__NEXT_DATA__?.defaultLocale
   );
 }

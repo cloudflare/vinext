@@ -5,6 +5,11 @@ describe("createPagesDevHydrationScript", () => {
   it("generates the normal Pages Router hydration entry", () => {
     const script = createPagesDevHydrationScript({
       appModuleSource: "/pages/_app.tsx",
+      clientRewrites: {
+        beforeFiles: [{ source: "/article/:slug", destination: "/ssg" }],
+        afterFiles: [],
+        fallback: [],
+      },
       pageModuleSource: "/pages/index.tsx",
       reactStrictMode: true,
       replaceFallbackRoute: true,
@@ -17,7 +22,13 @@ describe("createPagesDevHydrationScript", () => {
     expect(script).toContain('() => import("/pages/_app.tsx")');
     expect(script).toContain("const appRouter = Router;");
     expect(script).not.toContain("pageProps: rawPageProps,");
-    expect(script).toContain("if (nextData.isFallback)");
+    expect(script).toContain('window.__VINEXT_CLIENT_REWRITES__ = {"beforeFiles"');
+    expect(script).toContain("const shouldHydrateQuery =");
+    expect(script).toContain(
+      "nextData.gsp && (window.location.search || nextData.__vinext?.hasRewrites)",
+    );
+    expect(script).toContain("{ _h: 1, shallow: !nextData.isFallback, scroll: false }");
+    expect(script).toContain(": { pathname: nextData.page, query: nextData.query },");
     expect(script).not.toContain("window.__VINEXT_PAGE_PATTERNS__ = [nextData.page]");
   });
 
@@ -36,7 +47,7 @@ describe("createPagesDevHydrationScript", () => {
     expect(script).toContain('() => import("next/error")');
     expect(script).toContain("const pageProps = rawPageProps ?? {};");
     expect(script).toContain("element = React.createElement(PageComponent, pageProps);");
-    expect(script).not.toContain("if (nextData.isFallback)");
+    expect(script).not.toContain("const shouldHydrateQuery =");
     expect(script).not.toContain("const appRouter =");
   });
 

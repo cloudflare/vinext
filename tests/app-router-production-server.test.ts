@@ -1229,6 +1229,22 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("cache-control")).toContain("immutable");
   });
 
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("finalizes missing build assets after preserving App middleware headers", async () => {
+    const res = await fetch(`${baseUrl}/_next/static/middleware-finalized-404.js`, {
+      headers: { "accept-encoding": "identity" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(res.headers.get("x-missing-asset-middleware")).toBe("yes");
+    expect(res.headers.get("content-encoding")).toBeNull();
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(res.headers.get("etag")).toBeNull();
+    expect(await res.text()).toBe("Not Found");
+  });
+
   it("serves public files from the build output", async () => {
     // Ported from Next.js: test/production/export/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/production/export/index.test.ts

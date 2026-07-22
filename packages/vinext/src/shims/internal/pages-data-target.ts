@@ -108,31 +108,40 @@ function clientMiddlewareSourceMatches(pathname: string, source: string): boolea
   return pathIndex === pathParts.length;
 }
 
-function clientMiddlewareMatcherMatches(pathname: string, matcher: unknown): boolean {
-  if (matcher === undefined) return true;
+function matchClientMiddleware(
+  pathname: string,
+  matcher: unknown,
+): { localeAware: boolean } | null {
+  if (matcher === undefined) return { localeAware: true };
   if (typeof matcher === "string") {
-    return clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), matcher);
+    return clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), matcher)
+      ? { localeAware: true }
+      : null;
   }
-  if (!Array.isArray(matcher)) return true;
+  if (!Array.isArray(matcher)) return { localeAware: true };
 
   for (const item of matcher) {
     if (typeof item === "string") {
       if (clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), item)) {
-        return true;
+        return { localeAware: true };
       }
       continue;
     }
-    if (!isClientMiddlewareMatcherObject(item)) return true;
+    if (!isClientMiddlewareMatcherObject(item)) return { localeAware: true };
     const candidate = item.locale === false ? pathname : stripLocaleForMiddlewareMatcher(pathname);
     if (clientMiddlewareSourceMatches(candidate, item.source)) {
-      return true;
+      return { localeAware: item.locale !== false };
     }
   }
 
-  return false;
+  return null;
 }
 
-export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string): string | null {
+export function getPagesMiddlewareDataHref(
+  browserUrl: string,
+  basePath: string,
+  options: { locale?: string } = {},
+): string | null {
   const nextData = window.__NEXT_DATA__;
   if (!nextData || !hasVinextMiddleware(nextData)) return null;
   const buildId = nextData.buildId;
@@ -146,9 +155,15 @@ export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string)
   }
   if (parsed.origin !== window.location.origin) return null;
 
-  const pathname = stripBasePath(parsed.pathname, basePath);
-  if (!clientMiddlewareMatcherMatches(pathname, window.__VINEXT_MIDDLEWARE_MATCHER__)) {
-    return null;
+  let pathname = stripBasePath(parsed.pathname, basePath);
+  const middlewareMatch = matchClientMiddleware(pathname, window.__VINEXT_MIDDLEWARE_MATCHER__);
+  if (!middlewareMatch) return null;
+  if (
+    options.locale &&
+    middlewareMatch.localeAware &&
+    !getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__)
+  ) {
+    pathname = `/${options.locale}${pathname === "/" ? "" : pathname}`;
   }
 
   return buildPagesDataHref(basePath, buildId, pathname, parsed.search);
@@ -224,7 +239,8 @@ export function resolvePagesDataNavigationTarget(
         : "none";
   const explicitLocale =
     options.locale === false ? window.__VINEXT_DEFAULT_LOCALE__ : options.locale;
-  const currentLocale = locale ?? explicitLocale ?? window.__VINEXT_LOCALE__;
+  const currentLocale =
+    locale ?? explicitLocale ?? window.__VINEXT_LOCALE__ ?? window.__VINEXT_DEFAULT_LOCALE__;
   const prefetchPagePath =
     locale || !currentLocale || !window.__VINEXT_LOCALES__?.includes(currentLocale)
       ? pagePath

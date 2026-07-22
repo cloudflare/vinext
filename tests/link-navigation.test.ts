@@ -2725,6 +2725,109 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("probes middleware for direct gSSP Link prefetches without caching page data", async () => {
+    const observer = stubIntersectionObserver();
+    const gsspLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/sha?hello=world",
+      nodeEnv: "production",
+      props: {
+        onNavigate: (event: { preventDefault(): void }) => event.preventDefault(),
+      },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          buildId: "build-id",
+          __vinext: { hasMiddleware: true },
+        },
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/sha"],
+        __VINEXT_PAGE_LOADERS__: { "/sha": gsspLoader },
+        __VINEXT_PAGE_PATTERNS__: ["/sha"],
+        __VINEXT_PAGES_SSG_PATTERNS__: [],
+        __VINEXT_PAGES_SSP_PATTERNS__: ["/sha"],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      const clickEvent = {
+        button: 0,
+        currentTarget: { hasAttribute: () => false, target: "" },
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      } satisfies CapturedClickEvent;
+      await result.capturedAnchorProps.onClick?.(clickEvent);
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(gsspLoader).toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      for (const call of result.fetch.mock.calls) {
+        expect(call).toEqual([
+          "/_next/data/build-id/sha.json?hello=world",
+          expect.objectContaining({
+            headers: expect.objectContaining({
+              purpose: "prefetch",
+              "x-middleware-prefetch": "1",
+              "x-nextjs-data": "1",
+            }),
+          }),
+        ]);
+      }
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps shallow middleware-matched gSSP Link prefetches chunk-only", async () => {
+    const observer = stubIntersectionObserver();
+    const shallowLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/sha?hello=world",
+      nodeEnv: "production",
+      props: { shallow: true },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          page: "/sha",
+          query: {},
+          buildId: "build-id",
+          __vinext: { hasMiddleware: true },
+        },
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/sha"],
+        __VINEXT_PAGE_LOADERS__: { "/sha": shallowLoader },
+        __VINEXT_PAGE_PATTERNS__: ["/sha"],
+        __VINEXT_PAGES_SSG_PATTERNS__: [],
+        __VINEXT_PAGES_SSP_PATTERNS__: ["/sha"],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await flushPrefetchTasks();
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(shallowLoader).toHaveBeenCalled();
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches implicit dynamic Pages Router links through a concrete route URL", async () => {
     const observer = stubIntersectionObserver();
     const dynamicLoader = vi.fn(async () => ({ default: null }));

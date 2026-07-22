@@ -35,7 +35,7 @@ import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
-import { mergeRewriteQuery } from "../utils/query.js";
+import { mergeRewriteQuery, mergeRouteParamsIntoQuery, setQueryValue } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
@@ -43,11 +43,18 @@ import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
   isDataReq?: boolean;
+  hasMiddlewareRewrite?: boolean;
+  rewriteQueryKeys?: string[];
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
 };
 
-export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
+export type FilesystemRoutePhase =
+  | "direct"
+  | "middlewareRewrite"
+  | "beforeFiles"
+  | "afterFiles"
+  | "fallback";
 
 type PageRouteMatch = {
   route: { isDynamic: boolean; pattern?: string; dataKind?: "static" | "server" | "none" };
@@ -332,6 +339,14 @@ export async function runPagesRequest(
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
+  let middlewareRewriteFired = false;
+  const rewriteQueryKeys = new Set<string>();
+  const recordRewriteQueryKeys = (rewriteUrl: string): void => {
+    const rewriteParams = new URL(rewriteUrl, url).searchParams;
+    for (const key of rewriteParams.keys()) {
+      rewriteQueryKeys.add(key);
+    }
+  };
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
   const serveFilesystemRoute = async (
@@ -426,7 +441,9 @@ export async function runPagesRequest(
 
     if (result.rewriteUrl) {
       resolvedUrl = result.rewriteUrl;
+      recordRewriteQueryKeys(resolvedUrl);
       resolvedPathnameIsRequestPathname = false;
+      middlewareRewriteFired = true;
     }
 
     // Reconciled superset: result.status takes priority over result.rewriteStatus
@@ -521,7 +538,10 @@ export async function runPagesRequest(
   // before rewrites so a real public file wins over a fallback rewrite — matching the
   // pre-refactor prod-server ordering. Adapter callbacks own their path guards;
   // a true result means Node already wrote the response.
-  const directFilesystemResult = await serveFilesystemRoute(pathname, "direct");
+  const directFilesystemResult = await serveFilesystemRoute(
+    middlewareRewriteFired ? resolvedPathname : pathname,
+    middlewareRewriteFired ? "middlewareRewrite" : "direct",
+  );
   if (directFilesystemResult) return directFilesystemResult;
 
   // Step 9: beforeFiles rewrites
@@ -698,11 +718,18 @@ export async function runPagesRequest(
     // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
-    const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
-      ? { renderErrorPageOnMiss: false }
-      : isDataReq
-        ? { isDataReq: true }
-        : undefined;
+    const buildRenderOptions = (extra?: PagesRenderOptions): PagesRenderOptions | undefined => {
+      if (!isDataReq && !middlewareRewriteFired && !extra) return undefined;
+      return {
+        ...(isDataReq ? { isDataReq: true } : {}),
+        ...(middlewareRewriteFired ? { hasMiddlewareRewrite: true } : {}),
+        ...(rewriteQueryKeys.size > 0 ? { rewriteQueryKeys: [...rewriteQueryKeys] } : {}),
+        ...extra,
+      };
+    };
+    const initialRenderOptions = buildRenderOptions(
+      shouldDeferErrorPageOnMiss ? { renderErrorPageOnMiss: false } : undefined,
+    );
 
     // Convert staged middleware headers to a Web Headers object for renderPage.
     // Adapters that need to inject per-request values (e.g. CSP nonces) into the
@@ -747,7 +774,7 @@ export async function runPagesRequest(
         renderPageMatch = deps.matchPageRoute
           ? deps.matchPageRoute(resolvedPathname, request)
           : null;
-        response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+        response = await deps.renderPage(request, resolvedUrl, buildRenderOptions(), stagedHeaders);
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
       }
@@ -755,7 +782,7 @@ export async function runPagesRequest(
 
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
-      response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+      response = await deps.renderPage(request, resolvedUrl, buildRenderOptions(), stagedHeaders);
     }
 
     const matchedPathHeaders = { ...middlewareHeaders };
@@ -842,10 +869,32 @@ export async function runPagesRequest(
   return {
     type: "render",
     resolvedUrl,
-    renderOptions: isDataReq ? { isDataReq: true } : undefined,
+    renderOptions:
+      isDataReq || middlewareRewriteFired
+        ? {
+            ...(isDataReq ? { isDataReq: true } : {}),
+            ...(middlewareRewriteFired ? { hasMiddlewareRewrite: true } : {}),
+            ...(rewriteQueryKeys.size > 0 ? { rewriteQueryKeys: [...rewriteQueryKeys] } : {}),
+          }
+        : undefined,
     stagedHeaders: middlewareHeaders,
     requestHeaders: request.headers,
     middlewareStatus,
     isDataReq,
   };
+}
+
+export function buildInitialPagesRouterQuery(
+  resolvedQuery: Record<string, string | string[]>,
+  params: Record<string, string | string[]>,
+  rewriteQueryKeys: readonly string[] = [],
+): Record<string, string | string[]> {
+  const initialQuery: Record<string, string | string[]> = {};
+  for (const key of rewriteQueryKeys) {
+    const value = resolvedQuery[key];
+    if (typeof value === "string" || Array.isArray(value)) {
+      setQueryValue(initialQuery, key, Array.isArray(value) ? [...value] : value);
+    }
+  }
+  return mergeRouteParamsIntoQuery(initialQuery, params);
 }

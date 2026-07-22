@@ -279,9 +279,10 @@ test("hydrates a localized dynamic GSP with locale-free navigation state", async
   ).toBe(false);
 
   await expect(page.locator("#ready")).toHaveText("true");
-  await expect(page.locator("#query")).toHaveText(
-    JSON.stringify({ utm: victimToken, slug: "known" }),
-  );
+  expect(JSON.parse((await page.locator("#query").textContent()) ?? "null")).toEqual({
+    utm: victimToken,
+    slug: "known",
+  });
   await expect(page.locator("#as-path")).toHaveText(`/dynamic/known?utm=${victimToken}`);
   await expect(page.locator("#navigation-pathname")).toHaveText("/dynamic/known");
   await expect(page.locator("#navigation-params")).toHaveText(JSON.stringify({ slug: "known" }));
@@ -357,9 +358,10 @@ test("keeps fallback:true params out of the shell until hydration", async ({
     ),
   ).toBe(false);
 
-  await expect(page.locator("#query")).toHaveText(
-    JSON.stringify({ from: "browser", slug: browserSlug }),
-  );
+  expect(JSON.parse((await page.locator("#query").textContent()) ?? "null")).toEqual({
+    from: "browser",
+    slug: browserSlug,
+  });
   await expect(page.locator("#as-path")).toHaveText(
     `/fallback/${browserSlug}?from=browser#client-fragment`,
   );

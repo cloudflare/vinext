@@ -1,7 +1,13 @@
 import { createNonceAttribute } from "./html.js";
+import type { NextRewrite } from "../config/next-config.js";
 
 export type PagesDevHydrationOptions = {
   appModuleSource: string | null;
+  clientRewrites?: {
+    afterFiles: NextRewrite[];
+    beforeFiles: NextRewrite[];
+    fallback: NextRewrite[];
+  };
   forceRouterReady?: boolean;
   normalizePageProps?: boolean;
   pageModuleSource: string;
@@ -23,10 +29,21 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
     options.normalizePageProps === false
       ? "const pageProps = rawPageProps ?? {};"
       : 'const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};';
-  const fallbackReplacement = options.replaceFallbackRoute
+  const hydrationQueryReplacement = options.replaceFallbackRoute
     ? `
-  if (nextData.isFallback) {
-    await Router.replace(window.location.pathname + window.location.search + window.location.hash, undefined, { _h: 1, scroll: false });
+  const shouldHydrateQuery =
+    nextData.isFallback ||
+    (nextData.gsp && (window.location.search || nextData.__vinext?.hasRewrites));
+  if (shouldHydrateQuery) {
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const routeUrl = nextData.__vinext?.routeUrl;
+    await Router.replace(
+      nextData.isFallback && routeUrl
+        ? routeUrl
+        : { pathname: nextData.page, query: nextData.query },
+      currentUrl,
+      { _h: 1, shallow: !nextData.isFallback, scroll: false },
+    );
   }`
     : "";
   const createElement = options.appModuleSource
@@ -68,6 +85,9 @@ window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import(${JSON.stringif
 ${pagePatterns}
 window.__VINEXT_APP_LOADER__ = ${options.appModuleSource ? `() => import(${JSON.stringify(options.appModuleSource)})` : "undefined"};
 window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(options.reactStrictMode)};
+window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(
+    options.clientRewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
+  )};
 
 async function hydrate() {
   let hydrateRootOptions;
@@ -96,7 +116,7 @@ async function hydrate() {
   window.__VINEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED = true;
   window.__NEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED_CB?.();${fallbackReplacement}
+  window.__NEXT_HYDRATED_CB?.();${hydrationQueryReplacement}
 }
 hydrate();
 </script>`;

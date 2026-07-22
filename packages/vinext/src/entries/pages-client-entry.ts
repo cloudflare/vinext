@@ -299,13 +299,18 @@ async function hydrate() {
   window.__NEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED_CB?.();
 
-  if (nextData.isFallback) {
+  const shouldHydrateQuery =
+    nextData.isFallback ||
+    (nextData.gsp && (window.location.search || nextData.__vinext?.hasRewrites));
+  if (shouldHydrateQuery) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
     await Router.replace(
-      routeUrl || currentUrl,
-      routeUrl ? currentUrl : undefined,
-      { _h: 1, scroll: false },
+      nextData.isFallback && routeUrl
+        ? routeUrl
+        : { pathname: nextData.page, query: nextData.query },
+      currentUrl,
+      { _h: 1, shallow: !nextData.isFallback, scroll: false },
     );
   }
 }

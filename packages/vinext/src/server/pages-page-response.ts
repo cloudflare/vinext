@@ -29,6 +29,7 @@ import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
+import { bypassedPagesIsrSet } from "./pages-middleware-rewrite-cache.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -196,7 +197,11 @@ type RenderPagesPageResponseOptions = {
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
   params: Record<string, unknown>;
+  initialQuery?: Record<string, unknown>;
   query?: Record<string, unknown>;
+  bypassCdnCache?: boolean;
+  /** Skip shared origin ISR writes for request-specific rewrite state. */
+  bypassOriginCache?: boolean;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
   resetSSRHead?: (() => void) | undefined;
@@ -266,6 +271,8 @@ export function buildPagesNextDataScript(
     | "pageProps"
     | "props"
     | "params"
+    | "initialQuery"
+    | "query"
     | "routePattern"
     | "safeJsonStringify"
     | "scriptNonce"
@@ -280,7 +287,8 @@ export function buildPagesNextDataScript(
     // Next.js fallback:true shells intentionally omit the matched route
     // params. The live slug is published by the hydration query update after
     // the fallback data request resolves.
-    query: options.isFallback === true ? {} : options.params,
+    query:
+      options.isFallback === true ? {} : (options.initialQuery ?? options.query ?? options.params),
     buildId: options.buildId,
     isFallback: options.isFallback === true,
   };
@@ -498,6 +506,8 @@ export async function renderPagesPageResponse(
     pageProps: options.pageProps,
     props: renderProps,
     params: options.params,
+    initialQuery: options.initialQuery,
+    query: options.query,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,
@@ -615,6 +625,7 @@ export async function renderPagesPageResponse(
   );
 
   let responseBodyStream = bodyStream;
+  const requestIsrSet = options.bypassOriginCache ? bypassedPagesIsrSet : options.isrSet;
   if (
     // Keep nonce-bearing pages out of ISR writes: rewritePagesCachedHtml()
     // later matches the cached __NEXT_DATA__ block via a bare <script> marker.
@@ -637,7 +648,7 @@ export async function renderPagesPageResponse(
       pageData: options.props ?? { pageProps: options.pageProps },
       revalidateSeconds: options.isrRevalidateSeconds,
       routePattern: options.routePattern,
-      setCache: options.isrSet,
+      setCache: requestIsrSet,
       shellPrefix,
       shellSuffix,
       status: finalStatus,
@@ -668,7 +679,7 @@ export async function renderPagesPageResponse(
   // this point, so the captured value matches main's original capture site.
   const userSetCacheControl = responseHeaders.has("Cache-Control");
 
-  if (options.scriptNonce) {
+  if (options.scriptNonce || options.bypassCdnCache) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
   } else if (options.isrRevalidateSeconds !== null) {
     // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters

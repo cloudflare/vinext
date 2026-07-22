@@ -7,6 +7,11 @@ import {
   etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import {
+  setCdnCacheAdapter,
+  DefaultCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -149,6 +154,67 @@ describe("isPagesStreamingBot", () => {
 });
 
 describe("pages page response", () => {
+  it("keeps CDN tags for a query-invariant middleware rewrite MISS", async () => {
+    const common = createCommonOptions();
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": "no-store",
+          "CDN-Cache-Control": input.cacheControl,
+          "Cache-Tag": input.tags?.join(",") ?? null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(adapter);
+
+    try {
+      const response = await renderPagesPageResponse({
+        ...common.options,
+        isrCachePathname: "/rewritten",
+        isrRevalidateSeconds: 60,
+        routePattern: "/target",
+        routeUrl: "/rewritten",
+      });
+
+      expect(response.headers.get("CDN-Cache-Control")).toContain("s-maxage=60");
+      expect(response.headers.get("Cache-Tag")).toBe("_N_T_/rewritten");
+      await response.text();
+      await settleMicrotasks();
+      expect(common.isrSet).toHaveBeenCalledWith(
+        "pages:/rewritten",
+        expect.any(Object),
+        60,
+        undefined,
+        undefined,
+      );
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("does not store query-varying rewrite ISR output and keeps the response private", async () => {
+    const common = createCommonOptions();
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      bypassCdnCache: true,
+      bypassOriginCache: true,
+      isrCachePathname: "/rewritten?variant=one",
+      isrRevalidateSeconds: 60,
+      routeUrl: "/rewritten?variant=one",
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await response.text();
+    await settleMicrotasks();
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
     const common = createCommonOptions();
 
@@ -193,6 +259,27 @@ describe("pages page response", () => {
 
     expect(common.clearSsrContext).toHaveBeenCalledTimes(1);
     expect(common.renderDocumentToString).toHaveBeenCalledTimes(1);
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("serializes rewrite-added query state into __NEXT_DATA__", async () => {
+    const common = createCommonOptions();
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      initialQuery: { slug: "post", rewriteSlug: "post-2" },
+      query: { slug: "post", ignoredRequestSearch: "value" },
+    });
+
+    const html = await response.text();
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).not.toBeNull();
+    expect(JSON.parse(nextDataMatch![1]!).query).toEqual({
+      slug: "post",
+      rewriteSlug: "post-2",
+    });
   });
 
   it("preserves array-valued non-set-cookie headers from gSSP responses", async () => {

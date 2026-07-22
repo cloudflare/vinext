@@ -1044,6 +1044,11 @@ describe("extractLocaleFromUrl", () => {
     expect(result).toEqual({ locale: "de", url: "/", hadPrefix: true });
   });
 
+  it("preserves a trailing slash after extracting the locale prefix", () => {
+    const result = extractLocaleFromUrl("/fr/about/?foo=bar", i18nConfig);
+    expect(result).toEqual({ locale: "fr", url: "/about/?foo=bar", hadPrefix: true });
+  });
+
   it("returns default locale when no prefix", () => {
     const result = extractLocaleFromUrl("/about", i18nConfig);
     expect(result).toEqual({ locale: "en", url: "/about", hadPrefix: false });

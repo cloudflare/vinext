@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vite-plus/test";
 import {
+  buildInitialPagesRouterQuery,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
   type PagesPipelineDeps,
@@ -44,6 +45,34 @@ function makeRenderPage(status = 200, body = "ok") {
       new Response(body, { status }),
   );
 }
+
+describe("buildInitialPagesRouterQuery", () => {
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("preserves query state carried through a middleware rewrite", () => {
+    expect(buildInitialPagesRouterQuery({ rewriteSlug: "post-2" }, {}, ["rewriteSlug"])).toEqual({
+      rewriteSlug: "post-2",
+    });
+  });
+
+  it("preserves inherited request query state after a middleware rewrite", () => {
+    expect(
+      buildInitialPagesRouterQuery({ hello: "world", rewriteSlug: "post-2" }, {}, [
+        "hello",
+        "rewriteSlug",
+      ]),
+    ).toEqual({ hello: "world", rewriteSlug: "post-2" });
+  });
+
+  it("keeps route params authoritative over rewrite query values", () => {
+    expect(
+      buildInitialPagesRouterQuery({ slug: "rewrite", rewriteSlug: "post-2" }, { slug: "route" }, [
+        "slug",
+        "rewriteSlug",
+      ]),
+    ).toEqual({ slug: "route", rewriteSlug: "post-2" });
+  });
+});
 
 describe("on-demand revalidation middleware bypass", () => {
   it("uses the runtime adapter's authoritative credential verifier", async () => {
@@ -587,7 +616,32 @@ describe("middleware", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/bar",
-      undefined,
+      { hasMiddlewareRewrite: true },
+      expect.any(Headers),
+    );
+  });
+
+  it("serializes inherited and introduced query keys from middleware rewrites", async () => {
+    const renderPage = makeRenderPage(200, "rewrite target");
+    const result = await runPagesRequest(
+      makeRequest("/foo?hello=world"),
+      baseDeps({
+        runMiddleware: makeMiddleware({
+          continue: true,
+          rewriteUrl: "/bar?hello=world&from=middleware",
+        }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/bar?hello=world&from=middleware",
+      {
+        hasMiddlewareRewrite: true,
+        rewriteQueryKeys: ["hello", "from"],
+      },
       expect.any(Headers),
     );
   });

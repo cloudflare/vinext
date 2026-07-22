@@ -33,6 +33,15 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  if (pathname === "/_next/static/middleware-finalized-404.js") {
+    const response = NextResponse.next();
+    response.headers.set("content-encoding", "gzip");
+    response.headers.set("content-length", "999");
+    response.headers.set("etag", '"stale-build-asset"');
+    response.headers.set("x-missing-asset-middleware", "yes");
+    return response;
+  }
+
   if (pathname === "/%61dmin") {
     return NextResponse.rewrite(new URL("/admin", request.url));
   }
@@ -411,6 +420,7 @@ export const config = {
     "/mw-gated-before",
     "/mw-gated-fallback",
     "/_next/static/middleware-rewrite.js",
+    "/_next/static/middleware-finalized-404.js",
     {
       source: "/mw-object-gated",
       has: [{ type: "header", key: "x-mw-allow", value: "1" }],

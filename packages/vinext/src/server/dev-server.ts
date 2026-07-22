@@ -64,7 +64,10 @@ import {
 } from "./pages-page-data.js";
 import { sanitizeDestination } from "../config/config-matchers.js";
 import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
-import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
+import {
+  createPagesDevHydrationScript,
+  type PagesDevHydrationOptions,
+} from "./pages-dev-hydration.js";
 import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
@@ -87,6 +90,8 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import type { PagesMiddlewareRewriteCacheState } from "./pages-middleware-rewrite-cache.js";
+import { buildInitialPagesRouterQuery } from "./pages-request-pipeline.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -658,6 +663,7 @@ export function createSSRHandler(
   reactStrictMode = false,
   /** Next.js `expireTime`, used when formatting terminal GSP responses. */
   expireTime = PAGES_CACHE_ONE_YEAR_SECONDS,
+  clientRewrites?: PagesDevHydrationOptions["clientRewrites"],
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -696,6 +702,8 @@ export function createSSRHandler(
      */
     isDataReq: boolean = false,
     originalUrl: string = url,
+    middlewareRewriteCacheState?: PagesMiddlewareRewriteCacheState,
+    rewriteQueryKeys: string[] = [],
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -820,6 +828,7 @@ export function createSSRHandler(
       ? params
       : null;
     let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
+    const initialQuery = buildInitialPagesRouterQuery(query, params, rewriteQueryKeys);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
     const closeRequest = () => void closeAfterResponse(requestContext);
@@ -865,7 +874,7 @@ export function createSSRHandler(
         const isStaticPropsRender =
           typeof pageModule.getStaticProps === "function" &&
           typeof pageModule.getServerSideProps !== "function";
-        if (isStaticPropsRender) {
+        if (isStaticPropsRender && !middlewareRewriteCacheState) {
           // Match Next.js's Pages handler: getStaticProps renders receive only
           // route params and a resolved asPath without request search state.
           query = mergeRouteParamsIntoQuery({}, params);
@@ -921,6 +930,7 @@ export function createSSRHandler(
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
             query,
+            initialQuery,
             asPath: requestAsPath,
             navigationIsReady,
             nextData: pagesNextData,
@@ -1057,6 +1067,7 @@ export function createSSRHandler(
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
                 query: {},
+                initialQuery: {},
                 asPath: patternToNextFormat(route.pattern),
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
@@ -1579,6 +1590,7 @@ export function createSSRHandler(
 
         const hydrationScript = createPagesDevHydrationScript({
           appModuleSource,
+          clientRewrites,
           pageModuleSource,
           reactStrictMode: reactStrictMode === true,
           replaceFallbackRoute: true,
@@ -1589,7 +1601,7 @@ export function createSSRHandler(
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: isFallbackRender ? {} : params,
+            query: isFallbackRender ? {} : initialQuery,
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
