@@ -31,7 +31,7 @@ import {
 } from "vinext/shims/metadata";
 import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
 import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
-import { createInlineScriptTag } from "./html.js";
+import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
@@ -673,6 +673,8 @@ function createStreamedIconKey(pathname: string, metadataHtml: string): string {
   return `${pathname}:${(hash >>> 0).toString(36)}`;
 }
 
+const STREAMED_ICON_KEY_PLACEHOLDER = "vinext-pending-streamed-icon-key";
+
 const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el));const a='data-vinext-streamed-icon',o=el=>{const m=el.getAttribute(a),i=m.lastIndexOf(':');return Number(m.slice(i+1))};[...document.querySelectorAll('link['+a+']')].sort((l,r)=>o(l)-o(r)).forEach(el=>document.head.appendChild(el))`;
 
 export function createAppPageRouteBodyMetadata(
@@ -683,12 +685,17 @@ export function createAppPageRouteBodyMetadata(
   scriptNonce?: string,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
-  const renderedMetadataHtml = renderMetadataToHtml(metadata, pathname, { trailingSlash });
-  const metadataKey = hasStreamedIcons(metadata)
-    ? createStreamedIconKey(pathname, renderedMetadataHtml)
-    : "";
-  const metadataHtml = metadataKey
-    ? renderMetadataToHtml(metadata, pathname, { trailingSlash, streamedIconKey: metadataKey })
+  const streamedIconKey = hasStreamedIcons(metadata) ? STREAMED_ICON_KEY_PLACEHOLDER : undefined;
+  const renderedMetadataHtml = renderMetadataToHtml(metadata, pathname, {
+    trailingSlash,
+    streamedIconKey,
+  });
+  const metadataKey = streamedIconKey ? createStreamedIconKey(pathname, renderedMetadataHtml) : "";
+  const metadataHtml = streamedIconKey
+    ? renderedMetadataHtml.replaceAll(
+        `<link data-vinext-streamed-icon="${STREAMED_ICON_KEY_PLACEHOLDER}:`,
+        `<link data-vinext-streamed-icon="${escapeHtmlAttr(metadataKey)}:`,
+      )
     : renderedMetadataHtml;
   const parserInsertedMetadataHtml =
     metadataHtml + createInlineScriptTag(REINSERT_STREAMED_ICONS_SCRIPT, scriptNonce);

@@ -3510,6 +3510,31 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     expect(html).toMatch(/<script>document\.querySelectorAll[\s\S]*<\/script><\/div>$/);
   });
 
+  it("body placement: serializes icon-bearing metadata once", () => {
+    let titleReads = 0;
+    const title = 'data-vinext-streamed-icon="vinext-pending-streamed-icon-key:0';
+    const node = createAppPageRouteBodyMetadata(
+      {
+        get title() {
+          titleReads += 1;
+          return title;
+        },
+        icons: { icon: "/favicon.ico" },
+      },
+      '/icons" data-injected="true',
+      "body",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    // MetadataHead reads a string title twice per serialization: once for the
+    // type check and once for the value. A second serialization would read it
+    // four times.
+    expect(titleReads).toBe(2);
+    expect(html).toContain(`<title>${title}</title>`);
+    expect(html).not.toContain(' data-injected="true"');
+    expect(html).toContain("/icons&quot; data-injected=&quot;true:");
+  });
+
   it("body placement: includes icon cleanup reconciliation without streamed icons", () => {
     const node = createAppPageRouteBodyMetadata({ title: "Streamed title" }, "/metadata", "body");
     const html = renderToStaticMarkup(node as React.ReactElement);
