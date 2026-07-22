@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { resolveClientRuntimeModule, resolveRuntimeEntryModule } from "./runtime-entry-module.js";
 import type {
   VinextLinkPrefetchRoute,
@@ -6,6 +7,7 @@ import type {
 import type { AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
 import type { NextRewrite } from "../config/next-config.js";
+import { hasNamedExport } from "../build/report.js";
 
 /**
  * Generate the virtual browser entry module.
@@ -67,6 +69,22 @@ function requiresDynamicNavigationRequest(route: AppRoute): boolean {
   return route.isDynamic && route.parallelSlots.length > 0;
 }
 
+function fileHasGenerateStaticParams(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
+  try {
+    return hasNamedExport(fs.readFileSync(filePath, "utf8"), "generateStaticParams");
+  } catch {
+    return false;
+  }
+}
+
+function hasGenerateStaticParams(route: AppRoute): boolean {
+  return (
+    fileHasGenerateStaticParams(route.pagePath) ||
+    route.layouts.some((layoutPath) => fileHasGenerateStaticParams(layoutPath))
+  );
+}
+
 function splitPatternParts(pattern: string): string[] {
   return pattern.split("/").filter(Boolean);
 }
@@ -107,6 +125,7 @@ export function toLinkPrefetchRoute(
 ): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
+    ...(route.isDynamic && hasGenerateStaticParams(route) ? { hasGenerateStaticParams: true } : {}),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),

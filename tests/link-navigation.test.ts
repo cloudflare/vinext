@@ -54,6 +54,22 @@ const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: false, patternParts: ["intent-prefetch-target"], isDynamic: false },
   { canPrefetchLoadingShell: false, patternParts: ["touch-prefetch-target"], isDynamic: false },
   {
+    canPrefetchLoadingShell: true,
+    patternParts: ["metadata-await-promise", "nested"],
+    isDynamic: false,
+  },
+  {
+    canPrefetchLoadingShell: true,
+    patternParts: ["personalized-loading"],
+    isDynamic: false,
+  },
+  {
+    canPrefetchLoadingShell: true,
+    hasGenerateStaticParams: true,
+    patternParts: ["generated-posts", ":slug"],
+    isDynamic: true,
+  },
+  {
     canPrefetchLoadingShell: false,
     patternParts: ["same-origin-intent-prefetch-target"],
     isDynamic: false,
@@ -1481,7 +1497,7 @@ describe("Link prefetch scheduling", () => {
     try {
       expect(observer.observe).toHaveBeenCalledWith(result.anchor);
       observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
+      await waitForFetchCalls(result.fetch, 2);
 
       expect(observer.unobserve).not.toHaveBeenCalledWith(result.anchor);
       expectCanonicalRscFetchCall(
@@ -1931,12 +1947,349 @@ describe("Link prefetch scheduling", () => {
       );
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
+      await entry?.pending;
       expect(entry?.cacheForNavigation).toBe(true);
       expect(entry?.optimisticRouteShell).toBe(false);
     } finally {
       result.restoreNodeEnv();
     }
   });
+
+  it("full-prefetches visible static links with loading boundaries", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/metadata-await-promise/nested",
+      nodeEnv: "production",
+    });
+
+    try {
+      result.fetch.mockResolvedValueOnce(
+        new Response("static-shell", {
+          headers: { "cache-control": "s-maxage=31536000, stale-while-revalidate" },
+        }),
+      );
+      expect(observer.observe).toHaveBeenCalledWith(result.anchor);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+
+      // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+      const fullFetchCall = result.fetch.mock.calls.find(([, init]) => {
+        const headers = (init as RequestInit | undefined)?.headers as Headers | undefined;
+        return headers?.get(VINEXT_RSC_RENDER_MODE_HEADER) === null;
+      });
+      expect(fullFetchCall).toBeDefined();
+      expectCanonicalRscFetchCall(
+        fullFetchCall!,
+        "/metadata-await-promise/nested",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = fullFetchCall?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        null,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+      expect(
+        (fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
+      ).toBe("1");
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values()).find(
+        (candidate) => candidate.optimisticRouteShell !== true,
+      );
+      await entry?.pending;
+      await flushPrefetchTasks();
+      expect(entry?.cacheForNavigation).toBe(true);
+      expect(entry?.optimisticRouteShell).toBe(false);
+      expect(
+        Array.from(getPrefetchCache().values()).some(
+          (candidate) =>
+            candidate.cacheForNavigation === false && candidate.optimisticRouteShell === true,
+        ),
+      ).toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps pending Full prefetches non-consumable, then reuses the completed response", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/personalized-loading",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+
+    try {
+      // Next's Full prefetch is a navigation request issued ahead of time. It
+      // intentionally becomes reusable client state once complete, including
+      // for dynamic/no-store responses.
+      let closeFullResponse = () => {};
+      const fullBody = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("prefetched-cookie=before"));
+          closeFullResponse = () => controller.close();
+        },
+      });
+      result.fetch
+        .mockResolvedValueOnce(
+          new Response("static-shell", {
+            headers: { "cache-control": "s-maxage=31536000" },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(fullBody, {
+            headers: { "cache-control": "no-store, must-revalidate" },
+          }),
+        );
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+
+      const { consumePrefetchResponseForNavigation, getPrefetchCache } =
+        await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values()).find(
+        (candidate) => candidate.optimisticRouteShell !== true,
+      );
+      expect(entry).toBeDefined();
+      const cacheEntryAtAutoPrefetch = entry;
+      await flushPrefetchTasks();
+
+      expect(entry?.cacheForNavigation).toBe(false);
+      expect(
+        Array.from(getPrefetchCache().values()).some(
+          (candidate) => candidate.optimisticRouteShell === true,
+        ),
+      ).toBe(true);
+      const fetchCall = result.fetch.mock.calls[0];
+      const prefetchedUrl = fetchCall?.[0];
+      expect(typeof prefetchedUrl).toBe("string");
+      expect(
+        await consumePrefetchResponseForNavigation(prefetchedUrl as string, null, null),
+      ).toBeNull();
+
+      // Pointer intent must not promote the still-open Full response and make
+      // a click join its body. The separately cached loading shell remains the
+      // provisional navigation path.
+      result.capturedAnchorProps.onMouseEnter?.({
+        currentTarget: result.anchor,
+      } as CapturedIntentEvent);
+      await flushPrefetchTasks();
+      const currentFullEntry = Array.from(getPrefetchCache().values()).find(
+        (candidate) => candidate.optimisticRouteShell !== true,
+      );
+      expect(currentFullEntry).toBe(cacheEntryAtAutoPrefetch);
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      expect(currentFullEntry?.cacheForNavigation).toBe(false);
+      expect(
+        await consumePrefetchResponseForNavigation(prefetchedUrl as string, null, null),
+      ).toBeNull();
+
+      closeFullResponse();
+      await entry?.pending;
+      expect(entry?.cacheForNavigation).toBe(true);
+      expect(
+        await consumePrefetchResponseForNavigation(prefetchedUrl as string, null, null),
+      ).not.toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps a newly started hover Full prefetch non-consumable until body EOF", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+
+    let closeFullResponse = () => {};
+    const fullBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial-hover-full"));
+        closeFullResponse = () => controller.close();
+      },
+    });
+    result.fetch
+      .mockResolvedValueOnce(new Response("dynamic-loading-shell"))
+      .mockResolvedValueOnce(new Response(fullBody));
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      result.capturedAnchorProps.onMouseEnter?.({
+        currentTarget: result.anchor,
+      } as CapturedIntentEvent);
+      await waitForFetchCalls(result.fetch, 2);
+
+      const { consumePrefetchResponseForNavigation, getPrefetchCache } =
+        await import("../packages/vinext/src/shims/navigation.js");
+      const fullEntry = Array.from(getPrefetchCache().values()).find(
+        (candidate) => candidate.optimisticRouteShell !== true,
+      );
+      const fullFetchCall = result.fetch.mock.calls.find(([, init]) => {
+        const headers = (init as RequestInit | undefined)?.headers as Headers | undefined;
+        return headers?.get(VINEXT_RSC_RENDER_MODE_HEADER) === null;
+      });
+      const fullRscUrl = fullFetchCall?.[0];
+      expect(fullEntry).toBeDefined();
+      expect(typeof fullRscUrl).toBe("string");
+      expect(fullEntry?.cacheForNavigation).toBe(false);
+      expect(fullEntry?.cacheForNavigationOnComplete).toBe(true);
+      expect(
+        Array.from(getPrefetchCache().values()).some(
+          (candidate) => candidate.optimisticRouteShell === true,
+        ),
+      ).toBe(true);
+      expect(
+        await consumePrefetchResponseForNavigation(fullRscUrl as string, null, null),
+      ).toBeNull();
+
+      result.capturedAnchorProps.onMouseEnter?.({
+        currentTarget: result.anchor,
+      } as CapturedIntentEvent);
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      expect(
+        Array.from(getPrefetchCache().values()).find(
+          (candidate) => candidate.optimisticRouteShell !== true,
+        ),
+      ).toBe(fullEntry);
+
+      closeFullResponse();
+      await fullEntry?.pending;
+      expect(fullEntry?.cacheForNavigation).toBe(true);
+      expect(
+        await consumePrefetchResponseForNavigation(fullRscUrl as string, null, null),
+      ).not.toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps an explicit Full prefetch non-consumable until body EOF", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+
+    let closeFullResponse = () => {};
+    const fullBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial-explicit-full"));
+        closeFullResponse = () => controller.close();
+      },
+    });
+    result.fetch.mockImplementation((_input, init) => {
+      const headers = init?.headers as Headers | undefined;
+      return Promise.resolve(
+        headers?.get(VINEXT_RSC_RENDER_MODE_HEADER) === null
+          ? new Response(fullBody)
+          : new Response("explicit-loading-shell"),
+      );
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+
+      const { consumePrefetchResponseForNavigation, getPrefetchCache } =
+        await import("../packages/vinext/src/shims/navigation.js");
+      const fullEntry = Array.from(getPrefetchCache().values()).find(
+        (candidate) => candidate.optimisticRouteShell !== true,
+      );
+      const fullFetchCall = result.fetch.mock.calls.find(([, init]) => {
+        const headers = (init as RequestInit | undefined)?.headers as Headers | undefined;
+        return headers?.get(VINEXT_RSC_RENDER_MODE_HEADER) === null;
+      });
+      const fullRscUrl = fullFetchCall?.[0];
+      expect(fullEntry).toBeDefined();
+      expect(typeof fullRscUrl).toBe("string");
+      expect(fullEntry?.cacheForNavigation).toBe(false);
+      expect(fullEntry?.cacheForNavigationOnComplete).toBe(true);
+      expect(
+        Array.from(getPrefetchCache().values()).some(
+          (candidate) => candidate.optimisticRouteShell === true,
+        ),
+      ).toBe(true);
+      expect(
+        await consumePrefetchResponseForNavigation(fullRscUrl as string, null, null),
+      ).toBeNull();
+
+      result.capturedAnchorProps.onMouseEnter?.({
+        currentTarget: result.anchor,
+      } as CapturedIntentEvent);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      expect(
+        Array.from(getPrefetchCache().values()).find(
+          (candidate) => candidate.optimisticRouteShell !== true,
+        ),
+      ).toBe(fullEntry);
+
+      closeFullResponse();
+      await fullEntry?.pending;
+      expect(fullEntry?.cacheForNavigation).toBe(true);
+      expect(
+        await consumePrefetchResponseForNavigation(fullRscUrl as string, null, null),
+      ).not.toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it.each([
+    ["fixed force-dynamic route", "/personalized-loading", "no-store, must-revalidate"],
+    ["non-generated fallback param", "/generated-posts/fallback", undefined],
+  ])(
+    "keeps automatic %s prefetches shell-only without concrete static proof",
+    async (_name, href, cacheControl) => {
+      const observer = stubIntersectionObserver();
+      const result = await renderIsolatedLink({ href, nodeEnv: "production" });
+
+      try {
+        result.fetch.mockResolvedValueOnce(
+          new Response("dynamic-shell", {
+            headers: cacheControl === undefined ? undefined : { "cache-control": cacheControl },
+          }),
+        );
+        observer.dispatchIntersectingEntry(result.anchor);
+        await waitForFetchCalls(result.fetch, 1);
+        await flushPrefetchTasks();
+
+        expect(result.fetch).toHaveBeenCalledTimes(1);
+        const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+        expect(
+          (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
+        ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+        const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+        expect(
+          Array.from(getPrefetchCache().values()).some(
+            (entry) => entry.prefetchKind === "navigation",
+          ),
+        ).toBe(false);
+        expect(
+          Array.from(getPrefetchCache().values()).some(
+            (entry) =>
+              entry.prefetchKind === "loading-shell" &&
+              entry.automaticFullPrefetchEligible === false,
+          ),
+        ).toBe(true);
+      } finally {
+        result.restoreNodeEnv();
+      }
+    },
+  );
 
   it("full-prefetches visible dynamic links when prefetch is explicitly true", async () => {
     const observer = stubIntersectionObserver();

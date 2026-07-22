@@ -437,6 +437,35 @@ describe("App Router generated manifest construction", () => {
     }
   });
 
+  it("advertises generateStaticParams routes as full-prefetch candidates", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prefetch-static-params-"));
+    const appDir = path.join(tmpDir, "app");
+    try {
+      fs.mkdirSync(path.join(appDir, "posts", "[slug]"), { recursive: true });
+      fs.writeFileSync(path.join(appDir, "layout.tsx"), "export default function Layout() {}\n");
+      fs.writeFileSync(
+        path.join(appDir, "posts", "[slug]", "page.tsx"),
+        `export function generateStaticParams() { return [{ slug: "hello" }] }\nexport default function Page() {}\n`,
+      );
+      fs.writeFileSync(
+        path.join(appDir, "posts", "[slug]", "loading.tsx"),
+        "export default function Loading() {}\n",
+      );
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      expect(toLinkPrefetchRoutes(graph.routes)).toContainEqual(
+        expect.objectContaining({
+          canPrefetchLoadingShell: true,
+          hasGenerateStaticParams: true,
+          isDynamic: true,
+          patternParts: ["posts", ":slug"],
+        }),
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("constructs route module imports and route entries from the scanned app shape", () => {
     const routes = [
       {

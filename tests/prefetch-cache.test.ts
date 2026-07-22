@@ -564,6 +564,69 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
+  it("reuses a completed full prefetch regardless of HTTP cache policy", async () => {
+    const rscUrl = "/personalized-loading.rsc";
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("cookie=before", {
+          headers: {
+            "cache-control": "no-store, must-revalidate",
+            "content-type": "text/x-component",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: false, cacheForNavigationOnComplete: true },
+    );
+
+    const entry = getPrefetchCache().get(rscUrl);
+    await entry?.pending;
+    expect(entry?.cacheForNavigation).toBe(true);
+    await expect(consumePrefetchResponseForNavigation(rscUrl, null, null)).resolves.not.toBeNull();
+  });
+
+  it("does not make navigation await a provisional full-prefetch body", async () => {
+    const rscUrl = "/pending-personalized-loading.rsc";
+    let closeBody = () => {};
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        closeBody = () => controller.close();
+      },
+    });
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response(body, {
+          headers: {
+            "cache-control": "no-store, must-revalidate",
+            "content-type": "text/x-component",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: false, cacheForNavigationOnComplete: true },
+    );
+
+    // The fetch promise has resolved with headers, but snapshotting is still
+    // blocked on EOF. A click must use the independently prefetched loading
+    // shell/fresh response immediately rather than joining this stream.
+    await Promise.resolve();
+    await expect(consumePrefetchResponseForNavigation(rscUrl, null, null)).resolves.toBeNull();
+    expect(getPrefetchCache().get(rscUrl)?.pending).toBeDefined();
+
+    closeBody();
+    await getPrefetchCache().get(rscUrl)?.pending;
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(entry?.cacheForNavigation).toBe(true);
+    await expect(consumePrefetchResponseForNavigation(rscUrl, null, null)).resolves.not.toBeNull();
+  });
+
   it("honors an explicit fallback stale window above the minimum for prefetched responses", async () => {
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);

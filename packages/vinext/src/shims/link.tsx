@@ -328,18 +328,45 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
 }
 
-function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
+type AppRoutePrefetchPolicy = {
+  automaticFullPrefetchProbe?: "loading-shell";
   cacheForNavigation: boolean;
+  cacheForNavigationOnComplete?: boolean;
+  fetchFullPayload: boolean;
   prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
-} {
+};
+
+function resolveMatchedAutoAppRoutePrefetch(
+  route: VinextLinkPrefetchRoute,
+  hasInterceptionContext = false,
+): AppRoutePrefetchPolicy {
   const hasLoadingShell = route.canPrefetchLoadingShell;
+  const canProbeGeneratedDynamicPath = route.isDynamic && route.hasGenerateStaticParams === true;
+  const canAttemptFullLoadingPrefetch =
+    !hasInterceptionContext && (!route.isDynamic || canProbeGeneratedDynamicPath);
+  const fetchFullPayload =
+    (!hasLoadingShell || canAttemptFullLoadingPrefetch) &&
+    route.requiresDynamicNavigationRequest !== true;
   return {
-    // Automatic prefetches are only unsafe as authoritative navigation
-    // payloads for dynamic routes whose active parallel branches must be
-    // derived from the click-time target tree. Other concrete dynamic URLs can
-    // match Next.js's full-prefetch behavior, including client-param routes.
-    cacheForNavigation: !hasLoadingShell && route.requiresDynamicNavigationRequest !== true,
+    // Next's automatic strategy discovers cacheable segments from the route
+    // tree instead of assuming that a fixed pathname or generateStaticParams
+    // export is static. Vinext uses the loading-shell response as the concrete
+    // capability probe and starts the Full request only after positive proof.
+    // This does not affect explicit/intent Full prefetches: once completed,
+    // those remain reusable client state regardless of HTTP cache policy.
+    // Full responses are snapshotted before the router can consume them. Keep
+    // every newly-started Full request hidden until that snapshot reaches EOF;
+    // otherwise a click would join the pending snapshot and suppress the
+    // independently available loading shell/fresh navigation path.
+    cacheForNavigation: false,
+    fetchFullPayload,
+    ...(fetchFullPayload
+      ? {
+          cacheForNavigationOnComplete: true,
+          ...(hasLoadingShell ? { automaticFullPrefetchProbe: "loading-shell" as const } : {}),
+        }
+      : {}),
     prefetchShellFirst: !route.isDynamic,
     shouldPrefetch: true,
   };
@@ -357,39 +384,61 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) return false;
 
-  return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
+  return resolveAutoAppRoutePrefetch(href).fetchFullPayload;
 }
 
-export function resolveAutoAppRoutePrefetch(href: string): {
-  cacheForNavigation: boolean;
-  prefetchShellFirst: boolean;
-  shouldPrefetch: boolean;
-} {
+export function resolveAutoAppRoutePrefetch(
+  href: string,
+  hasInterceptionContext = false,
+): AppRoutePrefetchPolicy {
   if (typeof window === "undefined") {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      fetchFullPayload: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      fetchFullPayload: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const routeHref = toSameOriginRouteHref(href);
   if (routeHref === null) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      fetchFullPayload: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      fetchFullPayload: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
-  const prefetch = resolveMatchedAutoAppRoutePrefetch(match.route);
+  const prefetch = resolveMatchedAutoAppRoutePrefetch(match.route, hasInterceptionContext);
   const url = new URL(routeHref, "http://vinext.local");
   if (url.search !== "") {
     return {
       ...prefetch,
       cacheForNavigation: false,
+      fetchFullPayload: false,
+      automaticFullPrefetchProbe: undefined,
+      cacheForNavigationOnComplete: undefined,
       prefetchShellFirst: true,
     };
   }
@@ -397,13 +446,11 @@ export function resolveAutoAppRoutePrefetch(href: string): {
   return prefetch;
 }
 
-function resolveFullAppRoutePrefetch(): {
-  cacheForNavigation: true;
-  prefetchShellFirst: boolean;
-  shouldPrefetch: true;
-} {
+function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
   return {
-    cacheForNavigation: true,
+    cacheForNavigation: false,
+    cacheForNavigationOnComplete: true,
+    fetchFullPayload: true,
     prefetchShellFirst: true,
     shouldPrefetch: true,
   };
@@ -499,6 +546,7 @@ function prefetchUrl(
           getPrefetchCache,
           getPrefetchedUrls,
           getMountedSlotsHeader,
+          findProvisionalFullPrefetchEntryForNavigation,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
           peekPrefetchResponseForNavigation,
@@ -529,17 +577,23 @@ function prefetchUrl(
           ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
           : null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
+        const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const autoPrefetch =
           mode === "auto"
-            ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
+            ? resolveAutoAppRoutePrefetch(prefetchPolicyHref, interceptionContext !== null)
             : mode === "full-after-shell"
-              ? { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true }
+              ? {
+                  cacheForNavigation: false,
+                  cacheForNavigationOnComplete: true,
+                  fetchFullPayload: true,
+                  prefetchShellFirst: true,
+                  shouldPrefetch: true,
+                }
               : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
-        const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const isOptimisticRouteShellPrefetch = !autoPrefetch.fetchFullPayload;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
@@ -564,7 +618,7 @@ function prefetchUrl(
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        if (__prefetchInlining && autoPrefetch.cacheForNavigation) {
+        if (__prefetchInlining && autoPrefetch.fetchFullPayload) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
@@ -579,14 +633,31 @@ function prefetchUrl(
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]
             : [];
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+        if (
+          mode === "full-after-shell" &&
+          findProvisionalFullPrefetchEntryForNavigation(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+            additionalRscUrls,
+          ) !== null
+        ) {
+          return;
+        }
         const prefetched = getPrefetchedUrls();
         if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
+          if (!autoPrefetch.fetchFullPayload) {
             return;
           }
 
           const existing = getPrefetchCache().get(cacheKey);
-          if (existing?.cacheForNavigation === false) {
+          if (existing?.cacheForNavigationOnComplete === true && existing.pending !== undefined) {
+            return;
+          }
+          if (
+            existing?.cacheForNavigation === false &&
+            existing.cacheForNavigationOnComplete !== true
+          ) {
             existing.cacheForNavigation = true;
           }
         }
@@ -602,7 +673,9 @@ function prefetchUrl(
               }),
             priority,
           );
-        const fetchLoadingShellForReuse = async (): Promise<void> => {
+        const fetchLoadingShellForReuse = async (
+          recordAutomaticFullPrefetchEligibility = false,
+        ): Promise<boolean> => {
           const shellHeaders = createRscRequestHeaders({
             interceptionContext,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
@@ -638,11 +711,13 @@ function prefetchUrl(
                 cacheForNavigation: false,
                 optimisticRouteShell: true,
                 prefetchKind: "loading-shell",
+                recordAutomaticFullPrefetchEligibility,
               },
             );
             shellEntry = shellCache.get(shellCacheKey);
           }
           await shellEntry?.pending?.catch(() => {});
+          return shellEntry?.automaticFullPrefetchEligible === true;
         };
         const fetchAliasCacheHitProbe = async (): Promise<Response> => {
           const probeHeaders = createRscRequestHeaders({
@@ -665,11 +740,11 @@ function prefetchUrl(
           });
         };
         const hasExactNavigationCacheEntry =
-          autoPrefetch.cacheForNavigation &&
+          autoPrefetch.fetchFullPayload &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader);
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
-          (autoPrefetch.cacheForNavigation &&
+          (autoPrefetch.fetchFullPayload &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
             }));
@@ -708,83 +783,96 @@ function prefetchUrl(
           (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
           autoPrefetch.prefetchShellFirst;
         const fetchPromise =
-          autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
+          mode === "auto" && autoPrefetch.automaticFullPrefetchProbe !== undefined
             ? (async () => {
-                if (gateViaLoadingShell) {
-                  await fetchLoadingShellForReuse();
-                  return fetchFullRscPayload();
+                const eligible =
+                  autoPrefetch.automaticFullPrefetchProbe === "loading-shell" &&
+                  (await fetchLoadingShellForReuse(true));
+                if (!eligible) {
+                  throw new Error("Automatic Full prefetch requires concrete static proof");
                 }
-                const shellHeaders = createRscRequestHeaders({
-                  interceptionContext,
-                  renderMode: undefined,
-                });
-                shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-                shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
-                if (mountedSlotsHeader) {
-                  shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
-                }
-                const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
-                const shellCacheKey = AppElementsWire.encodeCacheKey(
-                  shellRscUrl,
-                  interceptionContext,
-                );
-                const shellCache = getPrefetchCache();
-                let shellEntry = shellCache.get(shellCacheKey);
-                if (shellEntry === undefined) {
-                  getPrefetchedUrls().add(shellCacheKey);
-                  prefetchRscResponse(
-                    shellRscUrl,
-                    scheduleAppPrefetchFetch(
-                      () =>
-                        fetch(shellRscUrl, {
-                          headers: shellHeaders,
-                          credentials: "include",
-                          priority,
-                          // @ts-expect-error — purpose is a valid fetch option in some browsers
-                          purpose: "prefetch",
-                        }),
-                      priority,
-                    ),
-                    interceptionContext,
-                    mountedSlotsHeader,
-                    undefined,
-                    {
-                      cacheForNavigation: false,
-                      optimisticRouteShell: false,
-                      prefetchKind: "route-tree",
-                    },
-                  );
-                  shellEntry = shellCache.get(shellCacheKey);
-                }
-                await shellEntry?.pending?.catch(() => {});
-                const renderedPathAndSearch = shellEntry?.snapshot?.renderedPathAndSearch;
-                if (renderedPathAndSearch) {
-                  const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
-                  const cachedRenderedResponse = peekPrefetchResponseForNavigation(
-                    renderedRscUrl,
-                    interceptionContext,
-                    mountedSlotsHeader,
-                  );
-                  if (cachedRenderedResponse) {
-                    return restoreRscResponse(cachedRenderedResponse);
-                  }
-                }
-                return scheduleAppPrefetchFetch(
-                  () =>
-                    fetch(rscUrl, {
-                      headers,
-                      credentials: "include",
-                      priority,
-                      // @ts-expect-error — purpose is a valid fetch option in some browsers
-                      purpose: "prefetch",
-                    }),
-                  priority,
-                );
+                return fetchFullRscPayload();
               })()
-            : fetchFullRscPayload();
+            : autoPrefetch.fetchFullPayload && (gateViaRouteTree || gateViaLoadingShell)
+              ? (async () => {
+                  if (gateViaLoadingShell) {
+                    await fetchLoadingShellForReuse();
+                    return fetchFullRscPayload();
+                  }
+                  const shellHeaders = createRscRequestHeaders({
+                    interceptionContext,
+                    renderMode: undefined,
+                  });
+                  shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+                  shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+                  if (mountedSlotsHeader) {
+                    shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+                  }
+                  const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
+                  const shellCacheKey = AppElementsWire.encodeCacheKey(
+                    shellRscUrl,
+                    interceptionContext,
+                  );
+                  const shellCache = getPrefetchCache();
+                  let shellEntry = shellCache.get(shellCacheKey);
+                  if (shellEntry === undefined) {
+                    getPrefetchedUrls().add(shellCacheKey);
+                    prefetchRscResponse(
+                      shellRscUrl,
+                      scheduleAppPrefetchFetch(
+                        () =>
+                          fetch(shellRscUrl, {
+                            headers: shellHeaders,
+                            credentials: "include",
+                            priority,
+                            // @ts-expect-error — purpose is a valid fetch option in some browsers
+                            purpose: "prefetch",
+                          }),
+                        priority,
+                      ),
+                      interceptionContext,
+                      mountedSlotsHeader,
+                      undefined,
+                      {
+                        cacheForNavigation: false,
+                        optimisticRouteShell: false,
+                        prefetchKind: "route-tree",
+                      },
+                    );
+                    shellEntry = shellCache.get(shellCacheKey);
+                  }
+                  await shellEntry?.pending?.catch(() => {});
+                  const renderedPathAndSearch = shellEntry?.snapshot?.renderedPathAndSearch;
+                  if (renderedPathAndSearch) {
+                    const renderedRscUrl = await createRscRequestUrl(
+                      renderedPathAndSearch,
+                      headers,
+                    );
+                    const cachedRenderedResponse = peekPrefetchResponseForNavigation(
+                      renderedRscUrl,
+                      interceptionContext,
+                      mountedSlotsHeader,
+                    );
+                    if (cachedRenderedResponse) {
+                      return restoreRscResponse(cachedRenderedResponse);
+                    }
+                  }
+                  return scheduleAppPrefetchFetch(
+                    () =>
+                      fetch(rscUrl, {
+                        headers,
+                        credentials: "include",
+                        priority,
+                        // @ts-expect-error — purpose is a valid fetch option in some browsers
+                        purpose: "prefetch",
+                      }),
+                    priority,
+                  );
+                })()
+              : fetchFullRscPayload();
         if (
           mode === "full" &&
-          autoPrefetch.cacheForNavigation &&
+          autoPrefetch.fetchFullPayload &&
           autoPrefetch.prefetchShellFirst &&
           mountedSlotsHeader === null &&
           !gateViaExplicitSearchShell
@@ -799,6 +887,7 @@ function prefetchUrl(
           undefined,
           {
             cacheForNavigation: autoPrefetch.cacheForNavigation,
+            cacheForNavigationOnComplete: autoPrefetch.cacheForNavigationOnComplete,
             fallbackTtlMs: PREFETCH_CACHE_TTL,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
@@ -874,6 +963,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
 
   for (const [cacheKey, entry] of getPrefetchCache()) {
     if (entry.optimisticRouteShell === true) continue;
+    if (entry.cacheForNavigationOnComplete === true) continue;
     if (entry.prefetchKind === "route-tree") continue;
 
     const [rscUrl] = cacheKey.split("\0", 1);
