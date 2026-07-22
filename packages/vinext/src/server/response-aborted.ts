@@ -44,6 +44,13 @@ function isDomAbortError(reason: unknown): boolean {
   );
 }
 
+function isPrematureCloseError(reason: unknown): boolean {
+  return (
+    reason instanceof Error &&
+    (reason as Partial<Record<"code", unknown>>).code === "ERR_STREAM_PREMATURE_CLOSE"
+  );
+}
+
 /**
  * Wrap a render stream that is about to become a Response body so that a
  * consumer cancellation with no reason reaches the underlying render as a
@@ -80,6 +87,12 @@ export function tagConsumerCancellation(
         // Runtimes that propagate a standard aborted signal cancel with a
         // DOMException named AbortError; that is still a consumer abort.
         if (isDomAbortError(reason)) {
+          return reader.cancel(new ResponseAbortedError(reason));
+        }
+        // Node's Readable.fromWeb pipeline cancels with an ordinary Error
+        // whose code is ERR_STREAM_PREMATURE_CLOSE when the client
+        // disconnects from a Node HTTP server.
+        if (isPrematureCloseError(reason)) {
           return reader.cancel(new ResponseAbortedError(reason));
         }
         return reader.cancel(reason);

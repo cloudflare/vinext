@@ -141,6 +141,23 @@ describe("app RSC error primitives", () => {
     expect(sourceCancelled).toBeInstanceOf(Error);
   });
 
+  it("tags consumer cancellation carrying a premature-close error", async () => {
+    let cancelReason: unknown = "unset";
+    const inner = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    const prematureClose = Object.assign(new Error("Premature close"), {
+      code: "ERR_STREAM_PREMATURE_CLOSE",
+    });
+    await tagConsumerCancellation(inner).cancel(prematureClose);
+
+    expect(isResponseAbortedError(cancelReason)).toBe(true);
+    expect((cancelReason as Error).cause).toBe(prematureClose);
+  });
+
   it("forwards an explicit cancellation reason unchanged", async () => {
     let cancelReason: unknown = "unset";
     const inner = new ReadableStream<Uint8Array>({
