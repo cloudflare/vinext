@@ -21,6 +21,8 @@ import os from "node:os";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
 
 type VinextPlugin = {
@@ -152,6 +154,49 @@ describe("client `global` define (config)", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("evaluates build configs with production NODE_ENV in test mode", async () => {
+    const tmpDir = await setupTmpProject(`
+      if (process.env.NODE_ENV !== "production") {
+        throw new Error(\`next.config saw NODE_ENV=\${process.env.NODE_ENV}\`);
+      }
+      export default {};
+    `);
+    const vinextEntryUrl = pathToFileURL(
+      path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
+    ).href;
+    const cliPath = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
+
+    try {
+      await fsp.writeFile(path.join(tmpDir, ".env.test"), "NODE_ENV=test\n");
+      await fsp.writeFile(
+        path.join(tmpDir, "vite.config.mjs"),
+        `
+          import vinext from ${JSON.stringify(vinextEntryUrl)};
+          export default ({ mode }) => {
+            if (mode !== "test") throw new Error(\`vite.config saw mode=\${mode}\`);
+            if (process.env.NODE_ENV !== "production") {
+              throw new Error(\`vite.config saw NODE_ENV=\${process.env.NODE_ENV}\`);
+            }
+            return { plugins: [vinext()] };
+          };
+        `,
+      );
+
+      const childEnv = { ...process.env };
+      Reflect.deleteProperty(childEnv, "NODE_ENV");
+      expect(() =>
+        execFileSync(process.execPath, [cliPath, "build", "--mode", "test"], {
+          cwd: tmpDir,
+          env: childEnv,
+          stdio: "pipe",
+          timeout: 30000,
+        }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30000);
 });
 
 describe("client `global` define (dev server behavior)", () => {
