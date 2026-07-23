@@ -2431,8 +2431,8 @@ function bootstrapHydration(
         if (prefetchedElements) {
           void reactBranch.cancel().catch(() => {});
         }
-        let rscPayload = prefetchedElements
-          ? Promise.resolve(prefetchedElements)
+        let rscPayload: AppElements | Promise<AppElements> = prefetchedElements
+          ? prefetchedElements
           : decodeAppElementsPromise(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
@@ -2458,7 +2458,7 @@ function bootstrapHydration(
           }
           rscPayload = resolveSupplementalRefreshes({
             merge: mergeRefreshedInterceptedSlot,
-            primary: rscPayload,
+            primary: Promise.resolve(rscPayload),
             signal: navigationAbortController.signal,
             supplemental,
           }).then((result) => result.value);

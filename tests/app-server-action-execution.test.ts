@@ -1333,6 +1333,7 @@ describe("app server action execution helpers", () => {
         currentRoutePathname: "/photos/42",
         findIntercept() {
           return {
+            interceptionId: null,
             matchedParams: { locale: "en", photoId: "42" },
             sourceMatchedParams: sourceParams,
             page: { default: "modal-photo" },
