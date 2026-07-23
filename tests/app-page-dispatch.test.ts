@@ -2072,6 +2072,9 @@ describe("app page dispatch", () => {
   });
 
   it("returns not found for dynamicParams=false paths outside generated params", async () => {
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response('<html><h1 class="next-error-h1">404</h1></html>', { status: 404 }),
+    );
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("unknown static params should not render the page");
@@ -2081,6 +2084,7 @@ describe("app page dispatch", () => {
       },
       route: createRoute({ isDynamic: true, params: ["slug"] }),
     });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
 
     const response = await dispatchAppPage({
       ...options,
@@ -2088,14 +2092,73 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(404);
-    await expect(response.text()).resolves.toBe("This page could not be found");
+    await expect(response.text()).resolves.toContain('class="next-error-h1"');
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      { matchedParams: { slug: "hello" } },
+      options.middlewareContext,
+    );
+  });
+
+  it("keeps request context alive while rendering a generated-param not-found response", async () => {
+    const observedHeaderValues: Array<string | null> = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    const clearRequestContext = vi.fn(() => setHeadersContext(null));
+    const renderHttpAccessFallbackPage = vi.fn(async () => {
+      observedHeaderValues.push(getHeadersContext()?.headers.get("x-static-miss") ?? null);
+      return new Response(
+        new ReadableStream({
+          async pull(controller) {
+            await streamGate;
+            observedHeaderValues.push(getHeadersContext()?.headers.get("x-static-miss") ?? null);
+            controller.enqueue(new TextEncoder().encode("not found"));
+            controller.close();
+          },
+        }),
+        { status: 404 },
+      );
+    });
+    const { options } = createDispatchOptions({
+      clearRequestContext,
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      isRscRequest: true,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+    const requestContext = createRequestContext({
+      headersContext: {
+        cookies: new Map(),
+        headers: new Headers({ "x-static-miss": "available" }),
+      },
+    });
+
+    const response = await runWithRequestContext(requestContext, () =>
+      dispatchAppPage({
+        ...options,
+        dynamicParamsConfig: false,
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(observedHeaderValues).toEqual(["available"]);
+    releaseStream();
+    await expect(response.text()).resolves.toBe("not found");
+    expect(observedHeaderValues).toEqual(["available", "available"]);
+    expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
   it("rejects generated scalar params with different casing", async () => {
+    const clearRequestContext = vi.fn();
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("case-mismatched static params should not render the page");
       },
+      clearRequestContext,
       async generateStaticParams() {
         return [{ region: "SE" }, { region: "DE" }];
       },
@@ -2109,6 +2172,7 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(404);
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("rejects generated catch-all params with different casing", async () => {

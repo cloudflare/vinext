@@ -241,6 +241,11 @@ function readRequestCacheLifeForPrerender(
   return options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
 }
 
+function resolveConfiguredDynamicStaleTimeSeconds(): number {
+  const seconds = Number(process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME);
+  return Number.isInteger(seconds) && seconds >= 0 ? seconds : 0;
+}
+
 function readRequestCacheLifeForCachePolicy(
   options: Pick<
     RenderAppPageLifecycleOptions,
@@ -705,13 +710,16 @@ export async function renderAppPageLifecycle(
     });
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
+  const dynamicStaleTimeSeconds =
+    options.dynamicStaleTimeSeconds ??
+    (options.isForceDynamic ? resolveConfiguredDynamicStaleTimeSeconds() : undefined);
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
     element: options.element,
     layoutFlags,
-    ...(options.dynamicStaleTimeSeconds !== undefined &&
+    ...(dynamicStaleTimeSeconds !== undefined &&
     options.isPrerender !== true &&
     !options.isForceStatic
-      ? { dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds }
+      ? { dynamicStaleTimeSeconds }
       : {}),
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
     renderObservation: payloadRenderObservation,
@@ -826,19 +834,18 @@ export async function renderAppPageLifecycle(
       options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
     }
     const shouldEmitDynamicStaleTime =
-      options.dynamicStaleTimeSeconds !== undefined &&
+      dynamicStaleTimeSeconds !== undefined &&
       options.isPrerender !== true &&
       !options.isForceStatic &&
-      (dynamicUsedDuringBuild || !shouldCaptureRscForCacheMetadata);
+      (dynamicUsedDuringBuild || options.isForceDynamic || !shouldCaptureRscForCacheMetadata);
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       // Only emit on dynamic renders — Next.js gates on !workStore.isStaticGeneration (line 2223).
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L2223-L2229
       // shouldCaptureRscForCacheMetadata is the runtime analog of isStaticGeneration: a render
       // written to the ISR cache (incl. production ISR, where isPrerender is false at runtime)
       // must not emit the authoritative per-page stale time.
-      dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime
-        ? options.dynamicStaleTimeSeconds
-        : undefined,
+      dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime ? dynamicStaleTimeSeconds : undefined,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
@@ -959,10 +966,10 @@ export async function renderAppPageLifecycle(
           return {
             kind,
             ...(kind === "dynamic" &&
-            options.dynamicStaleTimeSeconds !== undefined &&
+            dynamicStaleTimeSeconds !== undefined &&
             options.isPrerender !== true &&
             !shouldCaptureRscForCacheMetadata
-              ? { dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds }
+              ? { dynamicStaleTimeSeconds }
               : {}),
           };
         },
@@ -1103,6 +1110,7 @@ export async function renderAppPageLifecycle(
 
   if (htmlRender.shellErrorRecovered) {
     const response = buildAppPageHtmlResponse(safeHtmlStream, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
       linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
@@ -1131,6 +1139,7 @@ export async function renderAppPageLifecycle(
 
   if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
       linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
@@ -1202,6 +1211,7 @@ export async function renderAppPageLifecycle(
   }
 
   return buildAppPageHtmlResponse(safeHtmlStream, {
+    cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
     isEdgeRuntime: options.isEdgeRuntime,

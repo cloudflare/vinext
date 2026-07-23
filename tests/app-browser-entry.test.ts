@@ -32,6 +32,7 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { resolvePrefetchNavigationResponseUrl } from "../packages/vinext/src/server/app-browser-prefetch-response.js";
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
@@ -79,6 +80,10 @@ import {
   type AppElementsSlotBinding,
 } from "../packages/vinext/src/server/app-elements.js";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
+import {
+  beginAppRouterScrollIntent,
+  clearAppRouterScrollIntent,
+} from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createHistoryStateWithNavigationMetadata,
@@ -171,6 +176,7 @@ function createResolvedElements(
     : [AppElementsWire.encodeLayoutId(rootLayoutTreePath)],
   slotBindings: readonly AppElementsSlotBinding[] = [],
   interception: AppElementsInterception | null = null,
+  sourcePage: string | null = null,
 ) {
   return normalizeAppElements({
     ...AppElementsWire.createMetadataEntries({
@@ -180,6 +186,7 @@ function createResolvedElements(
       rootLayoutTreePath,
       routeId,
       slotBindings,
+      sourcePage,
     }),
     ...extraEntries,
   });
@@ -796,6 +803,39 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("keeps the visible URL when a settled prefetch was found through a rewrite alias", () => {
+    expect(
+      resolvePrefetchNavigationResponseUrl({
+        additionalRscUrls: ["/source?_rsc=source-digest"],
+        origin: "https://example.com",
+        responseUrl: "https://example.com/source?_rsc=prefetch-digest",
+        visibleRscUrl: "/rewrite?_rsc=visible-digest",
+      }),
+    ).toBe("/rewrite?_rsc=visible-digest");
+  });
+
+  it("preserves the prefetch response digest and canonicalizes same-origin URLs", () => {
+    expect(
+      resolvePrefetchNavigationResponseUrl({
+        additionalRscUrls: ["/source?_rsc=source-digest"],
+        origin: "https://example.com",
+        responseUrl: "https://example.com/rewrite?_rsc=prefetch-digest",
+        visibleRscUrl: "/rewrite?_rsc=visible-digest",
+      }),
+    ).toBe("/rewrite?_rsc=prefetch-digest");
+  });
+
+  it("preserves cross-origin prefetch response URLs for navigation validation", () => {
+    expect(
+      resolvePrefetchNavigationResponseUrl({
+        additionalRscUrls: ["/rewrite?_rsc=source-digest"],
+        origin: "https://example.com",
+        responseUrl: "https://other.example/rewrite?_rsc=prefetch-digest",
+        visibleRscUrl: "/rewrite?_rsc=visible-digest",
+      }),
+    ).toBe("https://other.example/rewrite?_rsc=prefetch-digest");
+  });
+
   it("hard-navigates RSC responses when the response compatibility ID is missing or stale", () => {
     stubWindow("https://example.com/current");
 
@@ -3454,6 +3494,178 @@ describe("app browser navigation controller", () => {
     } finally {
       detach();
       vi.unstubAllEnvs();
+    }
+  });
+
+  it("forces same-path search and hash state into a synchronous React commit", async () => {
+    const initialElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "hash page"),
+    });
+    const initialState = createState({
+      elements: initialElements,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/hash#non-existent",
+        {},
+      ),
+      routeId: "route:/hash",
+    });
+    const { controller, detach, setBrowserRouterState, stateRef } =
+      createControllerHarness(initialState);
+    const commitEffect = vi.fn();
+    const scrollIntent = beginAppRouterScrollIntent("#hash-160");
+
+    stubWindow("https://example.com/hash#non-existent");
+
+    try {
+      const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/hash?with-query-param#hash-160",
+          {},
+        ),
+        nextElements: Promise.resolve(initialElements),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/hash?with-query-param#hash-160",
+        navId,
+      });
+
+      const outcome = await Promise.race([
+        renderPromise,
+        new Promise<"timeout">((resolve) => {
+          setTimeout(() => resolve("timeout"), 50);
+        }),
+      ]);
+
+      expect(outcome).toBe("timeout");
+      expect(stateRef.current.renderId).toBeGreaterThan(0);
+      expect(stateRef.current.navigationSnapshot.searchParams.get("with-query-param")).toBe("");
+      expect(setBrowserRouterState).toHaveBeenLastCalledWith(stateRef.current);
+      // URL and scroll effects still wait for NavigationCommitSignal's layout
+      // effect; hash-rsc-requests.browser.spec.ts verifies that real commit.
+      expect(commitEffect).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
+    }
+  });
+
+  it("waits for the commit signal when a same-path search and hash navigation changes the tree", async () => {
+    const initialElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "old hash page"),
+    });
+    const nextElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "new hash page"),
+    });
+    const initialState = createState({
+      elements: initialElements,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/hash?old=1#old-content",
+        {},
+      ),
+      routeId: "route:/hash",
+    });
+    const { controller, detach } = createControllerHarness(initialState);
+    const commitEffect = vi.fn();
+    const scrollIntent = beginAppRouterScrollIntent("#new-content");
+
+    stubWindow("https://example.com/hash?old=1#old-content");
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/hash?new=1#new-content",
+          {},
+        ),
+        nextElements: Promise.resolve(nextElements),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: controller.beginPendingBrowserRouterState(),
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/hash?new=1#new-content",
+        navId,
+      });
+
+      await expect(
+        Promise.race([
+          renderPromise,
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
+        ]),
+      ).resolves.toBe("timeout");
+      expect(commitEffect).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
+    }
+  });
+
+  it("does not settle an unchanged search and hash render after a newer navigation starts", async () => {
+    const initialElements = createResolvedElements("route:/hash", "/", null, {
+      "page:/hash": React.createElement("main", null, "hash page"),
+    });
+    const initialState = createState({
+      elements: initialElements,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/hash", {}),
+      routeId: "route:/hash",
+    });
+    const { controller, detach } = createControllerHarness(initialState);
+    const commitEffect = vi.fn();
+    const scrollIntent = beginAppRouterScrollIntent("#hash-160");
+
+    stubWindow("https://example.com/hash");
+
+    try {
+      const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/hash?with-query-param#hash-160",
+          {},
+        ),
+        nextElements: Promise.resolve(initialElements),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/hash?with-query-param#hash-160",
+        navId,
+      });
+
+      for (let attempts = 0; attempts < 5 && !pendingRouterState.settled; attempts++) {
+        await Promise.resolve();
+      }
+      expect(pendingRouterState.settled).toBe(true);
+      controller.beginNavigation();
+
+      await expect(
+        Promise.race([
+          renderPromise,
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
+        ]),
+      ).resolves.toBe("timeout");
+      expect(commitEffect).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
     }
   });
 
@@ -6364,6 +6576,208 @@ describe("app browser entry bfcacheId helpers", () => {
     expect(pageOneKeys[dynamicPageId]).toBe(`${dynamicPageId}@/page/1`);
     expect(pageTwoKeys[dynamicPageId]).toBe(`${dynamicPageId}@/page/2`);
     expect(pageOneKeys[dynamicPageId]).not.toBe(pageTwoKeys[dynamicPageId]);
+  });
+
+  it("keys an intercepted source page by its proven source match", () => {
+    const feedLayoutId = AppElementsWire.encodeLayoutId("/feed");
+    const feedPageId = AppElementsWire.encodePageId("/feed", null);
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/feed");
+    const modalSlotBinding = {
+      ownerLayoutId: feedLayoutId,
+      slotId: modalSlotId,
+      state: "active",
+    } satisfies AppElementsSlotBinding;
+    const sourceElements = createResolvedElements(
+      "route:/feed",
+      "/",
+      null,
+      {
+        [feedPageId]: React.createElement("main", null),
+        [modalSlotId]: React.createElement("aside", null),
+      },
+      [rootLayoutId, feedLayoutId],
+      [modalSlotBinding],
+    );
+    const interceptedElements = createResolvedElements(
+      "route:/feed",
+      "/",
+      "/feed",
+      {
+        [feedPageId]: React.createElement("main", null),
+        [modalSlotId]: React.createElement("aside", null),
+      },
+      [rootLayoutId, feedLayoutId],
+      [modalSlotBinding],
+      createInterceptionProof("/feed", "/photos/42", modalSlotId),
+    );
+
+    const sourceKeys = createBfcacheSegmentStateKeyMap({
+      elements: sourceElements,
+      // Search is intentionally absent: the navigation snapshot passes the
+      // URL pathname separately from search params, so search-only changes do
+      // not participate in segment identity.
+      pathname: "/feed",
+    });
+    const interceptedKeys = createBfcacheSegmentStateKeyMap({
+      elements: interceptedElements,
+      pathname: "/photos/42",
+    });
+
+    expect(sourceKeys[feedPageId]).toBe(`${feedPageId}@/feed`);
+    expect(interceptedKeys[feedPageId]).toBe(sourceKeys[feedPageId]);
+    expect(interceptedKeys[modalSlotId]).toBe(`${modalSlotId}@route:/photos/42`);
+
+    const opened = createNextBfcacheIdMap({
+      current: {
+        [rootLayoutId]: "0",
+        [feedLayoutId]: "_b_1_",
+        [feedPageId]: "_b_2_",
+      },
+      currentElements: sourceElements,
+      currentPathname: "/feed",
+      elements: interceptedElements,
+      nextPathname: "/photos/42",
+    });
+    expect(opened[feedLayoutId]).toBe("_b_1_");
+    expect(opened[feedPageId]).toBe("_b_2_");
+    expect(opened[modalSlotId]).toMatch(/^_b_\d+_$/);
+  });
+
+  it("preserves rewritten source identities when interception proof uses the matched pathname", () => {
+    const localeLayoutId = AppElementsWire.encodeLayoutId("/interception-mw/[locale]");
+    const sourcePageId = AppElementsWire.encodePageId("/interception-mw/en", null);
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/interception-mw/[locale]");
+    const sourceRouteId = AppElementsWire.encodeRouteId("/interception-mw/en", null);
+    const targetRouteId = AppElementsWire.encodeRouteId("/interception-mw/en/foo/p/1", null);
+    const sourceBinding = {
+      activeRouteId: sourceRouteId,
+      ownerLayoutId: localeLayoutId,
+      slotId: modalSlotId,
+      state: "active",
+    } satisfies AppElementsSlotBinding;
+    const entries = {
+      [sourcePageId]: React.createElement("main", null),
+      [modalSlotId]: React.createElement("aside", null),
+    };
+    const sourceElements = createResolvedElements(
+      sourceRouteId,
+      "/",
+      null,
+      entries,
+      [rootLayoutId, localeLayoutId],
+      [sourceBinding],
+      null,
+      "/interception-mw/[locale]/page",
+    );
+    const interceptedElements = createResolvedElements(
+      sourceRouteId,
+      "/",
+      "/interception-mw/en",
+      entries,
+      [rootLayoutId, localeLayoutId],
+      [{ ...sourceBinding, activeRouteId: targetRouteId }],
+      createInterceptionProof("/interception-mw/en", "/interception-mw/en/foo/p/1", modalSlotId),
+      "/interception-mw/[locale]/page",
+    );
+
+    const next = createNextBfcacheIdMap({
+      current: {
+        [rootLayoutId]: "0",
+        [localeLayoutId]: "_b_1_",
+        [sourcePageId]: "_b_2_",
+        [modalSlotId]: "_b_3_",
+      },
+      currentElements: sourceElements,
+      currentPathname: "/interception-mw",
+      elements: interceptedElements,
+      nextPathname: "/interception-mw/foo/p/1",
+    });
+
+    expect(next[localeLayoutId]).toBe("_b_1_");
+    expect(next[sourcePageId]).toBe("_b_2_");
+    expect(next[modalSlotId]).not.toBe("_b_3_");
+  });
+
+  it("mints a fresh active children-slot identity when its route changes", () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/parent");
+    const createChildrenSlotElements = (routePath: string) =>
+      createResolvedElements(
+        AppElementsWire.encodeRouteId(routePath, null),
+        "/",
+        null,
+        { [childrenSlotId]: React.createElement("main", null) },
+        [rootLayoutId],
+        [
+          {
+            activeRouteId: AppElementsWire.encodeRouteId(routePath, null),
+            ownerLayoutId: rootLayoutId,
+            slotId: childrenSlotId,
+            state: "active",
+          },
+        ],
+      );
+
+    const next = createNextBfcacheIdMap({
+      current: { [rootLayoutId]: "0", [childrenSlotId]: "_b_1_" },
+      currentElements: createChildrenSlotElements("/parent/one"),
+      currentPathname: "/parent/one",
+      elements: createChildrenSlotElements("/parent/two"),
+      nextPathname: "/parent/two",
+    });
+
+    expect(next[rootLayoutId]).toBe("0");
+    expect(next[childrenSlotId]).not.toBe("_b_1_");
+  });
+
+  it("preserves source page identity while chained interception targets change", () => {
+    const feedLayoutId = AppElementsWire.encodeLayoutId("/feed");
+    const feedPageId = AppElementsWire.encodePageId("/feed", null);
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/feed");
+    const modalPhotoLayoutId = AppElementsWire.encodeLayoutId("/feed/@modal/photos/[id]");
+    const modalSlotBinding = {
+      ownerLayoutId: feedLayoutId,
+      slotId: modalSlotId,
+      state: "active",
+    } satisfies AppElementsSlotBinding;
+    const createInterceptedElements = (target: string) =>
+      createResolvedElements(
+        "route:/feed",
+        "/",
+        "/feed",
+        {
+          [feedPageId]: React.createElement("main", null),
+          [modalSlotId]: React.createElement("aside", null),
+          [modalPhotoLayoutId]: React.createElement("div", null),
+        },
+        [rootLayoutId, feedLayoutId, modalPhotoLayoutId],
+        [modalSlotBinding],
+        createInterceptionProof("/feed", target, modalSlotId),
+      );
+    const photo42Elements = createInterceptedElements("/photos/42");
+    const photo43Elements = createInterceptedElements("/photos/43");
+    const current = {
+      [rootLayoutId]: "0",
+      [feedLayoutId]: "_b_4_",
+      [feedPageId]: "_b_5_",
+      [modalSlotId]: "_b_6_",
+      [modalPhotoLayoutId]: "_b_7_",
+    };
+
+    const next = createNextBfcacheIdMap({
+      current,
+      currentElements: photo42Elements,
+      currentPathname: "/photos/42",
+      elements: photo43Elements,
+      nextPathname: "/photos/43",
+    });
+
+    expect(next[rootLayoutId]).toBe("0");
+    expect(next[feedLayoutId]).toBe("_b_4_");
+    expect(next[feedPageId]).toBe("_b_5_");
+    expect(next[modalSlotId]).toMatch(/^_b_\d+_$/);
+    expect(next[modalSlotId]).not.toBe("_b_6_");
+    expect(next[modalPhotoLayoutId]).toMatch(/^_b_\d+_$/);
+    expect(next[modalPhotoLayoutId]).not.toBe("_b_7_");
   });
 
   it("preserves encoded path delimiters when deriving segment state keys", () => {

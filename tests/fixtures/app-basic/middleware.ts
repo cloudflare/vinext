@@ -354,6 +354,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
     );
   }
+  if (pathname.startsWith("/metadata-icons-stream")) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
   r.headers.set("x-mw-pathname", pathname);
   r.headers.set("x-mw-ran", "true");
   if (sessionToken) {
@@ -404,6 +410,7 @@ export const config = {
     "/nextjs-compat/dynamic/:path*",
     "/nextjs-compat/action-forward-loop",
     "/nextjs-compat/action-node-mw",
+    "/metadata-icons-stream/:path*",
     "/use-client-page-pathname/:path*",
     "/rsc-fetch-redirect-src",
     "/rsc-fetch-error-target",

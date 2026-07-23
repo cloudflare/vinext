@@ -146,7 +146,9 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     // After #1336 item 3 the dispatch URL is `apiLookupUrl` (the locale-
     // stripped form of `resolvedUrl`), but `ctx` is still threaded through.
     const content = readPagesRouterEntrySource();
-    expect(content).toContain("handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)");
+    expect(content).toContain(
+      'handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")',
+    );
   });
 
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {

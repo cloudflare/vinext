@@ -647,6 +647,7 @@ describe("App RSC route matching", () => {
       expect(matcher.findIntercept("/photos/42", "/en/feed/recent")).toMatchObject({
         sourceRouteIndex: 1,
         matchedParams: { locale: "en", photoId: "42" },
+        sourceMatchedParams: { locale: "en", tab: "recent" },
       });
     });
 

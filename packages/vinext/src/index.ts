@@ -2242,6 +2242,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_APP_NAV_FAIL_HANDLING"] = JSON.stringify(
           nextConfig.appNavFailHandling,
         );
+        defines["process.env.__NEXT_TEST_MODE"] = JSON.stringify(
+          process.env.__NEXT_TEST_MODE ?? false,
+        );
         // Expose experimental.scrollRestoration to the Pages Router client.
         // Next.js defines this from config.experimental.scrollRestoration in
         // packages/next/src/build/define-env.ts.
@@ -5518,6 +5521,7 @@ export const loadServerActionClient = ${
                       nextConfig?.htmlLimitedBots,
                       nextConfig?.reactStrictMode === true,
                       nextConfig?.expireTime,
+                      nextConfig?.crossOrigin,
                     ),
                   };
                 }

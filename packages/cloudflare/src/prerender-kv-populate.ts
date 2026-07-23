@@ -124,7 +124,7 @@ export function buildPrerenderKVPairs(
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
     const expirationTtl = revalidateSeconds === undefined ? undefined : ttlSeconds;
-    const tags = buildAppPageCacheTags(cachePathname, []);
+    const tags = buildAppPageCacheTags(cachePathname, route.tags ?? []);
     const metadata = buildMetadata(tags);
     const htmlKey = appIsrCacheKey(cachePathname, "html", manifest.buildId);
     const rscKey = appIsrCacheKey(cachePathname, "rsc", manifest.buildId);

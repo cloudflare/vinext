@@ -27,6 +27,10 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import {
+  applyDocumentAssetProps,
+  extractDocumentAssetProps,
+} from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
 
@@ -204,6 +208,8 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  crossOrigin?: string;
+  disableOptimizedLoading: boolean;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
@@ -247,7 +253,7 @@ function buildPagesFontHeadHtml(
   for (const preload of fontPreloads) {
     // Font files are content-hashed immutable assets. Keep the preload URL
     // byte-identical to the @font-face source so the browser consumes it.
-    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
+    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin="anonymous" />\n  `;
   }
 
   if (fontStyles.length > 0) {
@@ -316,7 +322,7 @@ async function buildPagesShellHtml(
   nextDataScript: string,
   options: Pick<
     RenderPagesPageResponseOptions,
-    "assetTags" | "DocumentComponent" | "renderDocumentToString"
+    "assetTags" | "disableOptimizedLoading" | "DocumentComponent" | "renderDocumentToString"
   > & {
     ssrHeadHTML: string;
     /**
@@ -326,6 +332,7 @@ async function buildPagesShellHtml(
      * second time). `null` means use the normal fast path.
      */
     resolvedDocProps?: Record<string, unknown> | null;
+    crossOrigin?: string;
   },
 ): Promise<string> {
   if (options.DocumentComponent) {
@@ -334,17 +341,31 @@ async function buildPagesShellHtml(
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
-    let html = await options.renderDocumentToString(docElement);
+    const renderedDocument = extractDocumentAssetProps(
+      await options.renderDocumentToString(docElement),
+    );
+    let html = renderedDocument.html;
+    const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
+      configuredCrossOrigin: options.crossOrigin,
+      // Next.js emits optimized framework scripts from Head. When optimized
+      // loading is disabled, NextScript owns those same script tags instead.
+      scriptOwner: options.disableOptimizedLoading ? "next-script" : "head",
+    });
+    const generatedNextDataScript = applyDocumentAssetProps(
+      nextDataScript,
+      renderedDocument.props,
+      { configuredCrossOrigin: options.crossOrigin },
+    );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || options.assetTags || fontHeadHTML) {
+    if (options.ssrHeadHTML || generatedAssetTags || fontHeadHTML) {
       html = html.replace(
         "</head>",
-        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${options.assetTags}\n</head>`,
+        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${generatedAssetTags}\n</head>`,
       );
     }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
     if (!html.includes("__NEXT_DATA__")) {
-      html = html.replace("</body>", `  ${nextDataScript}\n</body>`);
+      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
     }
     return html;
   }
@@ -352,13 +373,27 @@ async function buildPagesShellHtml(
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
   // defaultHead seeds them with data-next-head=""), matching Next.js's
   // canonical ordering. Don't duplicate them here.
+  const generatedAssetTags = applyDocumentAssetProps(
+    options.assetTags,
+    {},
+    {
+      configuredCrossOrigin: options.crossOrigin,
+    },
+  );
+  const generatedNextDataScript = applyDocumentAssetProps(
+    nextDataScript,
+    {},
+    {
+      configuredCrossOrigin: options.crossOrigin,
+    },
+  );
   return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
     `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
-    `  ${options.assetTags}\n` +
+    `  ${generatedAssetTags}\n` +
     "</head>\n<body>\n" +
     `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${nextDataScript}\n` +
+    `  ${generatedNextDataScript}\n` +
     "</body>\n</html>"
   );
 }
@@ -593,6 +628,7 @@ export async function renderPagesPageResponse(
   }
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
+    disableOptimizedLoading: options.disableOptimizedLoading,
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
     ssrHeadHTML,
@@ -600,6 +636,7 @@ export async function renderPagesPageResponse(
     // resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
     resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
+    crossOrigin: options.crossOrigin,
   });
 
   options.clearSsrContext();

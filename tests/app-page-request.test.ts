@@ -11,10 +11,7 @@ import {
 
 describe("app page request helpers", () => {
   it("returns 404 when dynamicParams=false receives unknown params", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       async generateStaticParams() {
         return [{ slug: "known-post" }];
@@ -25,14 +22,10 @@ describe("app page request helpers", () => {
 
     expect(response?.status).toBe(404);
     await expect(response?.text()).resolves.toBe("This page could not be found");
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("returns 404 when dynamicParams=false has no static params sources", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: undefined,
       isDynamicRoute: true,
@@ -41,14 +34,10 @@ describe("app page request helpers", () => {
 
     expect(response?.status).toBe(404);
     await expect(response?.text()).resolves.toBe("This page could not be found");
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("allows matching static params, including nested parent params", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       async generateStaticParams() {
         return [{ item: "shoe" }];
@@ -58,12 +47,10 @@ describe("app page request helpers", () => {
     });
 
     expect(response).toBeNull();
-    expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
   it("allows canonical encoded App Page params from generateStaticParams", async () => {
     const response = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       async generateStaticParams() {
         return [{ id: "sticks & stones", path: ["a/b", "%61"] }];
@@ -82,7 +69,6 @@ describe("app page request helpers", () => {
     const generateStaticParams = async () => [{ id: "a%2Fb" }];
 
     const encodedLiteral = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams,
       isDynamicRoute: true,
@@ -91,7 +77,6 @@ describe("app page request helpers", () => {
     expect(encodedLiteral).toBeNull();
 
     const delimiterAlias = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams,
       isDynamicRoute: true,
@@ -101,12 +86,10 @@ describe("app page request helpers", () => {
   });
 
   it("requires every segment generateStaticParams source to allow the params", async () => {
-    const clearRequestContext = vi.fn();
     const layoutGenerateStaticParams = async () => [{ category: "docs" }];
     const pageGenerateStaticParams = async () => [{ slug: "intro" }];
 
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: [layoutGenerateStaticParams, pageGenerateStaticParams],
       isDynamicRoute: true,
@@ -114,11 +97,9 @@ describe("app page request helpers", () => {
     });
 
     expect(response?.status).toBe(404);
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("passes parent-only params to each generateStaticParams source", async () => {
-    const clearRequestContext = vi.fn();
     const categoryGenerateStaticParams = vi.fn(() => [{ category: "docs" }]);
     const itemGenerateStaticParams = vi.fn(
       ({ params }: { params: Record<string, string | string[]> }) => {
@@ -130,7 +111,6 @@ describe("app page request helpers", () => {
     );
 
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
         layouts: [null, { generateStaticParams: categoryGenerateStaticParams }],
@@ -143,7 +123,6 @@ describe("app page request helpers", () => {
     });
 
     expect(response).toBeNull();
-    expect(clearRequestContext).not.toHaveBeenCalled();
     expect(categoryGenerateStaticParams).toHaveBeenCalledWith({ params: {} });
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
   });
@@ -151,7 +130,6 @@ describe("app page request helpers", () => {
   it("ignores route groups when finding a layout generateStaticParams boundary", async () => {
     const generateStaticParams = vi.fn(() => [{ region: "SE" }]);
     const response = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
         layouts: [null, { generateStaticParams }],
@@ -184,7 +162,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -196,7 +173,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -225,7 +201,6 @@ describe("app page request helpers", () => {
     });
     const validate = (locale: string, slug: string) =>
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -259,7 +234,6 @@ describe("app page request helpers", () => {
     });
     const validate = (slug: string) =>
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -290,7 +264,6 @@ describe("app page request helpers", () => {
     });
     const validate = (slug: string) =>
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -321,7 +294,6 @@ describe("app page request helpers", () => {
     });
     const validate = (slug: string) =>
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -354,7 +326,6 @@ describe("app page request helpers", () => {
     });
     const validate = (slug: string) =>
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -372,7 +343,6 @@ describe("app page request helpers", () => {
 
   it("enforces generateStaticParams from a parallel page", async () => {
     const response = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
         parallelBranches: [
@@ -396,7 +366,6 @@ describe("app page request helpers", () => {
   it("remaps parallel page params before validating generateStaticParams", async () => {
     const generateStaticParams = vi.fn(() => [{ name: "post" }]);
     const response = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
         parallelBranches: [
@@ -437,7 +406,6 @@ describe("app page request helpers", () => {
     });
     const validate = (slug: string) =>
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -457,7 +425,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         async generateStaticParams() {
           throw error;
@@ -475,7 +442,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         async generateStaticParams() {
           return Promise.reject(error);
@@ -489,7 +455,6 @@ describe("app page request helpers", () => {
   // Ported from Next.js: packages/next/src/build/static-paths/app.test.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/static-paths/app.test.ts
   it("does not check remaining sources when an earlier generateStaticParams source throws", async () => {
-    const clearRequestContext = vi.fn();
     const throwsSource = vi.fn(() => {
       throw new Error("source 1 failed");
     });
@@ -497,7 +462,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext,
         enforceStaticParamsOnly: true,
         generateStaticParams: [throwsSource, rejectsSource],
         isDynamicRoute: true,
@@ -505,16 +469,12 @@ describe("app page request helpers", () => {
       }),
     ).rejects.toThrow("source 1 failed");
 
-    expect(clearRequestContext).not.toHaveBeenCalled();
     expect(throwsSource).toHaveBeenCalledTimes(1);
     expect(rejectsSource).not.toHaveBeenCalled();
   });
 
   it("returns 404 when generateStaticParams excludes the requested params", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: async () => [{ slug: "other" }],
       isDynamicRoute: true,
@@ -522,7 +482,6 @@ describe("app page request helpers", () => {
     });
 
     expect(response?.status).toBe(404);
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("renders intercepted source routes on RSC navigations", async () => {

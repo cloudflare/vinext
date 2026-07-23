@@ -1302,6 +1302,71 @@ describe("app server action execution helpers", () => {
     errorSpy.mockRestore();
   });
 
+  it("preserves an interception-only source tree during an action revalidation rerender", async () => {
+    const sourceRoute: TestRoute = {
+      id: "feed-recent",
+      page: {},
+      params: ["locale", "tab"],
+      pattern: "/:locale/feed/:tab",
+    };
+    const sourceParams = { locale: "en", tab: "recent" };
+    const buildPageElement = vi.fn(
+      ({
+        route,
+        params,
+        interceptOpts,
+      }: Parameters<
+        HandleServerActionRscRequestOptions<
+          string,
+          TestRoute,
+          TestInterceptOptions,
+          TestTemporaryReferences
+        >["buildPageElement"]
+      >[0]) => `${route.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`,
+    );
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        cleanPathname: "/photos/42",
+        currentRouteMatch: { params: sourceParams, route: sourceRoute },
+        currentRoutePathname: "/photos/42",
+        findIntercept() {
+          return {
+            matchedParams: { locale: "en", photoId: "42" },
+            sourceMatchedParams: sourceParams,
+            page: { default: "modal-photo" },
+            slotKey: "modal",
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return sourceRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/photos/42"));
+            return "revalidated";
+          });
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interceptOpts: { slot: "modal" },
+        params: sourceParams,
+        route: sourceRoute,
+      }),
+    );
+    await expect(response?.json()).resolves.toMatchObject({
+      root: 'feed-recent:{"locale":"en","tab":"recent"}:modal',
+      returnValue: { data: "revalidated", ok: true },
+    });
+  });
+
   it("allows deferred root params reads after failed fetch actions", async () => {
     let deferredRead!: Promise<string | string[] | undefined>;
     let releaseDeferred!: () => void;

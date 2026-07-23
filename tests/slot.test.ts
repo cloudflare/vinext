@@ -45,10 +45,25 @@ describe("slot primitives", () => {
     expect(typeof mod.Children).toBe("function");
     expect(typeof mod.ParallelSlot).toBe("function");
     expect(typeof mod.mergeElements).toBe("function");
+    expect(typeof mod.getNonCacheComponentsSegmentKey).toBe("function");
     expect(mod.ElementsContext).toBeDefined();
     expect(mod.ChildrenContext).toBeDefined();
     expect(mod.ParallelSlotsContext).toBeDefined();
     expect(mod.UNMATCHED_SLOT).toBe(Symbol.for("vinext.unmatchedSlot"));
+  });
+
+  it("keys fresh page carriers without remounting shared layouts or named parallel slots", async () => {
+    const { getNonCacheComponentsSegmentKey } =
+      await import("../packages/vinext/src/shims/slot.js");
+
+    expect(getNonCacheComponentsSegmentKey("page:/0", "page:/0@/0")).toBe("page:/0@/0");
+    expect(getNonCacheComponentsSegmentKey("slot:children:/", "slot:children:/@route:/0")).toBe(
+      "slot:children:/@route:/0",
+    );
+    expect(getNonCacheComponentsSegmentKey("layout:/", "layout:/@/0")).toBeUndefined();
+    expect(
+      getNonCacheComponentsSegmentKey("slot:breadcrumbs:/", "slot:breadcrumbs:/@/0"),
+    ).toBeUndefined();
   });
 
   it("Children renders null outside a Slot provider", async () => {

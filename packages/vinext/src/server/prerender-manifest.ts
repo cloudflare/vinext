@@ -9,6 +9,7 @@ export type PrerenderManifestRoute = {
   router?: string;
   fallback?: boolean;
   headers?: Record<string, string>;
+  tags?: string[];
 };
 
 export type PrerenderManifest = {

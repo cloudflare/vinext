@@ -69,6 +69,30 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/docs/", headers)).resolves.toBe("/docs/?_rsc");
   });
 
+  it("preserves encoded spaces while adding the RSC cache-busting query", async () => {
+    const headers = createRscRequestHeaders();
+
+    await expect(createRscRequestUrl("/?param=with%20space", headers)).resolves.toBe(
+      "/?param=with%20space&_rsc",
+    );
+  });
+
+  it("only exposes fetch priority through the Next.js test-mode header", () => {
+    withEnvVar("__NEXT_TEST_MODE", undefined, () => {
+      expect(
+        createRscRequestHeaders({ fetchPriority: "low" }).get("next-test-fetch-priority"),
+      ).toBeNull();
+    });
+    withEnvVar("__NEXT_TEST_MODE", "1", () => {
+      expect(
+        createRscRequestHeaders({ fetchPriority: "low" }).get("next-test-fetch-priority"),
+      ).toBe("low");
+      expect(
+        createRscRequestHeaders({ fetchPriority: "auto" }).get("next-test-fetch-priority"),
+      ).toBe("auto");
+    });
+  });
+
   it("hashes Vinext RSC variant headers into the request URL", async () => {
     const headers = createRscRequestHeaders({
       interceptionContext: "/feed",
@@ -81,6 +105,18 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
       `/photos/42?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
     );
+  });
+
+  it("keeps router state but omits the prefetch header for a full prefetch", () => {
+    const headers = createRscRequestHeaders({
+      nextUrl: "/current",
+      includePrefetchHeader: false,
+      prefetchRouterState: { pathAndSearch: "/current", routeId: "route:/current" },
+    });
+
+    expect(headers.get("next-router-prefetch")).toBeNull();
+    expect(headers.get("next-router-state-tree")).toBeTruthy();
+    expect(headers.get("next-url")).toBe("/current");
   });
 
   it("keeps server action POSTs on the visible route URL", () => {

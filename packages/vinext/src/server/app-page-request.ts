@@ -39,7 +39,6 @@ type ParallelGenerateStaticParamsBranch = {
 };
 
 export type ValidateAppPageDynamicParamsOptions = {
-  clearRequestContext: () => void;
   enforceStaticParamsOnly: boolean;
   generateStaticParams?:
     | GenerateStaticParams
@@ -570,7 +569,6 @@ export async function validateAppPageDynamicParams(
 
   const generateStaticParamsSources = normalizeGenerateStaticParams(options.generateStaticParams);
   if (generateStaticParamsSources.length === 0) {
-    options.clearRequestContext();
     return notFoundResponse();
   }
 
@@ -602,7 +600,6 @@ export async function validateAppPageDynamicParams(
     if (result.validated) {
       validatedIndependentResults = true;
       if (!areStaticParamsAllowed(options.params, result.staticParams, true)) {
-        options.clearRequestContext();
         return notFoundResponse();
       }
     }
@@ -614,7 +611,6 @@ export async function validateAppPageDynamicParams(
     // parallel result, the primary chain itself must match exactly.
     // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
     if (!areStaticParamsAllowed(options.params, chainedStaticParams)) {
-      options.clearRequestContext();
       return notFoundResponse();
     }
   }

@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   handlePagesApiRoute,
@@ -399,6 +402,70 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ id: "req-42" });
+  });
+
+  it("removes stale encoding headers after Node fetch decodes an edge API response", async () => {
+    // Ported from Next.js: packages/next/src/server/web/sandbox/sandbox.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/sandbox/sandbox.ts
+    const body = "Example Domain";
+    const compressedBody = gzipSync(body);
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-encoding": "gzip",
+        "content-length": String(compressedBody.byteLength),
+        "content-type": "text/plain",
+      });
+      res.end(compressedBody);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const address = upstream.address() as AddressInfo;
+      const response = await handlePagesApiRoute({
+        edgeRuntime: "node",
+        match: createMatch(
+          () => fetch(`http://127.0.0.1:${address.port}`),
+          {},
+          { runtime: "edge" },
+        ),
+        request: new Request("https://example.com/api/proxy"),
+        url: "/api/proxy",
+      });
+
+      expect(response.headers.get("content-encoding")).toBeNull();
+      expect(response.headers.get("content-length")).toBeNull();
+      await expect(response.text()).resolves.toBe(body);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("preserves encoded edge API responses in the Worker runtime", async () => {
+    const body = gzipSync("Example Domain");
+    const response = await handlePagesApiRoute({
+      edgeRuntime: "worker",
+      match: createMatch(
+        () =>
+          new Response(body, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(body.byteLength),
+              "content-type": "text/plain",
+            },
+          }),
+        {},
+        { runtime: "edge" },
+      ),
+      request: new Request("https://example.com/api/proxy"),
+      url: "/api/proxy",
+    });
+
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(response.headers.get("content-length")).toBe(String(body.byteLength));
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(body);
   });
 
   it("passes a NextRequest with nextUrl.searchParams to edge API handlers", async () => {

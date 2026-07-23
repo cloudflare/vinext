@@ -1,4 +1,5 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
+import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
@@ -7,8 +8,9 @@ export type PagesEntry = {
   handleApiRoute?: (
     request: Request,
     url: string,
-    ctx?: unknown,
-    trustedRevalidateOrigin?: string,
+    ctx: unknown,
+    trustedRevalidateOrigin: string | undefined,
+    edgeRuntime: EdgeApiExecutionRuntime,
   ) => Promise<Response> | Response;
   matchApiRoute?: (url: string, request: Request) => PagesRouteMatch | null;
   matchPageRoute?: (url: string, request: Request) => PagesRouteMatch | null;
@@ -139,11 +141,13 @@ export async function renderPagesFallback(
         return null;
       }
     }
+    const executionContext = getRequestExecutionContext();
     const pagesApiResponse = await pagesEntry.handleApiRoute(
       pagesRequest,
       pagesUrl,
       undefined,
-      getRequestExecutionContext()?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
+      executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
+      executionContext?.hostRuntime ?? "node",
     );
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(

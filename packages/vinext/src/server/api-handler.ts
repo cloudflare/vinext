@@ -20,7 +20,7 @@ import {
   urlQueryToSearchParams,
 } from "../utils/query.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
-import { isEdgeApiRuntime } from "./edge-api-runtime.js";
+import { finalizeEdgeApiResponse, isEdgeApiRuntime } from "./edge-api-runtime.js";
 import {
   DEFAULT_PAGES_API_BODY_SIZE_LIMIT,
   resolveBodyParserConfig,
@@ -416,10 +416,11 @@ export async function handleApiRoute(
             }
           : undefined,
       );
-      const response = await apiModule.default(nextRequest);
-      if (!(response instanceof Response)) {
+      const handlerResponse = await apiModule.default(nextRequest);
+      if (!(handlerResponse instanceof Response)) {
         throw new Error("Edge API route did not return a Response");
       }
+      const response = finalizeEdgeApiResponse(handlerResponse, "node");
 
       res.statusCode = response.status;
       res.statusMessage = response.statusText;

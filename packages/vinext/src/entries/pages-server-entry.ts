@@ -130,6 +130,7 @@ export async function generateServerEntry(
     // (the default), page scripts are emitted with `defer` in <head>. See
     // `.nextjs-ref/packages/next/src/pages/_document.tsx` getScripts().
     disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
+    crossOrigin: nextConfig?.crossOrigin,
     clientTraceMetadata: nextConfig?.clientTraceMetadata,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
@@ -380,6 +381,7 @@ const _renderPage = __createPagesPageHandler({
     htmlLimitedBots: vinextConfig.htmlLimitedBots,
     clientTraceMetadata: vinextConfig.clientTraceMetadata,
     disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
+    crossOrigin: vinextConfig.crossOrigin,
   },
   buildId,
   hasMiddleware,
@@ -467,11 +469,12 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 
-export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin) {
+export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker") {
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     ctx,
+    edgeRuntime,
     match,
     nextConfig: vinextConfig,
     request,

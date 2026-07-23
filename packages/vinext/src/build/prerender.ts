@@ -39,6 +39,7 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
+  NEXT_CACHE_TAGS_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -153,6 +154,8 @@ export type PrerenderRouteResult =
       router: "app" | "pages";
       /** Response headers that must be replayed with the prerendered artifact. */
       headers?: Record<string, string>;
+      /** Cache tags collected while rendering this route. */
+      tags?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
     }
@@ -1444,6 +1447,7 @@ export async function prerenderApp({
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
+            const cacheTags = readPrerenderCacheTagsHeader(response.headers);
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1452,6 +1456,7 @@ export async function prerenderApp({
                 html: null,
                 ok: response.ok,
                 requestCacheLife: null,
+                tags: [],
                 status: response.status,
               };
             }
@@ -1468,6 +1473,7 @@ export async function prerenderApp({
               ok: true,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
+              tags: cacheTags,
             };
           },
         );
@@ -1574,6 +1580,7 @@ export async function prerenderApp({
             ? { expire: renderedCacheControl.expire }
             : {}),
           router: "app",
+          ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
@@ -1721,6 +1728,12 @@ function readPrerenderCacheLifeHeader(
   }
 }
 
+function readPrerenderCacheTagsHeader(headers: Headers): string[] {
+  const value = headers.get(NEXT_CACHE_TAGS_HEADER);
+  if (!value) return [];
+  return [...new Set(value.split(",").filter(Boolean))];
+}
+
 function resolveRenderedExpireSeconds(options: {
   fallbackExpireSeconds: number;
   sMaxage?: number;
@@ -1773,6 +1786,7 @@ export function writePrerenderIndex(
         revalidate: r.revalidate,
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         router: r.router,
+        ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),

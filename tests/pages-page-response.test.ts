@@ -8,6 +8,29 @@ import {
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
 
+function getStartTags(html: string, tagName: string): string[] {
+  const tags: string[] = [];
+  const normalizedHtml = html.toLowerCase();
+  const marker = `<${tagName.toLowerCase()}`;
+  let offset = 0;
+
+  while (offset < html.length) {
+    const start = normalizedHtml.indexOf(marker, offset);
+    if (start === -1) break;
+    const boundary = normalizedHtml[start + marker.length];
+    if (boundary !== ">" && !/\s/.test(boundary ?? "")) {
+      offset = start + marker.length;
+      continue;
+    }
+    const end = normalizedHtml.indexOf(">", start + marker.length);
+    if (end === -1) break;
+    tags.push(html.slice(start, end + 1));
+    offset = end + 1;
+  }
+
+  return tags;
+}
+
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -72,6 +95,7 @@ function createCommonOptions() {
       buildId: "build-123",
       clearSsrContext,
       createPageElement,
+      disableOptimizedLoading: false,
       DocumentComponent: function TestDocument() {
         return null;
       },
@@ -349,12 +373,106 @@ describe("pages page response", () => {
     );
     expect(html).toContain('<link rel="stylesheet" nonce="pages-test-nonce" href="/font.css" />');
     expect(html).toContain(
-      '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin />',
+      '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin="anonymous" />',
     );
     expect(html).toContain('<style data-vinext-fonts nonce="pages-test-nonce">');
     expect(html).toContain(
       '<script type="module" nonce="pages-test-nonce" src="/entry.js" crossorigin></script>',
     );
+  });
+
+  // Ported from Next.js: test/e2e/app-document/rendering.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-document/rendering.test.ts
+  it.each([
+    {
+      label: "Head when optimized loading is enabled",
+      disableOptimizedLoading: false,
+      frameworkNonce: "head-nonce",
+      frameworkCrossOrigin: "use-credentials",
+    },
+    {
+      label: "NextScript when optimized loading is disabled",
+      disableOptimizedLoading: true,
+      frameworkNonce: "next-script-nonce",
+      frameworkCrossOrigin: "anonymous",
+    },
+  ])(
+    "keeps framework script ownership with $label",
+    async ({ disableOptimizedLoading, frameworkNonce, frameworkCrossOrigin }) => {
+      const common = createCommonOptions();
+      common.renderDocumentToString.mockResolvedValue(
+        '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+      );
+
+      const response = await renderPagesPageResponse({
+        ...common.options,
+        assetTags:
+          '<link rel="modulepreload" href="/entry.js" />\n' +
+          '<script type="module" src="/entry.js"></script>',
+        crossOrigin: "anonymous",
+        disableOptimizedLoading,
+      });
+
+      const html = await response.text();
+      expect(html).not.toContain("data-vinext-head-nonce");
+      expect(html).not.toContain("data-vinext-script-nonce");
+
+      const frameworkScript = getStartTags(html, "script").find((tag) =>
+        tag.includes('src="/entry.js"'),
+      );
+      expect(frameworkScript).toContain(`nonce="${frameworkNonce}"`);
+      expect(frameworkScript).toContain(`crossorigin="${frameworkCrossOrigin}"`);
+
+      const nextDataScript = getStartTags(html, "script").find((tag) =>
+        tag.includes('id="__NEXT_DATA__"'),
+      );
+      expect(nextDataScript).toContain('nonce="next-script-nonce"');
+      expect(nextDataScript).toContain('crossorigin="anonymous"');
+
+      const scriptPreloads = getStartTags(html, "link").filter(
+        (tag) => tag.includes('rel="modulepreload"') || tag.includes('as="script"'),
+      );
+      for (const tag of scriptPreloads) {
+        expect(tag).toContain('nonce="head-nonce"');
+        expect(tag).toContain('crossorigin="use-credentials"');
+      }
+      const fontPreload = getStartTags(html, "link").find((tag) => tag.includes('as="font"'));
+      expect(fontPreload).toContain('crossorigin="anonymous"');
+      expect(fontPreload).not.toContain("nonce=");
+    },
+  );
+
+  it("does not apply configured crossOrigin to user next/head assets", async () => {
+    const common = createCommonOptions();
+    common.options.getSSRHeadHTML = vi.fn(
+      () =>
+        '<script id="user-script" src="/user.js" data-next-head=""></script>' +
+        '<link id="user-preload" rel="preload" as="script" href="/user.js" data-next-head="" />',
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: null,
+      assetTags:
+        '<link rel="modulepreload" href="/entry.js" />\n' +
+        '<script type="module" src="/entry.js"></script>',
+      crossOrigin: "anonymous",
+    });
+
+    const html = await response.text();
+    const userScript = getStartTags(html, "script").find((tag) => tag.includes('id="user-script"'));
+    const userPreload = getStartTags(html, "link").find((tag) => tag.includes('id="user-preload"'));
+    expect(userScript).not.toContain("crossorigin");
+    expect(userPreload).not.toContain("crossorigin");
+
+    const generatedScript = getStartTags(html, "script").find((tag) =>
+      tag.includes('src="/entry.js"'),
+    );
+    const generatedPreload = getStartTags(html, "link").find((tag) =>
+      tag.includes('href="/entry.js"'),
+    );
+    expect(generatedScript).toContain('crossorigin="anonymous"');
+    expect(generatedPreload).toContain('crossorigin="anonymous"');
   });
 
   it("renders page before collecting SSR head HTML to prevent style race conditions", async () => {

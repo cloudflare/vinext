@@ -675,6 +675,64 @@ describe("buildPageElements", () => {
     ]);
   });
 
+  it("attaches the active route identity to a synthetic children page carrier", async () => {
+    function TestPage(): React.ReactNode {
+      return React.createElement("div", null, "Child page");
+    }
+    function TestLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
+      return children;
+    }
+
+    const route = createSyntheticRoute({
+      childrenSlot: {
+        id: "slot:children:/parent",
+        ownerTreePath: "/parent",
+        state: "active",
+      },
+      page: createSyntheticPageModule(TestPage),
+      layouts: [createSyntheticPageModule(TestLayout)],
+      layoutTreePositions: [1],
+      routeSegments: ["parent", "[id]"],
+      pattern: "/parent/:id",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, routePath: "/parent/two", params: { id: "two" } }),
+    );
+    const record = result as Record<string, unknown>;
+
+    expect(record[APP_SLOT_BINDINGS_KEY]).toEqual([
+      {
+        activeRouteId: "route:/parent/two",
+        ownerLayoutId: "layout:/parent",
+        slotId: "slot:children:/parent",
+        state: "active",
+      },
+    ]);
+    expect(record["slot:children:/parent"]).toBeDefined();
+
+    const intercepted = (await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/photos/two",
+        params: { id: "two" },
+        opts: {
+          interceptionContext: "/parent/two",
+          interceptSlotId: "slot:modal:/parent",
+          interceptSourceMatchedUrl: "/parent/two",
+        },
+      }),
+    )) as Record<string, unknown>;
+    expect(intercepted[APP_SLOT_BINDINGS_KEY]).toEqual([
+      {
+        activeRouteId: "route:/parent/two",
+        ownerLayoutId: "layout:/parent",
+        slotId: "slot:children:/parent",
+        state: "active",
+      },
+    ]);
+  });
+
   it("marks intercepted slot override bindings as active", async () => {
     function TestPage(): React.ReactNode {
       return React.createElement("div", null, "Hello");

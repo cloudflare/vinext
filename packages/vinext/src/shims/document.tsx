@@ -13,6 +13,13 @@ import type {
 } from "@vinext/types/next/upstream/dist/shared/lib/utils";
 import type { HtmlProps } from "@vinext/types/next/upstream/dist/shared/lib/html-context.shared-runtime";
 
+const documentAssetMarkerAttributes = {
+  headNonce: "data-vinext-head-nonce",
+  headCrossOrigin: "data-vinext-head-cross-origin",
+  scriptNonce: "data-vinext-script-nonce",
+  scriptCrossOrigin: "data-vinext-script-cross-origin",
+} as const;
+
 export type { DocumentContext, DocumentInitialProps, DocumentProps };
 
 export type OriginProps = {
@@ -77,8 +84,16 @@ export class Head extends React.Component<HeadProps> {
   }
 
   render(): React.ReactElement {
-    const { children, ...props } = this.props;
-    return <head {...props}>{children}</head>;
+    const { children, nonce, crossOrigin, ...props } = this.props;
+    return (
+      <head
+        {...props}
+        {...(nonce ? { [documentAssetMarkerAttributes.headNonce]: nonce } : {})}
+        {...(crossOrigin ? { [documentAssetMarkerAttributes.headCrossOrigin]: crossOrigin } : {})}
+      >
+        {children}
+      </head>
+    );
   }
 }
 
@@ -115,7 +130,14 @@ export class NextScript extends React.Component<OriginProps> {
   }
 
   render(): React.ReactElement {
-    return <span dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }} />;
+    const { nonce, crossOrigin } = this.props;
+    return (
+      <span
+        {...(nonce ? { [documentAssetMarkerAttributes.scriptNonce]: nonce } : {})}
+        {...(crossOrigin ? { [documentAssetMarkerAttributes.scriptCrossOrigin]: crossOrigin } : {})}
+        dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }}
+      />
+    );
   }
 }
 

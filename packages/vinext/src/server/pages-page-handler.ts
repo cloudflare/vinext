@@ -194,6 +194,7 @@ type VinextConfigSubset = {
   htmlLimitedBots?: string;
   clientTraceMetadata?: readonly string[];
   disableOptimizedLoading: boolean;
+  crossOrigin?: string;
 };
 
 export function shouldEmitPagesClientTraceMetadata(
@@ -1005,6 +1006,7 @@ export function createPagesPageHandler(
           basePath: vinextConfig.basePath,
           assetPrefix: vinextConfig.assetPrefix,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
+          crossOrigin: vinextConfig.crossOrigin,
         });
 
         let pageResponse = await renderPagesPageResponse({
@@ -1058,6 +1060,8 @@ export function createPagesPageHandler(
           routeUrl: renderRouteUrl,
           safeJsonStringify,
           scriptNonce,
+          crossOrigin: vinextConfig.crossOrigin,
+          disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,

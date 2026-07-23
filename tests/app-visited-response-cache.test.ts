@@ -3,8 +3,11 @@ import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
   createVisitedResponseCacheEntry,
+  deleteVisitedResponseCacheEntry,
+  findVisitedResponseCacheEntry,
   isVisitedResponseCacheEntryFresh,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
+import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import type { CachedRscResponse } from "../packages/vinext/src/shims/navigation.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 
@@ -143,5 +146,43 @@ describe("visited response cache freshness", () => {
         now,
       }),
     ).toBe(false);
+  });
+
+  it("deletes a normalized _rsc variant after failed visited reuse so navigation can fall through", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const storedKey = AppElementsWire.encodeCacheKey(
+      "/nextjs-compat/client-cache/1?tab=latest&_rsc=old",
+      null,
+    );
+    cache.set(storedKey, entry);
+
+    expect(
+      findVisitedResponseCacheEntry(
+        cache,
+        "/nextjs-compat/client-cache/1?tab=latest&_rsc=new",
+        null,
+      ),
+    ).toEqual({ cacheKey: storedKey, entry });
+
+    expect(
+      deleteVisitedResponseCacheEntry(
+        cache,
+        "/nextjs-compat/client-cache/1?tab=latest&_rsc=new",
+        null,
+      ),
+    ).toBe(true);
+    expect(cache.has(storedKey)).toBe(false);
+    expect(
+      findVisitedResponseCacheEntry(
+        cache,
+        "/nextjs-compat/client-cache/1?tab=latest&_rsc=new",
+        null,
+      ),
+    ).toBeNull();
   });
 });

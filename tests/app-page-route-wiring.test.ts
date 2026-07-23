@@ -2,7 +2,9 @@ import { Fragment, createElement, isValidElement, type ReactElement, type ReactN
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
+  APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_KEY,
   AppElementsWire,
   APP_SLOT_BINDINGS_KEY,
@@ -21,7 +23,10 @@ import {
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
   createRequestContext,
@@ -1301,6 +1306,46 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain('data-descendant="true"');
   });
 
+  it("skips an already-shared root loading boundary for loading-shell prefetches", async () => {
+    function RootLoading(): ReactNode {
+      return createElement("p", null, "Root loading");
+    }
+    function NestedLoading(): ReactNode {
+      return createElement("p", null, "Nested loading");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: NestedLoading },
+        loadings: [{ default: RootLoading }, { default: NestedLoading }],
+        loadingTreePositions: [0, 2],
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["prefetch-auto", "slug"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/prefetch-auto/slug",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/prefetch-auto/slug");
+    expect(html).toContain("Nested loading");
+    expect(html).not.toContain("Root loading");
+  });
+
   it("builds slot-only loading shells and omits unprotected parallel branches", async () => {
     function SlotLoading(): ReactNode {
       return createElement("p", null, "Slot loading shell");
@@ -1491,6 +1536,59 @@ describe("app page route wiring helpers", () => {
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
     expect(html).not.toContain("Page");
+  });
+
+  it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: RouteLoadingProbe },
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: { default: SlotPage },
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+      streamingMetadata: Promise.resolve(null),
+      streamingMetadataOutlet: Promise.resolve(null),
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html).not.toContain("Page");
+    expect(html).not.toContain("Layout");
+    expect(html).not.toContain("Route loading");
+    expect(html).not.toContain("slot-page");
+    expect(Object.keys(elements).some((key) => key.startsWith("slot:"))).toBe(false);
+    expect(Object.keys(elements).some((key) => key.startsWith("__vinext_streaming_metadata"))).toBe(
+      false,
+    );
+    expect(elements[APP_LAYOUT_IDS_KEY]).toEqual([]);
+    expect(elements[APP_ROOT_LAYOUT_KEY]).toBeNull();
   });
 
   it("uses override params for slot segment maps when an override page is active", async () => {
@@ -2380,6 +2478,102 @@ describe("app page route wiring helpers", () => {
     expect(body).toContain('data-layout="root"');
     expect(body).toContain('data-template="blog"');
     expect(body).toContain("Blog page");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+  it("wraps the streaming metadata outlet in the built-in not-found boundary", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      streamingMetadataOutlet: Promise.resolve(null),
+      streamingMetadataOutletSuspended: true,
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["metadata-not-found"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/metadata-not-found",
+      rootNotFoundModule: null,
+    });
+
+    const notFoundBoundary = findElementByTypeName(
+      elements["route:/metadata-not-found"],
+      "NotFoundBoundary",
+    );
+
+    expect(notFoundBoundary).not.toBeNull();
+    if (!notFoundBoundary) throw new Error("Expected the built-in not-found boundary");
+    expect(getElementTypeName((notFoundBoundary.props.fallback as ReactElement).type)).toBe(
+      "DefaultNotFound",
+    );
+    expect(
+      findSlotById(
+        notFoundBoundary.props.children,
+        "__vinext_streaming_metadata_outlet:route:/metadata-not-found",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("owns the built-in not-found boundary at the root layout", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["dashboard", "reports"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/reports",
+      rootNotFoundModule: null,
+    });
+
+    const routeEntry = elements["route:/dashboard/reports"];
+    const rootLayoutSlot = findSlotById(routeEntry, "layout:/");
+    const nestedLayoutSlot = findSlotById(routeEntry, "layout:/dashboard");
+    expect(rootLayoutSlot).not.toBeNull();
+    expect(nestedLayoutSlot).not.toBeNull();
+    if (!rootLayoutSlot || !nestedLayoutSlot) {
+      throw new Error("Expected both root and nested layout slots");
+    }
+
+    const rootNotFoundBoundary = findElementByTypeName(
+      rootLayoutSlot.props.children,
+      "NotFoundBoundary",
+    );
+    expect(rootNotFoundBoundary).not.toBeNull();
+    if (!rootNotFoundBoundary) throw new Error("Expected the built-in not-found boundary");
+    expect(getElementTypeName((rootNotFoundBoundary.props.fallback as ReactElement).type)).toBe(
+      "DefaultNotFound",
+    );
+    expect(findSlotById(rootNotFoundBoundary.props.children, "layout:/dashboard")).not.toBeNull();
+    expect(findElementByTypeName(nestedLayoutSlot.props.children, "NotFoundBoundary")).toBeNull();
   });
 
   it("nests per-segment NotFoundBoundary inside the template wrapper", () => {

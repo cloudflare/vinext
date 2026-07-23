@@ -59,7 +59,6 @@ export {
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveHistoryTraversalIntent,
-  type BfcacheIdMap,
   type HistoryTraversalIntent,
 } from "./app-history-state.js";
 
@@ -633,7 +632,7 @@ function mergeSkippedLayoutSlotPreservation(options: {
   return preservePreviousSlotIds;
 }
 
-export async function createPendingNavigationCommit(options: {
+type CreatePendingNavigationCommitOptions = {
   // Baseline for bfcacheId diffing, skip-preservation, and
   // startedVisibleCommitVersion — not necessarily the live router state.
   // Navigation callers must pass the state captured when the navigation
@@ -644,7 +643,6 @@ export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
   navigationCommitKind?: "authoritative" | "detached";
   navigationId?: number;
-  nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   operationLane: OperationLane;
   payloadOrigin: AppNavigationPayloadOrigin;
@@ -655,8 +653,12 @@ export async function createPendingNavigationCommit(options: {
   restoredBfcacheIds?: BfcacheIdMap | null;
   reuseCurrentBfcacheIds?: boolean;
   type: "navigate" | "replace" | "traverse";
-}): Promise<PendingNavigationCommit> {
-  const elements = await options.nextElements;
+};
+
+export function createPendingNavigationCommitFromElements(
+  options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
+): PendingNavigationCommit {
+  const elements = options.nextElements;
   const metadata = AppElementsWire.readMetadata(elements);
   const cacheEntryReuseProof =
     metadata.cacheEntryReuseProof ??
@@ -712,4 +714,13 @@ export async function createPendingNavigationCommit(options: {
     routeId: metadata.routeId,
     skippedLayoutIds: metadata.skippedLayoutIds,
   };
+}
+
+export async function createPendingNavigationCommit(
+  options: CreatePendingNavigationCommitOptions & { nextElements: Promise<AppElements> },
+): Promise<PendingNavigationCommit> {
+  return createPendingNavigationCommitFromElements({
+    ...options,
+    nextElements: await options.nextElements,
+  });
 }

@@ -1,7 +1,9 @@
 import { Fragment, Suspense, type ComponentType, type ReactNode } from "react";
 import {
   AppElementsWire,
+  APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
   type AppElements,
@@ -18,6 +20,7 @@ import {
 } from "vinext/shims/error-boundary";
 import { AppRouterScrollTarget } from "vinext/shims/app-router-scroll";
 import DefaultGlobalError from "vinext/shims/default-global-error";
+import DefaultNotFound from "vinext/shims/default-not-found";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import {
@@ -28,6 +31,8 @@ import {
   type Viewport,
 } from "vinext/shims/metadata";
 import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
+import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
+import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
@@ -46,6 +51,7 @@ import {
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -70,6 +76,7 @@ type AppPageComponent = ComponentType<AppPageComponentProps>;
 type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }>;
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
+const DEFAULT_NOT_FOUND_COMPONENT = DefaultNotFound as AppPageComponent;
 
 function resolveSlotLayoutParams(
   routeSegments: readonly string[],
@@ -215,6 +222,7 @@ type BuildAppPageRouteElementOptions<
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
+  scriptNonce?: string;
   streamingMetadata?: Promise<Metadata | null> | null;
   streamingMetadataOutlet?: Promise<unknown> | null;
   streamingMetadataOutletSuspended?: boolean;
@@ -456,16 +464,23 @@ function getPrefetchLoadingEntry<TModule extends AppPageModule>(
     "loading" | "loadings" | "loadingTreePositions" | "routeSegments"
   >,
 ): AppPageLoadingEntry<TModule> | null {
-  let firstEntry: AppPageLoadingEntry<TModule> | null = null;
+  let rootEntry: AppPageLoadingEntry<TModule> | null = null;
+  let firstNestedEntry: AppPageLoadingEntry<TModule> | null = null;
   for (const [index, loadingModule] of (route.loadings ?? []).entries()) {
     if (!getDefaultExport(loadingModule)) continue;
     const treePosition = route.loadingTreePositions?.[index];
     if (treePosition === undefined) continue;
-    if (firstEntry === null || treePosition < firstEntry.treePosition) {
-      firstEntry = { loadingModule, treePosition };
+    if (treePosition === 0) {
+      rootEntry ??= { loadingModule, treePosition };
+    } else if (firstNestedEntry === null || treePosition < firstNestedEntry.treePosition) {
+      firstNestedEntry = { loadingModule, treePosition };
     }
   }
-  if (firstEntry) return firstEntry;
+  // The root layout is already shared for a client-side prefetch. Prefer the
+  // first loading boundary below it, falling back to the root loading UI only
+  // when no nested boundary exists.
+  if (firstNestedEntry) return firstNestedEntry;
+  if (rootEntry) return rootEntry;
 
   // Legacy/eager route fixtures may only expose the leaf loading field.
   return getDefaultExport(route.loading)
@@ -586,8 +601,8 @@ function createAppPageSlotBindings<
     interception: AppElementsInterception | null;
     interceptionId: string | null;
     interceptionContext: string | null;
+    routeId: string;
     routePath: string;
-    sourceRouteId: string;
   },
 ): readonly AppElementsSlotBinding[] {
   const bindings: AppElementsSlotBinding[] = [];
@@ -596,7 +611,7 @@ function createAppPageSlotBindings<
       (layoutEntry) => layoutEntry.treePath === route.childrenSlot?.ownerTreePath,
     )?.id;
     bindings.push({
-      ...(route.childrenSlot.state === "active" ? { activeRouteId: options.sourceRouteId } : {}),
+      ...(route.childrenSlot.state === "active" ? { activeRouteId: options.routeId } : {}),
       ownerLayoutId: ownerLayoutId ?? null,
       slotId: route.childrenSlot.id,
       state: route.childrenSlot.state,
@@ -651,31 +666,80 @@ function createAppPageRouteHead(
   );
 }
 
+function hasStreamedIcons(metadata: Metadata): boolean {
+  const icons = metadata.icons;
+  if (!icons) return false;
+  if (typeof icons === "string" || icons instanceof URL || Array.isArray(icons)) {
+    return !Array.isArray(icons) || icons.length > 0;
+  }
+  if ("url" in icons) return true;
+  return Boolean(icons.shortcut || icons.icon || icons.apple || icons.other);
+}
+
+function createStreamedIconKey(pathname: string, metadataHtml: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < metadataHtml.length; index++) {
+    hash ^= metadataHtml.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${pathname}:${(hash >>> 0).toString(36)}`;
+}
+
+const STREAMED_ICON_KEY_PLACEHOLDER = "vinext-pending-streamed-icon-key";
+
+const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el));const a='data-vinext-streamed-icon',o=el=>{const m=el.getAttribute(a),i=m.lastIndexOf(':');return Number(m.slice(i+1))};[...document.querySelectorAll('link['+a+']')].sort((l,r)=>o(l)-o(r)).forEach(el=>document.head.appendChild(el))`;
+
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
   pathname: string,
   metadataPlacement: "body" | "head",
   trailingSlash?: boolean,
+  scriptNonce?: string,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
+  const streamedIconKey = hasStreamedIcons(metadata) ? STREAMED_ICON_KEY_PLACEHOLDER : undefined;
+  const renderedMetadataHtml = renderMetadataToHtml(metadata, pathname, {
+    trailingSlash,
+    streamedIconKey,
+  });
+  const metadataKey = streamedIconKey ? createStreamedIconKey(pathname, renderedMetadataHtml) : "";
+  const metadataHtml = streamedIconKey
+    ? renderedMetadataHtml.replaceAll(
+        `<link data-vinext-streamed-icon="${STREAMED_ICON_KEY_PLACEHOLDER}:`,
+        `<link data-vinext-streamed-icon="${escapeHtmlAttr(metadataKey)}:`,
+      )
+    : renderedMetadataHtml;
+  const parserInsertedMetadataHtml =
+    metadataHtml + createInlineScriptTag(REINSERT_STREAMED_ICONS_SCRIPT, scriptNonce);
   return (
-    <div
-      hidden
-      dangerouslySetInnerHTML={{
-        __html: renderMetadataToHtml(metadata, pathname, { trailingSlash }),
-      }}
-    />
+    <>
+      <div
+        hidden
+        suppressHydrationWarning
+        dangerouslySetInnerHTML={{
+          __html: parserInsertedMetadataHtml,
+        }}
+      />
+      <StreamedIconsInsertion metadataKey={metadataKey} />
+    </>
   );
 }
 
 async function AppPageStreamingMetadata(props: {
   metadata: Promise<Metadata | null>;
   pathname: string;
+  scriptNonce?: string;
   trailingSlash?: boolean;
 }): Promise<ReactNode> {
   try {
     const metadata = await props.metadata;
-    return createAppPageRouteBodyMetadata(metadata, props.pathname, "body", props.trailingSlash);
+    return createAppPageRouteBodyMetadata(
+      metadata,
+      props.pathname,
+      "body",
+      props.trailingSlash,
+      props.scriptNonce,
+    );
   } catch {
     // The matching outlet below rethrows inside the route's error boundaries.
     // Keeping the tag outlet successful lets already-flushed HTML remain valid.
@@ -761,6 +825,7 @@ export function buildAppPageElements<
     }
     return nearest;
   };
+  const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
   const prefetchLoadingEntry = isPrefetchLoadingShell
     ? getPrefetchLoadingEntry(options.route)
@@ -862,11 +927,18 @@ export function buildAppPageElements<
         interception: renderIdentity?.interception ?? options.interception ?? null,
         interceptionId: options.interceptionId ?? null,
         interceptionContext,
+        routeId,
         routePath: options.routePath,
-        sourceRouteId: routeId,
       }),
     }),
   };
+  if (isPrefetchEmpty) {
+    elements[APP_LAYOUT_IDS_KEY] = [];
+    elements[APP_ROOT_LAYOUT_KEY] = null;
+    elements[pageElementId] = null;
+    elements[routeId] = null;
+    return elements;
+  }
   // Surface static-sibling info on the wire so the client router can decide
   // whether a cached dynamic-route prefetch can be reused when navigating to a
   // static sibling URL. Mirrors Next.js's loader-tree `staticSiblings` tuple
@@ -881,6 +953,7 @@ export function buildAppPageElements<
       <AppPageStreamingMetadata
         metadata={options.streamingMetadataTags ?? options.streamingMetadata}
         pathname={options.resolvedMetadataPathname ?? options.routePath}
+        scriptNonce={options.scriptNonce}
         trailingSlash={options.trailingSlash}
       />
     );
@@ -1141,6 +1214,13 @@ export function buildAppPageElements<
             const SlotComponent = slotComponent!;
             return <SlotComponent {...slotProps} />;
           })();
+      if (overrideOrPageComponent) {
+        // Named parallel-slot entries flatten the slot page and its layout
+        // chain into one wire element. Key only the page leaf so dynamic
+        // siblings reset page-local client state while the surrounding slot
+        // layouts keep their state, matching Next.js segment ownership.
+        slotElement = <Fragment key={slotResetKey}>{slotElement}</Fragment>;
+      }
     }
     const branchSegments = slotOverride?.branchSegments ?? slotRouteSegments;
     const branchLayouts = new Map<
@@ -1356,8 +1436,18 @@ export function buildAppPageElements<
     errorEntries.length > 0 ? errorEntries[errorEntries.length - 1].errorModule : null;
   // Next.js nesting (outer to inner): Error > Unauthorized > Forbidden > NotFound > children.
   // Building bottom-up means NotFoundBoundary must wrap first, then Forbidden, Unauthorized, Error.
-  const notFoundComponent =
+  // Next's app loader injects its built-in not-found convention when the app has
+  // no custom fallback. Keep the equivalent boundary around late client-side
+  // signals such as a streaming MetadataOutlet rejection.
+  const configuredNotFoundComponent =
     getDefaultExport(options.route.notFound) ?? getDefaultExport(options.rootNotFoundModule);
+  // The built-in convention belongs to the root layout's children slot. Keep
+  // the route-level fallback only for layoutless synthetic/test routes.
+  const defaultNotFoundOwnerLayoutId =
+    configuredNotFoundComponent === null ? (layoutEntries[0]?.id ?? null) : null;
+  const notFoundComponent =
+    configuredNotFoundComponent ??
+    (defaultNotFoundOwnerLayoutId === null ? DEFAULT_NOT_FOUND_COMPONENT : null);
   if (notFoundComponent) {
     const NotFoundComponent = notFoundComponent;
     routeChildren = (
@@ -1435,7 +1525,9 @@ export function buildAppPageElements<
     // Building bottom-up means Loading must wrap the leaf subtree first, then
     // access/error boundaries, Template, and finally the Layout slot.
     if (layoutEntry) {
-      const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
+      const layoutNotFoundComponent =
+        getDefaultExport(layoutEntry.notFoundModule) ??
+        (layoutEntry.id === defaultNotFoundOwnerLayoutId ? DEFAULT_NOT_FOUND_COMPONENT : null);
       if (layoutNotFoundComponent) {
         const LayoutNotFoundComponent = layoutNotFoundComponent;
         segmentChildren = (
@@ -1572,6 +1664,7 @@ export function buildAppPageElements<
         options.resolvedMetadataPathname ?? options.routePath,
         metadataPlacement,
         options.trailingSlash,
+        options.scriptNonce,
       )}
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
