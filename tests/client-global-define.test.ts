@@ -170,29 +170,33 @@ describe("client `global` define (config)", () => {
     }
   }, 15000);
 
-  it("evaluates build configs with production NODE_ENV in test mode", async () => {
-    const tmpDir = await setupTmpProject(`
-      if (process.env.NODE_ENV !== "production") {
-        throw new Error(\`next.config saw NODE_ENV=\${process.env.NODE_ENV}\`);
-      }
-      export default {};
-    `);
+  it("defaults config NODE_ENV to production without overriding caller values", async () => {
+    const tmpDir = await setupTmpProject(`export default {};`);
     const vinextEntryUrl = pathToFileURL(
       path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
     ).href;
     const cliPath = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
+    const viteConfigNodeEnvLog = path.join(tmpDir, "vite-config-node-env.log");
+    const nextConfigNodeEnvLog = path.join(tmpDir, "next-config-node-env.log");
 
     try {
       await fsp.writeFile(path.join(tmpDir, ".env.test"), "NODE_ENV=test\n");
       await fsp.writeFile(
+        path.join(tmpDir, "next.config.mjs"),
+        `
+          import { appendFileSync } from "node:fs";
+          appendFileSync(${JSON.stringify(nextConfigNodeEnvLog)}, \`\${process.env.NODE_ENV}\n\`);
+          export default {};
+        `,
+      );
+      await fsp.writeFile(
         path.join(tmpDir, "vite.config.mjs"),
         `
+          import { appendFileSync } from "node:fs";
           import vinext from ${JSON.stringify(vinextEntryUrl)};
           export default ({ mode }) => {
             if (mode !== "test") throw new Error(\`vite.config saw mode=\${mode}\`);
-            if (process.env.NODE_ENV !== "production") {
-              throw new Error(\`vite.config saw NODE_ENV=\${process.env.NODE_ENV}\`);
-            }
+            appendFileSync(${JSON.stringify(viteConfigNodeEnvLog)}, \`\${process.env.NODE_ENV}\n\`);
             return { plugins: [vinext()] };
           };
         `,
@@ -200,14 +204,26 @@ describe("client `global` define (config)", () => {
 
       const childEnv = { ...process.env };
       Reflect.deleteProperty(childEnv, "NODE_ENV");
-      expect(() =>
+      const build = () =>
         execFileSync(process.execPath, [cliPath, "build", "--mode", "test"], {
           cwd: tmpDir,
           env: childEnv,
           stdio: "pipe",
           timeout: 30000,
-        }),
-      ).not.toThrow();
+        });
+
+      expect(build).not.toThrow();
+      expect((await fsp.readFile(viteConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("production");
+      expect((await fsp.readFile(nextConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("production");
+
+      await Promise.all([
+        fsp.rm(viteConfigNodeEnvLog, { force: true }),
+        fsp.rm(nextConfigNodeEnvLog, { force: true }),
+      ]);
+      childEnv.NODE_ENV = "test";
+      expect(build).not.toThrow();
+      expect((await fsp.readFile(viteConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("test");
+      expect((await fsp.readFile(nextConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("test");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

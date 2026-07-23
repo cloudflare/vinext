@@ -472,9 +472,11 @@ async function buildApp() {
   const buildMode = parsed.mode ?? "production";
 
   // Vite modes select config and dotenv files independently of NODE_ENV.
-  // A build always runs with production semantics, including while loading
-  // user Vite/Next configs before the vinext plugin's config hook executes.
-  Reflect.set(process.env, "NODE_ENV", "production");
+  // Seed production semantics before dotenv/config loading, but preserve an
+  // explicit caller value just like Next.js and normal process-env precedence.
+  if (!process.env.NODE_ENV) {
+    Reflect.set(process.env, "NODE_ENV", "production");
+  }
 
   if (parsed.precompress) {
     process.env.VINEXT_PRECOMPRESS = "1";
