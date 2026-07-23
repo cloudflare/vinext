@@ -4,14 +4,17 @@ type BrowserActionExecution<T> = {
 };
 
 type QueuedAction = {
+  kind: "action" | "navigation";
   next: QueuedAction | null;
   run(): BrowserActionExecution<unknown>;
+  valueSettled: boolean;
 };
 
 export type AppBrowserActionQueue = {
   enqueue<T>(run: () => BrowserActionExecution<T>): Promise<T>;
   runNavigation<T>(run: () => Promise<T>): Promise<T>;
   runQueuedNavigation<T>(run: () => Promise<T>): Promise<T>;
+  runRefresh<T>(run: () => Promise<T>): Promise<T>;
 };
 
 export function createAppBrowserActionQueue(): AppBrowserActionQueue {
@@ -37,7 +40,10 @@ export function createAppBrowserActionQueue(): AppBrowserActionQueue {
     runAction(active);
   }
 
-  function enqueue<T>(run: () => BrowserActionExecution<T>): Promise<T> {
+  function enqueue<T>(
+    run: () => BrowserActionExecution<T>,
+    kind: QueuedAction["kind"] = "action",
+  ): Promise<T> {
     let resolveValue!: (value: T | PromiseLike<T>) => void;
     let rejectValue!: (reason?: unknown) => void;
     const value = new Promise<T>((resolve, reject) => {
@@ -45,12 +51,23 @@ export function createAppBrowserActionQueue(): AppBrowserActionQueue {
       rejectValue = reject;
     });
     const action: QueuedAction = {
+      kind,
       next: null,
       run() {
         const execution = run();
-        execution.value.then(resolveValue, rejectValue);
+        execution.value.then(
+          (result) => {
+            action.valueSettled = true;
+            resolveValue(result);
+          },
+          (error) => {
+            action.valueSettled = true;
+            rejectValue(error);
+          },
+        );
         return execution;
       },
+      valueSettled: false,
     };
 
     if (active === null) {
@@ -69,8 +86,10 @@ export function createAppBrowserActionQueue(): AppBrowserActionQueue {
       const pendingActions = active?.next ?? null;
       const navigation = run();
       const navigationAction: QueuedAction = {
+        kind: "navigation",
         next: pendingActions,
         run: () => ({ completion: navigation, value: navigation }),
+        valueSettled: false,
       };
       active = navigationAction;
       if (pendingActions === null) last = navigationAction;
@@ -84,7 +103,16 @@ export function createAppBrowserActionQueue(): AppBrowserActionQueue {
       return enqueue(() => {
         const navigation = run();
         return { completion: navigation, value: navigation };
-      });
+      }, "navigation");
+    },
+    runRefresh<T>(run: () => Promise<T>): Promise<T> {
+      // Wait while the mutation result itself is unresolved so refresh cannot
+      // fetch pre-mutation data. Once the value settles, the remaining action
+      // completion may only be an RSC commit/tail; refresh must retain its
+      // ordinary preemption semantics for cache invalidation and loading UI.
+      return active?.kind === "action" && !active.valueSettled
+        ? this.runQueuedNavigation(run)
+        : this.runNavigation(run);
     },
   };
 }

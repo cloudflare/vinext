@@ -304,6 +304,11 @@ const discardedServerActionRefreshScheduler = hasServerActions
           undefined,
           undefined,
           true,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          true,
         );
       },
     })
@@ -331,6 +336,7 @@ const navigationSupplementalRefreshRecoveryScheduler = createDiscardedServerActi
       undefined,
       undefined,
       undefined,
+      true,
       true,
     );
   },
@@ -2741,10 +2747,13 @@ function bootstrapHydration(
       if (args[2] !== "refresh") {
         return serverActionQueue.runNavigation(() => navigateRsc(...args));
       }
-      return serverActionQueue.runQueuedNavigation(() => {
+      const refresh = () => {
         const [, ...refreshArgs] = args;
         return navigateRsc(window.location.href, ...refreshArgs);
-      });
+      };
+      return args[10]
+        ? serverActionQueue.runQueuedNavigation(refresh)
+        : serverActionQueue.runRefresh(refresh);
     },
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),

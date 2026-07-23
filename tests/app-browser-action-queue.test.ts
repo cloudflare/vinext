@@ -91,4 +91,62 @@ describe("app browser action queue", () => {
     await refresh;
     expect(events).toEqual(["A started", "B started", "refresh started"]);
   });
+
+  it("queues refresh while an active action value is unresolved", async () => {
+    const actionValue = deferred<string>();
+    const actionCompletion = deferred<void>();
+    const events: string[] = [];
+    const queue = createAppBrowserActionQueue();
+
+    const action = queue.enqueue(() => ({
+      completion: actionCompletion.promise,
+      value: actionValue.promise,
+    }));
+    const refresh = queue.runRefresh(async () => {
+      events.push("refresh started");
+    });
+
+    expect(events).toEqual([]);
+    actionValue.resolve("A");
+    await expect(action).resolves.toBe("A");
+    expect(events).toEqual([]);
+
+    actionCompletion.resolve();
+    await refresh;
+    expect(events).toEqual(["refresh started"]);
+  });
+
+  it("lets refresh preempt after the active action value settles", async () => {
+    const actionCompletion = deferred<void>();
+    const events: string[] = [];
+    const queue = createAppBrowserActionQueue();
+
+    const action = queue.enqueue(() => ({
+      completion: actionCompletion.promise,
+      value: Promise.resolve("A"),
+    }));
+    await expect(action).resolves.toBe("A");
+
+    const refresh = queue.runRefresh(async () => {
+      events.push("refresh started");
+    });
+    await refresh;
+    expect(events).toEqual(["refresh started"]);
+
+    actionCompletion.resolve();
+  });
+
+  it("lets refresh preempt an active navigation", async () => {
+    const navigationCompletion = deferred<void>();
+    const events: string[] = [];
+    const queue = createAppBrowserActionQueue();
+
+    void queue.runNavigation(() => navigationCompletion.promise);
+    await queue.runRefresh(async () => {
+      events.push("refresh started");
+    });
+    expect(events).toEqual(["refresh started"]);
+
+    navigationCompletion.resolve();
+  });
 });
