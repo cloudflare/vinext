@@ -113,8 +113,10 @@ describe("client `global` define (config)", () => {
   it("excludes .env.local from NEXT_PUBLIC defines in test mode", async () => {
     const previousFromTest = process.env.NEXT_PUBLIC_FROM_TEST_MODE;
     const previousLocalOnly = process.env.NEXT_PUBLIC_LOCAL_ONLY;
+    const previousFallback = process.env.NEXT_PUBLIC_WITH_FALLBACK;
     delete process.env.NEXT_PUBLIC_FROM_TEST_MODE;
     delete process.env.NEXT_PUBLIC_LOCAL_ONLY;
+    delete process.env.NEXT_PUBLIC_WITH_FALLBACK;
 
     const plugins = vinext() as VinextPlugin[];
     const mainPlugin = plugins.find(
@@ -125,7 +127,11 @@ describe("client `global` define (config)", () => {
     const tmpDir = await setupTmpProject(`export default {};`);
     try {
       await fsp.writeFile(path.join(tmpDir, ".env.local"), "NEXT_PUBLIC_LOCAL_ONLY=from-local\n");
-      await fsp.writeFile(path.join(tmpDir, ".env.test"), "NEXT_PUBLIC_FROM_TEST_MODE=from-test\n");
+      await fsp.writeFile(
+        path.join(tmpDir, ".env.test"),
+        "NEXT_PUBLIC_FROM_TEST_MODE=from-test\n" +
+          "NEXT_PUBLIC_WITH_FALLBACK=${MISSING_VALUE:-fallback}\n",
+      );
 
       const configResult = (await mainPlugin!.config!(
         { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
@@ -138,8 +144,12 @@ describe("client `global` define (config)", () => {
       expect(Object.hasOwn(configResult.define ?? {}, "process.env.NEXT_PUBLIC_LOCAL_ONLY")).toBe(
         false,
       );
+      expect(configResult.define?.["process.env.NEXT_PUBLIC_WITH_FALLBACK"]).toBe(
+        JSON.stringify("fallback"),
+      );
       expect(process.env.NEXT_PUBLIC_FROM_TEST_MODE).toBe("from-test");
       expect(process.env.NEXT_PUBLIC_LOCAL_ONLY).toBeUndefined();
+      expect(process.env.NEXT_PUBLIC_WITH_FALLBACK).toBe("fallback");
     } finally {
       if (previousFromTest === undefined) {
         delete process.env.NEXT_PUBLIC_FROM_TEST_MODE;
@@ -150,6 +160,11 @@ describe("client `global` define (config)", () => {
         delete process.env.NEXT_PUBLIC_LOCAL_ONLY;
       } else {
         process.env.NEXT_PUBLIC_LOCAL_ONLY = previousLocalOnly;
+      }
+      if (previousFallback === undefined) {
+        delete process.env.NEXT_PUBLIC_WITH_FALLBACK;
+      } else {
+        process.env.NEXT_PUBLIC_WITH_FALLBACK = previousFallback;
       }
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

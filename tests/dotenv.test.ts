@@ -188,6 +188,36 @@ describe("loadDotenv", () => {
     expect(env.URL).toBe("http://localhost:3000");
   });
 
+  it("supports dotenv-expand default and alternate operators", () => {
+    writeFile(
+      ".env",
+      [
+        "SET=value",
+        "EMPTY=",
+        "DEFAULT_UNSET=${MISSING:-fallback}",
+        "DEFAULT_EMPTY=${EMPTY:-fallback}",
+        "DEFAULT_DASH=${MISSING-fallback}",
+        "ALTERNATE_SET=${SET:+alternate}",
+        "ALTERNATE_PLUS=${SET+alternate}",
+        "ALTERNATE_MISSING=${MISSING:+alternate}",
+        "NESTED_DEFAULT=${MISSING:-${SET}}",
+        "SELF_DEFAULT=${SELF_DEFAULT:-self-fallback}",
+      ].join("\n"),
+    );
+
+    const env: Record<string, string | undefined> = {};
+    loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
+
+    expect(env.DEFAULT_UNSET).toBe("fallback");
+    expect(env.DEFAULT_EMPTY).toBe("fallback");
+    expect(env.DEFAULT_DASH).toBe("fallback");
+    expect(env.ALTERNATE_SET).toBe("alternate");
+    expect(env.ALTERNATE_PLUS).toBe("alternate");
+    expect(env.ALTERNATE_MISSING).toBe("");
+    expect(env.NESTED_DEFAULT).toBe("value");
+    expect(env.SELF_DEFAULT).toBe("self-fallback");
+  });
+
   it("expansion prefers process.env over file values", () => {
     writeFile(
       ".env.development.local",
