@@ -285,6 +285,14 @@ const browserNavigationController = createAppBrowserNavigationController({
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
 });
+type NavigationSupplementalRefreshRecovery = {
+  mountedSlotsHeader: string | null;
+  persistedRefreshInterceptions: PersistedRefreshInterception[];
+  persistedSourcePageRefresh: string | null;
+  targetHref: string;
+};
+let pendingNavigationSupplementalRefreshRecovery: NavigationSupplementalRefreshRecovery | null =
+  null;
 const discardedServerActionRefreshScheduler = hasServerActions
   ? createDiscardedServerActionRefreshScheduler({
       runRefresh() {
@@ -304,6 +312,29 @@ const discardedServerActionRefreshScheduler = hasServerActions
       markNavigationStart() {},
       schedule() {},
     };
+const navigationSupplementalRefreshRecoveryScheduler = createDiscardedServerActionRefreshScheduler({
+  runRefresh() {
+    const recovery = pendingNavigationSupplementalRefreshRecovery;
+    if (recovery === null) return;
+    if (recovery.targetHref !== window.location.href) {
+      pendingNavigationSupplementalRefreshRecovery = null;
+      return;
+    }
+    clearClientNavigationCaches();
+    void getNavigationRuntime()?.functions.navigate?.(
+      window.location.href,
+      0,
+      "refresh",
+      undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+  },
+});
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const serverActionQueue = createAppBrowserActionQueue();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
@@ -1860,7 +1891,15 @@ function bootstrapHydration(
     traversalIntent?: HistoryTraversalIntent,
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+    supplementalRefreshRecoveryAttempt = false,
   ): Promise<void> {
+    let supplementalRefreshRecovery = supplementalRefreshRecoveryAttempt
+      ? pendingNavigationSupplementalRefreshRecovery
+      : null;
+    // Any navigation consumes or supersedes the pending retry. The recovery
+    // scheduler passes the captured plan explicitly through the attempt flag;
+    // a user navigation must never replay a stale persisted-slot plan later.
+    pendingNavigationSupplementalRefreshRecovery = null;
     serverActionSupplementalRefreshCoordinator.abortAll();
     abortSupersededNavigation();
     const navigationAbortController = new AbortController();
@@ -1870,6 +1909,7 @@ function bootstrapHydration(
     const navId = browserNavigationController.beginNavigation();
     const navigationCacheGeneration = clientNavigationCacheGeneration;
     discardedServerActionRefreshScheduler.markNavigationStart();
+    navigationSupplementalRefreshRecoveryScheduler.markNavigationStart();
 
     // Loop variables for inline redirect following. On a redirect, these are
     // updated and the loop continues without returning or re-entering navigateRsc,
@@ -1933,9 +1973,13 @@ function bootstrapHydration(
       // authoritative payload arrives. Keep every candidate in this navigation
       // anchored to the same pre-navigation identity base.
       const navigationInitiationState = getBrowserRouterState();
-      const mountedSlotsHeader = getMountedSlotIdsHeader(navigationInitiationState.elements);
+      const navigationInitiationMountedSlotsHeader = getMountedSlotIdsHeader(
+        navigationInitiationState.elements,
+      );
 
       while (true) {
+        const mountedSlotsHeader =
+          supplementalRefreshRecovery?.mountedSlotsHeader ?? navigationInitiationMountedSlotsHeader;
         const url = new URL(currentHref, window.location.origin);
         const requestState = getRequestState(
           navigationKind,
@@ -1956,8 +2000,9 @@ function bootstrapHydration(
         // Pass navId so only this navigation (or a newer one) can clear it later.
         setPendingPathname(url.pathname, navId);
 
-        const persistedRefreshInterceptions =
-          navigationKind === "refresh"
+        const persistedRefreshInterceptions = supplementalRefreshRecovery
+          ? supplementalRefreshRecovery.persistedRefreshInterceptions
+          : navigationKind === "refresh"
             ? resolvePersistedRefreshInterceptions(
                 navigationInitiationState,
                 getBrowserRouteManifest(),
@@ -1965,8 +2010,9 @@ function bootstrapHydration(
                 requestInterceptionContext,
               )
             : [];
-        const persistedSourcePageRefresh =
-          navigationKind === "refresh" || navigationKind === "traverse"
+        const persistedSourcePageRefresh = supplementalRefreshRecovery
+          ? supplementalRefreshRecovery.persistedSourcePageRefresh
+          : navigationKind === "refresh" || navigationKind === "traverse"
             ? resolveNavigationSourcePageRefresh({
                 basePath: __basePath,
                 navigationKind,
@@ -2140,6 +2186,7 @@ function bootstrapHydration(
             currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
             currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
             redirectCount = cachedFetchDecision.redirect.redirectDepth;
+            supplementalRefreshRecovery = null;
             continue;
           }
           // Check stale-navigation before and after createFromFetch. The pre-check
@@ -2389,6 +2436,9 @@ function bootstrapHydration(
           currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
           currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;
           redirectCount = liveFetchDecision.redirect.redirectDepth;
+          // The captured retry plan belongs to the pre-redirect route. The
+          // redirected target must derive its own persisted slots and header.
+          supplementalRefreshRecovery = null;
           continue;
         }
 
@@ -2436,6 +2486,7 @@ function bootstrapHydration(
           : decodeAppElementsPromise(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
+        let supplementalRefresh: Promise<{ degraded: boolean; value: AppElements }> | null = null;
         if (persistedRefreshInterceptions.length > 0 || persistedSourcePageRefresh !== null) {
           const supplemental = persistedRefreshInterceptions.map(
             (interception) => (signal: AbortSignal) =>
@@ -2456,12 +2507,13 @@ function bootstrapHydration(
               }),
             );
           }
-          rscPayload = resolveSupplementalRefreshes({
+          supplementalRefresh = resolveSupplementalRefreshes({
             merge: mergeRefreshedInterceptedSlot,
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortController.signal,
             supplemental,
-          }).then((result) => result.value);
+          });
+          rscPayload = supplementalRefresh.then((result) => result.value);
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -2506,6 +2558,24 @@ function bootstrapHydration(
               : visibleCommitMode,
         });
         if (renderOutcome !== "committed") return;
+        if (
+          navigationKind === "refresh" &&
+          supplementalRefresh !== null &&
+          shouldScheduleSupplementalRefreshRecovery({
+            activeNavigationId: browserNavigationController.getActiveNavigationId(),
+            degraded: (await supplementalRefresh).degraded,
+            recoveryAttempt: supplementalRefreshRecoveryAttempt,
+            startedNavigationId: navId,
+          })
+        ) {
+          pendingNavigationSupplementalRefreshRecovery = {
+            mountedSlotsHeader,
+            persistedRefreshInterceptions,
+            persistedSourcePageRefresh,
+            targetHref: window.location.href,
+          };
+          navigationSupplementalRefreshRecoveryScheduler.schedule();
+        }
         if (persistedRefreshInterceptions.length > 0 || persistedSourcePageRefresh !== null) {
           clearVisitedResponseCache();
           void cacheBufferPromise.catch(() => {});
@@ -2623,6 +2693,7 @@ function bootstrapHydration(
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
       discardedServerActionRefreshScheduler.markNavigationSettled();
+      navigationSupplementalRefreshRecoveryScheduler.markNavigationSettled();
     }
   };
 

@@ -375,5 +375,13 @@ describe("server action supplemental refreshes", () => {
         startedNavigationId: 4,
       }),
     ).toBe(false);
+    expect(
+      shouldScheduleSupplementalRefreshRecovery({
+        activeNavigationId: 4,
+        degraded: true,
+        recoveryAttempt: true,
+        startedNavigationId: 4,
+      }),
+    ).toBe(false);
   });
 });

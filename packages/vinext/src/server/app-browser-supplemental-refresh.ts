@@ -207,9 +207,14 @@ export function createSupplementalRefreshCoordinator(): {
 export function shouldScheduleSupplementalRefreshRecovery(options: {
   activeNavigationId: number;
   degraded: boolean;
+  recoveryAttempt?: boolean;
   startedNavigationId: number;
 }): boolean {
-  return options.degraded && options.activeNavigationId === options.startedNavigationId;
+  return (
+    options.degraded &&
+    !options.recoveryAttempt &&
+    options.activeNavigationId === options.startedNavigationId
+  );
 }
 
 export function settleSuccessfulServerActionResult<T>(options: {

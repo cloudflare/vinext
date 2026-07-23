@@ -597,6 +597,40 @@ test.describe("Intercepting Routes", () => {
     );
   });
 
+  test("router.refresh recovers when a persisted slot refresh fails", async ({ page }) => {
+    await page.goto(`${BASE}/refreshing`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Open refreshing login" }).click();
+    await expect(page.getByTestId("refreshing-login-modal")).toBeVisible();
+    await page.getByRole("link", { name: "Go to Other Page" }).click();
+    await expect(page.getByTestId("refreshing-other-page")).toBeVisible();
+
+    const modalToken = await page.getByTestId("refreshing-modal-token").textContent();
+    const otherToken = await page.getByTestId("refreshing-other-token").textContent();
+    let supplementalRequests = 0;
+    await page.route("**/*", async (route) => {
+      if (isAppRouterRscRequestForPath(route.request(), "/refreshing/login")) {
+        supplementalRequests++;
+        if (supplementalRequests === 1) {
+          await route.abort("failed");
+          return;
+        }
+      }
+      await route.continue();
+    });
+
+    await page
+      .getByTestId("refreshing-other-page")
+      .getByRole("button", { name: "Refresh", exact: true })
+      .click();
+
+    // The primary refresh still commits after the supplemental request fails.
+    await expect(page.getByTestId("refreshing-other-token")).not.toHaveText(otherToken ?? "");
+    // A bounded recovery refresh must retry the stale persisted slot.
+    await expect.poll(() => supplementalRequests).toBe(2);
+    await expect(page.getByTestId("refreshing-modal-token")).not.toHaveText(modalToken ?? "");
+  });
+
   // Ported from Next.js:
   // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
