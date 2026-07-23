@@ -287,7 +287,7 @@ class PagesResponseStream extends Writable {
     this.resStatusCode = code;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
-        this.setHeaderValue(key, value, { replaceSetCookie: false });
+        this.setHeaderValue(key, value, { replaceSetCookie: true });
       }
     }
     return this as PagesReqResResponse;

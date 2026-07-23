@@ -350,6 +350,23 @@ describe("pages api route", () => {
     expect(response.headers.get("x-multi")).toBe("a, b");
   });
 
+  it("res.writeHead() replaces previously set Set-Cookie headers (Node.js parity)", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.setHeader("Set-Cookie", "existing=1");
+        res.writeHead(200, {
+          "Set-Cookie": ["replacement=2", "replacement-extra=3"],
+        });
+        res.end();
+      }),
+      request: new Request("https://example.com/api/cookie"),
+      url: "/api/cookie",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual(["replacement=2", "replacement-extra=3"]);
+  });
+
   it("res.setHeader and res.getHeader round-trip correctly", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
