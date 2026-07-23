@@ -1993,10 +1993,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // development server -> development. Next.js unconditionally forces
         // NODE_ENV during build/dev, so we do the same.
         let resolvedNodeEnv: string;
-        if (mode === "test") {
-          resolvedNodeEnv = "test";
-        } else if (env?.command === "build" || env?.isPreview === true) {
+        if (env?.command === "build" || env?.isPreview === true) {
           resolvedNodeEnv = "production";
+        } else if (mode === "test") {
+          resolvedNodeEnv = "test";
         } else {
           resolvedNodeEnv = "development";
         }
