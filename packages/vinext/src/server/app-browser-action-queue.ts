@@ -11,6 +11,7 @@ type QueuedAction = {
 export type AppBrowserActionQueue = {
   enqueue<T>(run: () => BrowserActionExecution<T>): Promise<T>;
   runNavigation<T>(run: () => Promise<T>): Promise<T>;
+  runQueuedNavigation<T>(run: () => Promise<T>): Promise<T>;
 };
 
 export function createAppBrowserActionQueue(): AppBrowserActionQueue {
@@ -36,32 +37,34 @@ export function createAppBrowserActionQueue(): AppBrowserActionQueue {
     runAction(active);
   }
 
-  return {
-    enqueue<T>(run: () => BrowserActionExecution<T>): Promise<T> {
-      let resolveValue!: (value: T | PromiseLike<T>) => void;
-      let rejectValue!: (reason?: unknown) => void;
-      const value = new Promise<T>((resolve, reject) => {
-        resolveValue = resolve;
-        rejectValue = reject;
-      });
-      const action: QueuedAction = {
-        next: null,
-        run() {
-          const execution = run();
-          execution.value.then(resolveValue, rejectValue);
-          return execution;
-        },
-      };
+  function enqueue<T>(run: () => BrowserActionExecution<T>): Promise<T> {
+    let resolveValue!: (value: T | PromiseLike<T>) => void;
+    let rejectValue!: (reason?: unknown) => void;
+    const value = new Promise<T>((resolve, reject) => {
+      resolveValue = resolve;
+      rejectValue = reject;
+    });
+    const action: QueuedAction = {
+      next: null,
+      run() {
+        const execution = run();
+        execution.value.then(resolveValue, rejectValue);
+        return execution;
+      },
+    };
 
-      if (active === null) {
-        last = action;
-        runAction(action);
-      } else {
-        if (last !== null) last.next = action;
-        last = action;
-      }
-      return value;
-    },
+    if (active === null) {
+      last = action;
+      runAction(action);
+    } else {
+      if (last !== null) last.next = action;
+      last = action;
+    }
+    return value;
+  }
+
+  return {
+    enqueue,
     runNavigation<T>(run: () => Promise<T>): Promise<T> {
       const pendingActions = active?.next ?? null;
       const navigation = run();
@@ -76,6 +79,12 @@ export function createAppBrowserActionQueue(): AppBrowserActionQueue {
         () => advance(navigationAction),
       );
       return navigation;
+    },
+    runQueuedNavigation<T>(run: () => Promise<T>): Promise<T> {
+      return enqueue(() => {
+        const navigation = run();
+        return { completion: navigation, value: navigation };
+      });
     },
   };
 }

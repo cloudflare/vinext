@@ -65,4 +65,30 @@ describe("app browser action queue", () => {
     await expect(actionB).resolves.toBe("B");
     expect(events).toEqual(["navigation started", "B started"]);
   });
+
+  it("queues refresh behind active and already-queued actions", async () => {
+    const firstCompletion = deferred<void>();
+    const events: string[] = [];
+    const queue = createAppBrowserActionQueue();
+
+    const actionA = queue.enqueue(() => {
+      events.push("A started");
+      return { completion: firstCompletion.promise, value: Promise.resolve("A") };
+    });
+    const actionB = queue.enqueue(() => {
+      events.push("B started");
+      return { completion: Promise.resolve(), value: Promise.resolve("B") };
+    });
+    const refresh = queue.runQueuedNavigation(async () => {
+      events.push("refresh started");
+    });
+
+    await expect(actionA).resolves.toBe("A");
+    expect(events).toEqual(["A started"]);
+
+    firstCompletion.resolve();
+    await expect(actionB).resolves.toBe("B");
+    await refresh;
+    expect(events).toEqual(["A started", "B started", "refresh started"]);
+  });
 });

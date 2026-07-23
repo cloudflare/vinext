@@ -1900,6 +1900,13 @@ function bootstrapHydration(
     // scheduler passes the captured plan explicitly through the attempt flag;
     // a user navigation must never replay a stale persisted-slot plan later.
     pendingNavigationSupplementalRefreshRecovery = null;
+    if (
+      supplementalRefreshRecoveryAttempt &&
+      (supplementalRefreshRecovery === null ||
+        supplementalRefreshRecovery.targetHref !== window.location.href)
+    ) {
+      return;
+    }
     serverActionSupplementalRefreshCoordinator.abortAll();
     abortSupersededNavigation();
     const navigationAbortController = new AbortController();
@@ -2730,7 +2737,15 @@ function bootstrapHydration(
         routeId: state.routeId,
       };
     },
-    navigate: (...args) => serverActionQueue.runNavigation(() => navigateRsc(...args)),
+    navigate: (...args) => {
+      if (args[2] !== "refresh") {
+        return serverActionQueue.runNavigation(() => navigateRsc(...args));
+      }
+      return serverActionQueue.runQueuedNavigation(() => {
+        const [, ...refreshArgs] = args;
+        return navigateRsc(window.location.href, ...refreshArgs);
+      });
+    },
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
   });

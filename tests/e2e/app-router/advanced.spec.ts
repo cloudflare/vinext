@@ -756,12 +756,12 @@ test.describe("Intercepting Routes", () => {
     await expect(page.getByTestId("refreshing-other-page")).toBeVisible();
   });
 
-  test("recovers a preempted revalidating action before continuing the queued action", async ({
+  test("drains queued actions before recovering a preempted revalidating action", async ({
     page,
   }) => {
-    // Ported from Next.js's discarded revalidating action coverage, extended to
-    // cover a queued action behind the detached commit:
-    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/actions/app-action.test.ts
+    // Ported from Next.js:
+    // test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
     await page.goto(`${BASE}/refreshing`);
     await waitForAppRouterHydration(page);
     await page.getByRole("link", { name: "Open refreshing login" }).click();
@@ -776,6 +776,7 @@ test.describe("Intercepting Routes", () => {
     const recoveryRequested = deferred();
     const releaseRecovery = deferred();
     let actionPosts = 0;
+    let actionPostsAtRecovery = 0;
     let refreshingRequests = 0;
     await page.route("**/*", async (route) => {
       const request = route.request();
@@ -790,6 +791,7 @@ test.describe("Intercepting Routes", () => {
           navigationRequested.resolve();
           await releaseNavigation.promise;
         } else if (refreshingRequests === 2) {
+          actionPostsAtRecovery = actionPosts;
           recoveryRequested.resolve();
           await releaseRecovery.promise;
         }
@@ -807,14 +809,15 @@ test.describe("Intercepting Routes", () => {
     releaseSupplemental.resolve();
     releaseNavigation.resolve();
 
-    await recoveryRequested.promise;
-    await expect(page.getByTestId("refreshing-page-token")).toBeVisible();
-    const recoveryToken = await page.getByTestId("refreshing-page-token").textContent();
-    expect(actionPosts).toBe(1);
-
-    releaseRecovery.resolve();
     await expect.poll(() => actionPosts).toBe(2);
-    await expect(page.getByTestId("refreshing-page-token")).not.toHaveText(recoveryToken ?? "");
+    await recoveryRequested.promise;
+    expect(actionPostsAtRecovery).toBe(2);
+
+    const recoveryResponse = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), "/refreshing"),
+    );
+    releaseRecovery.resolve();
+    expect((await recoveryResponse).ok()).toBe(true);
     expect(refreshingRequests).toBe(2);
   });
 
