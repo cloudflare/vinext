@@ -451,14 +451,13 @@ class PagesResponseStream extends Writable {
     options: { replaceSetCookie: boolean },
   ): void {
     if (name.toLowerCase() === "set-cookie") {
+      // getHeader() exposes this array like Node's ServerResponse. Snapshot it
+      // before replacement so passing that live value back does not clear it.
+      const values = Array.isArray(value) ? value.map(String) : [String(value)];
       if (options.replaceSetCookie) {
         this.setCookieHeaders.length = 0;
       }
-      if (Array.isArray(value)) {
-        this.setCookieHeaders.push(...value.map(String));
-      } else {
-        this.setCookieHeaders.push(String(value));
-      }
+      this.setCookieHeaders.push(...values);
       return;
     }
 

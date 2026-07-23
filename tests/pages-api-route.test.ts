@@ -382,6 +382,32 @@ describe("pages api route", () => {
     expect(cookies).toEqual(["session=xyz"]);
   });
 
+  it("preserves Set-Cookie values when a caller mutates and resets the getHeader array", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        // Matches next-auth v4's setCookie helper:
+        // https://github.com/nextauthjs/next-auth/blob/next-auth%404.24.13/packages/next-auth/src/next/utils.ts#L5-L15
+        const appendCookie = (cookie: string) => {
+          let cookies = res.getHeader("Set-Cookie") ?? [];
+          if (!Array.isArray(cookies)) {
+            cookies = [String(cookies)];
+          }
+          cookies.push(cookie);
+          res.setHeader("Set-Cookie", cookies);
+        };
+
+        appendCookie("a=1; Path=/");
+        appendCookie("b=2; Path=/");
+        res.end();
+      }),
+      request: new Request("https://example.com/api/cookie"),
+      url: "/api/cookie",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+  });
+
   it("calls edge API route handlers with a Fetch Request and returns their Response", async () => {
     // Ported from Next.js: test/e2e/edge-async-local-storage/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-async-local-storage/index.test.ts
