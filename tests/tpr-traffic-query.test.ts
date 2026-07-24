@@ -44,7 +44,9 @@ describe("queryTraffic", () => {
     //   unknown field "requests"
     // Both are rejected regardless of zone plan, so the query never returns.
     expect(calls[0]).toContain("orderBy: [count_DESC]");
-    expect(calls[0]).toContain("count");
+    // `count` as a selected field, on its own line — asserting the substring
+    // alone would be satisfied by `count_DESC` in orderBy and prove nothing.
+    expect(calls[0]).toMatch(/^\s*count\s*$/m);
     expect(calls[0]).not.toContain("sum_requests_DESC");
     expect(calls[0]).not.toContain("sum { requests }");
   });
