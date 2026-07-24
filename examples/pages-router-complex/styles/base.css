@@ -1,0 +1,26 @@
+:root {
+  --frame-max-width: 72rem;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: var(--frame-max-width);
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+body[data-keyboard-user="true"] :focus {
+  outline: 3px solid #4062ff;
+}
+
+[data-palette="story"] {
+  background: #fffdf5;
+}
+
+[data-palette="service"] {
+  background: #f3f6f9;
+}

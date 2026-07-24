@@ -836,6 +836,22 @@ describe("process.env.NODE_ENV define", () => {
     }
   }, 15000);
 
+  it("keeps NODE_ENV production for builds using test mode", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "test",
+      });
+
+      expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
+      expect(process.env.NODE_ENV).toBe("production");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("is injected as production for build without explicit mode", async () => {
     // Other tests in this file pass { command: "build" } with no mode.
     // The mode defaults to "development" via env?.mode ?? "development",

@@ -4,6 +4,46 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
 
 describe("Next.js deploy harness logging", () => {
+  it("does not recursively append failure diagnostics to deploy logs", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+    const cleanup = script.match(
+      /(cleanup_on_error\(\) \{[\s\S]*?\n\})\n\ntrap cleanup_on_error EXIT/,
+    )?.[1];
+    expect(cleanup).toBeDefined();
+
+    const tempRoot = fs.mkdtempSync(path.join(process.cwd(), ".e2e-deploy-cleanup-test-"));
+    try {
+      const buildLog = path.join(tempRoot, "build.log");
+      fs.writeFileSync(buildLog, "build failed\n");
+
+      const result = execFileSync(
+        "bash",
+        [
+          "-c",
+          [
+            "persist_debug_artifacts() { :; }",
+            cleanup!,
+            "DEPLOYMENT_READY=0 PID_FILE=missing.pid PORT_FILE=missing.port SERVER_LOG=missing.log DEBUG_RUN_DIR=debug",
+            'cleanup_on_error 2>> "${BUILD_LOG}"',
+          ].join("\n"),
+        ],
+        {
+          cwd: tempRoot,
+          env: { ...process.env, BUILD_LOG: buildLog },
+          timeout: 2_000,
+        },
+      );
+
+      expect(result).toHaveLength(0);
+      const output = fs.readFileSync(buildLog, "utf8");
+      expect(output.match(/build failed/g)).toHaveLength(2);
+      expect(output).toContain("=== vinext e2e deploy debug ===");
+      expect(Buffer.byteLength(output)).toBeLessThan(2_000);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("materializes workspace dependencies required by the local vinext package", () => {
     const repoRoot = path.resolve(".");
     const script = fs.readFileSync(path.join(repoRoot, "scripts/e2e-deploy.sh"), "utf8");

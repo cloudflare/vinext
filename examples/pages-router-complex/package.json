@@ -1,0 +1,31 @@
+{
+  "name": "vinext-pages-router-complex",
+  "private": true,
+  "scripts": {
+    "dev": "vinext dev",
+    "build": "RELEASE_TAG=local vinext build",
+    "start": "vinext start",
+    "preview": "vinext start",
+    "dev:next": "next dev --webpack",
+    "build:next": "RELEASE_TAG=local next build --webpack",
+    "start:next": "next start"
+  },
+  "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@vinext/cloudflare": "workspace:*",
+    "i18next": "^24.2.3",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-i18next": "^15.7.4",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "next": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
