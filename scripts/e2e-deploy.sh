@@ -242,13 +242,17 @@ cleanup_on_error() {
     echo
     echo "=== vinext e2e deploy debug ==="
     if [ -f "${BUILD_LOG}" ]; then
+      local build_log_tail
+      build_log_tail="$(tail -80 "${BUILD_LOG}" 2>/dev/null || true)"
       echo "--- last 80 lines of ${BUILD_LOG} ---"
-      tail -80 "${BUILD_LOG}" 2>/dev/null || true
+      printf '%s\n' "${build_log_tail}"
       echo "--- end ${BUILD_LOG} (persisted to ${DEBUG_RUN_DIR}/${BUILD_LOG}) ---"
     fi
     if [ -f "${SERVER_LOG}" ]; then
+      local server_log_tail
+      server_log_tail="$(tail -40 "${SERVER_LOG}" 2>/dev/null || true)"
       echo "--- last 40 lines of ${SERVER_LOG} ---"
-      tail -40 "${SERVER_LOG}" 2>/dev/null || true
+      printf '%s\n' "${server_log_tail}"
       echo "--- end ${SERVER_LOG} (persisted to ${DEBUG_RUN_DIR}/${SERVER_LOG}) ---"
     fi
     echo "=== end vinext e2e deploy debug ==="
