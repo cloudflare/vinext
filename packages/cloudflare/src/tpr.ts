@@ -58,12 +58,12 @@ export type TPRResult = {
   skipped?: string;
 };
 
-type TrafficEntry = {
+export type TrafficEntry = {
   path: string;
   requests: number;
 };
 
-type SelectedRoutes = {
+export type SelectedRoutes = {
   routes: TrafficEntry[];
   totalRequests: number;
   coveredRequests: number;
@@ -532,7 +532,7 @@ export function domainCandidates(domain: string): string[] {
 }
 
 /** Resolve zone ID from a domain name via the Cloudflare API. */
-async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
+export async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
   // Try progressively longer domain candidates until one matches a zone.
   // This handles all public suffixes without a hardcoded TLD list —
   // for simple TLDs (.com, .io) the 2-part candidate hits on the first try;
@@ -588,7 +588,7 @@ async function resolveAccountId(apiToken: string): Promise<string | null> {
  * Query Cloudflare zone analytics for top page paths by request count
  * over the given time window.
  */
-async function queryTraffic(
+export async function queryTraffic(
   zoneTag: string,
   apiToken: string,
   windowHours: number,
@@ -601,14 +601,14 @@ async function queryTraffic(
       zones(filter: { zoneTag: "${zoneTag}" }) {
         httpRequestsAdaptiveGroups(
           limit: 10000
-          orderBy: [sum_requests_DESC]
+          orderBy: [count_DESC]
           filter: {
             datetime_geq: "${start.toISOString()}"
             datetime_lt: "${now.toISOString()}"
             requestSource: "eyeball"
           }
         ) {
-          sum { requests }
+          count
           dimensions { clientRequestPath }
         }
       }
@@ -634,7 +634,7 @@ async function queryTraffic(
       viewer?: {
         zones?: Array<{
           httpRequestsAdaptiveGroups?: Array<{
-            sum: { requests: number };
+            count: number;
             dimensions: { clientRequestPath: string };
           }>;
         }>;
@@ -652,13 +652,13 @@ async function queryTraffic(
   return filterTrafficPaths(
     groups.map((g) => ({
       path: g.dimensions.clientRequestPath,
-      requests: g.sum.requests,
+      requests: g.count,
     })),
   );
 }
 
 /** Filter out non-page requests (static assets, API routes, internal routes). */
-function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
+export function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
     // Static assets
@@ -680,7 +680,7 @@ function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
  * Walk the ranked traffic list, accumulating request counts until the
  * coverage target is met or the hard cap is reached.
  */
-function selectRoutes(
+export function selectRoutes(
   traffic: TrafficEntry[],
   coverageTarget: number,
   limit: number,
