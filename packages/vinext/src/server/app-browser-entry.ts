@@ -951,6 +951,23 @@ function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode
   mpaNavigationScheduler.navigate(window, href, historyUpdateMode);
 }
 
+// A fast follow-up navigation aborts the in-flight navigation's RSC fetch
+// mid-stream (see `activeNavigationAbortController`). When the aborted stream
+// still has an un-consumed React Flight chunk — e.g. streamed metadata that the
+// superseded route never committed to render — React reports the resulting
+// AbortError globally rather than to a specific consumer. That is expected
+// navigation control flow, not a real failure, so it must not reach the console
+// (which would trip the "no console errors" e2e assertions). Duck-typed because
+// the error may cross realms.
+function isNavigationAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    (error as { name: unknown }).name === "AbortError"
+  );
+}
+
 function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
   const router = useRouter();
 
@@ -1631,6 +1648,19 @@ function bootstrapHydration(
     activeNavigationAbortController?.abort();
     activeNavigationAbortController = null;
   }
+
+  // Suppress benign AbortErrors from superseded navigations for the page
+  // lifetime. Installed once here (not in a component effect) so there is no
+  // listener gap while the router tree re-renders mid-navigation — exactly when
+  // the aborted RSC stream reports its un-consumed Flight chunk globally.
+  const suppressNavigationAbortError = (event: ErrorEvent | PromiseRejectionEvent): void => {
+    const error = "reason" in event ? event.reason : event.error;
+    if (isNavigationAbortError(error)) {
+      event.preventDefault();
+    }
+  };
+  window.addEventListener("error", suppressNavigationAbortError);
+  window.addEventListener("unhandledrejection", suppressNavigationAbortError);
 
   const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
     href: string,
