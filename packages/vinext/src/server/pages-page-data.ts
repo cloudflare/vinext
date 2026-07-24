@@ -10,7 +10,7 @@ import type {
   CacheControlMetadata,
 } from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
-import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
+import { buildMissIsrCacheControl, decideIsr, ISR_NO_STORE_CACHE_CONTROL } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
@@ -38,6 +38,7 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { bypassedPagesIsrGet, bypassedPagesIsrSet } from "./pages-middleware-rewrite-cache.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -230,6 +231,7 @@ type RenderPagesIsrHtmlOptions = {
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
   params: Record<string, unknown>;
+  nextDataQuery?: Record<string, unknown>;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
@@ -313,6 +315,10 @@ export type ResolvePagesPageDataOptions = {
   router?: PagesGetInitialPropsRouter;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
+  nextDataQuery?: Record<string, unknown>;
+  bypassCdnCache?: boolean;
+  /** Skip shared origin ISR reads and writes for request-specific rewrite state. */
+  bypassOriginCache?: boolean;
   asPath?: string;
   resolvedUrl?: string;
   route: Pick<Route, "isDynamic">;
@@ -449,8 +455,15 @@ function applyCachedPagesRepresentationHeaders(
   response: Response,
   cacheState: "HIT" | "STALE",
   entry: CacheHandlerValue,
-  options: Pick<ResolvePagesPageDataOptions, "expireSeconds">,
+  options: Pick<ResolvePagesPageDataOptions, "expireSeconds" | "bypassCdnCache">,
 ): Response {
+  if (options.bypassCdnCache) {
+    response.headers.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
+    for (const [name, value] of Object.entries(buildCacheStateHeaders(cacheState))) {
+      response.headers.set(name, value);
+    }
+    return response;
+  }
   const { cacheControl } = decideIsr({
     cacheState,
     kind: "pages",
@@ -906,6 +919,7 @@ function buildPagesCacheResponse(
   cacheControl?: CacheControlMetadata,
   status?: number,
   cachedHeaders?: Record<string, string | string[]>,
+  bypassCdnCache?: boolean,
 ): Response {
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
@@ -925,7 +939,11 @@ function buildPagesCacheResponse(
     "Content-Type": "text/html; charset=utf-8",
     ...buildCacheStateHeaders(cacheState),
   });
-  applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
+  if (bypassCdnCache) {
+    headers.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
+  } else {
+    applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
+  }
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);
@@ -1029,6 +1047,7 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     pageProps: options.pageProps,
     props: renderProps,
     params: options.params,
+    query: options.nextDataQuery,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     // Serialize the same readiness flags (gssp/gsp/autoExport/…) the initial
@@ -1044,6 +1063,8 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
 export async function resolvePagesPageData(
   options: ResolvePagesPageDataOptions,
 ): Promise<ResolvePagesPageDataResult> {
+  const requestIsrGet = options.bypassOriginCache ? bypassedPagesIsrGet : options.isrGet;
+  const requestIsrSet = options.bypassOriginCache ? bypassedPagesIsrSet : options.isrSet;
   // Next.js passes `params: null` (effectively) to gSSP/gSP context for
   // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
   // Internal bookkeeping (route param hydration, ISR HTML, getStaticPaths
@@ -1114,7 +1135,7 @@ export async function resolvePagesPageData(
     options.revalidateOnlyGenerated
   ) {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    onDemandPreviousCacheEntry = await options.isrGet(options.isrCacheKey("pages", pathname));
+    onDemandPreviousCacheEntry = await requestIsrGet(options.isrCacheKey("pages", pathname));
     if (!onDemandPreviousCacheEntry) {
       return {
         kind: "response",
@@ -1161,7 +1182,7 @@ export async function resolvePagesPageData(
 
   if (isFallback) {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
+    const cached = await requestIsrGet(options.isrCacheKey("pages", pathname));
     if (cached?.value.value?.kind !== "PAGES") {
       const appShortCircuit = await loadForegroundAppInitialRenderProps();
       if (appShortCircuit) return appShortCircuit;
@@ -1254,7 +1275,7 @@ export async function resolvePagesPageData(
     const cached =
       onDemandPreviousCacheEntry !== undefined
         ? onDemandPreviousCacheEntry
-        : await options.isrGet(cacheKey);
+        : await requestIsrGet(cacheKey);
     const cachedValue = cached?.value.value;
     const isLegacyCachedNotFound =
       cachedValue?.kind === "PAGES" &&
@@ -1295,7 +1316,7 @@ export async function resolvePagesPageData(
                 routeUrl: options.routeUrl,
                 sanitizeDestination: options.sanitizeDestination,
               });
-              await options.isrSet(
+              await requestIsrSet(
                 cacheKey,
                 {
                   kind: "REDIRECT",
@@ -1309,7 +1330,7 @@ export async function resolvePagesPageData(
             }
 
             if (freshResult.notFound) {
-              await options.isrSet(cacheKey, null, revalidateSeconds, undefined, expireSeconds);
+              await requestIsrSet(cacheKey, null, revalidateSeconds, undefined, expireSeconds);
               return;
             }
 
@@ -1330,13 +1351,14 @@ export async function resolvePagesPageData(
                 pageProps: freshPageProps,
                 props: freshRenderProps,
                 params: options.params,
+                nextDataQuery: options.nextDataQuery,
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                 routePattern: options.routePattern,
                 safeJsonStringify: options.safeJsonStringify,
                 nextData: options.nextData,
                 vinext: options.vinext,
               });
-              await options.isrSet(
+              await requestIsrSet(
                 cacheKey,
                 buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
                 revalidateSeconds,
@@ -1349,7 +1371,7 @@ export async function resolvePagesPageData(
             // A cached redirect/not-found has no reusable HTML shell. Persist
             // the resolved props and let the next foreground request render
             // the canonical PAGES representation without re-running user code.
-            await options.isrSet(
+            await requestIsrSet(
               cacheKey,
               {
                 kind: "PAGES",
@@ -1439,6 +1461,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
         cachedValue.headers,
+        options.bypassCdnCache,
       );
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
       // for bot UAs so they are consistent with fresh-MISS bot responses (which
@@ -1518,6 +1541,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
         cachedValue.headers,
+        options.bypassCdnCache,
       );
       // Bot / crawler ETag consistency: same as the HIT branch — attach an
       // ETag to STALE responses for bot UAs and honour If-None-Match / 304.
@@ -1579,7 +1603,7 @@ export async function resolvePagesPageData(
           routeUrl: options.routeUrl,
           sanitizeDestination: options.sanitizeDestination,
         });
-        await options.isrSet(
+        await requestIsrSet(
           cacheKey,
           {
             kind: "REDIRECT",
@@ -1601,7 +1625,7 @@ export async function resolvePagesPageData(
       const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
       const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
       if (previewData === false) {
-        await options.isrSet(cacheKey, null, revalidateSeconds, undefined, expireSeconds);
+        await requestIsrSet(cacheKey, null, revalidateSeconds, undefined, expireSeconds);
       }
       const notFoundResult = buildPagesNotFoundResult(
         options,
@@ -1651,7 +1675,7 @@ export async function resolvePagesPageData(
 
     if (shouldPersistFallbackData && previewData === false) {
       const revalidateSeconds = isrRevalidateSeconds ?? false;
-      await options.isrSet(
+      await requestIsrSet(
         cacheKey,
         {
           kind: "PAGES",

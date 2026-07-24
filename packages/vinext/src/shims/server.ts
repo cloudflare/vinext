@@ -170,9 +170,15 @@ export class NextRequest extends Request {
         }
       : undefined;
     this._nextUrl = new NextURL(url, undefined, urlConfig);
-    this._url = process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE
-      ? url.toString()
-      : this._nextUrl.toString();
+    // File-shaped requests keep their original URL spelling even when
+    // trailingSlash is enabled. NextURL still exposes the configured slash
+    // policy, but middleware's request.url must not turn a missing static
+    // asset such as `manifest.json` into `manifest.json/`.
+    const preserveFileRequestUrl = /\.[^/]+$/.test(url.pathname);
+    this._url =
+      process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE || preserveFileRequestUrl
+        ? url.toString()
+        : this._nextUrl.toString();
     this._cookies = new RequestCookies(this.headers);
   }
 

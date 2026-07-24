@@ -11059,6 +11059,16 @@ describe("NextURL basePath and locale properties", () => {
     }
   });
 
+  it("NextRequest.url preserves file-shaped requests with trailingSlash enabled", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/_next/static/build/manifest.json?foo=1", {
+      nextConfig: { trailingSlash: true },
+    });
+
+    expect(req.nextUrl.href).toBe("http://localhost/_next/static/build/manifest.json/?foo=1");
+    expect(req.url).toBe("http://localhost/_next/static/build/manifest.json?foo=1");
+  });
+
   it("NextRequest passes config when input is a Request object", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     const raw = new Request("http://localhost/app/fr/dashboard");

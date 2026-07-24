@@ -2375,6 +2375,7 @@ export default class CustomDocument extends Document {
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toMatchObject({ id: "first", hello: "world" });
+    expect(nextData.query).toEqual({ id: "first", hello: "world" });
   });
 
   it("middleware rewrite with target-side query lets rewrite-target win on key conflicts", async () => {
@@ -6804,6 +6805,14 @@ describe("Production server middleware (Pages Router)", () => {
     const html = await res.text();
     // /rewritten should serve the content of /ssr page
     expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("lets middleware rewrite a missing Pages chunk in production", async () => {
+    const res = await fetch(`${prodUrl}/_next/static/chunks/pages/_app-non-existent.js`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("About");
   });
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts

@@ -1648,12 +1648,53 @@ describe("readPagesRouterEntrySource", () => {
           canceled = true;
         },
       }),
-      { status: 404, headers: { "content-type": "text/html" } },
+      {
+        status: 404,
+        headers: {
+          "accept-ranges": "bytes",
+          "content-digest": "sha-256=:stale:",
+          "content-disposition": 'attachment; filename="chunk.js"',
+          "content-type": "text/html",
+          "content-encoding": "gzip",
+          "content-language": "fr",
+          "content-length": "999",
+          "content-location": "/old-chunk.js",
+          "content-md5": "stale",
+          "content-range": "bytes 0-5/999",
+          etag: '"stale"',
+          digest: "sha-256=stale",
+          "last-modified": "Wed, 01 Jan 2025 00:00:00 GMT",
+          "repr-digest": "sha-256=:stale:",
+          trailer: "Digest",
+          "transfer-encoding": "chunked",
+          "x-from-middleware": "yes",
+        },
+      },
     );
 
     const finalized = finalizeMissingStaticAssetResponse(routed404, true);
     expect(finalized.status).toBe(404);
     expect(finalized.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    for (const name of [
+      "accept-ranges",
+      "content-digest",
+      "content-disposition",
+      "content-encoding",
+      "content-language",
+      "content-length",
+      "content-location",
+      "content-md5",
+      "content-range",
+      "digest",
+      "etag",
+      "last-modified",
+      "repr-digest",
+      "trailer",
+      "transfer-encoding",
+    ]) {
+      expect(finalized.headers.get(name)).toBeNull();
+    }
+    expect(finalized.headers.get("x-from-middleware")).toBe("yes");
     expect(await finalized.text()).toBe("Not Found");
     await vi.waitFor(() => expect(canceled).toBe(true));
 

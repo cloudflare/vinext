@@ -47,7 +47,7 @@ import {
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
-import { mergeHeaders } from "./worker-utils.js";
+import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
 import {
   normalizeNextDataPagePathname,
   isNextDataPathname,
@@ -2014,9 +2014,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (result.type === "response") {
         const { response } = result;
         if (missingBuildAsset && response.status === 404) {
-          cancelResponseBody(response);
-          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("Not Found");
+          await sendWebResponse(
+            finalizeMissingStaticAssetResponse(response, true),
+            req,
+            res,
+            compress,
+          );
           return;
         }
         const shouldStream = isVinextStreamedHtmlResponse(response);

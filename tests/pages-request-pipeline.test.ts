@@ -587,7 +587,7 @@ describe("middleware", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/bar",
-      undefined,
+      { hasMiddlewareRewrite: true },
       expect.any(Headers),
     );
   });

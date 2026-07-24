@@ -34,6 +34,7 @@ import {
   findFileWithExts,
 } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
+import { getPagesMiddlewareRewriteCacheState } from "./server/pages-middleware-rewrite-cache.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import {
   DEFAULT_DEVICE_SIZES,
@@ -5529,6 +5530,8 @@ export const loadServerActionClient = ${
                 }
                 // Update req.url to the resolved URL so SSR sees the post-mw path
                 req.url = pipelineResult.resolvedUrl;
+                const hasMiddlewareRewrite =
+                  pipelineResult.renderOptions?.hasMiddlewareRewrite === true;
                 await cachedSSRHandler.handler(
                   req,
                   res,
@@ -5536,6 +5539,12 @@ export const loadServerActionClient = ${
                   req.__vinextMiddlewareStatus,
                   pipelineResult.isDataReq,
                   originalRequestUrl,
+                  hasMiddlewareRewrite
+                    ? getPagesMiddlewareRewriteCacheState(
+                        pipelineResult.resolvedUrl,
+                        hasMiddlewareRewrite,
+                      )
+                    : undefined,
                 );
               }
             } catch (e) {

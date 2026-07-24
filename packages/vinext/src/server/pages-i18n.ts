@@ -115,7 +115,10 @@ export function extractLocaleFromUrl(
 
   if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
     const locale = parts[0];
-    const rest = "/" + parts.slice(1).join("/");
+    // Slice the locale prefix from the original pathname so significant path
+    // spelling such as a configured trailing slash survives normalization.
+    // This mirrors Next.js' normalizeLocalePath() behavior.
+    const rest = pathname.slice(locale.length + 1) || "/";
     return { locale, url: (rest || "/") + query, hadPrefix: true };
   }
 
