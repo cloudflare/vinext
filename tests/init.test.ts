@@ -517,10 +517,17 @@ describe("init — dependency installation", () => {
   it("detects missing @vitejs/plugin-rsc for App Router", async () => {
     setupProject(tmpDir, { router: "app" });
 
-    const { result } = await runInit(tmpDir);
+    const { result, execCalls } = await runInit(tmpDir);
 
     expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
+    expect(execCalls).toContainEqual(
+      expect.objectContaining({
+        cmd: expect.stringContaining(
+          "@vitejs/plugin-rsc@https://pkg.pr.new/@vitejs/plugin-rsc@50eaf476",
+        ),
+      }),
+    );
   });
 
   it("treats src/app projects as App Router", async () => {

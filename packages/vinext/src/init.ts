@@ -121,6 +121,8 @@ export function addScripts(root: string, port: number): string[] {
 
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
+const PLUGIN_RSC_INSTALL_SPEC = "@vitejs/plugin-rsc@https://pkg.pr.new/@vitejs/plugin-rsc@50eaf476";
+
 export function getInitDeps(isAppRouter: boolean): string[] {
   const deps = ["vinext", "vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
@@ -308,7 +310,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   if (missingDeps.length > 0) {
     console.log(`  Installing ${missingDeps.join(", ")}...`);
-    installDeps(root, missingDeps, exec);
+    installDeps(
+      root,
+      missingDeps.map((dep) => (dep === "@vitejs/plugin-rsc" ? PLUGIN_RSC_INSTALL_SPEC : dep)),
+      exec,
+    );
     console.log();
   }
 

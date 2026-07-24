@@ -1273,7 +1273,10 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = false;
 
     const missing = getMissingDeps(info);
-    expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
+    expect(missing).toContainEqual({
+      name: "@vitejs/plugin-rsc",
+      version: "https://pkg.pr.new/@vitejs/plugin-rsc@50eaf476",
+    });
   });
 
   it("does not require @vitejs/plugin-rsc for Pages Router", () => {

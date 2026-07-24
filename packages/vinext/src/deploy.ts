@@ -811,7 +811,10 @@ export function getMissingDeps(
     missing.push({ name: "@vitejs/plugin-react", version: "latest" });
   }
   if (info.isAppRouter && !info.hasRscPlugin) {
-    missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
+    missing.push({
+      name: "@vitejs/plugin-rsc",
+      version: "https://pkg.pr.new/@vitejs/plugin-rsc@50eaf476",
+    });
   }
   if (info.isAppRouter) {
     // react-server-dom-webpack must be resolvable from the project root for Vite.

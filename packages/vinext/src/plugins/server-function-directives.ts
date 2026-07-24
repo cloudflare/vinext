@@ -224,6 +224,11 @@ export async function createServerFunctionDirectivePlugin(options: Options): Pro
         if (!manager) {
           throw new Error("vinext: failed to access @vitejs/plugin-rsc through getPluginApi().");
         }
+        if (!manager.serverReferences) {
+          throw new Error(
+            "vinext: Installed @vitejs/plugin-rsc does not support user-land server reference claims.",
+          );
+        }
         if (active.length === 0) {
           manager.serverReferences.deleteClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id);
           return;
