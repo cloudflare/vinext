@@ -1,0 +1,20 @@
+.focusLayout {
+  --frame-max-width: 90rem;
+}
+
+.masthead {
+  display: flex;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #ccc;
+}
+
+.baseboard {
+  margin-top: 2rem;
+  padding: 1rem;
+  border-top: 1px solid #ccc;
+}
+
+.fullBleed {
+  max-width: none;
+}

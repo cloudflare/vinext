@@ -39,14 +39,12 @@ import {
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
-import path from "pathslash";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,
   findFileWithExts,
-  findFileWithExtensions,
   type ValidFileMatcher,
 } from "../routing/file-matcher.js";
 import {
@@ -937,14 +935,13 @@ export function createSSRHandler(
         // initial Pages Router state as the client __NEXT_DATA__ payload.
         // oxlint-disable-next-line typescript/no-explicit-any
         let AppComponent: any = null;
-        const appPath = path.join(pagesDir, "_app");
-        if (findFileWithExtensions(appPath, matcher)) {
-          try {
-            const appModule = await importModule(runner, appPath);
-            AppComponent = appModule.default ?? null;
-          } catch {
-            // _app exists but failed to load
-          }
+        // Import the resolved file (extension included): the module runner
+        // does not apply custom resolve.extensions (e.g. ".page.tsx" from
+        // pageExtensions) to extensionless ids.
+        const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
+        if (appFilePath) {
+          const appModule = await importModule(runner, appFilePath);
+          AppComponent = appModule.default ?? null;
         }
         const pagesNextData = {
           ...buildPagesReadinessNextData({
@@ -1551,7 +1548,7 @@ export function createSSRHandler(
 
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
-        const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
+        const appAssetPath = AppComponent ? appFilePath : null;
         const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
           server,
           runner,
@@ -1610,11 +1607,11 @@ export function createSSRHandler(
         const viteBase = server.config.base;
         const pageModuleUrl = createPagesDevModuleUrl(viteRoot, route.filePath, viteBase);
         const pageModuleSource = createPagesDevModuleUrl(viteRoot, route.filePath, "/");
-        const appModuleUrl = AppComponent
-          ? createPagesDevModuleUrl(viteRoot, path.join(pagesDir, "_app"), viteBase)
+        const appModuleUrl = appAssetPath
+          ? createPagesDevModuleUrl(viteRoot, appAssetPath, viteBase)
           : null;
-        const appModuleSource = AppComponent
-          ? createPagesDevModuleUrl(viteRoot, path.join(pagesDir, "_app"), "/")
+        const appModuleSource = appAssetPath
+          ? createPagesDevModuleUrl(viteRoot, appAssetPath, "/")
           : null;
         const serializedPagesNextData = {
           ...pagesNextData,
@@ -1650,17 +1647,15 @@ export function createSSRHandler(
           },
         )}</script>`;
 
-        // Try to load custom _document.tsx
-        const docPath = path.join(pagesDir, "_document");
+        // Try to load custom _document.tsx (import the resolved file — the
+        // module runner does not apply custom resolve.extensions to
+        // extensionless ids)
+        const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
         // oxlint-disable-next-line typescript/no-explicit-any
         let DocumentComponent: any = null;
-        if (findFileWithExtensions(docPath, matcher)) {
-          try {
-            const docModule = (await runner.import(docPath)) as Record<string, unknown>;
-            DocumentComponent = docModule.default ?? null;
-          } catch {
-            // _document exists but failed to load
-          }
+        if (docFilePath) {
+          const docModule = (await runner.import(docFilePath)) as Record<string, unknown>;
+          DocumentComponent = docModule.default ?? null;
         }
 
         // Expose page route patterns on window before hydration so the
@@ -1889,15 +1884,10 @@ async function renderErrorPage(
       // Try to load _app.tsx to wrap the error page
       // oxlint-disable-next-line typescript/no-explicit-any
       let AppComponent: any = null;
-      const appPathErr = path.join(pagesDir, "_app");
       const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
-      if (findFileWithExtensions(appPathErr, matcher)) {
-        try {
-          const appModule = await importModule(runner, appAssetPath ?? appPathErr);
-          AppComponent = appModule.default ?? null;
-        } catch {
-          // _app exists but failed to load
-        }
+      if (appAssetPath) {
+        const appModule = await importModule(runner, appAssetPath);
+        AppComponent = appModule.default ?? null;
       }
 
       const createElement = React.createElement;
@@ -2006,17 +1996,14 @@ async function renderErrorPage(
         renderProps = { pageProps: errorProps };
       }
 
-      // Try custom _document
+      // Try custom _document (import the resolved file — the module runner
+      // does not apply custom resolve.extensions to extensionless ids)
       // oxlint-disable-next-line typescript/no-explicit-any
       let DocumentComponent: any = null;
-      const docPathErr = path.join(pagesDir, "_document");
-      if (findFileWithExtensions(docPathErr, matcher)) {
-        try {
-          const docModule = await importModule(runner, docPathErr);
-          DocumentComponent = docModule.default ?? null;
-        } catch {
-          // _document exists but failed to load
-        }
+      const docFilePathErr = findFileWithExts(pagesDir, "_document", matcher);
+      if (docFilePathErr) {
+        const docModule = await importModule(runner, docFilePathErr);
+        DocumentComponent = docModule.default ?? null;
       }
 
       const createErrorElement = (

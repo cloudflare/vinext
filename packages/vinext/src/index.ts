@@ -11,7 +11,7 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createLogger, loadEnv, parseAst, transformWithOxc } from "vite";
+import { createLogger, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -82,6 +82,7 @@ import {
   type NextConfigInput,
   type ResolvedNextConfig,
 } from "./config/next-config.js";
+import { loadDotenv } from "./config/dotenv.js";
 import { mergeServerExternalPackages } from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
@@ -1983,23 +1984,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Next.js loads .env files before evaluating next.config.js, so
         // env vars are available in config, server-side code, and as
         // NEXT_PUBLIC_* defines for the client bundle.
-        // Pass '' as prefix to load ALL vars, not just VITE_-prefixed ones.
         const mode = env?.mode ?? "development";
-        const envDir = config.envDir ?? root;
-        const dotenvVars = loadEnv(mode, envDir, "");
-        for (const [key, value] of Object.entries(dotenvVars)) {
-          if (process.env[key] === undefined) {
-            process.env[key] = value;
-          }
+        if (config.envDir !== false) {
+          const envDir = config.envDir ?? root;
+          loadDotenv({ root: envDir, mode });
         }
         // Align NODE_ENV with Next.js semantics: build/preview -> production,
         // development server -> development. Next.js unconditionally forces
         // NODE_ENV during build/dev, so we do the same.
         let resolvedNodeEnv: string;
-        if (mode === "test") {
-          resolvedNodeEnv = "test";
-        } else if (env?.command === "build" || env?.isPreview === true) {
+        if (env?.command === "build" || env?.isPreview === true) {
           resolvedNodeEnv = "production";
+        } else if (mode === "test") {
+          resolvedNodeEnv = "test";
         } else {
           resolvedNodeEnv = "development";
         }
