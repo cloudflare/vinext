@@ -1482,23 +1482,39 @@ describe("App Router route graph builder", () => {
     });
   });
 
-  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
-    // Param names ending in + or * would map to :id+ / :id*, which the trie
-    // matcher interprets as catch-all / optional-catch-all. Skip these routes
-    // entirely to avoid ambiguity.
+  // Param names ending in + or * would map to :id+ / :id*, which the trie
+  // matcher interprets as catch-all / optional-catch-all. Skip these routes
+  // entirely to avoid ambiguity. The + and * cases are split because `*` is a
+  // reserved character in Windows filenames — a literal `[id*]` directory can't
+  // exist there, so that scenario is gated to POSIX (where it's reachable).
+  it("skips routes whose param names end in + (would collide with the catch-all modifier)", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "[id+]/page.tsx", EMPTY_PAGE);
-      await writeAppFile(appDir, "[id*]/page.tsx", EMPTY_PAGE);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const patterns = graph.routes.map((r) => r.pattern);
 
       expect(patterns).not.toContain("/:id+");
-      expect(patterns).not.toContain("/:id*");
       expect(patterns).toHaveLength(0);
     });
   });
+
+  it.runIf(process.platform !== "win32")(
+    "skips routes whose param names end in * (would collide with the optional-catch-all modifier)",
+    async () => {
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "[id*]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((r) => r.pattern);
+
+        expect(patterns).not.toContain("/:id*");
+        expect(patterns).toHaveLength(0);
+      });
+    },
+  );
 
   // Intercepting route source-pattern computation. Mirrors Next.js'
   // `extractInterceptionRouteInformation` which derives the intercepting
