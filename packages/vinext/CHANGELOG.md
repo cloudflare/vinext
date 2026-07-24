@@ -1,5 +1,44 @@
 # vinext
 
+## 1.0.0-beta.4
+
+### Bug Fixes
+
+#### App Router
+
+- install default not-found boundary (#2670)
+- scope dynamic params by segment (#2228)
+- honor client cache stale times (#2449)
+- resolve interception-only RSC targets (#2256)
+- preserve hash query navigation semantics (#2669)
+- reconcile streamed metadata icons (#2320)
+- align prefetch server protocol (#2318)
+
+#### Pages
+
+- preserve live Set-Cookie header arrays (#2689)
+- normalize decoded edge responses (#2668)
+- propagate Document script security props (#2044)
+
+#### Misc
+
+- **Pages Router:** load custom \_app/\_document via resolved file paths in dev (#2692)
+- **CSS:** load Sass partials from paths containing tildes (#2691)
+- honor build --mode dotenv files (#2523)
+- **Build:** normalize jsx-in-js module ids on Windows (#2687)
+- **RSC:** handle Windows paths in client reference dedup (#2686)
+- **Cache:** preserve prerendered page cache tags (#709)
+
+### Performance
+
+- **App Router:** serialize streamed metadata once (#2675)
+
+### Contributors
+
+- @james-elicx
+- @MaxtuneLee
+- @WilliamK112
+
 ## 1.0.0-beta.3
 
 ### Features
