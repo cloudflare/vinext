@@ -638,9 +638,7 @@ vinext({
   cache: {
     data: {
       adapter: require.resolve("./my-adapter.js"),
-      options: {
-        /* … */
-      },
+      options: {/* … */},
     },
   },
 });

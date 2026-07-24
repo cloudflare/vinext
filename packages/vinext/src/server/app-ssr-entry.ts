@@ -127,6 +127,10 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
     try {
       const [{ createRequire }, path] = await Promise.all([
         import("node:module"),
+        // Native node:path is fine here: the resolved path is fed straight into
+        // a dynamic import() and never compared against pathslash-normalized
+        // ids, so forward-slash canonicalization buys nothing.
+        // oxlint-disable-next-line no-restricted-imports
         import("node:path"),
       ]);
       const require = createRequire(import.meta.url);
