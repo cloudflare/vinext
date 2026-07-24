@@ -166,18 +166,7 @@ export function getCacheContext(): CacheContext | null {
  * (they depend on virtual modules set up by @vitejs/plugin-rsc).
  * In test environments, the import fails and we fall back to JSON.
  */
-type RscModule = {
-  renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
-  createFromReadableStream: <T>(
-    stream: ReadableStream<Uint8Array>,
-    options?: object,
-    extraOptions?: { preserveServerReferences?: boolean },
-  ) => Promise<T>;
-  encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
-  createTemporaryReferenceSet: () => unknown;
-  createClientTemporaryReferenceSet: () => unknown;
-  decodeReply: (body: string | FormData, options?: unknown) => Promise<unknown[]>;
-};
+type RscModule = typeof import("@vitejs/plugin-rsc/react/rsc");
 
 function getUseCacheDeploymentIdDefine(): string | undefined {
   try {
@@ -216,7 +205,7 @@ let _rscModule: RscModule | null | typeof NOT_LOADED = NOT_LOADED;
 async function getRscModule(): Promise<RscModule | null> {
   if (_rscModule !== NOT_LOADED) return _rscModule;
   try {
-    _rscModule = (await import("@vitejs/plugin-rsc/react/rsc")) as RscModule;
+    _rscModule = await import("@vitejs/plugin-rsc/react/rsc");
   } catch {
     _rscModule = null;
   }

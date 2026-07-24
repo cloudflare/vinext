@@ -1,8 +1,8 @@
 /**
  * Tests the vinext user-land server function directive integration used for function-level
  * "use cache" directives. Vinext owns the directive plugin while plugin-rsc
- * provides directive transforms and the shared reference metadata map. Vinext
- * owns directive orchestration and merges its references after rsc:use-server.
+ * provides directive transforms and aggregates independently owned server
+ * reference claims.
  */
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -56,18 +56,14 @@ async function configurePluginRsc(plugins: Plugin[]) {
 }
 
 describe("plugin-rsc inline use-cache references", () => {
-  it("restores user-land reference metadata after rsc:use-server", async () => {
+  it("keeps the vinext claim when rsc:use-server removes its own claim", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
     const useCacheIndex = plugins.findIndex(
       (candidate) => candidate.name === "vinext:server-function-directives",
     );
     const useServerIndex = plugins.findIndex((candidate) => candidate.name === "rsc:use-server");
-    const metadataIndex = plugins.findIndex(
-      (candidate) => candidate.name === "vinext:server-function-directive-metadata",
-    );
     expect(useCacheIndex).toBeLessThan(useServerIndex);
-    expect(metadataIndex).toBeGreaterThan(useServerIndex);
 
     const context = { environment: { name: "rsc", mode: "build" } };
     const transformed = await unwrapHook(plugins[useCacheIndex]!.transform)!.call(
@@ -75,17 +71,14 @@ describe("plugin-rsc inline use-cache references", () => {
       inlineCacheCode,
       moduleId,
     );
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeDefined();
+    expect(manager.serverReferences.metaMap.get(moduleId)).toBeDefined();
 
     await unwrapHook(plugins[useServerIndex]!.transform)!.call(
       context,
       transformed!.code,
       moduleId,
     );
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeUndefined();
-
-    unwrapHook(plugins[metadataIndex]!.transform)!.call(context, transformed!.code, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeDefined();
+    expect(manager.serverReferences.metaMap.get(moduleId)).toBeDefined();
 
     const ssrContext = { environment: { name: "ssr", mode: "build" } };
     const proxied = await unwrapHook(plugins[useCacheIndex]!.transform)!.call(
@@ -94,23 +87,19 @@ describe("plugin-rsc inline use-cache references", () => {
       moduleId,
     );
     await unwrapHook(plugins[useServerIndex]!.transform)!.call(ssrContext, proxied!.code, moduleId);
-    unwrapHook(plugins[metadataIndex]!.transform)!.call(ssrContext, proxied!.code, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toMatchObject({
+    expect(manager.serverReferences.metaMap.get(moduleId)).toMatchObject({
       importId: moduleId,
       exportNames: expect.arrayContaining(["getData"]),
     });
   });
 
-  it("merges and deduplicates use-server and user-land reference metadata", async () => {
+  it("aggregates use-server and vinext claims", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
     const useCachePlugin = plugins.find(
       (candidate) => candidate.name === "vinext:server-function-directives",
     )!;
     const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
-    const metadataPlugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directive-metadata",
-    )!;
     const context = { environment: { name: "rsc", mode: "build" } };
     const source = [
       `export async function action() {`,
@@ -132,79 +121,98 @@ describe("plugin-rsc inline use-cache references", () => {
       useCacheResult!.code,
       moduleId,
     );
-    const upstreamMetadata = manager.serverReferenceMetaMap[moduleId];
-    const upstreamExport = upstreamMetadata.exportNames[0]!;
-    upstreamMetadata.exportNames.push(upstreamExport);
+    expect(useServerResult!.code).toContain("$$VinextReactServer.registerServerReference");
+    expect(() => parseAst(useServerResult!.code)).not.toThrow();
+    const claims = manager.serverReferences.claimMap.get(moduleId);
+    expect([...claims.keys()]).toEqual(["vinext:server-function-directives", "rsc:use-server"]);
 
-    unwrapHook(metadataPlugin.transform)!.call(context, useServerResult!.code, moduleId);
-
-    const merged = manager.serverReferenceMetaMap[moduleId];
-    expect(merged.importId).toBe(upstreamMetadata.importId);
-    expect(merged.referenceKey).toBe(upstreamMetadata.referenceKey);
-    expect(merged.exportNames).toContain(upstreamExport);
+    const merged = manager.serverReferences.metaMap.get(moduleId)!;
+    expect(merged.importId).toBe(moduleId);
+    expect(merged.exportNames).toContainEqual(expect.stringMatching(/action/));
     expect(merged.exportNames).toContainEqual(expect.stringMatching(/getData/));
     expect(merged.exportNames).toHaveLength(new Set(merged.exportNames).size);
   });
 
-  it("restores RSC-owned metadata after a non-owning proxy pass", async () => {
+  it("preserves the vinext claim when transformed code enters a proxy graph", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
     const useCachePlugin = plugins.find(
       (candidate) => candidate.name === "vinext:server-function-directives",
     )!;
     const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
-    const metadataPlugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directive-metadata",
-    )!;
     const rscContext = { environment: { name: "rsc", mode: "build" } };
     const transformed = await unwrapHook(useCachePlugin.transform)!.call(
       rscContext,
       inlineCacheCode,
       moduleId,
     );
-    const ownedExportNames = manager.serverReferenceMetaMap[moduleId].exportNames;
+    const ownedExportNames = manager.serverReferences.metaMap.get(moduleId)!.exportNames;
 
     const ssrContext = { environment: { name: "ssr", mode: "build" } };
     await unwrapHook(useCachePlugin.transform)!.call(ssrContext, transformed!.code, moduleId);
     await unwrapHook(useServerPlugin.transform)!.call(ssrContext, transformed!.code, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeUndefined();
-
-    unwrapHook(metadataPlugin.transform)!.call(ssrContext, transformed!.code, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId].exportNames).toEqual(ownedExportNames);
+    expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual(ownedExportNames);
   });
 
-  it("does not let a stale proxy transform resurrect RSC-removed metadata", async () => {
+  it("removes the vinext claim when the directive is removed", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
     const useCachePlugin = plugins.find(
       (candidate) => candidate.name === "vinext:server-function-directives",
     )!;
-    const metadataPlugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directive-metadata",
-    )!;
     const rscContext = { environment: { name: "rsc", mode: "build" } };
     const ssrContext = { environment: { name: "ssr", mode: "build" } };
 
     await unwrapHook(useCachePlugin.transform)!.call(rscContext, fileCacheCode, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeDefined();
+    await unwrapHook(useCachePlugin.transform)!.call(ssrContext, fileCacheCode, moduleId);
+    expect(manager.serverReferences.metaMap.get(moduleId)).toBeDefined();
 
-    await unwrapHook(useCachePlugin.transform)!.call(
-      rscContext,
-      `export async function getData() { return 1; }`,
-      moduleId,
-    );
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeUndefined();
+    const source = `export async function getData() { return 1; }`;
+    await unwrapHook(useCachePlugin.transform)!.call(rscContext, source, moduleId);
+    await unwrapHook(useCachePlugin.transform)!.call(ssrContext, source, moduleId);
+    expect(manager.serverReferences.metaMap.get(moduleId)).toBeUndefined();
+  });
 
-    const staleProxy = await unwrapHook(useCachePlugin.transform)!.call(
-      ssrContext,
-      fileCacheCode,
-      moduleId,
-    );
-    unwrapHook(metadataPlugin.transform)!.call(ssrContext, staleProxy!.code, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeUndefined();
+  it("hands a file-level reference between vinext and rsc:use-server", async () => {
+    const plugins = await getPlugins();
+    const manager = await configurePluginRsc(plugins);
+    const useCachePlugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
+    const context = { environment: { name: "rsc", mode: "build" } };
+    const useServerCode = [
+      `"use server";`,
+      `export async function getData() {`,
+      `  return 1;`,
+      `}`,
+    ].join("\n");
 
-    await unwrapHook(useCachePlugin.transform)!.call(rscContext, fileCacheCode, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeDefined();
+    const transform = async (source: string) => {
+      const useCacheResult = await unwrapHook(useCachePlugin.transform)!.call(
+        context,
+        source,
+        moduleId,
+      );
+      await unwrapHook(useServerPlugin.transform)!.call(
+        context,
+        useCacheResult?.code ?? source,
+        moduleId,
+      );
+    };
+
+    await transform(fileCacheCode);
+    expect([...manager.serverReferences.claimMap.get(moduleId).keys()]).toEqual([
+      "vinext:server-function-directives",
+    ]);
+
+    await transform(useServerCode);
+    expect([...manager.serverReferences.claimMap.get(moduleId).keys()]).toEqual(["rsc:use-server"]);
+
+    await transform(fileCacheCode);
+    expect([...manager.serverReferences.claimMap.get(moduleId).keys()]).toEqual([
+      "vinext:server-function-directives",
+    ]);
   });
 
   it("matches Vite's dev reference key for files outside the project root", async () => {
@@ -230,7 +238,7 @@ describe("plugin-rsc inline use-cache references", () => {
     );
     const expectedKey = path.posix.join("/@fs/", externalId);
     expect(result!.code).toContain(JSON.stringify(expectedKey));
-    expect(manager.serverReferenceMetaMap[externalId].referenceKey).toBe(expectedKey);
+    expect(manager.serverReferences.metaMap.get(externalId)!.referenceKey).toBe(expectedKey);
   });
 
   it("wraps and registers inline cache functions with plugin-rsc's build reference key", async () => {
@@ -251,10 +259,10 @@ describe("plugin-rsc inline use-cache references", () => {
       .update(manager.toRelativeId(moduleId))
       .digest("hex")
       .slice(0, 12);
-    expect(result!.code).toContain("$$ReactServer.registerServerReference");
+    expect(result!.code).toContain("$$VinextReactServer.registerServerReference");
     expect(result!.code).toContain("registerCachedFunction");
     expect(result!.code).toContain(JSON.stringify(expectedKey));
-    expect(manager.serverReferenceMetaMap[moduleId]).toEqual({
+    expect(manager.serverReferences.metaMap.get(moduleId)).toEqual({
       importId: moduleId,
       referenceKey: expectedKey,
       exportNames: [expect.stringMatching(/^\$\$hoist_[a-z0-9]+_0_getData$/)],
@@ -286,7 +294,7 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(getDataName(withUnrelated!.code)).toBe(getDataName(original!.code));
   });
 
-  it("leaves directive removal cleanup to the preceding use-server pass", async () => {
+  it("removes its claim when the directive is removed", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
     const plugin = plugins.find(
@@ -296,7 +304,7 @@ describe("plugin-rsc inline use-cache references", () => {
     const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
     const context = { environment: { name: "rsc", mode: "build" } };
     await transform.call(context, inlineCacheCode, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeDefined();
+    expect(manager.serverReferences.metaMap.get(moduleId)).toBeDefined();
     const source = `export async function getData() { return 1; }`;
     const useServerResult = await unwrapHook(useServerPlugin.transform)!.call(
       context,
@@ -304,7 +312,7 @@ describe("plugin-rsc inline use-cache references", () => {
       moduleId,
     );
     await transform.call(context, useServerResult?.code ?? source, moduleId);
-    expect(manager.serverReferenceMetaMap[moduleId]).toBeUndefined();
+    expect(manager.serverReferences.metaMap.get(moduleId)).toBeUndefined();
   });
 
   it("encrypts closure captures and reports bound-argument metadata to vinext", async () => {
@@ -428,7 +436,7 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("registerCachedFunction(alias");
     expect(result!.code).toContain("registerCachedFunction(named");
     expect(result!.code).toContain("registerCachedFunction(imported");
-    expect(manager.serverReferenceMetaMap[moduleId].exportNames).toEqual(
+    expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual(
       expect.arrayContaining(["direct", "alias", "named", "renamed", "default"]),
     );
   });
@@ -588,10 +596,10 @@ describe("plugin-rsc inline use-cache references", () => {
       moduleId,
     );
     expect(result).not.toBeNull();
-    expect(result!.code).toContain("$$ReactServer.registerServerReference");
+    expect(result!.code).toContain("$$VinextReactServer.registerServerReference");
     expect(result!.code).toContain("registerCachedFunction");
     expect(result!.code).not.toContain('"use cache";');
-    expect(manager.serverReferenceMetaMap[moduleId].exportNames).toEqual(["getData"]);
+    expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual(["getData"]);
   });
 
   it.each(["ssr", "client"])(

@@ -1,23 +1,22 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import type { SourceMap } from "magic-string";
-import type { Plugin, Rollup, ViteDevServer } from "vite";
+import type { Plugin, Rollup } from "vite";
 import { parseAstAsync, transformWithOxc } from "vite";
 import { isUnknownRecord } from "../utils/record.js";
 import { escapeRegExp } from "../utils/regex.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
-type RscPluginManager = NonNullable<
-  ReturnType<typeof import("@vitejs/plugin-rsc").getPluginApi>
->["manager"];
 type Program = Parameters<RscTransforms["transformDirectiveProxyExport"]>[0];
-type ModuleDirective = NonNullable<
-  Parameters<RscTransforms["transformServerActionServer"]>[2]["moduleDirective"]
-> & { start?: number };
-type StringDirective = ModuleDirective & { type: "Literal"; value: string };
+type ProgramExpressionStatement = Extract<Program["body"][number], { type: "ExpressionStatement" }>;
+type StringDirective = Extract<ProgramExpressionStatement["expression"], { type: "Literal" }> & {
+  value: string;
+  start: number;
+  end: number;
+};
 type ExportFilter = NonNullable<Parameters<RscTransforms["transformWrapExport"]>[2]["filter"]>;
 type ExportMeta = Parameters<ExportFilter>[1];
 type FunctionParameters = NonNullable<ExportMeta["parameters"]>;
@@ -55,60 +54,8 @@ type Options = {
 };
 
 const SERVER_FUNCTION_DIRECTIVE_MARKER = "/* __vinext_server_function_directives__ */";
-
-type ServerReferenceMetadata = RscPluginManager["serverReferenceMetaMap"][string];
-
-function mergeServerReferenceMetadata(
-  manager: RscPluginManager,
-  id: string,
-  referenceKey: string,
-  exportNames: Iterable<string>,
-): void {
-  const existing = manager.serverReferenceMetaMap[id];
-  manager.serverReferenceMetaMap[id] = {
-    importId: existing?.importId ?? id,
-    referenceKey: existing?.referenceKey ?? referenceKey,
-    exportNames: [...new Set([...(existing?.exportNames ?? []), ...exportNames])],
-  };
-}
-
-function removeOwnedServerReferenceMetadata(
-  manager: RscPluginManager,
-  ownedReferences: Map<string, ServerReferenceMetadata>,
-  id: string,
-): void {
-  const owned = ownedReferences.get(id);
-  if (!owned) return;
-  ownedReferences.delete(id);
-
-  const existing = manager.serverReferenceMetaMap[id];
-  if (!existing) return;
-
-  const ownedExportNames = new Set(owned.exportNames);
-  const exportNames = existing.exportNames.filter((name) => !ownedExportNames.has(name));
-  if (exportNames.length === 0) {
-    delete manager.serverReferenceMetaMap[id];
-  } else {
-    manager.serverReferenceMetaMap[id] = { ...existing, exportNames };
-  }
-}
-
-function setOwnedServerReferenceMetadata(
-  manager: RscPluginManager,
-  ownedReferences: Map<string, ServerReferenceMetadata>,
-  id: string,
-  referenceKey: string,
-  exportNames: Iterable<string>,
-): void {
-  removeOwnedServerReferenceMetadata(manager, ownedReferences, id);
-  const metadata = {
-    importId: id,
-    referenceKey,
-    exportNames: [...new Set(exportNames)],
-  };
-  ownedReferences.set(id, metadata);
-  mergeServerReferenceMetadata(manager, id, referenceKey, metadata.exportNames);
-}
+const SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME = "vinext:server-function-directives";
+const USE_SERVER_PLUGIN_NAME = "rsc:use-server";
 
 function resolvePluginRscModule(projectRoot: string, specifier: string): string {
   try {
@@ -136,7 +83,13 @@ function matchDirective(value: string, directive: string | RegExp): RegExpMatchA
 }
 
 function isStringLiteral(value: unknown): value is StringDirective {
-  return isUnknownRecord(value) && value.type === "Literal" && typeof value.value === "string";
+  return (
+    isUnknownRecord(value) &&
+    value.type === "Literal" &&
+    typeof value.value === "string" &&
+    typeof value.start === "number" &&
+    typeof value.end === "number"
+  );
 }
 
 function isExpressionStatement(
@@ -206,24 +159,6 @@ function findInlineDirective(
   return result;
 }
 
-function hashString(value: string): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, 12);
-}
-
-function normalizeViteImportAnalysisUrl(
-  environment: ViteDevServer["environments"][string],
-  id: string,
-): string {
-  const root = environment.config.root;
-  const rootPrefix = root.endsWith("/") ? root : `${root}/`;
-  if (id.startsWith(rootPrefix)) return id.slice(root.length);
-
-  const cleanId = id.split("?", 1)[0] ?? id;
-  if (path.isAbsolute(cleanId) && fs.existsSync(cleanId)) return path.posix.join("/@fs/", id);
-  if (id.startsWith(".") || id.startsWith("/")) return id;
-  return `/@id/${id.replace("\0", "__x00__")}`;
-}
-
 async function expandExportAll(
   transforms: RscTransforms,
   context: Rollup.TransformPluginContext,
@@ -244,7 +179,7 @@ async function expandExportAll(
   });
 }
 
-export async function createServerFunctionDirectivePlugins(options: Options): Promise<Plugin[]> {
+export async function createServerFunctionDirectivePlugin(options: Options): Promise<Plugin> {
   const rscModulePath = resolvePluginRscModule(options.projectRoot, "@vitejs/plugin-rsc");
   const transformsPath = resolvePluginRscModule(
     options.projectRoot,
@@ -268,11 +203,9 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
   const transforms: RscTransforms = await import(pathToFileURL(transformsPath).href);
   const { getPluginApi } = rscModule;
   let manager: RscPluginManager | undefined;
-  const ownedReferences = new Map<string, ServerReferenceMetadata>();
-  const serverReferenceOwnership = new Map<string, boolean>();
 
   const transformPlugin: Plugin = {
-    name: "vinext:server-function-directives",
+    name: SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME,
 
     configResolved(config) {
       manager = getPluginApi(config)?.manager;
@@ -292,24 +225,17 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
           throw new Error("vinext: failed to access @vitejs/plugin-rsc through getPluginApi().");
         }
         if (active.length === 0) {
-          if (isServer) {
-            serverReferenceOwnership.set(id, false);
-            removeOwnedServerReferenceMetadata(manager, ownedReferences, id);
-          }
+          manager.serverReferences.deleteClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id);
           return;
         }
 
         let ast = await parseProgram(code);
         const useServerBoundary = transforms.hasDirective(ast.body, "use server");
-        if (!isServer && useServerBoundary) return;
-
-        const normalizedId =
-          manager.config.command === "build"
-            ? hashString(manager.toRelativeId(id))
-            : normalizeViteImportAnalysisUrl(
-                manager.server.environments[options.serverEnvironmentName],
-                id,
-              );
+        if (!isServer && useServerBoundary) {
+          manager.serverReferences.deleteClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id);
+          return;
+        }
+        const reference = manager.serverReferences.resolve(id, options.serverEnvironmentName);
 
         if (!isServer) {
           for (const definition of active) {
@@ -327,7 +253,10 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
             const moduleDirective = findModuleDirective(ast, definition.directive);
             if (moduleDirective) matches.push([definition, moduleDirective]);
           }
-          if (matches.length === 0) return;
+          if (matches.length === 0) {
+            manager.serverReferences.deleteClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id);
+            return;
+          }
           if (matches.length > 1) {
             throw Object.assign(
               new Error("Multiple server function directives match this module."),
@@ -344,18 +273,17 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
             code,
             directive: moduleDirective.value,
             runtime: (name) =>
-              `$$ReactClient.createServerReference(${JSON.stringify(`${normalizedId}#${name}`)},$$ReactClient.callServer,undefined,${this.environment.mode === "dev" ? "$$ReactClient.findSourceMapURL" : "undefined"},${JSON.stringify(name)})`,
+              `$$ReactClient.createServerReference(${JSON.stringify(`${reference.referenceKey}#${name}`)},$$ReactClient.callServer,undefined,${this.environment.mode === "dev" ? "$$ReactClient.findSourceMapURL" : "undefined"},${JSON.stringify(name)})`,
           });
-          if (!result?.output.hasChanged()) return;
-          if (serverReferenceOwnership.get(id) !== false) {
-            setOwnedServerReferenceMetadata(
-              manager,
-              ownedReferences,
-              id,
-              normalizedId,
-              result.exportNames,
-            );
+          if (!result?.output.hasChanged()) {
+            manager.serverReferences.deleteClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id);
+            return;
           }
+          manager.serverReferences.deleteClaim(USE_SERVER_PLUGIN_NAME, id);
+          manager.serverReferences.replaceClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id, {
+            ...reference,
+            exportNames: result.exportNames,
+          });
           result.output.prepend(
             `${SERVER_FUNCTION_DIRECTIVE_MARKER}\nimport * as $$ReactClient from ${JSON.stringify(this.environment.name === options.browserEnvironmentName ? browserRuntime : ssrRuntime)};\n`,
           );
@@ -370,9 +298,9 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
         let needsEncryptionRuntime = false;
         let outputMap: SourceMap | undefined;
 
-        for (const definition of active) {
+        for (const [definitionIndex, definition] of active.entries()) {
           const runtimeName = definition.runtime
-            ? `$$server_function_directive_${hashString(definition.runtime)}`
+            ? `$$server_function_directive_${definitionIndex}`
             : undefined;
           let runtimeUsed = false;
           const getRuntime = () => {
@@ -405,54 +333,60 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
             definition.validate?.({ id, directive: moduleMatch[0], location: "module" });
           }
 
-          const result = transforms.transformServerActionServer(code, ast, {
-            runtime: (value, name) =>
-              `$$ReactServer.registerServerReference(${value}, ${JSON.stringify(normalizedId)}, ${JSON.stringify(name)})`,
-            directive: definition.directive,
-            moduleDirective,
-            moduleRuntime: (value, name, meta) => {
-              if (!moduleMatch) return value;
-              needsReactRuntime = true;
-              return `$$ReactServer.registerServerReference(${definition.wrap({ value, name, id, directiveMatch: moduleMatch, location: "module", hasBoundArgs: false, parameters: meta.parameters, runtime: getRuntime(), meta })}, ${JSON.stringify(normalizedId)}, ${JSON.stringify(name)})`;
-            },
-            inlineRuntime: (value, name, meta) => {
-              definition.validate?.({
-                id,
-                directive: meta.directiveMatch[0],
-                location: "inline",
-              });
-              const wrapped = definition.wrap({
-                value,
-                name,
-                id,
-                directiveMatch: meta.directiveMatch,
-                location: "inline",
-                hasBoundArgs: meta.hasBoundArgs,
-                parameters: meta.parameters,
-                runtime: getRuntime(),
-              });
-              if (useServerBoundary) return wrapped;
+          const result = moduleMatch
+            ? transforms.transformWrapExport(code, ast, {
+                runtime: (value, name, meta) => {
+                  needsReactRuntime = true;
+                  return `$$VinextReactServer.registerServerReference(${definition.wrap({ value, name, id, directiveMatch: moduleMatch, location: "module", hasBoundArgs: false, parameters: meta.parameters, runtime: getRuntime(), meta })}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
+                },
+                filter: (name, meta) => definition.filterExport?.({ name, id, meta }) ?? true,
+                rejectNonAsyncFunction: definition.rejectNonAsyncModule,
+              })
+            : transforms.transformHoistInlineDirective(code, ast, {
+                directive: definition.directive,
+                runtime: (value, name, meta) => {
+                  definition.validate?.({
+                    id,
+                    directive: meta.directiveMatch[0],
+                    location: "inline",
+                  });
+                  const wrapped = definition.wrap({
+                    value,
+                    name,
+                    id,
+                    directiveMatch: meta.directiveMatch,
+                    location: "inline",
+                    hasBoundArgs: meta.hasBoundArgs,
+                    parameters: meta.parameters,
+                    runtime: getRuntime(),
+                  });
+                  if (useServerBoundary) return wrapped;
 
-              needsReactRuntime = true;
-              if (meta.hasBoundArgs) {
-                needsEncryptionRuntime = true;
-                return `$$ReactServer.registerServerReference((($$wrapped) => async ($$encoded, ...$$args) => $$wrapped(...await __vite_rsc_encryption_runtime.decryptActionBoundArgs($$encoded), ...$$args))(${wrapped}), ${JSON.stringify(normalizedId)}, ${JSON.stringify(name)})`;
-              }
-              return `$$ReactServer.registerServerReference(${wrapped}, ${JSON.stringify(normalizedId)}, ${JSON.stringify(name)})`;
-            },
-            filter: (name, meta) => definition.filterExport?.({ name, id, meta }) ?? true,
-            rejectNonAsyncFunction: definition.rejectNonAsyncFunction,
-            rejectNonAsyncModule: definition.rejectNonAsyncModule,
-            encode: (value) => {
-              needsEncryptionRuntime = true;
-              return `__vite_rsc_encryption_runtime.encryptActionBoundArgs(${value})`;
-            },
-            stableName: true,
-            exportWrappedHoist: !useServerBoundary,
-            detectUseServerModule: false,
-            rejectForbiddenExpressions: true,
-          });
+                  needsReactRuntime = true;
+                  if (meta.hasBoundArgs) {
+                    needsEncryptionRuntime = true;
+                    return `$$VinextReactServer.registerServerReference((($$wrapped) => async ($$encoded, ...$$args) => $$wrapped(...await __vite_rsc_encryption_runtime.decryptActionBoundArgs($$encoded), ...$$args))(${wrapped}), ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
+                  }
+                  return `$$VinextReactServer.registerServerReference(${wrapped}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
+                },
+                rejectNonAsyncFunction: definition.rejectNonAsyncFunction,
+                encode: (value) => {
+                  needsEncryptionRuntime = true;
+                  return `__vite_rsc_encryption_runtime.encryptActionBoundArgs(${value})`;
+                },
+                stableName: true,
+                exportWrappedHoist: !useServerBoundary,
+                rejectForbiddenExpressions: true,
+              });
           if (!result.output.hasChanged()) continue;
+
+          if (moduleDirective) {
+            result.output.overwrite(
+              moduleDirective.start,
+              moduleDirective.end,
+              `/* ${JSON.stringify(moduleDirective.value)} */`,
+            );
+          }
 
           if (runtimeUsed && definition.runtime && runtimeName) {
             result.output.prepend(
@@ -468,15 +402,18 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
         }
 
         if (!useServerBoundary && exportNames.size > 0) {
-          serverReferenceOwnership.set(id, true);
-          setOwnedServerReferenceMetadata(manager, ownedReferences, id, normalizedId, exportNames);
-        } else if (isServer) {
-          serverReferenceOwnership.set(id, false);
-          removeOwnedServerReferenceMetadata(manager, ownedReferences, id);
+          manager.serverReferences.deleteClaim(USE_SERVER_PLUGIN_NAME, id);
+          manager.serverReferences.replaceClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id, {
+            ...reference,
+            exportNames: [...exportNames],
+          });
+        } else {
+          manager.serverReferences.deleteClaim(SERVER_FUNCTION_DIRECTIVE_PLUGIN_NAME, id);
         }
 
         const imports = [
-          needsReactRuntime && `import * as $$ReactServer from ${JSON.stringify(rscRuntime)};`,
+          needsReactRuntime &&
+            `import * as $$VinextReactServer from ${JSON.stringify(rscRuntime)};`,
           needsEncryptionRuntime &&
             `import * as __vite_rsc_encryption_runtime from ${JSON.stringify(encryptionRuntime)};`,
         ].filter(Boolean);
@@ -488,17 +425,5 @@ export async function createServerFunctionDirectivePlugins(options: Options): Pr
     },
   };
 
-  const metadataPlugin: Plugin = {
-    name: "vinext:server-function-directive-metadata",
-    transform: {
-      handler(_code, id) {
-        if (!manager) return;
-        const owned = ownedReferences.get(id);
-        if (!owned) return;
-        mergeServerReferenceMetadata(manager, id, owned.referenceKey, owned.exportNames);
-      },
-    },
-  };
-
-  return [transformPlugin, metadataPlugin];
+  return transformPlugin;
 }

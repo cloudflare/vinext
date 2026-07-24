@@ -118,7 +118,7 @@ import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import {
-  createServerFunctionDirectivePlugins,
+  createServerFunctionDirectivePlugin,
   type ServerFunctionDirectiveContext,
 } from "./plugins/server-function-directives.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -946,7 +946,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
-        const serverFunctionPlugins = await createServerFunctionDirectivePlugins({
+        const serverFunctionPlugin = await createServerFunctionDirectivePlugin({
           projectRoot: earlyBaseDir,
           definitions: [
             {
@@ -1011,13 +1011,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           serverEnvironmentName: "rsc",
           browserEnvironmentName: "client",
         });
-        const [serverFunctionPlugin, serverFunctionMetadataPlugin] = serverFunctionPlugins;
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
-        if (useServerIndex === -1 || !serverFunctionPlugin || !serverFunctionMetadataPlugin) {
+        if (useServerIndex === -1) {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
         plugins.splice(useServerIndex, 0, serverFunctionPlugin);
-        plugins.splice(useServerIndex + 2, 0, serverFunctionMetadataPlugin);
         return plugins;
       })
       .catch((cause) => {
