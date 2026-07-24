@@ -741,6 +741,50 @@ describe("App RSC route matching", () => {
       expect(matcher.findIntercept("/en/photos", "/en/bar")).toBeNull();
       expect(matcher.findIntercept("/en/photos", "/en")).toBeNull();
     });
+
+    it("uses an exact interception id when slots share source and target patterns", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          pattern: "/feed",
+          patternParts: ["feed"],
+          slots: {
+            drawer: {
+              id: "slot:drawer:/feed",
+              intercepts: [
+                {
+                  sourceMatchPattern: "/feed",
+                  targetPattern: "/login",
+                  interceptLayouts: [],
+                  page: "drawer-login",
+                  params: [],
+                },
+              ],
+            },
+            modal: {
+              id: "slot:modal:/feed",
+              intercepts: [
+                {
+                  sourceMatchPattern: "/feed",
+                  targetPattern: "/login",
+                  interceptLayouts: [],
+                  page: "modal-login",
+                  params: [],
+                },
+              ],
+            },
+          },
+        },
+      ] as any);
+
+      expect(
+        matcher.findIntercept("/login", "/feed", "interception:slot:drawer:/feed:/feed->/login")
+          ?.slotKey,
+      ).toBe("drawer");
+      expect(
+        matcher.findIntercept("/login", "/feed", "interception:slot:modal:/feed:/feed->/login")
+          ?.slotKey,
+      ).toBe("modal");
+    });
   });
 });
 

@@ -9,11 +9,13 @@ import "./global.css";
 // Shows a modal version of the photo instead of the full page.
 export default async function PhotoModal({ params }: { params: { id: string } }) {
   const initialLikes = await getPhotoLikes(params.id);
+  const renderToken = Math.random().toString(36).slice(2);
 
   return (
     <div data-testid="photo-modal">
       <h2>Photo Modal</h2>
       <p>Viewing photo {params.id} in modal</p>
+      <p data-testid="photo-modal-render-token">{renderToken}</p>
       <Link href="/photos/43" id="modal-photo-43-link">
         Next Photo
       </Link>

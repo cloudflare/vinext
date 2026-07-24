@@ -429,7 +429,7 @@ function createAppRouteGraphSiblingInterceptSlotId(sourcePattern: string): strin
   return createAppRouteGraphSlotId(SIBLING_INTERCEPT_SLOT_NAME, sourcePattern);
 }
 
-function createAppRouteGraphInterceptionId(
+export function createAppRouteGraphInterceptionId(
   slotId: string,
   sourcePattern: string,
   targetPattern: string,
@@ -1279,8 +1279,6 @@ function discoverSlotSubRoutes(
     // the synthetic sub-route has a fallback for the children slot. Layout-only
     // parent routes (no page.tsx) do not need a default — the children slot was
     // never occupied at the parent level, so the sub-route simply renders null.
-    const childrenDefault = findFile(parentPageDir, "default", matcher);
-    if (parentRoute.pagePath && !childrenDefault) continue;
     const childrenSlotId = createAppRouteGraphSlotId("children", childrenOwnerTreePath);
     if (parentRoute.pagePath) {
       parentRoute.childrenSlot = {
@@ -1289,6 +1287,8 @@ function discoverSlotSubRoutes(
         state: "active",
       };
     }
+    const childrenDefault = findFile(parentPageDir, "default", matcher);
+    if (parentRoute.pagePath && !childrenDefault) continue;
     for (const route of routes) {
       if (!route.pagePath || route === parentRoute) continue;
       const relativePageDir = path.relative(parentPageDir, path.dirname(route.pagePath));

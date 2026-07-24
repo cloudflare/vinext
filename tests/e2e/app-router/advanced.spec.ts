@@ -8,6 +8,14 @@ import {
 const BASE = "http://localhost:4174";
 const FEED_DRAFT_VALUE = "source draft survives";
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 async function fillFeedSourceState(page: Page, value: string = FEED_DRAFT_VALUE): Promise<void> {
   await expect(page.getByTestId("feed-draft-input")).toBeVisible();
   await page.getByTestId("feed-draft-input").fill(value);
@@ -434,6 +442,385 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
   });
 
+  test("router.refresh refreshes every active intercepted parallel branch", async ({ page }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+    await fillFeedSourceState(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expectFeedSourceState(page);
+
+    const feedRenderToken = await page.getByTestId("feed-render-token").textContent();
+    const modalRenderToken = await page.getByTestId("photo-modal-render-token").textContent();
+
+    await page.click('[data-testid="photo-modal-refresh"]');
+
+    await expect(page.getByTestId("feed-render-token")).not.toHaveText(feedRenderToken ?? "");
+    await expect(page.getByTestId("photo-modal-render-token")).not.toHaveText(
+      modalRenderToken ?? "",
+    );
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expectFeedSourceState(page);
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
+  test("router.refresh refreshes a persisted modal and the active children slot", async ({
+    page,
+  }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    await page.goto(`${BASE}/parallel-refresh`);
+    await waitForAppRouterHydration(page);
+
+    const initialPageToken = await page.getByTestId("parallel-refresh-page-token").textContent();
+    await page.getByRole("link", { name: "Open login" }).click();
+    await expect(page.getByTestId("parallel-refresh-login-modal")).toBeVisible();
+    const initialModalToken = await page.getByTestId("parallel-refresh-modal-token").textContent();
+
+    await page
+      .getByTestId("parallel-refresh-login-modal")
+      .getByTestId("parallel-refresh-button")
+      .click();
+
+    await expect(page.getByTestId("parallel-refresh-page-token")).not.toHaveText(
+      initialPageToken ?? "",
+    );
+    await expect(page.getByTestId("parallel-refresh-modal-token")).not.toHaveText(
+      initialModalToken ?? "",
+    );
+
+    await page.getByRole("link", { name: "Other page" }).click();
+    await expect(page.getByTestId("parallel-refresh-other-page")).toBeVisible();
+    await expect(page.getByTestId("parallel-refresh-login-modal")).toBeVisible();
+    const persistedModalToken = await page
+      .getByTestId("parallel-refresh-modal-token")
+      .textContent();
+    const initialOtherToken = await page.getByTestId("parallel-refresh-other-token").textContent();
+
+    await page
+      .getByTestId("parallel-refresh-other-page")
+      .getByTestId("parallel-refresh-button")
+      .click();
+
+    await expect(page.getByTestId("parallel-refresh-modal-token")).not.toHaveText(
+      persistedModalToken ?? "",
+    );
+    await expect(page.getByTestId("parallel-refresh-other-token")).not.toHaveText(
+      initialOtherToken ?? "",
+    );
+  });
+
+  test("router.refresh refreshes a persisted dynamic modal with current search params", async ({
+    page,
+  }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    await page.goto(`${BASE}/parallel-refresh-dynamic/foo`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Open dynamic login" }).click();
+    await expect(page.getByTestId("parallel-refresh-dynamic-login-modal")).toBeVisible();
+    await expect(page.getByTestId("parallel-refresh-dynamic-modal-slug")).toHaveText("foo");
+    await expect(page.getByTestId("parallel-refresh-dynamic-modal-search")).toHaveText("modal");
+
+    await page.getByRole("link", { name: "Other dynamic page" }).click();
+    await expect(page.getByTestId("parallel-refresh-dynamic-other-page")).toBeVisible();
+    await expect(page.getByTestId("parallel-refresh-dynamic-login-modal")).toBeVisible();
+    const initialModalToken = await page
+      .getByTestId("parallel-refresh-dynamic-modal-token")
+      .textContent();
+    const initialOtherToken = await page
+      .getByTestId("parallel-refresh-dynamic-other-token")
+      .textContent();
+
+    await page
+      .getByTestId("parallel-refresh-dynamic-other-page")
+      .getByTestId("parallel-refresh-button")
+      .click();
+
+    await expect(page.getByTestId("parallel-refresh-dynamic-modal-token")).not.toHaveText(
+      initialModalToken ?? "",
+    );
+    await expect(page.getByTestId("parallel-refresh-dynamic-other-token")).not.toHaveText(
+      initialOtherToken ?? "",
+    );
+    await expect(page.getByTestId("parallel-refresh-dynamic-modal-search")).toHaveText("other");
+  });
+
+  test("router.refresh refreshes multiple persisted intercepted slots", async ({ page }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    await page.goto(`${BASE}/parallel-refresh-multiple`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Open drawer" }).click();
+    await expect(page.getByTestId("parallel-refresh-multiple-drawer")).toBeVisible();
+    await page.getByRole("link", { name: "Open modal" }).click();
+    await expect(page.getByTestId("parallel-refresh-multiple-modal")).toBeVisible();
+    await expect(page.getByTestId("parallel-refresh-multiple-drawer")).toBeVisible();
+    await page.getByRole("link", { name: "Multiple other page" }).click();
+    await expect(page.getByTestId("parallel-refresh-multiple-other-page")).toBeVisible();
+    await expect(page.getByTestId("parallel-refresh-multiple-modal")).toBeVisible();
+    await expect(page.getByTestId("parallel-refresh-multiple-drawer")).toBeVisible();
+
+    const initialDrawerToken = await page
+      .getByTestId("parallel-refresh-multiple-drawer-token")
+      .textContent();
+    const initialModalToken = await page
+      .getByTestId("parallel-refresh-multiple-modal-token")
+      .textContent();
+    const initialOtherToken = await page
+      .getByTestId("parallel-refresh-multiple-other-token")
+      .textContent();
+
+    await page
+      .getByTestId("parallel-refresh-multiple-other-page")
+      .getByTestId("parallel-refresh-button")
+      .click();
+
+    await expect(page.getByTestId("parallel-refresh-multiple-drawer-token")).not.toHaveText(
+      initialDrawerToken ?? "",
+    );
+    await expect(page.getByTestId("parallel-refresh-multiple-modal-token")).not.toHaveText(
+      initialModalToken ?? "",
+    );
+    await expect(page.getByTestId("parallel-refresh-multiple-other-token")).not.toHaveText(
+      initialOtherToken ?? "",
+    );
+  });
+
+  test("router.refresh recovers when a persisted slot refresh fails", async ({ page }) => {
+    await page.goto(`${BASE}/refreshing`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Open refreshing login" }).click();
+    await expect(page.getByTestId("refreshing-login-modal")).toBeVisible();
+    await page.getByRole("link", { name: "Go to Other Page" }).click();
+    await expect(page.getByTestId("refreshing-other-page")).toBeVisible();
+
+    const modalToken = await page.getByTestId("refreshing-modal-token").textContent();
+    const otherToken = await page.getByTestId("refreshing-other-token").textContent();
+    let supplementalRequests = 0;
+    await page.route("**/*", async (route) => {
+      if (isAppRouterRscRequestForPath(route.request(), "/refreshing/login")) {
+        supplementalRequests++;
+        if (supplementalRequests === 1) {
+          await route.abort("failed");
+          return;
+        }
+      }
+      await route.continue();
+    });
+
+    await page
+      .getByTestId("refreshing-other-page")
+      .getByRole("button", { name: "Refresh", exact: true })
+      .click();
+
+    // The primary refresh still commits after the supplemental request fails.
+    await expect(page.getByTestId("refreshing-other-token")).not.toHaveText(otherToken ?? "");
+    // A bounded recovery refresh must retry the stale persisted slot.
+    await expect.poll(() => supplementalRequests).toBe(2);
+    await expect(page.getByTestId("refreshing-modal-token")).not.toHaveText(modalToken ?? "");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+  for (const fixture of [
+    {
+      basePath: "/refreshing",
+      label: "regular",
+      modalTestId: "refreshing-login-modal",
+      modalTokenTestId: "refreshing-modal-token",
+      otherTokenTestId: "refreshing-other-token",
+      pageTokenTestId: "refreshing-page-token",
+      searchPrefix: "refreshing",
+    },
+    {
+      basePath: "/dynamic-refresh/foo",
+      label: "dynamic",
+      modalTestId: "dynamic-refresh-login-modal",
+      modalTokenTestId: "dynamic-refresh-modal-token",
+      otherTokenTestId: "dynamic-refresh-other-token",
+      pageTokenTestId: "dynamic-refresh-page-token",
+      searchPrefix: "dynamic-refresh",
+    },
+  ]) {
+    for (const withSearchParams of [false, true]) {
+      test(`router.refresh (${fixture.label}) - searchParams: ${withSearchParams} refreshes intercepted and source slots`, async ({
+        page,
+      }) => {
+        await page.goto(`${BASE}${fixture.basePath}`);
+        await waitForAppRouterHydration(page);
+
+        if (withSearchParams) {
+          await page
+            .getByRole("button", { name: `Update ${fixture.searchPrefix}-page search params` })
+            .click();
+          await expect(
+            page.getByTestId(`${fixture.searchPrefix}-page-search-params`),
+          ).toContainText("0.");
+        }
+
+        const pageToken = await page.getByTestId(fixture.pageTokenTestId).textContent();
+        await page.getByRole("link", { name: /Open .*refreshing login/ }).click();
+        await expect(page.getByTestId(fixture.modalTestId)).toBeVisible();
+        const modalToken = await page.getByTestId(fixture.modalTokenTestId).textContent();
+
+        await page
+          .getByTestId(fixture.modalTestId)
+          .getByRole("button", { name: "Refresh", exact: true })
+          .click();
+
+        await expect(page.getByTestId(fixture.pageTokenTestId)).not.toHaveText(pageToken ?? "");
+        await expect(page.getByTestId(fixture.modalTokenTestId)).not.toHaveText(modalToken ?? "");
+        await expect(page.getByTestId(fixture.modalTestId)).toBeVisible();
+      });
+
+      test(`server revalidation (${fixture.label}) - searchParams: ${withSearchParams} refreshes persisted and active slots`, async ({
+        page,
+      }) => {
+        await page.goto(`${BASE}${fixture.basePath}`);
+        await waitForAppRouterHydration(page);
+
+        if (withSearchParams) {
+          await page
+            .getByRole("button", { name: `Update ${fixture.searchPrefix}-page search params` })
+            .click();
+          await expect(
+            page.getByTestId(`${fixture.searchPrefix}-page-search-params`),
+          ).toContainText("0.");
+        }
+
+        await page.getByRole("link", { name: /Open .*refreshing login/ }).click();
+        await expect(page.getByTestId(fixture.modalTestId)).toBeVisible();
+        await page.getByRole("link", { name: /Go to (Dynamic )?Other Page/ }).click();
+        const modalToken = await page.getByTestId(fixture.modalTokenTestId).textContent();
+        const otherToken = await page.getByTestId(fixture.otherTokenTestId).textContent();
+
+        await page.getByRole("main").getByRole("button", { name: "Revalidate" }).click();
+
+        await expect(page.getByTestId(fixture.modalTokenTestId)).not.toHaveText(modalToken ?? "");
+        await expect(page.getByTestId(fixture.otherTokenTestId)).not.toHaveText(otherToken ?? "");
+        await expect(page.getByTestId(fixture.modalTestId)).toBeVisible();
+      });
+    }
+  }
+
+  test("serializes actions behind an earlier detached supplemental commit", async ({ page }) => {
+    await page.goto(`${BASE}/refreshing`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Open refreshing login" }).click();
+    await expect(page.getByTestId("refreshing-login-modal")).toBeVisible();
+    await page.getByRole("link", { name: "Go to Other Page" }).click();
+    await expect(page.getByTestId("refreshing-other-page")).toBeVisible();
+
+    let actionPosts = 0;
+    await page.route("**/*", async (route) => {
+      if (route.request().method() === "POST") actionPosts++;
+      await route.continue();
+    });
+    const supplementalRequested = deferred();
+    const releaseSupplemental = deferred();
+    await page.route("**/refreshing/login**", async (route) => {
+      supplementalRequested.resolve();
+      await releaseSupplemental.promise;
+      await route.continue();
+    });
+
+    const initialModalToken = await page.getByTestId("refreshing-modal-token").textContent();
+    const initialOtherToken = await page.getByTestId("refreshing-other-token").textContent();
+    await page.getByTestId("serialized-revalidate").click();
+    await supplementalRequested.promise;
+    await expect(page.getByTestId("serialized-revalidate-status")).toHaveText("A resolved");
+    expect(actionPosts).toBe(1);
+
+    releaseSupplemental.resolve();
+    await expect(page.getByTestId("serialized-revalidate-status")).toHaveText("B resolved");
+    expect(actionPosts).toBe(2);
+    await expect(page.getByTestId("refreshing-modal-token")).not.toHaveText(
+      initialModalToken ?? "",
+    );
+    await expect(page.getByTestId("refreshing-other-token")).not.toHaveText(
+      initialOtherToken ?? "",
+    );
+    await expect(page.getByTestId("refreshing-login-modal")).toBeVisible();
+    await expect(page.getByTestId("refreshing-other-page")).toBeVisible();
+  });
+
+  test("drains queued actions before recovering a preempted revalidating action", async ({
+    page,
+  }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
+    await page.goto(`${BASE}/refreshing`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Open refreshing login" }).click();
+    await expect(page.getByTestId("refreshing-login-modal")).toBeVisible();
+    await page.getByRole("link", { name: "Go to Other Page" }).click();
+    await expect(page.getByTestId("refreshing-other-page")).toBeVisible();
+
+    const supplementalRequested = deferred();
+    const releaseSupplemental = deferred();
+    const navigationRequested = deferred();
+    const releaseNavigation = deferred();
+    const recoveryRequested = deferred();
+    const releaseRecovery = deferred();
+    let actionPosts = 0;
+    let actionPostsAtRecovery = 0;
+    let refreshingRequests = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (request.method() === "POST") actionPosts++;
+
+      if (isAppRouterRscRequestForPath(request, "/refreshing/login")) {
+        supplementalRequested.resolve();
+        await releaseSupplemental.promise;
+      } else if (isAppRouterRscRequestForPath(request, "/refreshing")) {
+        refreshingRequests++;
+        if (refreshingRequests === 1) {
+          navigationRequested.resolve();
+          await releaseNavigation.promise;
+        } else if (refreshingRequests === 2) {
+          actionPostsAtRecovery = actionPosts;
+          recoveryRequested.resolve();
+          await releaseRecovery.promise;
+        }
+      }
+      await route.continue();
+    });
+
+    await page.getByTestId("serialized-revalidate").click();
+    await supplementalRequested.promise;
+    await expect(page.getByTestId("serialized-revalidate-status")).toHaveText("A resolved");
+    expect(actionPosts).toBe(1);
+
+    await page.getByRole("link", { name: "Go to Refreshing Page" }).click();
+    await navigationRequested.promise;
+    releaseSupplemental.resolve();
+    releaseNavigation.resolve();
+
+    await expect.poll(() => actionPosts).toBe(2);
+    await recoveryRequested.promise;
+    expect(actionPostsAtRecovery).toBe(2);
+
+    const recoveryResponse = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), "/refreshing"),
+    );
+    releaseRecovery.resolve();
+    expect((await recoveryResponse).ok()).toBe(true);
+    expect(refreshingRequests).toBe(2);
+  });
+
   test("revalidating server action from dynamic intercepted modal returns a result", async ({
     page,
   }) => {
@@ -550,6 +937,68 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
     await expectFeedSourceState(page);
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
+  test("cache-miss traversal from an intercepted route uses the target history authority", async ({
+    page,
+  }) => {
+    const traversalRscPaths: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (request.headers()["rsc"] === "1" && url.searchParams.has("_rsc")) {
+        traversalRscPaths.push(url.pathname);
+      }
+    });
+
+    await page.goto(`${BASE}/about`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(async () => {
+      const runtime = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
+      const navigate =
+        typeof runtime === "object" &&
+        runtime !== null &&
+        "functions" in runtime &&
+        typeof runtime.functions === "object" &&
+        runtime.functions !== null &&
+        "navigate" in runtime.functions &&
+        typeof runtime.functions.navigate === "function"
+          ? runtime.functions.navigate
+          : null;
+      if (navigate === null) throw new Error("Expected Vinext RSC navigation executor");
+      await navigate("/feed", 0, "navigate", "push", undefined, true);
+    });
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.evaluate(() => {
+      const runtime = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
+      const clearNavigationCaches =
+        typeof runtime === "object" &&
+        runtime !== null &&
+        "functions" in runtime &&
+        typeof runtime.functions === "object" &&
+        runtime.functions !== null &&
+        "clearNavigationCaches" in runtime.functions &&
+        typeof runtime.functions.clearNavigationCaches === "function"
+          ? runtime.functions.clearNavigationCaches
+          : null;
+      if (clearNavigationCaches === null) {
+        throw new Error("Expected Vinext navigation cache invalidation");
+      }
+      clearNavigationCaches();
+    });
+    traversalRscPaths.length = 0;
+
+    await page.evaluate(() => window.history.go(-2));
+    await page.waitForURL(`${BASE}/about`);
+
+    await expect(page.locator("#app-page")).toHaveText("About");
+    await expect(page.locator('[data-testid="feed-page"]')).not.toBeVisible();
+    await expect.poll(() => traversalRscPaths).toContain("/about");
+    expect(traversalRscPaths).not.toContain("/feed");
   });
 });
 

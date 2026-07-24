@@ -75,6 +75,9 @@ export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 
+/** Exact interception declaration requested by supplemental refreshes. */
+export const VINEXT_INTERCEPTION_ID_HEADER = "X-Vinext-Interception-Id";
+
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 

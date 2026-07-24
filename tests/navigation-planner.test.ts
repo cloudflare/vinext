@@ -1417,6 +1417,7 @@ describe("navigationPlanner root-boundary decisions", () => {
         layoutIds: ["layout:/", "layout:/feed"],
         pattern: "/feed",
         rootBoundaryId: "root-boundary:/",
+        slotBindings: [createSlotBinding("slot:children:/", "layout:/", "active")],
         interceptions: [
           {
             ownerLayoutId: "layout:/feed",
@@ -1433,7 +1434,12 @@ describe("navigationPlanner root-boundary decisions", () => {
       },
     ]);
     const currentSnapshot: RouteSnapshot = {
-      ...createRouteSnapshot(null, []),
+      ...createRouteSnapshot(
+        null,
+        [],
+        [],
+        [createSlotBinding("slot:children:/", "layout:/", "active")],
+      ),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
@@ -1442,7 +1448,10 @@ describe("navigationPlanner root-boundary decisions", () => {
         null,
         [],
         [],
-        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+        [
+          createSlotBinding("slot:children:/", "layout:/", "active"),
+          createSlotBinding("slot:modal:/feed", "layout:/feed", "active"),
+        ],
       ),
       displayUrl: "https://example.com/photos/42",
       interception: createInterceptionSnapshot(),
@@ -1463,6 +1472,21 @@ describe("navigationPlanner root-boundary decisions", () => {
     }
     expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
     expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/feed"]);
+    expect(decision.proposal.preservePreviousSlotIds).toEqual(["slot:children:/"]);
+
+    for (const lane of ["refresh", "traverse"] as const) {
+      const authoritativeDecision = planFlightResponseFromSnapshots({
+        currentSnapshot,
+        lane,
+        routeManifest,
+        targetSnapshot,
+      });
+      expect(authoritativeDecision.kind).toBe("proposeCommit");
+      if (authoritativeDecision.kind !== "proposeCommit") {
+        throw new Error("Expected proposeCommit decision");
+      }
+      expect(authoritativeDecision.proposal.preservePreviousSlotIds).toEqual([]);
+    }
   });
 
   it("approves manifest-declared dynamic interception topology with concrete wire route ids", () => {

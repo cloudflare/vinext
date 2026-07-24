@@ -162,6 +162,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   actionFailed?: boolean;
   handlerStart: number;
   interceptionContext: string | null;
+  interceptionId: string | null;
   interceptionPathname: string;
   isProgressiveActionRender: boolean;
   isRscRequest: boolean;
@@ -535,6 +536,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     url,
     isRscRequest,
     interceptionContextHeader,
+    interceptionIdHeader,
     mountedSlotsHeader,
     renderMode,
     clientReuseManifest,
@@ -1246,6 +1248,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     actionFailed,
     handlerStart,
     interceptionContext: interceptionContextHeader,
+    interceptionId: interceptionIdHeader,
     interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
     isProgressiveActionRender,
     isRscRequest,

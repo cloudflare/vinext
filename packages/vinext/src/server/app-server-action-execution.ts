@@ -157,6 +157,7 @@ type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
 };
 
 type AppServerActionIntercept<TPage = unknown> = {
+  interceptionId: string | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
   page: TPage;

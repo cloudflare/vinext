@@ -94,6 +94,8 @@ type AppElementsSlotBindingState = "active" | "default" | "unmatched";
 
 export type AppElementsSlotBinding = Readonly<{
   activeRouteId?: string | null;
+  interceptionId?: string | null;
+  interceptionSourceMatchedUrl?: string | null;
   ownerLayoutId: string | null;
   slotId: string;
   state: AppElementsSlotBindingState;
@@ -549,8 +551,32 @@ function parseSlotBindings(
       throw new Error("[vinext] Invalid __slotBindings in App Router payload: expected route ids");
     }
 
+    const interceptionId = entry.interceptionId;
+    if (
+      interceptionId !== undefined &&
+      interceptionId !== null &&
+      (typeof interceptionId !== "string" || !interceptionId.startsWith("interception:"))
+    ) {
+      throw new Error(
+        "[vinext] Invalid __slotBindings in App Router payload: expected interception ids",
+      );
+    }
+    const interceptionSourceMatchedUrl = entry.interceptionSourceMatchedUrl;
+    if (
+      interceptionSourceMatchedUrl !== undefined &&
+      interceptionSourceMatchedUrl !== null &&
+      (typeof interceptionSourceMatchedUrl !== "string" ||
+        !isInterceptionMatchedUrlPath(interceptionSourceMatchedUrl))
+    ) {
+      throw new Error(
+        "[vinext] Invalid __slotBindings in App Router payload: expected interception source URLs",
+      );
+    }
+
     slotBindings.push({
       ...(activeRouteId !== undefined ? { activeRouteId } : {}),
+      ...(interceptionId !== undefined ? { interceptionId } : {}),
+      ...(interceptionSourceMatchedUrl !== undefined ? { interceptionSourceMatchedUrl } : {}),
       ownerLayoutId,
       slotId,
       state,

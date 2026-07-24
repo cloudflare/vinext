@@ -1119,6 +1119,7 @@ describe("App Router entry templates", () => {
 
     expect(code).toContain('import { createAppRscHandler } from "vinext/server/app-rsc-handler";');
     expect(code).toContain("export default createAppRscHandler({");
+    expect(code).toContain("interceptionId: intercept.interceptionId,");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 

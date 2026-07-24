@@ -1,8 +1,20 @@
 import { test, expect } from "@playwright/test";
 import { RSC_FORM_STATE_GLOBAL } from "../../../packages/vinext/src/server/app-browser-hydration";
-import { waitForAppRouterHydration } from "../helpers";
+import {
+  isAppRouterRscRequestForPath,
+  isAppRouterServerActionRequestForPath,
+  waitForAppRouterHydration,
+} from "../helpers";
 
 const BASE = "http://localhost:4174";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 test.describe("Server Actions", () => {
   test("like button calls server action and updates count", async ({ page }) => {
@@ -28,6 +40,62 @@ test.describe("Server Actions", () => {
     await expect(page.locator('[data-testid="likes"]')).toHaveText(`Likes: ${currentCount + 1}`, {
       timeout: 10_000,
     });
+  });
+
+  test("router.refresh waits for an active server action", async ({ page }) => {
+    // Next.js only lets navigate/restore actions preempt the action queue.
+    // ACTION_REFRESH stays queued behind an active server action:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
+    await page.goto(`${BASE}/actions`);
+    await waitForAppRouterHydration(page);
+
+    const actionRequested = deferred();
+    const releaseAction = deferred();
+    const refreshRequested = deferred();
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (isAppRouterServerActionRequestForPath(request, "/actions")) {
+        actionRequested.resolve();
+        await releaseAction.promise;
+      } else if (isAppRouterRscRequestForPath(request, "/actions")) {
+        refreshRequested.resolve();
+      }
+      await route.continue();
+    });
+
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      Reflect.set(window, "__VINEXT_ACTION_REQUEST_RELEASED__", false);
+      Reflect.set(window, "__VINEXT_REFRESH_STARTED_EARLY__", false);
+      window.fetch = (input, init) => {
+        const request = new Request(input, init);
+        if (
+          request.method === "GET" &&
+          request.headers.get("rsc") === "1" &&
+          new URL(request.url).pathname === "/actions" &&
+          Reflect.get(window, "__VINEXT_ACTION_REQUEST_RELEASED__") !== true
+        ) {
+          Reflect.set(window, "__VINEXT_REFRESH_STARTED_EARLY__", true);
+        }
+        return originalFetch(input, init);
+      };
+    });
+
+    await page.getByTestId("like-btn").click();
+    await actionRequested.promise;
+    await page.getByTestId("refresh-during-action-btn").click();
+    const refreshStartedEarly = await page.evaluate(
+      () => Reflect.get(window, "__VINEXT_REFRESH_STARTED_EARLY__") === true,
+    );
+
+    await page.evaluate(() => {
+      Reflect.set(window, "__VINEXT_ACTION_REQUEST_RELEASED__", true);
+    });
+    releaseAction.resolve();
+    await refreshRequested.promise;
+    await expect(page.getByTestId("like-btn")).toHaveText("Like");
+
+    expect(refreshStartedEarly).toBe(false);
   });
 
   test("message form calls server action with FormData", async ({ page }) => {

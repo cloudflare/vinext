@@ -72,6 +72,7 @@ type BuildAppPageElementResult<TElement> = {
 };
 
 type AppPageInterceptMatch<TPage = unknown> = {
+  interceptionId: string | null;
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;

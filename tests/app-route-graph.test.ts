@@ -407,6 +407,35 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("records the active children slot even when a named-slot subroute lacks default.tsx", async () => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-revalidation/
+    // parallel-routes-revalidation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "nested/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "nested/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@drawer/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@drawer/drawer/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const nested = findRoute(graph.routes, "/nested");
+
+      expect(nested.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "active",
+      });
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get("route:/nested::slot:children:/nested"),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/nested",
+        slotId: "slot:children:/nested",
+        state: "active",
+      });
+    });
+  });
+
   it("materializes synthetic routes from a sibling route-group's parallel slot", async () => {
     // Two sibling route groups share the same URL pattern at the root:
     //   (group-a) provides a layout-only route with a catch-all parallel slot

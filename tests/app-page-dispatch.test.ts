@@ -2318,6 +2318,7 @@ describe("app page dispatch", () => {
       ...options,
       findIntercept() {
         return {
+          interceptionId: null,
           interceptBranchSegments: ["(.)photos", "[id]"],
           matchedParams: { id: "123" },
           notFound: { default: "modal-not-found" },
@@ -2384,6 +2385,7 @@ describe("app page dispatch", () => {
       buildPageElement,
       cleanPathname: "/photos/123",
       findIntercept: () => ({
+        interceptionId: null,
         matchedParams: { id: "123" },
         page: { default: "modal-page" },
         slotId: "slot:modal:/feed",
@@ -2484,6 +2486,7 @@ describe("app page dispatch", () => {
       ...options,
       findIntercept() {
         return {
+          interceptionId: null,
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
@@ -2533,6 +2536,7 @@ describe("app page dispatch", () => {
       ...options,
       findIntercept() {
         return {
+          interceptionId: null,
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
@@ -2589,6 +2593,7 @@ describe("app page dispatch", () => {
       ...options,
       findIntercept() {
         return {
+          interceptionId: "interception:modal",
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
@@ -2653,6 +2658,7 @@ describe("app page dispatch", () => {
       ...options,
       findIntercept() {
         return {
+          interceptionId: "interception:modal",
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
@@ -2705,6 +2711,7 @@ describe("app page dispatch", () => {
         ...options,
         findIntercept() {
           return {
+            interceptionId: "interception:modal",
             matchedParams: { id: "123" },
             page: { default: "modal-page" },
             slotKey: "modal@app/feed/@modal",
@@ -2993,6 +3000,7 @@ describe("app page dispatch", () => {
       cleanPathname: "/photos/123",
       findIntercept() {
         return {
+          interceptionId: null,
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
@@ -3088,6 +3096,7 @@ describe("app page dispatch", () => {
       dynamicConfig: "force-dynamic",
       findIntercept() {
         return {
+          interceptionId: null,
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",

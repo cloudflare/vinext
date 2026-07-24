@@ -174,10 +174,28 @@ function reduceApprovedVisibleCommitState(
             );
           })
         : [];
+      // Refresh payloads are authoritative for active slots even when the
+      // planner approved preserving their previous elements. Normal
+      // navigation/replace payloads still let the planner preserve a source
+      // slot (for example, when an intercepted modal changes search params).
+      const suppliedActiveSlotIds =
+        action.operation.lane === "refresh"
+          ? new Set(
+              action.slotBindings
+                .filter(
+                  (binding) =>
+                    binding.state === "active" && Object.hasOwn(action.elements, binding.slotId),
+                )
+                .map((binding) => binding.slotId),
+            )
+          : new Set<string>();
+      const effectivePreservePreviousSlotIds = preservePreviousSlotIds.filter(
+        (slotId) => !suppliedActiveSlotIds.has(slotId),
+      );
       const hmrPreservedSlotOwnerLayoutIds =
         action.operation.lane === "hmr"
           ? bfcacheCompatiblePreserveElementIds.filter((id) =>
-              preservePreviousSlotIds.some((slotId) => {
+              effectivePreservePreviousSlotIds.some((slotId) => {
                 const targetBinding = action.slotBindings.find(
                   (binding) => binding.slotId === slotId,
                 );
@@ -203,7 +221,7 @@ function reduceApprovedVisibleCommitState(
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
         preserveElementIds,
-        preservePreviousSlotIds,
+        preservePreviousSlotIds: effectivePreservePreviousSlotIds,
       });
       return commitVisibleRouterState(
         state,
@@ -227,7 +245,7 @@ function reduceApprovedVisibleCommitState(
             state.slotBindings,
             action.slotBindings,
             action.layoutIds,
-            preservePreviousSlotIds,
+            effectivePreservePreviousSlotIds,
           ),
         },
         action.operation,

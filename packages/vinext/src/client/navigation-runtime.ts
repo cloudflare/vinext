@@ -45,6 +45,8 @@ export type NavigationRuntimeNavigate = (
   traversalIntent?: NavigationRuntimeTraversalIntent,
   scrollIntent?: AppRouterScrollIntent | null,
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode,
+  supplementalRefreshRecoveryAttempt?: boolean,
+  queueRefresh?: boolean,
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {

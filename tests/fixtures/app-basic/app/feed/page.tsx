@@ -18,10 +18,12 @@ export default async function FeedPage({
 }) {
   await fetch("data:text/plain,feed-source", { cache: "no-store" });
   const resolvedSearchParams = await searchParams;
+  const renderToken = Math.random().toString(36).slice(2);
 
   return (
     <div data-testid="feed-page">
       <h1>Photo Feed</h1>
+      <p data-testid="feed-render-token">{renderToken}</p>
       <FeedState initialTab={getTab(resolvedSearchParams)} />
       <ul>
         <li>

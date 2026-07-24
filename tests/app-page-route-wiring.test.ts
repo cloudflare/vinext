@@ -789,6 +789,48 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-sidebar-segments="members"');
   });
 
+  it("identifies the active source route for an implicit children slot", () => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-revalidation/
+    // parallel-routes-revalidation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        childrenSlot: {
+          id: "slot:children:/dashboard",
+          ownerTreePath: "/dashboard",
+          state: "active",
+        },
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["dashboard"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    expect(AppElementsWire.readMetadata(elements).slotBindings).toContainEqual({
+      activeRouteId: "route:/dashboard",
+      ownerLayoutId: "layout:/dashboard",
+      slotId: "slot:children:/dashboard",
+      state: "active",
+    });
+  });
+
   it("omits mounted default-only named-slot state from soft-navigation providers", () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
