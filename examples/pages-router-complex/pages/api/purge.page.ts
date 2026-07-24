@@ -1,7 +1,7 @@
 import type { NextApiHandler } from "next";
 
 import { meterApiRoute } from "@atlas/beacon/meter-api-route";
-import { lookupStore } from "@atlas/memo/result-cache";
+import { lookupStore } from "@atlas/memo/memo-cache";
 
 type PurgePayload = { registry: string; op: string; keyHint?: string };
 

@@ -457,6 +457,10 @@ jobs:
             label: pages-router
             shardIndex: 1
             shardTotal: 1
+          - project: pages-router-complex
+            label: pages-router-complex
+            shardIndex: 1
+            shardTotal: 1
           - project: pages-router-basepath-dev
             label: pages-router-basepath-dev
             shardIndex: 1

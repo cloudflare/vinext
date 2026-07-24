@@ -21,7 +21,7 @@ import {
   graphHandleOptionsFromEnv,
   openServerGraphHandle,
 } from "@atlas/graph-handle/server";
-import { buildResultCache, HeapStore } from "@atlas/memo/result-cache";
+import { buildResultCache, HeapStore } from "@atlas/memo/memo-cache";
 import {
   fetchProvisioningOptions,
   provisioningCategory,

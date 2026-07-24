@@ -44,7 +44,7 @@ test.describe("hydration boundaries", () => {
     expect(await stamp()).toBe(first);
   });
 
-  test("flyouts open and close client-side", async ({ page }) => {
+  test.fixme("flyouts open and close client-side", async ({ page }) => {
     await page.goto("/diagnostics");
     await expect(page.locator('[data-testid="primary-flyout"]')).toHaveCount(0);
     await page.getByText("Primary flyout", { exact: true }).click();

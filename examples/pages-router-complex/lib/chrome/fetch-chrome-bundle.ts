@@ -1,6 +1,6 @@
 import type { AppContext } from "next/app";
 
-import { buildResultCache, HeapStore } from "../memo/result-cache";
+import { buildResultCache, HeapStore } from "../memo/memo-cache";
 import type { Zone } from "../zones/zone";
 import { zoneFromRouteQuery } from "../zones/zone";
 

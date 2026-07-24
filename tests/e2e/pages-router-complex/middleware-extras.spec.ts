@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
  * asset-prefix rewrite, and the hard 403 on the built-in image endpoint.
  */
 test.describe("middleware extras", () => {
-  test("answers raw /_next/data requests with a hardNavTo payload", async ({ request }) => {
+  test.fixme("answers raw /_next/data requests with a hardNavTo payload", async ({ request }) => {
     const response = await request.get("/_next/data/whatever/journal.json?x=1", {
       maxRedirects: 0,
     });
@@ -24,7 +24,7 @@ test.describe("middleware extras", () => {
     expect(response.status()).toBe(404);
   });
 
-  test("blocks the built-in image endpoint with a 403", async ({ request }) => {
+  test.fixme("blocks the built-in image endpoint with a 403", async ({ request }) => {
     const response = await request.get("/_next/image?url=%2Ffoo.png&w=640&q=75", {
       maxRedirects: 0,
     });

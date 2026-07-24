@@ -386,8 +386,8 @@ const projectServers = {
     // Compatibility target exercising the convoluted patterns of large,
     // long-lived Pages Router apps (examples/pages-router-complex). The specs
     // document behaviour verified against real Next.js (`pnpm dev:next` in
-    // the example); vinext is not expected to pass all of them yet, so this
-    // project is intentionally NOT in the CI e2e matrix. Run it with:
+    // the example). Known vinext gaps are marked test.fixme so the passing
+    // compatibility surface remains enforced in CI. Run it with:
     //   PLAYWRIGHT_PROJECT=pages-router-complex pnpm run test:e2e
     testDir: "./tests/e2e/pages-router-complex",
     use: { baseURL: "http://localhost:4199" },
