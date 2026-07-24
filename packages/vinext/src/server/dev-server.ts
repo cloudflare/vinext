@@ -937,10 +937,13 @@ export function createSSRHandler(
         // initial Pages Router state as the client __NEXT_DATA__ payload.
         // oxlint-disable-next-line typescript/no-explicit-any
         let AppComponent: any = null;
-        const appPath = path.join(pagesDir, "_app");
-        if (findFileWithExtensions(appPath, matcher)) {
+        // Import the resolved file (extension included): the module runner
+        // does not apply custom resolve.extensions (e.g. ".page.tsx" from
+        // pageExtensions) to extensionless ids.
+        const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
+        if (appFilePath) {
           try {
-            const appModule = await importModule(runner, appPath);
+            const appModule = await importModule(runner, appFilePath);
             AppComponent = appModule.default ?? null;
           } catch {
             // _app exists but failed to load
@@ -1650,13 +1653,15 @@ export function createSSRHandler(
           },
         )}</script>`;
 
-        // Try to load custom _document.tsx
-        const docPath = path.join(pagesDir, "_document");
+        // Try to load custom _document.tsx (import the resolved file — the
+        // module runner does not apply custom resolve.extensions to
+        // extensionless ids)
+        const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
         // oxlint-disable-next-line typescript/no-explicit-any
         let DocumentComponent: any = null;
-        if (findFileWithExtensions(docPath, matcher)) {
+        if (docFilePath) {
           try {
-            const docModule = (await runner.import(docPath)) as Record<string, unknown>;
+            const docModule = (await runner.import(docFilePath)) as Record<string, unknown>;
             DocumentComponent = docModule.default ?? null;
           } catch {
             // _document exists but failed to load
@@ -2006,13 +2011,14 @@ async function renderErrorPage(
         renderProps = { pageProps: errorProps };
       }
 
-      // Try custom _document
+      // Try custom _document (import the resolved file — the module runner
+      // does not apply custom resolve.extensions to extensionless ids)
       // oxlint-disable-next-line typescript/no-explicit-any
       let DocumentComponent: any = null;
-      const docPathErr = path.join(pagesDir, "_document");
-      if (findFileWithExtensions(docPathErr, matcher)) {
+      const docFilePathErr = findFileWithExts(pagesDir, "_document", matcher);
+      if (docFilePathErr) {
         try {
-          const docModule = await importModule(runner, docPathErr);
+          const docModule = await importModule(runner, docFilePathErr);
           DocumentComponent = docModule.default ?? null;
         } catch {
           // _document exists but failed to load
