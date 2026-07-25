@@ -226,13 +226,70 @@ export async function closeAfterResponse(ctx: UnifiedRequestContext): Promise<vo
   return state.completion ?? Promise.resolve();
 }
 
-/** Wrap a response so deferred callbacks start on stream completion or cancellation. */
+/**
+ * Whether this request has function-form `after()` work that still needs to
+ * observe the response body closing.
+ *
+ * Promise-form `after(promise)` goes straight to `ExecutionContext.waitUntil()`
+ * and never touches `afterContext` — only function-form `after(fn)`, via
+ * `queueAfterCallback()`, needs the body's close observed, since its contract
+ * is "run once the response has been sent". `resolveCompletion` stays
+ * non-null for as long as any callback is queued or in flight, so checking it
+ * alongside `callbacks`/`pendingCallbacks` keeps this correct on re-entry
+ * after some callbacks have already started.
+ */
+export function requiresResponseCloseTracking(ctx: UnifiedRequestContext): boolean {
+  const state = ctx.afterContext;
+  return (
+    state.callbacks.length > 0 || state.pendingCallbacks > 0 || state.resolveCompletion !== null
+  );
+}
+
+type ResponseWithFullyBufferedBodyMetadata = Response & {
+  __vinextFullyBufferedBody?: boolean;
+};
+
+/**
+ * Mark a response whose body vinext constructed from a fully in-memory string
+ * or byte array, as opposed to a body handed back by user code, which could
+ * still be producing. With no producer left, no `after()` call can originate
+ * from this body — the one signal that makes it safe for
+ * `closeAfterResponseWithBody()` to skip close tracking.
+ *
+ * Not set for a metadata route's `result instanceof Response` passthrough (a
+ * user `icon.tsx`/`opengraph-image.tsx` can return a streaming
+ * `ImageResponse`) or any handler-returned `new Response(stream)` — those
+ * bodies can still be producing and must keep close tracking.
+ */
+export function markFullyBufferedBody(response: Response): Response {
+  (response as ResponseWithFullyBufferedBodyMetadata).__vinextFullyBufferedBody = true;
+  return response;
+}
+
+function isFullyBufferedBody(response: Response): boolean {
+  return (response as ResponseWithFullyBufferedBodyMetadata).__vinextFullyBufferedBody === true;
+}
+
+/**
+ * Wrap a response so deferred `after()` callbacks start on stream completion
+ * or cancellation. Skipped only when the body is marked fully buffered (see
+ * `markFullyBufferedBody`) and nothing is currently registered — that lets
+ * the runtime send it with an accurate `Content-Length` instead of chunked
+ * transfer encoding.
+ */
 export function closeAfterResponseWithBody(
   response: Response,
   ctx: UnifiedRequestContext,
 ): Response {
   if (!response.body) {
+    // Resolve the after-lifecycle now (a no-op if nothing is queued) so a
+    // callback registered after this call returns doesn't wait forever on a
+    // responseClosed flag nothing else will set.
     queueMicrotask(() => void closeAfterResponse(ctx));
+    return response;
+  }
+
+  if (isFullyBufferedBody(response) && !requiresResponseCloseTracking(ctx)) {
     return response;
   }
 
