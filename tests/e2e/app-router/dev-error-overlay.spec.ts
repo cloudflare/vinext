@@ -304,6 +304,52 @@ test.describe("Dev error overlay", () => {
     expect(canaryAfterNav).toBe(true);
   });
 
+  // React 19 reports an attribute-only hydration mismatch through
+  // console.error ("...won't be patched up") and does NOT call
+  // onRecoverableError, so the overlay only sees it once console.error is
+  // patched. Ported from Next.js's hydration acceptance suite:
+  // https://github.com/vercel/next.js/blob/canary/test/development/acceptance-app/hydration-error.test.ts
+  test("attribute-only hydration mismatch surfaces as a Console Error", async ({ page }) => {
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+
+    await page.goto(`${BASE}/dev-overlay-hydration`);
+    await expect(page.getByTestId("dev-overlay-hydration-content")).toBeVisible();
+
+    // A console error opens the overlay automatically (it may briefly render as
+    // the minimized indicator first).
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(indicator.or(dialog).first()).toBeVisible({ timeout: 10_000 });
+    if ((await indicator.count()) > 0 && (await dialog.count()) === 0) {
+      await indicator.click();
+    }
+    await expect(dialog).toBeVisible({ timeout: 2_000 });
+
+    // Labeled "Console Error" (not "Recoverable Error" — no onRecoverableError
+    // fires for the attribute-only case).
+    await expect(page.getByTestId("vinext-dev-error-title")).toHaveText("Console Error");
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText("patched up");
+    // The React attribute diff is preserved.
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText("aria-label");
+
+    // The DOM keeps the server-rendered attribute — React does not patch it,
+    // proving this is the attribute path rather than a recoverable tree
+    // regeneration.
+    await expect(page.getByTestId("hydration-attribute-target")).toHaveAttribute(
+      "aria-label",
+      "auto",
+    );
+
+    // Exactly one overlay entry: no pagination control.
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeHidden();
+
+    // The browser console still received the original warning.
+    expect(consoleErrors.some((text) => text.includes("patched up"))).toBe(true);
+  });
+
   test("clicking the backdrop minimizes the dialog to a corner indicator", async ({ page }) => {
     await page.goto(`${BASE}/dev-overlay-test`);
     await clickUntilOverlay(page, "trigger-window-error");

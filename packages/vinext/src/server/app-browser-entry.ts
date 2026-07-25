@@ -1572,6 +1572,17 @@ function bootstrapHydration(
     hydrationCachePublication.fail();
     prodOnRecoverableError(...args);
   };
+  // In dev, route recoverable errors (incl. text/tree hydration mismatches) to
+  // the overlay as "Recoverable Error" instead of React's default reportError
+  // path, which would surface them as an "Unhandled Script Error" global event.
+  // Aliased to a const so the closure keeps the non-null narrowing.
+  const devOverlay = devErrorOverlay;
+  const devRecoverableError = devOverlay
+    ? (error: unknown, errorInfo?: { componentStack?: string }) => {
+        hydrationCachePublication.fail();
+        devOverlay.devOnRecoverableError(error, errorInfo);
+      }
+    : undefined;
   const invalidateOnCaughtError = <T extends (...args: never[]) => void>(handler: T): T =>
     ((...args: Parameters<T>) => {
       hydrationCachePublication.fail();
@@ -1585,6 +1596,7 @@ function bootstrapHydration(
           onCaughtError: invalidateOnCaughtError(
             createDevOnCaughtError(devErrorOverlay.devOnCaughtError, onUncaughtError),
           ),
+          onRecoverableError: devRecoverableError,
           onUncaughtError,
         })
       : createVinextHydrateRootOptions({

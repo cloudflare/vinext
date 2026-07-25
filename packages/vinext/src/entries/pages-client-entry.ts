@@ -231,6 +231,7 @@ async function hydrate() {
     overlay.reportInitialDevServerErrors();
     hydrateRootOptions = {
       onCaughtError: overlay.devOnCaughtError,
+      onRecoverableError: overlay.devOnRecoverableError,
       onUncaughtError: overlay.devOnUncaughtError,
     };
   }

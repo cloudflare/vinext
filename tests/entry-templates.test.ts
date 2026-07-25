@@ -1791,6 +1791,7 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("overlay.installViteHmrErrorHandler(import.meta.hot)");
       expect(code).toContain("overlay.reportInitialDevServerErrors()");
       expect(code).toContain("onCaughtError: overlay.devOnCaughtError");
+      expect(code).toContain("onRecoverableError: overlay.devOnRecoverableError");
       expect(code).toContain("onUncaughtError: overlay.devOnUncaughtError");
       expect(overlayImportIndex).toBeLessThan(pageLoadIndex);
     } finally {

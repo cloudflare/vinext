@@ -51,6 +51,7 @@ import {
   createDevErrorOverlayMountNode,
   createViteOpenInEditorUrl,
   devOnCaughtError,
+  devOnRecoverableError,
   devOnUncaughtError,
   formatErrorInfoForClipboard,
   formatOverlayDisplayFile,
@@ -60,6 +61,7 @@ import {
 } from "../packages/vinext/src/client/dev-error-overlay.js";
 import {
   dismissOverlay,
+  getOverlaySnapshot,
   reportToOverlay,
   subscribeOverlay,
 } from "../packages/vinext/src/client/dev-error-overlay-store.js";
@@ -8120,6 +8122,38 @@ describe("devOnUncaughtError (hydrateRoot dev handler)", () => {
   });
 });
 
+describe("devOnRecoverableError (hydrateRoot dev handler)", () => {
+  // These run in a Node environment with no `window`, so reportDevError's
+  // window guard makes the overlay-mounting side effects a no-op; the
+  // behavior under test here is that the handler never throws and correctly
+  // filters/unwraps its input before that guard. Full "opens the overlay as
+  // Recoverable Error, exactly once, deduped against the console echo"
+  // coverage lives in the App/Pages Router dev-overlay E2E specs.
+  it("ignores redirect sentinels handled by global redirect recovery", () => {
+    expect(() =>
+      devOnRecoverableError(
+        Object.assign(new Error("NEXT_REDIRECT:/?auth=required"), {
+          digest: "NEXT_REDIRECT;;%2F%3Fauth%3Drequired",
+        }),
+        { componentStack: "\n    at ProtectedPage" },
+      ),
+    ).not.toThrow();
+  });
+
+  it("is not a no-op (regression guard against `() => {}`)", () => {
+    // React reports recoverable hydration mismatches (text/tree) through this
+    // callback. Guard against silently swallowing them the way `caught` and
+    // `uncaught` once did.
+    expect(() => devOnRecoverableError(new Error("hydration mismatch"))).not.toThrow();
+  });
+
+  it("unwraps error.cause (React wraps recoverable errors) without throwing", () => {
+    const inner = new Error("Hydration failed because the server rendered text");
+    const wrapper = new Error("recoverable", { cause: inner });
+    expect(() => devOnRecoverableError(wrapper, { componentStack: "\n    at Page" })).not.toThrow();
+  });
+});
+
 describe("dev overlay Shadow DOM mount", () => {
   class FakeShadowRoot {
     children: FakeElement[] = [];
@@ -8541,6 +8575,7 @@ describe("dev overlay store", () => {
         source: "caught",
         message: "boom",
         stack: undefined,
+        ownerStack: undefined,
         ignoredStackFrames: undefined,
         projectRoot: undefined,
         codeFrame: undefined,
@@ -8555,6 +8590,89 @@ describe("dev overlay store", () => {
       expect(listener).toHaveBeenCalledTimes(2);
     } finally {
       unsubscribe();
+      dismissOverlay();
+    }
+  });
+
+  // Aligns with Next.js's pushErrorFilterDuplicates: a report is only "new"
+  // if it differs from every retained error on message, stack, or owner
+  // stack — no time window, and text alone isn't enough to call it the same.
+  it("collapses a report identical on message/stack/ownerStack into the existing entry", () => {
+    try {
+      const base = {
+        source: "console-error" as const,
+        message: "Warning: Each child in a list should have a unique key prop.",
+        stack: undefined,
+        ownerStack: "at List (App.tsx:10)",
+        ignoredStackFrames: undefined,
+        projectRoot: undefined,
+        codeFrame: undefined,
+        componentStack: undefined,
+      };
+
+      const firstId = reportToOverlay(base);
+      expect(getOverlaySnapshot().errors).toHaveLength(1);
+
+      const secondId = reportToOverlay({ ...base });
+      expect(secondId).toBe(firstId);
+      expect(getOverlaySnapshot().errors).toHaveLength(1);
+    } finally {
+      dismissOverlay();
+    }
+  });
+
+  it("keeps a repeat of the same message as a distinct entry when it comes from a different owner stack", () => {
+    try {
+      const message = "Warning: Each child in a list should have a unique key prop.";
+
+      reportToOverlay({
+        source: "console-error",
+        message,
+        stack: undefined,
+        ownerStack: "at ListA (App.tsx:10)",
+        ignoredStackFrames: undefined,
+        projectRoot: undefined,
+        codeFrame: undefined,
+        componentStack: undefined,
+      });
+      reportToOverlay({
+        source: "console-error",
+        message,
+        stack: undefined,
+        ownerStack: "at ListB (App.tsx:42)",
+        ignoredStackFrames: undefined,
+        projectRoot: undefined,
+        codeFrame: undefined,
+        componentStack: undefined,
+      });
+
+      expect(getOverlaySnapshot().errors).toHaveLength(2);
+    } finally {
+      dismissOverlay();
+    }
+  });
+
+  it("still treats an identical repeat as a duplicate however long it's been (no dedup time window)", () => {
+    vi.useFakeTimers();
+    try {
+      const base = {
+        source: "console-error" as const,
+        message: "Warning: something went wrong",
+        stack: undefined,
+        ownerStack: null,
+        ignoredStackFrames: undefined,
+        projectRoot: undefined,
+        codeFrame: undefined,
+        componentStack: undefined,
+      };
+
+      reportToOverlay(base);
+      vi.advanceTimersByTime(10 * 60 * 1000);
+      reportToOverlay({ ...base });
+
+      expect(getOverlaySnapshot().errors).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
       dismissOverlay();
     }
   });
