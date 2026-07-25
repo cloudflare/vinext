@@ -64,7 +64,11 @@ describe("getStackIgnoringStrictMode", () => {
 });
 
 describe("isSameReportedError", () => {
-  const base = { message: "boom", stack: "Error: boom\n    at f (a.tsx:1:1)", ownerStack: "at Owner" };
+  const base = {
+    message: "boom",
+    stack: "Error: boom\n    at f (a.tsx:1:1)",
+    ownerStack: "at Owner",
+  };
 
   it("matches when message, stack, and owner stack are all identical", () => {
     expect(isSameReportedError(base, { ...base })).toBe(true);
