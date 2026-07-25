@@ -382,6 +382,29 @@ const projectServers = {
       timeout: 120_000,
     },
   },
+  "pages-router-complex": {
+    // Compatibility target exercising the convoluted patterns of large,
+    // long-lived Pages Router apps (examples/pages-router-complex). The specs
+    // document behaviour verified against real Next.js (`pnpm dev:next` in
+    // the example). Known vinext gaps are marked test.fixme so the passing
+    // compatibility surface remains enforced in CI. Run it with:
+    //   PLAYWRIGHT_PROJECT=pages-router-complex pnpm run test:e2e
+    testDir: "./tests/e2e/pages-router-complex",
+    use: { baseURL: "http://localhost:4199" },
+    server: {
+      command: "npx vp dev --port 4199",
+      cwd: "./examples/pages-router-complex",
+      port: 4199,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+      env: {
+        ATLAS_PURGE_BEARER: "e2e-purge-token",
+        // Parity gap: vinext invokes generateBuildId at dev startup; Next.js
+        // only calls it at build time.
+        RELEASE_TAG: "e2e",
+      },
+    },
+  },
   "cloudflare-encoded-paths": {
     testDir: "./tests/e2e/cloudflare-encoded-paths",
     use: { baseURL: "http://localhost:4197" },
