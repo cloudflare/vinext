@@ -290,7 +290,7 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   const routeValues = extractRouteValues(config);
   const routeTargets = extractRouteTargets(routeValues);
   const customDomains = extractDomainsFromCustomDomains(config);
-  if (routeValues.length > 1 && routeTargets.length > 0) {
+  if (routeTargets.length > 1) {
     result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
   } else if (routeTargets[0]?.scheme) {
     result.unsupportedTrafficScope =
@@ -357,12 +357,7 @@ function extractRouteTargets(routes: unknown): WranglerRouteTarget[] {
       if (target && !target.hostname.includes("workers.dev")) targets.push(target);
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
-      const pattern =
-        typeof r.pattern === "string"
-          ? r.pattern
-          : typeof r.zone_name === "string"
-            ? r.zone_name
-            : null;
+      const pattern = typeof r.pattern === "string" ? r.pattern : null;
       if (pattern) {
         const target = parseRoutePattern(pattern);
         if (target && !target.hostname.includes("workers.dev")) {

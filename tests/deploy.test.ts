@@ -3277,6 +3277,26 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     });
   });
 
+  it("does not count ignored workers.dev routes as a second traffic scope", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: ["my-worker.workers.dev/*", "app.example.com/blog/*"],
+      }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+    });
+    expect(parseWranglerConfig(tmpDir)?.unsupportedTrafficScope).toBeUndefined();
+  });
+
+  it("does not treat a pattern-less zone_name as a traffic hostname", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: [{ zone_name: "example.com" }] }));
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBeUndefined();
+  });
+
   it.each(["http", "https"])("rejects a %s-only route as an ambiguous traffic scope", (scheme) => {
     writeFile(
       tmpDir,
