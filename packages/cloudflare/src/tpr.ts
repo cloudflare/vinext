@@ -318,10 +318,10 @@ function extractDomainFromRoutes(routes: unknown): string | null {
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
       const pattern =
-        typeof r.zone_name === "string"
-          ? r.zone_name
-          : typeof r.pattern === "string"
-            ? r.pattern
+        typeof r.pattern === "string"
+          ? r.pattern
+          : typeof r.zone_name === "string"
+            ? r.zone_name
             : null;
       if (pattern) {
         const domain = cleanDomain(pattern);
@@ -336,9 +336,9 @@ function extractDomainFromCustomDomains(config: Record<string, unknown>): string
   // Workers Custom Domains: "custom_domains": ["example.com"]
   if (Array.isArray(config.custom_domains)) {
     for (const d of config.custom_domains) {
-      if (typeof d === "string" && !d.includes("workers.dev")) {
-        return cleanDomain(d);
-      }
+      if (typeof d !== "string") continue;
+      const domain = cleanDomain(d);
+      if (domain && !domain.includes("workers.dev")) return domain;
     }
   }
   return null;
@@ -350,8 +350,11 @@ function cleanDomain(raw: string): string | null {
     .replace(/^https?:\/\//, "")
     .replace(/\/\*$/, "")
     .replace(/\/+$/, "")
-    .split("/")[0]; // Take only the host part
-  return cleaned || null;
+    .split("/")[0] // Take only the host part
+    ?.toLowerCase();
+  // A wildcard route does not identify the concrete hostname whose traffic
+  // should be ranked or which Host header the local prerender should use.
+  return cleaned && !cleaned.includes("*") ? cleaned : null;
 }
 
 /**
@@ -505,7 +508,11 @@ function extractTomlRoutesArrayDomain(section: string): string | null {
 }
 
 function extractTomlRouteBlockDomain(section: string): string | null {
-  const patternMatch = section.match(/^(?:pattern|zone_name)\s*=\s*"([^"]+)"/m);
+  // `zone_name` identifies the enclosing zone, while `pattern` identifies
+  // the hostname actually routed to this Worker. Prefer the latter when both
+  // are present so traffic from sibling hostnames is not mixed together.
+  const patternMatch =
+    section.match(/^pattern\s*=\s*"([^"]+)"/m) ?? section.match(/^zone_name\s*=\s*"([^"]+)"/m);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;
@@ -531,13 +538,18 @@ export function domainCandidates(domain: string): string[] {
   return candidates;
 }
 
+type ResolvedZone = {
+  id: string;
+  accountId?: string;
+};
+
 /** Resolve zone ID from a domain name via the Cloudflare API. */
-export async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
-  // Try progressively longer domain candidates until one matches a zone.
-  // This handles all public suffixes without a hardcoded TLD list —
-  // for simple TLDs (.com, .io) the 2-part candidate hits on the first try;
-  // for multi-part TLDs (.co.uk, .com.au) it takes one extra call.
-  for (const candidate of domainCandidates(domain)) {
+async function resolveZone(domain: string, apiToken: string): Promise<ResolvedZone | null> {
+  // Prefer the longest matching zone. A token can have access to both a
+  // parent zone and a delegated child zone, and DNS uses the child for the
+  // hostname in that case. This also avoids mistaking an accessible public
+  // suffix for the application's zone.
+  for (const candidate of domainCandidates(domain).reverse()) {
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(candidate)}`,
       {
@@ -548,18 +560,36 @@ export async function resolveZoneId(domain: string, apiToken: string): Promise<s
       },
     );
 
-    if (!response.ok) continue;
+    if (!response.ok) {
+      throw new Error(`Zone lookup failed: ${response.status} ${response.statusText}`);
+    }
 
     const data = (await response.json()) as {
       success: boolean;
-      result?: Array<{ id: string }>;
+      result?: Array<{ id: string; account?: { id?: string } }>;
+      errors?: Array<{ message?: string }>;
     };
+    if (!data.success) {
+      const detail = data.errors
+        ?.map((error) => error.message)
+        .filter(Boolean)
+        .join("; ");
+      throw new Error(`Zone lookup failed${detail ? `: ${detail}` : ""}`);
+    }
     if (data.success && data.result?.length) {
-      return data.result[0].id;
+      return {
+        id: data.result[0].id,
+        accountId: data.result[0].account?.id,
+      };
     }
   }
 
   return null;
+}
+
+/** Resolve zone ID from a domain name via the Cloudflare API. */
+export async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
+  return (await resolveZone(domain, apiToken))?.id ?? null;
 }
 
 /** Resolve the account ID associated with the API token. */
@@ -585,26 +615,34 @@ async function resolveAccountId(apiToken: string): Promise<string | null> {
 // ─── Traffic Querying ────────────────────────────────────────────────────────
 
 /**
- * Query Cloudflare zone analytics for top page paths by request count
- * over the given time window.
+ * Query Cloudflare zone analytics for one hostname's top page paths by
+ * request count over the given time window. The Groups dataset has no cursor
+ * pagination, so the maximum 10,000-row window is used.
  */
 export async function queryTraffic(
   zoneTag: string,
   apiToken: string,
   windowHours: number,
+  hostname: string,
 ): Promise<TrafficEntry[]> {
   const now = new Date();
   const start = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
 
-  const query = `{
+  const query = `query TPRTraffic(
+    $zoneTag: string!
+    $start: Time!
+    $end: Time!
+    $hostname: string!
+  ) {
     viewer {
-      zones(filter: { zoneTag: "${zoneTag}" }) {
+      zones(filter: { zoneTag: $zoneTag }) {
         httpRequestsAdaptiveGroups(
           limit: 10000
           orderBy: [count_DESC]
           filter: {
-            datetime_geq: "${start.toISOString()}"
-            datetime_lt: "${now.toISOString()}"
+            datetime_geq: $start
+            datetime_lt: $end
+            clientRequestHTTPHost: $hostname
             requestSource: "eyeball"
           }
         ) {
@@ -621,7 +659,15 @@ export async function queryTraffic(
       Authorization: `Bearer ${apiToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({
+      query,
+      variables: {
+        zoneTag,
+        start: start.toISOString(),
+        end: now.toISOString(),
+        hostname,
+      },
+    }),
   });
 
   if (!response.ok) {
@@ -1041,24 +1087,32 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
     return skip("no VINEXT_KV_CACHE KV namespace configured");
   }
 
-  // ── 5. Resolve account ID ─────────────────────────────────────
-  const accountId = wranglerConfig.accountId ?? (await resolveAccountId(apiToken));
+  // ── 5. Resolve zone and account IDs ───────────────────────────
+  console.log(`  TPR: Analyzing traffic for ${wranglerConfig.customDomain} (last ${windowHours}h)`);
+
+  let zone: ResolvedZone | null;
+  try {
+    zone = await resolveZone(wranglerConfig.customDomain, apiToken);
+  } catch (err) {
+    return skip(err instanceof Error ? err.message : `zone lookup failed: ${String(err)}`);
+  }
+  if (!zone) {
+    return skip(`could not resolve zone for ${wranglerConfig.customDomain}`);
+  }
+
+  // If account_id is omitted, use the account that owns the resolved zone.
+  // Selecting the first account visible to a multi-account token can point KV
+  // uploads at a different account from the application.
+  const accountId =
+    wranglerConfig.accountId ?? zone.accountId ?? (await resolveAccountId(apiToken));
   if (!accountId) {
     return skip("could not resolve Cloudflare account ID");
   }
 
-  // ── 6. Resolve zone ID ────────────────────────────────────────
-  console.log(`  TPR: Analyzing traffic for ${wranglerConfig.customDomain} (last ${windowHours}h)`);
-
-  const zoneId = await resolveZoneId(wranglerConfig.customDomain, apiToken);
-  if (!zoneId) {
-    return skip(`could not resolve zone for ${wranglerConfig.customDomain}`);
-  }
-
-  // ── 7. Query traffic data ─────────────────────────────────────
+  // ── 6. Query traffic data ─────────────────────────────────────
   let traffic: TrafficEntry[];
   try {
-    traffic = await queryTraffic(zoneId, apiToken, windowHours);
+    traffic = await queryTraffic(zone.id, apiToken, windowHours, wranglerConfig.customDomain);
   } catch (err) {
     return skip(`analytics query failed: ${err instanceof Error ? err.message : String(err)}`);
   }

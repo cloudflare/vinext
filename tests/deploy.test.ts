@@ -3226,6 +3226,24 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.customDomain).toBe("example.co.uk");
   });
 
+  it("uses a route object's hostname pattern instead of its enclosing zone", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: [{ pattern: "APP.example.com/*", zone_name: "example.com" }],
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("app.example.com");
+  });
+
+  it("does not treat a wildcard route as one concrete traffic hostname", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["*.example.com/*"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBeUndefined();
+  });
+
   it("extracts custom domain from custom_domains array", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
     const config = parseWranglerConfig(tmpDir);
@@ -3233,7 +3251,14 @@ describe("parseWranglerConfig — custom domain extraction", () => {
   });
 
   it("ignores workers.dev domains", () => {
-    writeFile(tmpDir, "wrangler.json", JSON.stringify({ routes: ["my-app.workers.dev/*"] }));
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        routes: ["my-app.workers.dev/*"],
+        custom_domains: ["MY-APP.WORKERS.DEV"],
+      }),
+    );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBeUndefined();
   });
