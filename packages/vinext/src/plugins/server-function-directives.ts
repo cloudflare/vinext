@@ -370,7 +370,10 @@ export async function createServerFunctionDirectivePlugin(options: Options): Pro
                   needsReactRuntime = true;
                   if (meta.hasBoundArgs) {
                     needsEncryptionRuntime = true;
-                    return `$$VinextReactServer.registerServerReference((($$wrapped) => async ($$encoded, ...$$args) => $$wrapped(...await __vite_rsc_encryption_runtime.decryptActionBoundArgs($$encoded), ...$$args))(${wrapped}), ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
+                    const forwardedArgs = meta.parameters.hasRest
+                      ? "$$args"
+                      : `$$args.slice(0, ${meta.parameters.count})`;
+                    return `$$VinextReactServer.registerServerReference((($$wrapped) => async ($$encoded, ...$$args) => $$wrapped(...await __vite_rsc_encryption_runtime.decryptActionBoundArgs($$encoded), ...${forwardedArgs}))(${wrapped}), ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
                   }
                   return `$$VinextReactServer.registerServerReference(${wrapped}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
                 },

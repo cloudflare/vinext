@@ -7,6 +7,10 @@ const USE_CACHE_HMR_ACTIONS_FILE = path.join(
   process.cwd(),
   "tests/fixtures/app-basic/app/use-cache-hmr/actions.ts",
 );
+const USE_CACHE_MIXED_HMR_ACTIONS_FILE = path.join(
+  process.cwd(),
+  "tests/fixtures/app-basic/app/use-cache-mixed-ownership/actions.ts",
+);
 const USE_CACHE_HMR_CACHED = `"use cache";
 
 export async function getMode() {
@@ -19,6 +23,34 @@ export async function getMode() {
   return "plain";
 }
 `;
+const USE_CACHE_MIXED_HMR_CACHED = [
+  `export const ownershipLabel = "cache";`,
+  ``,
+  `export async function builtinAction() {`,
+  `  "use server";`,
+  `  return "builtin";`,
+  `}`,
+  ``,
+  `export async function flexibleAction() {`,
+  `  "use cache";`,
+  `  return \`cached:\${Math.random()}\`;`,
+  `}`,
+  ``,
+].join("\n");
+const USE_CACHE_MIXED_HMR_SERVER = [
+  `export const ownershipLabel = "server";`,
+  ``,
+  `export async function builtinAction() {`,
+  `  "use server";`,
+  `  return "builtin";`,
+  `}`,
+  ``,
+  `export async function flexibleAction() {`,
+  `  "use server";`,
+  `  return "server";`,
+  `}`,
+  ``,
+].join("\n");
 
 async function writeUseCacheHmrActions(content: string, forceUpdate = false) {
   const nextContent = forceUpdate ? `${content}// hmr-update:${Date.now()}\n` : content;
@@ -34,6 +66,13 @@ async function waitForUseCacheHmrTransform(request: APIRequestContext) {
       return response.ok();
     })
     .toBe(true);
+}
+
+async function writeUseCacheMixedHmrActions(content: string, forceUpdate = false) {
+  const nextContent = forceUpdate ? `${content}// hmr-update:${Date.now()}\n` : content;
+  if ((await readFile(USE_CACHE_MIXED_HMR_ACTIONS_FILE, "utf8")) !== nextContent) {
+    await writeFile(USE_CACHE_MIXED_HMR_ACTIONS_FILE, nextContent);
+  }
 }
 
 test.describe('"use cache" file-level directive', () => {
@@ -150,12 +189,12 @@ test.describe('"use cache" transform coverage', () => {
   test("supports advanced function and export forms", async ({ page }) => {
     await page.goto(`${BASE}/use-cache-transform-coverage`);
     await expect(page.getByTestId("use-cache-transform-coverage")).toHaveText(
-      "destructured|export-star|object-method|static-method|server-boundary|custom-kind",
+      /^destructured\|export-star\|object-method\|static-method\|server-boundary:[0-9.e+-]+\|custom-kind$/,
     );
     await expect(async () => {
       await page.locator("#call-cached-server-boundary").click();
       await expect(page.getByTestId("cached-server-boundary-result")).toHaveText(
-        "server-boundary",
+        /^server-boundary:[0-9.e+-]+$/,
         { timeout: 2000 },
       );
     }).toPass({ timeout: 15_000 });
@@ -193,6 +232,65 @@ test.describe('"use cache" transform coverage', () => {
       }).toPass({ timeout: 15_000 });
     } finally {
       await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED);
+    }
+  });
+
+  test("moves one export between use-cache and use-server ownership without reloading", async ({
+    page,
+  }) => {
+    await writeUseCacheMixedHmrActions(USE_CACHE_MIXED_HMR_CACHED, true);
+    try {
+      await page.goto(`${BASE}/use-cache-mixed-ownership`);
+      await expect(page.getByTestId("mixed-ownership-label")).toHaveText("cache");
+      await expect(async () => {
+        await page.locator("#call-mixed-builtin").click();
+        await expect(page.getByTestId("mixed-builtin-result")).toHaveText("builtin", {
+          timeout: 2000,
+        });
+        await page.locator("#call-mixed-flexible").click();
+        await expect(page.getByTestId("mixed-flexible-result")).toHaveText(/^cached:[0-9.e+-]+$/, {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+      await page.evaluate(() => Reflect.set(window, "__vinextMixedOwnershipHmr", true));
+
+      await writeUseCacheMixedHmrActions(USE_CACHE_MIXED_HMR_SERVER, true);
+      await expect(page.getByTestId("mixed-ownership-label")).toHaveText("server", {
+        timeout: 15_000,
+      });
+      expect(await page.evaluate(() => Reflect.get(window, "__vinextMixedOwnershipHmr"))).toBe(
+        true,
+      );
+      await expect(async () => {
+        await page.locator("#call-mixed-builtin").click();
+        await expect(page.getByTestId("mixed-builtin-result")).toHaveText("builtin", {
+          timeout: 2000,
+        });
+        await page.locator("#call-mixed-flexible").click();
+        await expect(page.getByTestId("mixed-flexible-result")).toHaveText("server", {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+
+      await writeUseCacheMixedHmrActions(USE_CACHE_MIXED_HMR_CACHED, true);
+      await expect(page.getByTestId("mixed-ownership-label")).toHaveText("cache", {
+        timeout: 15_000,
+      });
+      expect(await page.evaluate(() => Reflect.get(window, "__vinextMixedOwnershipHmr"))).toBe(
+        true,
+      );
+      await expect(async () => {
+        await page.locator("#call-mixed-builtin").click();
+        await expect(page.getByTestId("mixed-builtin-result")).toHaveText("builtin", {
+          timeout: 2000,
+        });
+        await page.locator("#call-mixed-flexible").click();
+        await expect(page.getByTestId("mixed-flexible-result")).toHaveText(/^cached:[0-9.e+-]+$/, {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+    } finally {
+      await writeUseCacheMixedHmrActions(USE_CACHE_MIXED_HMR_CACHED);
     }
   });
 });

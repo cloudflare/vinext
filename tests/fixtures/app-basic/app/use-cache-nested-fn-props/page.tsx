@@ -16,22 +16,28 @@ export default function UseCacheNestedFnPropsPage() {
       <Suspense fallback={<h1>Loading...</h1>}>
         <Dynamic />
       </Suspense>
-      <CachedForm />
+      <CachedForm capturedScopeValue="closure-captured-bound-arg-vinext" />
+      <CachedForm capturedScopeValue="closure-captured-bound-arg-other" idSuffix="other" />
     </div>
   );
 }
 
-async function CachedForm() {
+async function CachedForm({
+  capturedScopeValue,
+  idSuffix,
+}: {
+  capturedScopeValue: string;
+  idSuffix?: string;
+}) {
   "use cache";
 
   // Closure-captured by getMessage below. The hoist transform lifts the
   // capture into a `.bind(null, capturedScopeValue)` bound argument on the
   // server reference. The binding is encrypted before RSC serialization and
   // decrypted before the cached wrapper builds its argument-based cache key.
-  const capturedScopeValue = "closure-captured-bound-arg-vinext";
-
   return (
     <Form
+      idSuffix={idSuffix}
       getDate={async () => {
         "use cache";
         return new Date().toISOString();

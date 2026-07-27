@@ -976,6 +976,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 id,
                 directiveMatch,
                 location,
+                hasBoundArgs,
                 parameters,
                 runtime,
               }: ServerFunctionDirectiveContext) => {
@@ -991,7 +992,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   fileMatcher.extensionRegex.test(moduleFileName);
                 const runtimeOptions = {
                   ...(isAppPageDefault ? { appPageDefaultExport: true } : {}),
-                  ...(parameters ? { parameters } : {}),
+                  ...(parameters && !hasBoundArgs ? { parameters } : {}),
                 };
                 const pageOptions =
                   Object.keys(runtimeOptions).length > 0

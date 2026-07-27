@@ -9,13 +9,15 @@ export function Form({
   getDate,
   getRandom,
   getMessage,
+  idSuffix,
 }: {
   getDate: () => Promise<string>;
   getRandom: () => Promise<number>;
-  // Closure-capturing cached function — exercises bound-arg serialization
-  // (the captured value travels as an unencrypted `.bind(null, ...)` arg).
+  // Closure-capturing cached function — exercises bound-arg serialization.
   getMessage: () => Promise<string>;
+  idSuffix?: string;
 }) {
+  const suffix = idSuffix ? `-${idSuffix}` : "";
   const [date, formAction, isDatePending] = useActionState(getDate, null);
 
   const [random, buttonAction, isRandomPending] = useActionState(getRandom, null);
@@ -24,16 +26,16 @@ export function Form({
 
   return (
     <form action={formAction}>
-      <button id="submit-button-date">Get Date</button>{" "}
-      <button id="submit-button-random" formAction={buttonAction}>
+      <button id={`submit-button-date${suffix}`}>Get Date</button>{" "}
+      <button id={`submit-button-random${suffix}`} formAction={buttonAction}>
         Get Random
       </button>{" "}
-      <button id="submit-button-message" formAction={messageAction}>
+      <button id={`submit-button-message${suffix}`} formAction={messageAction}>
         Get Message
       </button>
-      <p id="date">{isDatePending ? "loading..." : date}</p>
-      <p id="random">{isRandomPending ? "loading..." : random}</p>
-      <p id="message">{isMessagePending ? "loading..." : message}</p>
+      <p id={`date${suffix}`}>{isDatePending ? "loading..." : date}</p>
+      <p id={`random${suffix}`}>{isRandomPending ? "loading..." : random}</p>
+      <p id={`message${suffix}`}>{isMessagePending ? "loading..." : message}</p>
     </form>
   );
 }

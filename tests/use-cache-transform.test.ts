@@ -345,6 +345,12 @@ describe("plugin-rsc inline use-cache references", () => {
     );
     expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
     expect(result!.code).toContain("decryptActionBoundArgs($$encoded)");
+    expect(result!.code).toContain("...$$args.slice(0, 0)");
+    const boundRegistration = result!.code.match(
+      /registerCachedFunction\(\$\$hoist_[^,]+_getMessage\$\$impl,[^)]*\)/,
+    )?.[0];
+    expect(boundRegistration).toBeDefined();
+    expect(boundRegistration).not.toContain('"parameters"');
   });
 
   it.each(["ssr", "client"])(

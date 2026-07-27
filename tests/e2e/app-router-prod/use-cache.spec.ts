@@ -1,12 +1,69 @@
 import { expect, test } from "@playwright/test";
 
 test.describe('production "use cache" server function references', () => {
-  test("invokes file-level cached exports imported by a Client Component", async ({ page }) => {
+  test("separates arguments for file-level cached exports imported by a Client Component", async ({
+    page,
+  }) => {
     await page.goto("/use-cache-client-import");
+
     await page.locator("#call-client-imported-cache").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("1");
     await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
       /^client-cache:direct:[0-9.e+-]+$/,
     );
+    const directResult = await page.getByTestId("client-imported-cache-result").innerText();
+
+    await page.locator("#call-client-imported-cache-other").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("2");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+      /^client-cache:other:[0-9.e+-]+$/,
+    );
+    const otherResult = await page.getByTestId("client-imported-cache-result").innerText();
+    expect(otherResult).not.toBe(directResult);
+
+    await page.locator("#call-client-imported-cache").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("3");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(directResult);
+  });
+
+  test("runs inline use-server and use-cache exports owned by different plugins", async ({
+    page,
+  }) => {
+    await page.goto("/use-cache-mixed-ownership");
+    await expect(page.getByTestId("use-cache-mixed-ownership-page")).toBeVisible();
+
+    await page.locator("#call-mixed-builtin").click();
+    await expect(page.getByTestId("mixed-builtin-call-count")).toHaveText("1");
+    await expect(page.getByTestId("mixed-builtin-result")).toHaveText("builtin");
+
+    await page.locator("#call-mixed-flexible").click();
+    await expect(page.getByTestId("mixed-flexible-call-count")).toHaveText("1");
+    const cachedResult = await page.getByTestId("mixed-flexible-result").innerText();
+    expect(cachedResult).toMatch(/^cached:[0-9.e+-]+$/);
+
+    await page.locator("#call-mixed-flexible").click();
+    await expect(page.getByTestId("mixed-flexible-call-count")).toHaveText("2");
+    await expect(page.getByTestId("mixed-flexible-result")).toHaveText(cachedResult);
+  });
+
+  test('caches an inline "use cache" function inside a file-level "use server" module', async ({
+    page,
+  }) => {
+    await page.goto("/use-cache-transform-coverage");
+
+    const aggregateResult = await page.getByTestId("use-cache-transform-coverage").innerText();
+    const serverResult = aggregateResult.split("|")[4];
+    if (!serverResult) throw new Error("Missing server-boundary result");
+    expect(serverResult).toMatch(/^server-boundary:[0-9.e+-]+$/);
+
+    await page.locator("#call-cached-server-boundary").click();
+    await expect(page.getByTestId("cached-server-boundary-call-count")).toHaveText("1");
+    const firstActionResult = await page.getByTestId("cached-server-boundary-result").innerText();
+    expect(firstActionResult).toMatch(/^server-boundary:[0-9.e+-]+$/);
+
+    await page.locator("#call-cached-server-boundary").click();
+    await expect(page.getByTestId("cached-server-boundary-call-count")).toHaveText("2");
+    await expect(page.getByTestId("cached-server-boundary-result")).toHaveText(firstActionResult);
   });
 
   test("replays cached RSC through SSR and invokes nested functions from the browser", async ({
@@ -34,5 +91,14 @@ test.describe('production "use cache" server function references', () => {
     const firstMessage = await page.locator("#message").textContent();
     await page.locator("#submit-button-message").click();
     await expect(page.locator("#message")).toHaveText(firstMessage!);
+
+    await page.locator("#submit-button-message-other").click();
+    await expect(page.locator("#message-other")).toHaveText(
+      /^message:closure-captured-bound-arg-other:[0-9.e+-]+$/,
+    );
+    const otherMessage = await page.locator("#message-other").textContent();
+    expect(otherMessage).not.toBe(firstMessage);
+    await page.locator("#submit-button-message-other").click();
+    await expect(page.locator("#message-other")).toHaveText(otherMessage!);
   });
 });

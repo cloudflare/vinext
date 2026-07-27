@@ -2,5 +2,5 @@
 
 export async function fromServerBoundary() {
   "use cache";
-  return "server-boundary";
+  return `server-boundary:${Math.random()}`;
 }
