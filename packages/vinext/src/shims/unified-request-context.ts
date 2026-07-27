@@ -63,6 +63,7 @@ export type AfterRequestContext = {
   callbacks: Array<() => unknown>;
   responseClosed: boolean;
   pendingCallbacks: number;
+  pendingPromises: number;
   completion: Promise<void> | null;
   resolveCompletion: (() => void) | null;
 };
@@ -129,6 +130,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
       callbacks: [],
       responseClosed: false,
       pendingCallbacks: 0,
+      pendingPromises: 0,
       completion: null,
       resolveCompletion: null,
     },
@@ -194,6 +196,14 @@ export function queueAfterCallback(ctx: UnifiedRequestContext, callback: () => u
   }
 }
 
+/** Track promise-form after() work that can register a callback before settling. */
+export function trackAfterPromise<T>(ctx: UnifiedRequestContext, promise: Promise<T>): Promise<T> {
+  ctx.afterContext.pendingPromises += 1;
+  return promise.finally(() => {
+    ctx.afterContext.pendingPromises -= 1;
+  });
+}
+
 /** Bind a callback to every AsyncLocalStorage context active at registration. */
 export function bindRequestContextSnapshot<T>(
   ctx: UnifiedRequestContext,
@@ -230,18 +240,20 @@ export async function closeAfterResponse(ctx: UnifiedRequestContext): Promise<vo
  * Whether this request has function-form `after()` work that still needs to
  * observe the response body closing.
  *
- * Promise-form `after(promise)` goes straight to `ExecutionContext.waitUntil()`
- * and never touches `afterContext` — only function-form `after(fn)`, via
- * `queueAfterCallback()`, needs the body's close observed, since its contract
- * is "run once the response has been sent". `resolveCompletion` stays
- * non-null for as long as any callback is queued or in flight, so checking it
- * alongside `callbacks`/`pendingCallbacks` keeps this correct on re-entry
- * after some callbacks have already started.
+ * Promise-form `after(promise)` is included because its continuation can
+ * register a function-form `after()` before the promise settles. Function-form
+ * work needs the body's close observed because its contract is "run once the
+ * response has been sent". `resolveCompletion` stays non-null for as long as
+ * any callback is queued or in flight, so checking it alongside the explicit
+ * counters keeps this correct on re-entry after callbacks have started.
  */
 export function requiresResponseCloseTracking(ctx: UnifiedRequestContext): boolean {
   const state = ctx.afterContext;
   return (
-    state.callbacks.length > 0 || state.pendingCallbacks > 0 || state.resolveCompletion !== null
+    state.callbacks.length > 0 ||
+    state.pendingCallbacks > 0 ||
+    state.pendingPromises > 0 ||
+    state.resolveCompletion !== null
   );
 }
 
@@ -268,6 +280,11 @@ export function markFullyBufferedBody(response: Response): Response {
 
 function isFullyBufferedBody(response: Response): boolean {
   return (response as ResponseWithFullyBufferedBodyMetadata).__vinextFullyBufferedBody === true;
+}
+
+/** Preserve the internal buffered-body signal when response metadata is rebuilt. */
+export function preserveFullyBufferedBodyMetadata(source: Response, target: Response): Response {
+  return isFullyBufferedBody(source) ? markFullyBufferedBody(target) : target;
 }
 
 /**

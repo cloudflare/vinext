@@ -23,6 +23,7 @@ import {
   getRequestContext,
   isInsideUnifiedScope,
   queueAfterCallback,
+  trackAfterPromise,
 } from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -1243,9 +1244,12 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
     if (task == null || typeof (task as PromiseLike<T>).then !== "function") {
       throw new TypeError("`after()`: Argument must be a promise or a function");
     }
-    const guarded = Promise.resolve(task).catch((error) => {
-      console.error("[vinext] after() task failed:", error);
-    });
+    const guarded = trackAfterPromise(
+      requestContext,
+      Promise.resolve(task).catch((error) => {
+        console.error("[vinext] after() task failed:", error);
+      }),
+    );
     getRequestExecutionContext()?.waitUntil(guarded);
     return;
   }

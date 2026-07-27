@@ -32,6 +32,7 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
@@ -146,11 +147,14 @@ function applyMiddlewareContextToResponse(
   const headers = new Headers(response.headers);
   mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
 
-  return new Response(response.body, {
-    status: middlewareContext.status ?? response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      status: middlewareContext.status ?? response.status,
+      statusText: response.statusText,
+      headers,
+    }),
+  );
 }
 
 type DispatchMatchedPageOptions<TRoute> = {

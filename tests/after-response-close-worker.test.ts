@@ -77,6 +77,19 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),
     );
+    // Force the metadata response through the middleware header/status rebuild
+    // that previously discarded the internal fully-buffered marker.
+    await fs.writeFile(
+      path.join(root, "middleware.ts"),
+      `import { NextResponse } from "next/server";
+export function middleware() {
+  const response = NextResponse.next();
+  response.headers.set("x-metadata-middleware", "applied");
+  return response;
+}
+export const config = { matcher: ["/robots.txt"] };
+`,
+    );
     const cloudflarePluginPath = path.join(
       root,
       "node_modules/@cloudflare/vite-plugin/dist/index.mjs",
@@ -136,6 +149,7 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-encoding")).toBeNull();
+    expect(res.headers.get("x-metadata-middleware")).toBe("applied");
 
     const bodyText = await res.text();
     expect(bodyText).toContain("Disallow: /private/");

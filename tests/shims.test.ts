@@ -5088,6 +5088,58 @@ describe("next/server shim", () => {
     await vi.waitFor(() => expect(called).toBe(true));
   });
 
+  // Ported from Next.js: packages/next/src/server/after/after-context.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/after/after-context.test.ts
+  it("runs after() callbacks added from after(promise) after a fully buffered response returns", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markFullyBufferedBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      executionContext: {
+        waitUntil(promise: Promise<unknown>) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+    let releasePromise!: () => void;
+    const promiseGate = new Promise<void>((resolve) => {
+      releasePromise = resolve;
+    });
+    let called = false;
+    let original!: Response;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(
+        (async () => {
+          await promiseGate;
+          after(() => {
+            called = true;
+          });
+        })(),
+      );
+      original = markFullyBufferedBody(new Response("buffered"));
+      response = closeAfterResponseWithBody(original, requestContext);
+    });
+
+    // The outstanding promise keeps close tracking enabled. A callback it
+    // registers must wait for the body to close, not run as soon as the
+    // promise settles while the response is still being delivered.
+    expect(response).not.toBe(original);
+    releasePromise();
+    await vi.waitFor(() => expect(requestContext.afterContext.callbacks).toHaveLength(1));
+    expect(called).toBe(false);
+
+    expect(await response.text()).toBe("buffered");
+    await vi.waitFor(() => expect(called).toBe(true));
+    await Promise.all(waitUntilCalls);
+  });
+
   it("wraps an unmarked response even with no after() work registered yet", async () => {
     // No fully-buffered marker (e.g. a hand-written Route Handler returning
     // new Response(stream), or a page render whose Suspense-wrapped async
