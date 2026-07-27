@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.4
+
+### Bug Fixes
+
+- **Cache:** preserve prerendered page cache tags (#709)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.3
 
 ### Bug Fixes
