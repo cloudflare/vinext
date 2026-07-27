@@ -8,6 +8,7 @@ import {
   APP_ROUTE_KEY,
   APP_SOURCE_PAGE_KEY,
   APP_SLOT_BINDINGS_KEY,
+  AppElementsWire,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import type { AppPageModule } from "../packages/vinext/src/server/app-page-route-wiring.js";
@@ -22,6 +23,7 @@ import { resolveAppPageRouteStateKey } from "../packages/vinext/src/server/app-p
 // eslint-disable-next-line import/first
 import {
   buildPageElements,
+  resolveInterceptedSlotIdentitySegments,
   resolveInterceptedSlotSegments,
   resolveAppPageNavigationParams,
   type AppPageBuildRoute,
@@ -442,6 +444,65 @@ describe("buildPageElements", () => {
     expect((result as Record<string, unknown>)[APP_SOURCE_PAGE_KEY]).toBe(
       "/foo/bar/(..)(..)hoge/page",
     );
+  });
+
+  it("keys sibling interception pages by target graph and bound params", async () => {
+    function InterceptPage(): React.ReactNode {
+      return React.createElement("div", null, "Intercepted");
+    }
+
+    const buildIdentity = async (
+      source: string,
+      sourceId: string,
+      id: string,
+      targetRouteGraphId: string | null = "graph-route:/photo/:id",
+      interceptionGraphId = "graph-interception:/feed->/photo/:slug",
+    ): Promise<string | undefined> => {
+      const route = createSyntheticRoute({
+        ids: {
+          layouts: [],
+          page: `graph-page:/${source}`,
+          rootBoundary: null,
+          route: `graph-route:/${source}`,
+          routeHandler: null,
+          slots: {},
+          templates: [],
+        },
+        page: createSyntheticPageModule(() => React.createElement("div", null, "Source")),
+        layouts: [],
+        routeSegments: [source, "[sourceId]"],
+        pattern: `/${source}/:sourceId`,
+      });
+      const result = await buildPageElements(
+        createBaseOptions({
+          route,
+          params: { sourceId },
+          routePath: `/photo/${id}`,
+          opts: {
+            interceptGraphId: interceptionGraphId,
+            interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+            interceptPage: createSyntheticPageModule(InterceptPage),
+            interceptParams: { slug: id },
+            interceptSourcePageSegments: [source, "(.)photo", "[slug]"],
+            interceptTargetPatternParts: ["photo", ":slug"],
+            interceptTargetRouteGraphId: targetRouteGraphId,
+          },
+        }),
+      );
+
+      return AppElementsWire.readMetadata(result).bfcacheSegmentIdentities[`page:/photo/${id}`];
+    };
+
+    const first = await buildIdentity("feed", "a", "42");
+    expect(first).toBeDefined();
+    expect(await buildIdentity("feed", "a", "42")).toBe(first);
+    expect(await buildIdentity("feed", "a", "43")).not.toBe(first);
+    expect(await buildIdentity("feed", "b", "42")).not.toBe(first);
+    expect(await buildIdentity("gallery", "a", "42")).not.toBe(first);
+    expect(await buildIdentity("feed", "a", "42", null)).toBe(first);
+    expect(
+      await buildIdentity("feed", "a", "42", null, "graph-interception:/feed->/album/:slug"),
+    ).not.toBe(first);
   });
 
   it("keeps interception context out of the error payload route ID", async () => {
@@ -873,8 +934,42 @@ describe("buildPageElements", () => {
     expect(html).toContain('data-modal-segments="before|foo|1"');
     expect(interceptedSegments).toEqual(["before", "[username]", "[id]"]);
     expect(
+      resolveInterceptedSlotIdentitySegments(
+        [
+          "(shell)",
+          "@outer",
+          "sub",
+          "@modal",
+          "before",
+          "(group)",
+          "(.)[username]",
+          "@nested",
+          "(nested)",
+          "[id]",
+        ],
+        "modal@(shell)/@outer/sub/@modal",
+      ),
+    ).toEqual([
+      { marker: null, paramSource: "route", segment: "before" },
+      { marker: null, paramSource: "route", segment: "(group)" },
+      { marker: "(.)", paramSource: "slot", segment: "[username]" },
+      { marker: null, paramSource: "slot", segment: "(nested)" },
+      { marker: null, paramSource: "slot", segment: "[id]" },
+    ]);
+    expect(
       resolveAppPageRouteStateKey(interceptedSegments ?? [], { username: "foo", id: "1" }),
     ).toBe(JSON.stringify(["before", "username|foo|d", "id|1|d"]));
+  });
+
+  it("resolves the interception marker owned by a nested parallel slot", () => {
+    const sourceSegments = ["feed", "@outer", "(.)photo", "@inner", "(.)comments", "[id]"];
+    const slotKey = "inner@feed/@outer/(.)photo/@inner";
+
+    expect(resolveInterceptedSlotIdentitySegments(sourceSegments, slotKey)).toEqual([
+      { marker: "(.)", paramSource: "slot", segment: "comments" },
+      { marker: null, paramSource: "slot", segment: "[id]" },
+    ]);
+    expect(resolveInterceptedSlotSegments(sourceSegments, slotKey)).toEqual(["comments", "[id]"]);
   });
 
   it.each([
@@ -1024,7 +1119,7 @@ describe("buildPageElements", () => {
     });
   });
 
-  it("rejects graph slot ids that diverge from the wire slot id", async () => {
+  it("uses wire slot ids only as payload addresses", async () => {
     function TestPage(): React.ReactNode {
       return React.createElement("div", null, "Hello");
     }
@@ -1049,9 +1144,13 @@ describe("buildPageElements", () => {
       },
     });
 
-    await expect(
-      buildPageElements(createBaseOptions({ route, routePath: "/feed" })),
-    ).rejects.toThrow("App Router slot id mismatch");
+    const elements = await buildPageElements(createBaseOptions({ route, routePath: "/feed" }));
+    const wireSlotId = AppElementsWire.encodeSlotId("modal", "/feed");
+    const identities = AppElementsWire.readMetadata(elements).bfcacheSegmentIdentities;
+
+    expect(elements[wireSlotId]).toBeDefined();
+    expect(Object.hasOwn(elements, "slot:modal:/wrong")).toBe(false);
+    expect(JSON.parse(identities[wireSlotId])).toContain("slot:modal:/wrong");
   });
 
   it("does NOT call markDynamicUsage while wiring searchParams into the render tree", async () => {

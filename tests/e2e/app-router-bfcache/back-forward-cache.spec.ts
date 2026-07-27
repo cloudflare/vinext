@@ -16,6 +16,14 @@ function incrementButton(page: Page, n: number) {
   return page.locator(`#increment-button-${n}:visible`).first();
 }
 
+function templateCounter(page: Page, n: number) {
+  return page.locator(`#template-counter-${n}:visible`).first();
+}
+
+function templateIncrementButton(page: Page, n: number) {
+  return page.locator(`#template-increment-${n}:visible`).first();
+}
+
 async function expectPage(page: Page, n: number) {
   await expect(page.locator("h2:visible").first()).toHaveText(`Page ${n}`);
 }
@@ -96,6 +104,23 @@ test.describe("Next.js compat: back/forward cache", () => {
 
     await clickPageLink(page, 2);
     await expect(counter(page, 2)).toHaveText("Count: 9");
+  });
+
+  test("preserves recent template state across segment navigations", async ({ page }) => {
+    await page.goto(`${ROUTE}/1`);
+    await waitForAppRouterHydration(page);
+    await expectPage(page, 1);
+
+    await templateIncrementButton(page, 1).click();
+    await expect(templateCounter(page, 1)).toHaveText("Template count: 1");
+
+    await clickPageLink(page, 2);
+    await templateIncrementButton(page, 2).click();
+    await templateIncrementButton(page, 2).click();
+    await expect(templateCounter(page, 2)).toHaveText("Template count: 2");
+
+    await clickPageLink(page, 1);
+    await expect(templateCounter(page, 1)).toHaveText("Template count: 1");
   });
 
   test("preserves only the three most recent segment entries", async ({ page }) => {
