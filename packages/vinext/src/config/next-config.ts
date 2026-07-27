@@ -222,7 +222,7 @@ export type NextConfig = {
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
-    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
+    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
     /** Allowed image qualities. When unset, any quality from 1-100 is permitted (matches Next.js). */
     qualities?: number[];

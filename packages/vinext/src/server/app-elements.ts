@@ -6,6 +6,7 @@ export const APP_PREFETCH_LOADING_SHELL_MARKER_KEY = "__prefetchLoadingShell";
 export {
   AppElementsWire,
   APP_ARTIFACT_COMPATIBILITY_KEY,
+  APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
   APP_DYNAMIC_STALE_TIME_KEY,
   APP_INTERCEPTION_KEY,
@@ -29,6 +30,7 @@ export {
   readAppElementsMetadata,
   withLayoutFlags,
   type AppElementValue,
+  type AppElementsBfcacheSegmentIdentities,
   type AppElementsInterception,
   type AppElementsSlotBinding,
   type AppElements,

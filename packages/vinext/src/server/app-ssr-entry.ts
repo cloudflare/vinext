@@ -48,7 +48,7 @@ import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
-import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
+import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
@@ -456,18 +456,15 @@ export async function handleSsr(
           const bfcacheMaps = createInitialBfcacheMaps({
             elements,
             metadata,
-            // Normalized inside the function to match the client navigation
-            // snapshot pathname (SSR/client Activity key parity).
-            pathname: ssrNavigationContext.pathname,
           });
           const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
             createReactElement(Slot, { id: metadata.routeId }),
           );
-          const stateKeyTree = createReactElement(
-            BfcacheStateKeyMapContext.Provider,
-            { value: bfcacheMaps.stateKeys },
+          const identityMapTree = createReactElement(
+            BfcacheIdentityMapContext.Provider,
+            { value: bfcacheMaps.identities },
             routeTree,
           );
           // During SSR we only provide the id *map*, seeded entirely with the
@@ -480,9 +477,9 @@ export async function handleSsr(
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
                 { value: bfcacheMaps.bfcacheIds },
-                stateKeyTree,
+                identityMapTree,
               )
-            : stateKeyTree;
+            : identityMapTree;
         }
 
         const flightRootElement = createReactElement(VinextFlightRoot);

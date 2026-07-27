@@ -72,6 +72,7 @@ type BuildAppPageElementResult<TElement> = {
 };
 
 type AppPageInterceptMatch<TPage = unknown> = {
+  interceptionGraphId?: string | null;
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
@@ -98,6 +99,8 @@ type AppPageInterceptMatch<TPage = unknown> = {
   slotKey: string;
   sourceRouteIndex: number;
   sourcePageSegments?: readonly string[] | null;
+  targetPatternParts?: readonly string[];
+  targetRouteGraphId?: string | null;
 };
 
 type ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts> = {

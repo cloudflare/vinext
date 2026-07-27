@@ -64,6 +64,7 @@ type AppRscSlotForMatching = {
 };
 
 type AppRscSiblingInterceptForMatching = {
+  id?: string | null;
   targetPattern: string;
   sourceMatchPattern: string | null;
   sourcePageSegments?: readonly string[];
@@ -90,6 +91,9 @@ type AppRscSiblingInterceptForMatching = {
 
 type AppRscRouteForMatching = {
   __loadRouteHandler?: unknown;
+  ids?: {
+    route?: string | null;
+  } | null;
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
@@ -111,6 +115,7 @@ type AppRscInterceptLoadState = {
 };
 
 type AppRscInterceptLookupEntry = {
+  interceptionGraphId: string | null;
   sourceRouteIndex: number;
   slotKey: string;
   targetPattern: string;
@@ -134,6 +139,7 @@ type AppRscInterceptLookupEntry = {
   __loadState: AppRscInterceptLoadState;
   params: readonly string[];
   slotId: string | null;
+  targetRouteGraphId: string | null;
 };
 
 function createRouteParams(): AppRscRouteParams {
@@ -364,6 +370,41 @@ function compareInterceptTargetPatterns(
   return lengthDifference !== 0 ? lengthDifference : a.targetPattern.localeCompare(b.targetPattern);
 }
 
+function createRoutePatternStructureKey(patternParts: readonly string[]): string {
+  return JSON.stringify(
+    patternParts.map((part) => {
+      if (!part.startsWith(":")) return ["static", part];
+      if (part.endsWith("*")) return ["optional-catch-all"];
+      if (part.endsWith("+")) return ["catch-all"];
+      return ["dynamic"];
+    }),
+  );
+}
+
+function createPatternStructureToRouteGraphId<Route extends AppRscRouteForMatching>(
+  routes: readonly Route[],
+): ReadonlyMap<string, string | null> {
+  const routeGraphIds = new Map<string, string | null>();
+
+  for (const route of routes) {
+    const routeGraphId = route.ids?.route;
+    if (typeof routeGraphId !== "string") continue;
+
+    const key = createRoutePatternStructureKey(route.patternParts);
+    const previous = routeGraphIds.get(key);
+    if (previous === undefined) {
+      routeGraphIds.set(key, routeGraphId);
+    } else if (previous !== routeGraphId) {
+      // Route validation normally rejects structurally ambiguous patterns.
+      // Keep the request-time lookup conservative if malformed/generated input
+      // still contains more than one graph identity for the same URL shape.
+      routeGraphIds.set(key, null);
+    }
+  }
+
+  return routeGraphIds;
+}
+
 function createInterceptLookup<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): AppRscInterceptLookupEntry[] {
@@ -377,6 +418,11 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
   // current) rather than kind="current-route" (owner === current), which would
   // render the descendant page instead of the owner's layout+page tree.
   const patternToIndex = new Map<string, number>(routes.map((r, i) => [r.pattern, i]));
+  const patternStructureToRouteGraphId = createPatternStructureToRouteGraphId(routes);
+  const resolveTargetRouteGraphId = (targetPattern: string): string | null =>
+    patternStructureToRouteGraphId.get(
+      createRoutePatternStructureKey(targetPattern.split("/").filter(Boolean)),
+    ) ?? null;
 
   const interceptLookup: AppRscInterceptLookupEntry[] = [];
   for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
@@ -396,9 +442,11 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
               ? (patternToIndex.get(sourceMatchPattern) ?? routeIndex)
               : routeIndex;
           interceptLookup.push({
+            interceptionGraphId: null,
             sourceRouteIndex: ownerRouteIndex,
             slotKey,
             slotId: typeof slotModule.id === "string" ? slotModule.id : null,
+            targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),
             targetPattern: intercept.targetPattern,
             targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
             sourceMatchPattern,
@@ -436,9 +484,11 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           ? sourceMatchPattern.split("/").filter(Boolean)
           : null;
         interceptLookup.push({
+          interceptionGraphId: typeof intercept.id === "string" ? intercept.id : null,
           sourceRouteIndex: routeIndex,
           slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
           slotId: typeof intercept.slotId === "string" ? intercept.slotId : null,
+          targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),
           targetPattern: intercept.targetPattern,
           targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
           sourceMatchPattern,

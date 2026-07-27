@@ -15,6 +15,7 @@ import {
   APP_RENDER_OBSERVATION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
+  APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_SOURCE_PAGE_KEY,
   APP_SLOT_BINDINGS_KEY,
@@ -39,6 +40,10 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 
 describe("AppElementsWire", () => {
+  it("exposes stable metadata keys through the codec boundary", () => {
+    expect(AppElementsWire.keys.bfcacheSegmentIdentities).toBe(APP_BFCACHE_SEGMENT_IDENTITIES_KEY);
+  });
+
   it("encodes outgoing record payloads without mutating caller-owned records", () => {
     const element = {
       "layout:/": "root-layout",
@@ -83,6 +88,7 @@ describe("AppElementsWire", () => {
       layoutFlags: {},
       rootLayoutTreePath: "/",
       routeId: "route:/photos/42\0/feed",
+      bfcacheSegmentIdentities: {},
       skippedLayoutIds: [],
       slotBindings: [],
       sourcePage: null,
@@ -105,6 +111,10 @@ describe("AppElementsWire", () => {
       layoutIds: ["layout:/(dashboard)"],
       rootLayoutTreePath: "/(dashboard)",
       routeId: AppElementsWire.encodeRouteId("/dashboard", null),
+      bfcacheSegmentIdentities: {
+        [AppElementsWire.encodeLayoutId("/(dashboard)")]: "/dashboard",
+        [AppElementsWire.encodePageId("/dashboard", null)]: "/dashboard",
+      },
       sourcePage: "/(dashboard)/page",
     });
 
@@ -113,6 +123,10 @@ describe("AppElementsWire", () => {
       [APP_LAYOUT_IDS_KEY]: ["layout:/(dashboard)"],
       [APP_ROOT_LAYOUT_KEY]: "/(dashboard)",
       [APP_ROUTE_KEY]: "route:/dashboard",
+      [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: {
+        "layout:/(dashboard)": "/dashboard",
+        "page:/dashboard": "/dashboard",
+      },
       [APP_SOURCE_PAGE_KEY]: "/(dashboard)/page",
     });
   });
@@ -314,6 +328,7 @@ describe("AppElementsWire", () => {
       layoutFlags: { [AppElementsWire.encodeLayoutId("/")]: "s" },
       rootLayoutTreePath: "/",
       routeId: "route:/dashboard",
+      bfcacheSegmentIdentities: {},
       skippedLayoutIds: [],
       slotBindings: [],
       sourcePage: null,
@@ -443,6 +458,33 @@ describe("app elements payload helpers", () => {
     );
 
     expect(metadata.interceptionContext).toBeNull();
+  });
+
+  it.each([
+    {
+      label: "non-string binding",
+      bfcacheSegmentIdentities: {
+        "page:/dashboard": "/dashboard",
+        "layout:/": 123,
+      },
+    },
+    {
+      label: "non-segment element id",
+      bfcacheSegmentIdentities: {
+        "page:/dashboard": "/dashboard",
+        "route:/dashboard": "/dashboard",
+      },
+    },
+  ])("rejects the BFCache identity map atomically: $label", ({ bfcacheSegmentIdentities }) => {
+    const metadata = readAppElementsMetadata({
+      ...normalizeAppElements({
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_ROUTE_KEY]: "route:/dashboard",
+      }),
+      [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: bfcacheSegmentIdentities,
+    });
+
+    expect(metadata.bfcacheSegmentIdentities).toEqual({});
   });
 
   it("encodes intercepted route ids and cache keys with a NUL separator", () => {

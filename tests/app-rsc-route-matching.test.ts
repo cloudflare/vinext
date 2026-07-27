@@ -680,6 +680,7 @@ describe("App RSC route matching", () => {
     it("findIntercept matches sibling intercept on soft-nav and misses on hard-nav", () => {
       const routes: TestRoute[] = [
         {
+          ids: { route: "graph-route:/foo/bar" },
           pattern: "/foo/bar",
           patternParts: ["foo", "bar"],
           siblingIntercepts: [
@@ -696,7 +697,11 @@ describe("App RSC route matching", () => {
             },
           ],
         },
-        { pattern: "/hoge", patternParts: ["hoge"] },
+        {
+          ids: { route: "graph-route:/hoge" },
+          pattern: "/hoge",
+          patternParts: ["hoge"],
+        },
       ];
       const matcher = createAppRscRouteMatcher(routes as any);
 
@@ -707,12 +712,98 @@ describe("App RSC route matching", () => {
       expect(hit?.sourcePageSegments).toEqual(["foo", "bar", "(..)(..)hoge"]);
       expect(hit?.interceptLayoutSegments).toEqual([["[photo]"]]);
       expect(hit?.interceptBranchSegments).toEqual(["[photo]", "[comment]"]);
+      expect(hit?.targetRouteGraphId).toBe("graph-route:/hoge");
 
       // Hard-nav (no source): must return null
       expect(matcher.findIntercept("/hoge", null)).toBeNull();
 
       // Wrong source: must return null
       expect(matcher.findIntercept("/hoge", "/other")).toBeNull();
+    });
+
+    it("resolves intercepted graph identities across different parameter names", () => {
+      // Ported from Next.js: packages/next/src/build/validate-app-paths.test.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/validate-app-paths.test.ts
+      const routes: TestRoute[] = [
+        {
+          ids: { route: "graph-route:/feed" },
+          pattern: "/feed",
+          patternParts: ["feed"],
+          slots: {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/feed",
+                  targetPattern: "/blog/:slug/post",
+                  interceptLayouts: ["layout"],
+                  page: "modal-post",
+                  params: ["slug"],
+                },
+                {
+                  sourceMatchPattern: "/feed",
+                  targetPattern: "/files/:path+",
+                  interceptLayouts: ["layout"],
+                  page: "modal-file",
+                  params: ["path"],
+                },
+              ],
+            },
+          },
+        },
+        {
+          ids: { route: "graph-route:/blog/:id/post" },
+          pattern: "/blog/:id/post",
+          patternParts: ["blog", ":id", "post"],
+        },
+        {
+          ids: { route: "graph-route:/files/:segments+" },
+          pattern: "/files/:segments+",
+          patternParts: ["files", ":segments+"],
+        },
+      ];
+      const matcher = createAppRscRouteMatcher(routes as any);
+
+      expect(matcher.findIntercept("/blog/value/post", "/feed")?.targetRouteGraphId).toBe(
+        "graph-route:/blog/:id/post",
+      );
+      expect(matcher.findIntercept("/files/a/b", "/feed")?.targetRouteGraphId).toBe(
+        "graph-route:/files/:segments+",
+      );
+    });
+
+    it("carries sibling interception identity when the direct target uses a broader catch-all", () => {
+      // Ported from Next.js: test/e2e/app-dir/interception-routes-multiple-catchall
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-routes-multiple-catchall/interception-routes-multiple-catchall.test.ts
+      const interceptionGraphId =
+        "interception:slot:__vinext_sibling_intercept:/templates:/templates->/showcase/:catchAll+";
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/templates/:source+" },
+          pattern: "/templates/:source+",
+          patternParts: ["templates", ":source+"],
+          siblingIntercepts: [
+            {
+              id: interceptionGraphId,
+              targetPattern: "/showcase/:catchAll+",
+              sourceMatchPattern: "/templates",
+              sourcePageSegments: ["templates", "(..)showcase", "[...catchAll]"],
+              slotId: "slot:__vinext_sibling_intercept:/templates",
+              interceptLayouts: [],
+              page: "intercept-page",
+              params: ["catchAll"],
+            },
+          ],
+        },
+        {
+          ids: { route: "graph-route:/:catchAll+" },
+          pattern: "/:catchAll+",
+          patternParts: [":catchAll+"],
+        },
+      ] as any);
+
+      const hit = matcher.findIntercept("/showcase/single", "/templates/multi/slug");
+      expect(hit?.targetRouteGraphId).toBeNull();
+      expect(hit?.interceptionGraphId).toBe(interceptionGraphId);
     });
 
     it("matches dynamic segments in the intercepting route pattern", () => {
@@ -770,6 +861,7 @@ type TestSiblingIntercept = {
 
 type TestRoute = {
   __loadRouteHandler?: unknown;
+  ids?: { route: string };
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
