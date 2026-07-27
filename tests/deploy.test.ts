@@ -3248,10 +3248,44 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.customDomain).toBeUndefined();
   });
 
+  it("does not silently analyze only the first of multiple Worker routes", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({ routes: ["app.example.com/blog/*", "app.example.com/docs/*"] }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope: "multiple Worker routes — TPR requires one traffic scope",
+    });
+  });
+
+  it.each(["http", "https"])("rejects a %s-only route as an ambiguous traffic scope", (scheme) => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({ routes: [`${scheme}://app.example.com/*`] }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope:
+        "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics",
+    });
+  });
+
   it("extracts custom domain from custom_domains array", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBe("shop.example.com.au");
+  });
+
+  it("does not silently analyze only the first of multiple custom domains", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({ custom_domains: ["app.example.com", "docs.example.com"] }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope: "multiple Worker custom domains — TPR requires one traffic scope",
+    });
   });
 
   it("ignores workers.dev domains", () => {

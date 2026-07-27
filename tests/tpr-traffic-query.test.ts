@@ -241,6 +241,43 @@ describe("resolveZoneId", () => {
 });
 
 describe("runTPR traffic lookup", () => {
+  it.each([
+    {
+      name: "multiple routes",
+      routes: ["app.example.com/blog/*", "app.example.com/docs/*"],
+      reason: "multiple Worker routes — TPR requires one traffic scope",
+    },
+    {
+      name: "an HTTPS-only route",
+      routes: ["https://app.example.com/*"],
+      reason: "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics",
+    },
+  ])("skips $name instead of analyzing partial traffic", async ({ routes, reason }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-unsupported-scope-"));
+    fs.writeFileSync(
+      path.join(root, "wrangler.json"),
+      JSON.stringify({
+        routes,
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "kv-id" }],
+      }),
+    );
+
+    const previousToken = process.env.CLOUDFLARE_API_TOKEN;
+    process.env.CLOUDFLARE_API_TOKEN = "token";
+    try {
+      vi.stubGlobal("fetch", async () => {
+        throw new Error("Unsupported traffic scope must not call Cloudflare APIs");
+      });
+      await expect(runTPR({ root, coverage: 90, limit: 1000, window: 24 })).resolves.toMatchObject({
+        skipped: reason,
+      });
+    } finally {
+      if (previousToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = previousToken;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the resolved zone's account and hostname when account_id is omitted", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-traffic-"));
     fs.writeFileSync(

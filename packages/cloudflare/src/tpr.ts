@@ -83,6 +83,7 @@ type WranglerConfig = {
   routePathLike?: string;
   routeZoneId?: string;
   routeZoneName?: string;
+  unsupportedTrafficScope?: string;
   name?: string;
   legacyEnv?: boolean;
   env?: Record<string, WranglerEnvironmentConfig>;
@@ -96,6 +97,7 @@ export type WranglerEnvironmentConfig = {
 type WranglerRouteTarget = {
   hostname: string;
   pathLike?: string;
+  scheme?: "http" | "https";
   zoneId?: string;
   zoneName?: string;
 };
@@ -285,15 +287,24 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   }
 
   // Custom domain — check routes[] and custom_domains[]
-  const routeTarget = extractRouteTarget(config.routes);
-  if (routeTarget) {
+  const routeTargets = extractRouteTargets(config.routes);
+  const customDomains = extractDomainsFromCustomDomains(config);
+  if (Array.isArray(config.routes) && config.routes.length > 1 && routeTargets.length > 0) {
+    result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
+  } else if (routeTargets[0]?.scheme) {
+    result.unsupportedTrafficScope =
+      "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
+  } else if (routeTargets[0]) {
+    const routeTarget = routeTargets[0];
     result.customDomain = routeTarget.hostname;
     result.routePathLike = routeTarget.pathLike;
     result.routeZoneId = routeTarget.zoneId;
     result.routeZoneName = routeTarget.zoneName;
-  } else {
-    const domain = extractDomainFromCustomDomains(config);
-    if (domain) result.customDomain = domain;
+  } else if (customDomains.length > 1) {
+    result.unsupportedTrafficScope =
+      "multiple Worker custom domains — TPR requires one traffic scope";
+  } else if (customDomains[0]) {
+    result.customDomain = customDomains[0];
   }
 
   const env = extractEnvConfigs(config.env);
@@ -322,18 +333,19 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
     result.name = config.name;
   }
   const domain =
-    extractRouteTarget(config.routes)?.hostname ?? extractDomainFromCustomDomains(config);
+    extractRouteTargets(config.routes)[0]?.hostname ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
   return result;
 }
 
-function extractRouteTarget(routes: unknown): WranglerRouteTarget | null {
-  if (!Array.isArray(routes)) return null;
+function extractRouteTargets(routes: unknown): WranglerRouteTarget[] {
+  if (!Array.isArray(routes)) return [];
+  const targets: WranglerRouteTarget[] = [];
 
   for (const route of routes) {
     if (typeof route === "string") {
       const target = parseRoutePattern(route);
-      if (target && !target.hostname.includes("workers.dev")) return target;
+      if (target && !target.hostname.includes("workers.dev")) targets.push(target);
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
       const pattern =
@@ -345,19 +357,20 @@ function extractRouteTarget(routes: unknown): WranglerRouteTarget | null {
       if (pattern) {
         const target = parseRoutePattern(pattern);
         if (target && !target.hostname.includes("workers.dev")) {
-          return {
+          targets.push({
             ...target,
             zoneId: typeof r.zone_id === "string" ? r.zone_id : undefined,
             zoneName: typeof r.zone_name === "string" ? r.zone_name.toLowerCase() : undefined,
-          };
+          });
         }
       }
     }
   }
-  return null;
+  return targets;
 }
 
 function parseRoutePattern(raw: string): WranglerRouteTarget | null {
+  const scheme = raw.match(/^(https?):\/\//i)?.[1]?.toLowerCase() as "http" | "https" | undefined;
   const withoutProtocol = raw.replace(/^https?:\/\//i, "");
   const slashIndex = withoutProtocol.indexOf("/");
   const hostname = (slashIndex === -1 ? withoutProtocol : withoutProtocol.slice(0, slashIndex))
@@ -366,7 +379,7 @@ function parseRoutePattern(raw: string): WranglerRouteTarget | null {
   if (!hostname || hostname.includes("*")) return null;
 
   const routePath = slashIndex === -1 ? "" : withoutProtocol.slice(slashIndex);
-  if (!routePath || routePath === "/*") return { hostname };
+  if (!routePath || routePath === "/*") return { hostname, scheme };
 
   // Cloudflare GraphQL uses SQL LIKE syntax. Preserve literal URL-encoded
   // percent signs and underscores while translating route wildcards.
@@ -375,19 +388,24 @@ function parseRoutePattern(raw: string): WranglerRouteTarget | null {
     .replaceAll("%", "\\%")
     .replaceAll("_", "\\_")
     .replaceAll("*", "%");
-  return { hostname, pathLike };
+  return { hostname, pathLike, scheme };
 }
 
 function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
+  return extractDomainsFromCustomDomains(config)[0] ?? null;
+}
+
+function extractDomainsFromCustomDomains(config: Record<string, unknown>): string[] {
+  const domains: string[] = [];
   // Workers Custom Domains: "custom_domains": ["example.com"]
   if (Array.isArray(config.custom_domains)) {
     for (const d of config.custom_domains) {
       if (typeof d !== "string") continue;
       const domain = cleanDomain(d);
-      if (domain && !domain.includes("workers.dev")) return domain;
+      if (domain && !domain.includes("workers.dev")) domains.push(domain);
     }
   }
-  return null;
+  return domains;
 }
 
 /** Strip protocol and trailing wildcards from a route pattern to get a bare domain. */
@@ -434,27 +452,41 @@ function extractFromTOML(content: string): WranglerConfig {
   if (routeMatch) {
     const target = parseRoutePattern(routeMatch[1]);
     if (target && !target.hostname.includes("workers.dev")) {
-      result.customDomain = target.hostname;
-      result.routePathLike = target.pathLike;
+      if (target.scheme) {
+        result.unsupportedTrafficScope =
+          "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
+      } else {
+        result.customDomain = target.hostname;
+        result.routePathLike = target.pathLike;
+      }
     }
   }
 
   // [[routes]] blocks
-  if (!result.customDomain) {
+  if (!result.customDomain && !result.unsupportedTrafficScope) {
     const routeBlocks = content.split(/\[\[routes\]\]/);
+    const targets: Array<{ target: WranglerRouteTarget; block: string }> = [];
     for (let i = 1; i < routeBlocks.length; i++) {
       const block = routeBlocks[i].split(/\[\[/)[0];
       const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
       if (patternMatch) {
         const target = parseRoutePattern(patternMatch[1]);
         if (target && !target.hostname.includes("workers.dev")) {
-          result.customDomain = target.hostname;
-          result.routePathLike = target.pathLike;
-          result.routeZoneId = block.match(/^zone_id\s*=\s*"([^"]+)"/m)?.[1];
-          result.routeZoneName = block.match(/^zone_name\s*=\s*"([^"]+)"/m)?.[1]?.toLowerCase();
-          break;
+          targets.push({ target, block });
         }
       }
+    }
+    if (targets.length > 1) {
+      result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
+    } else if (targets[0]?.target.scheme) {
+      result.unsupportedTrafficScope =
+        "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
+    } else if (targets[0]) {
+      const { target, block } = targets[0];
+      result.customDomain = target.hostname;
+      result.routePathLike = target.pathLike;
+      result.routeZoneId = block.match(/^zone_id\s*=\s*"([^"]+)"/m)?.[1];
+      result.routeZoneName = block.match(/^zone_name\s*=\s*"([^"]+)"/m)?.[1]?.toLowerCase();
     }
   }
 
@@ -1188,6 +1220,9 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   }
 
   // ── 3. Check for custom domain ────────────────────────────────
+  if (wranglerConfig.unsupportedTrafficScope) {
+    return skip(wranglerConfig.unsupportedTrafficScope);
+  }
   if (!wranglerConfig.customDomain) {
     return skip("no custom domain — zone analytics unavailable");
   }
