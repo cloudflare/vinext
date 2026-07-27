@@ -286,10 +286,11 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     }
   }
 
-  // Custom domain — check routes[] and custom_domains[]
-  const routeTargets = extractRouteTargets(config.routes);
+  // Custom domain — check route, routes[], and custom_domains[]
+  const routeValues = extractRouteValues(config);
+  const routeTargets = extractRouteTargets(routeValues);
   const customDomains = extractDomainsFromCustomDomains(config);
-  if (Array.isArray(config.routes) && config.routes.length > 1 && routeTargets.length > 0) {
+  if (routeValues.length > 1 && routeTargets.length > 0) {
     result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
   } else if (routeTargets[0]?.scheme) {
     result.unsupportedTrafficScope =
@@ -333,9 +334,17 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
     result.name = config.name;
   }
   const domain =
-    extractRouteTargets(config.routes)[0]?.hostname ?? extractDomainFromCustomDomains(config);
+    extractRouteTargets(extractRouteValues(config))[0]?.hostname ??
+    extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
   return result;
+}
+
+function extractRouteValues(config: Record<string, unknown>): unknown[] {
+  const routes: unknown[] = [];
+  if (config.route !== undefined) routes.push(config.route);
+  if (Array.isArray(config.routes)) routes.push(...config.routes);
+  return routes;
 }
 
 function extractRouteTargets(routes: unknown): WranglerRouteTarget[] {
@@ -413,6 +422,75 @@ function cleanDomain(raw: string): string | null {
   return parseRoutePattern(raw)?.hostname ?? null;
 }
 
+function getTomlRootBody(content: string): string {
+  const lines: string[] = [];
+  for (const line of content.split("\n")) {
+    if (parseTomlSectionHeader(line)) break;
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+function parseTomlRouteTable(table: string): WranglerRouteTarget | null {
+  const pattern = table.match(/\bpattern\s*=\s*"([^"]+)"/)?.[1];
+  if (!pattern) return null;
+  const target = parseRoutePattern(pattern);
+  if (!target || target.hostname.includes("workers.dev")) return null;
+  return {
+    ...target,
+    zoneId: table.match(/\bzone_id\s*=\s*"([^"]+)"/)?.[1],
+    zoneName: table.match(/\bzone_name\s*=\s*"([^"]+)"/)?.[1]?.toLowerCase(),
+  };
+}
+
+function extractTomlInlineRouteTargets(content: string): WranglerRouteTarget[] {
+  const root = getTomlRootBody(content);
+  const targets: WranglerRouteTarget[] = [];
+
+  const scalar = root.match(/^route\s*=\s*"([^"]+)"/m)?.[1];
+  if (scalar) {
+    const target = parseRoutePattern(scalar);
+    if (target && !target.hostname.includes("workers.dev")) targets.push(target);
+  }
+
+  const inlineTable = root.match(/^route\s*=\s*\{([^}]*)\}/m)?.[1];
+  if (inlineTable) {
+    const target = parseTomlRouteTable(inlineTable);
+    if (target) targets.push(target);
+  }
+
+  const routesArray = root.match(/^routes\s*=\s*\[([\s\S]*?)\]/m)?.[1];
+  if (routesArray) {
+    const tables = [...routesArray.matchAll(/\{([^{}]*)\}/g)];
+    for (const table of tables) {
+      const target = parseTomlRouteTable(table[1]);
+      if (target) targets.push(target);
+    }
+
+    const stringsOnly = routesArray.replaceAll(/\{[^{}]*\}/g, "");
+    for (const match of stringsOnly.matchAll(/"([^"]+)"/g)) {
+      const target = parseRoutePattern(match[1]);
+      if (target && !target.hostname.includes("workers.dev")) targets.push(target);
+    }
+  }
+
+  return targets;
+}
+
+function applyTomlRouteTargets(result: WranglerConfig, targets: WranglerRouteTarget[]): void {
+  if (targets.length > 1) {
+    result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
+  } else if (targets[0]?.scheme) {
+    result.unsupportedTrafficScope =
+      "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
+  } else if (targets[0]) {
+    result.customDomain = targets[0].hostname;
+    result.routePathLike = targets[0].pathLike;
+    result.routeZoneId = targets[0].zoneId;
+    result.routeZoneName = targets[0].zoneName;
+  }
+}
+
 /**
  * Simple extraction of specific fields from wrangler.toml content.
  * Not a full TOML parser — just enough for the fields we need.
@@ -446,49 +524,12 @@ function extractFromTOML(content: string): WranglerConfig {
     }
   }
 
-  // routes — both string and table forms
-  // route = "example.com/*"
-  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
-  if (routeMatch) {
-    const target = parseRoutePattern(routeMatch[1]);
-    if (target && !target.hostname.includes("workers.dev")) {
-      if (target.scheme) {
-        result.unsupportedTrafficScope =
-          "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
-      } else {
-        result.customDomain = target.hostname;
-        result.routePathLike = target.pathLike;
-      }
-    }
+  const routeTargets = extractTomlInlineRouteTargets(content);
+  for (const block of content.split(/\[\[routes\]\]/).slice(1)) {
+    const target = parseTomlRouteTable(block.split(/\[\[/)[0]);
+    if (target) routeTargets.push(target);
   }
-
-  // [[routes]] blocks
-  if (!result.customDomain && !result.unsupportedTrafficScope) {
-    const routeBlocks = content.split(/\[\[routes\]\]/);
-    const targets: Array<{ target: WranglerRouteTarget; block: string }> = [];
-    for (let i = 1; i < routeBlocks.length; i++) {
-      const block = routeBlocks[i].split(/\[\[/)[0];
-      const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
-      if (patternMatch) {
-        const target = parseRoutePattern(patternMatch[1]);
-        if (target && !target.hostname.includes("workers.dev")) {
-          targets.push({ target, block });
-        }
-      }
-    }
-    if (targets.length > 1) {
-      result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
-    } else if (targets[0]?.target.scheme) {
-      result.unsupportedTrafficScope =
-        "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
-    } else if (targets[0]) {
-      const { target, block } = targets[0];
-      result.customDomain = target.hostname;
-      result.routePathLike = target.pathLike;
-      result.routeZoneId = block.match(/^zone_id\s*=\s*"([^"]+)"/m)?.[1];
-      result.routeZoneName = block.match(/^zone_name\s*=\s*"([^"]+)"/m)?.[1]?.toLowerCase();
-    }
-  }
+  applyTomlRouteTargets(result, routeTargets);
 
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;

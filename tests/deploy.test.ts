@@ -3242,6 +3242,24 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     });
   });
 
+  it("supports the singular JSON route field", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        route: {
+          pattern: "app.example.com/blog/*",
+          zone_id: "zone-id",
+        },
+      }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneId: "zone-id",
+    });
+  });
+
   it("does not treat a wildcard route as one concrete traffic hostname", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["*.example.com/*"] }));
     const config = parseWranglerConfig(tmpDir);
@@ -3390,6 +3408,43 @@ zone_name = "example.com"
       customDomain: "app.example.com",
       routePathLike: "/blog/%",
       routeZoneName: "example.com",
+    });
+  });
+
+  it.each([
+    {
+      name: "singular inline-table route",
+      route: `route = { pattern = "app.example.com/blog/*", zone_id = "zone-id" }`,
+    },
+    {
+      name: "plural inline-table routes array",
+      route: `routes = [{ pattern = "app.example.com/blog/*", zone_id = "zone-id" }]`,
+    },
+  ])("parses a top-level TOML $name", ({ route }) => {
+    writeFile(tmpDir, "wrangler.toml", route);
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneId: "zone-id",
+    });
+  });
+
+  it("rejects multiple top-level TOML string routes", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `routes = ["app.example.com/blog/*", "app.example.com/docs/*"]`,
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope: "multiple Worker routes — TPR requires one traffic scope",
+    });
+  });
+
+  it("rejects a scheme-qualified top-level TOML routes array", () => {
+    writeFile(tmpDir, "wrangler.toml", `routes = ["https://app.example.com/*"]`);
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope:
+        "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics",
     });
   });
 });
