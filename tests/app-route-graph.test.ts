@@ -1541,6 +1541,7 @@ describe("App Router route graph builder", () => {
 
     function collectSiblingIntercepts(routes: readonly AppRouteGraphRoute[]) {
       const out: Array<{
+        id?: string;
         ownerRoute: string;
         targetPattern: string;
         sourceMatchPattern: string;
@@ -1553,6 +1554,7 @@ describe("App Router route graph builder", () => {
       for (const route of routes) {
         for (const ir of (route as any).siblingIntercepts ?? []) {
           out.push({
+            id: ir.id,
             ownerRoute: route.pattern,
             targetPattern: ir.targetPattern,
             sourceMatchPattern: ir.sourceMatchPattern,
@@ -1797,6 +1799,7 @@ describe("App Router route graph builder", () => {
         // Also the catchAll page registers a sibling intercept for /showcase/:catchAll+
         expect(intercepts).toContainEqual(
           expect.objectContaining({
+            id: "interception:slot:__vinext_sibling_intercept:/templates:/templates->/showcase/:catchAll+",
             targetPattern: "/showcase/:catchAll+",
             sourceMatchPattern: "/templates",
             convention: "..",

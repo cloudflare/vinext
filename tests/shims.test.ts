@@ -152,6 +152,44 @@ describe("slot BFCache entry ordering", () => {
     expect(order).toEqual(["one", "three", "two"]);
   });
 
+  it("does not evict a committed snapshot during a discarded render", async () => {
+    const { stageBfcacheSlotEntryForRender } = await import("../packages/vinext/src/shims/slot.js");
+    const entry = (stateKey: string) => ({ content: stateKey, stateKey });
+    const snapshots = new Map([
+      ["one", entry("one")],
+      ["two", entry("two")],
+      ["three", entry("three")],
+    ]);
+    const committedOrder = ["one", "two", "three"];
+
+    const discarded = stageBfcacheSlotEntryForRender(snapshots, committedOrder, entry("four"), 3);
+    expect(discarded.order).toEqual(["four", "one", "two"]);
+    expect(snapshots.has("three")).toBe(true);
+    expect(snapshots.has("four")).toBe(false);
+
+    const resumed = stageBfcacheSlotEntryForRender(snapshots, committedOrder, entry("one"), 3);
+    expect(resumed.entries.map((snapshot) => snapshot.stateKey)).toEqual(["one", "two", "three"]);
+
+    const overwritten = stageBfcacheSlotEntryForRender(
+      snapshots,
+      committedOrder,
+      { content: "speculative one", stateKey: "one" },
+      3,
+    );
+    expect(overwritten.entries[0]?.content).toBe("speculative one");
+    expect(snapshots.get("one")?.content).toBe("one");
+
+    const winningRender = stageBfcacheSlotEntryForRender(
+      snapshots,
+      committedOrder,
+      entry("two"),
+      3,
+    );
+    expect(winningRender.entries.find((snapshot) => snapshot.stateKey === "one")?.content).toBe(
+      "one",
+    );
+  });
+
   it("keeps a single retained entry when the limit is one", async () => {
     const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
 
@@ -5029,6 +5067,306 @@ describe("next/server shim", () => {
     await requestContext.afterContext.completion;
     expect(nestedFinished).toBe(true);
     expect(completed).toBe(true);
+  });
+
+  it("returns a fully-buffered-marked response unchanged when no after() work is registered", async () => {
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markFullyBufferedBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const original = markFullyBufferedBody(
+      new Response("buffered", {
+        status: 201,
+        statusText: "Created",
+        headers: { "x-custom": "value" },
+      }),
+    );
+
+    const response = await runWithRequestContext(requestContext, () =>
+      closeAfterResponseWithBody(original, requestContext),
+    );
+
+    // Same object, not rebuilt through a TransformStream.
+    expect(response).toBe(original);
+    expect(response.status).toBe(201);
+    expect(response.statusText).toBe("Created");
+    expect(response.headers.get("x-custom")).toBe("value");
+    expect(await response.text()).toBe("buffered");
+  });
+
+  it("still wraps a fully-buffered-marked response when after() is registered", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markFullyBufferedBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const original = markFullyBufferedBody(new Response("buffered"));
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(() => {
+        called = true;
+      });
+      response = closeAfterResponseWithBody(original, requestContext);
+    });
+
+    expect(response).not.toBe(original);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+
+    await response.text();
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  // Ported from Next.js: packages/next/src/server/after/after-context.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/after/after-context.test.ts
+  it("runs after() callbacks added from after(promise) after a fully buffered response returns", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markFullyBufferedBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      executionContext: {
+        waitUntil(promise: Promise<unknown>) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+    let releasePromise!: () => void;
+    const promiseGate = new Promise<void>((resolve) => {
+      releasePromise = resolve;
+    });
+    let called = false;
+    let original!: Response;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(
+        (async () => {
+          await promiseGate;
+          after(() => {
+            called = true;
+          });
+        })(),
+      );
+      original = markFullyBufferedBody(new Response("buffered"));
+      response = closeAfterResponseWithBody(original, requestContext);
+    });
+
+    // The outstanding promise keeps close tracking enabled. A callback it
+    // registers must wait for the body to close, not run as soon as the
+    // promise settles while the response is still being delivered.
+    expect(response).not.toBe(original);
+    releasePromise();
+    await vi.waitFor(() => expect(requestContext.afterContext.callbacks).toHaveLength(1));
+    expect(called).toBe(false);
+
+    expect(await response.text()).toBe("buffered");
+    await vi.waitFor(() => expect(called).toBe(true));
+    await Promise.all(waitUntilCalls);
+  });
+
+  it("wraps an unmarked response even with no after() work registered yet", async () => {
+    // No fully-buffered marker (e.g. a hand-written Route Handler returning
+    // new Response(stream), or a page render whose Suspense-wrapped async
+    // Server Components can still call after() later) — must stay wrapped.
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const original = new Response("streamed");
+
+    const response = await runWithRequestContext(requestContext, () =>
+      closeAfterResponseWithBody(original, requestContext),
+    );
+
+    expect(response).not.toBe(original);
+    expect(await response.text()).toBe("streamed");
+  });
+
+  it("defers a late after() call registered from an unmarked still-producing stream until it completes", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      // No after() call has happened yet when closeAfterResponseWithBody runs.
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await streamGate;
+          after(() => {
+            called = true;
+          });
+          controller.enqueue(new TextEncoder().encode("streamed"));
+          controller.close();
+        },
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    releaseStream();
+    await Promise.resolve();
+    await Promise.resolve();
+    // after() has just been registered but the stream hasn't closed yet.
+    expect(called).toBe(false);
+
+    await response.text();
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("runs a late after() call from an unmarked still-producing stream when the client cancels instead of consuming it", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await streamGate;
+          after(() => {
+            called = true;
+          });
+          controller.enqueue(new TextEncoder().encode("streamed"));
+          // Deliberately no controller.close() — the client below cancels
+          // instead of the producer ever finishing on its own.
+        },
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    releaseStream();
+    await Promise.resolve();
+    await Promise.resolve();
+    await response.body!.cancel();
+
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("keeps a late after() call from an unmarked still-producing stream wired to ctx.executionContext.waitUntil", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise: Promise<unknown>) {
+        waitUntilCalls.push(promise);
+      },
+    };
+    const requestContext = createRequestContext({ executionContext });
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await streamGate;
+          after(() => {
+            called = true;
+          });
+          controller.enqueue(new TextEncoder().encode("streamed"));
+          controller.close();
+        },
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    // Nothing registered yet, so no waitUntil call has happened.
+    expect(waitUntilCalls).toHaveLength(0);
+
+    releaseStream();
+    await response.text();
+    await vi.waitFor(() => expect(waitUntilCalls).toHaveLength(1));
+    await waitUntilCalls[0];
+    expect(called).toBe(true);
+  });
+
+  it("closeAfterResponseWithBody still resolves queued after() work when the client cancels the body instead of consuming it", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    let called = false;
+
+    // Deliberately never closes on its own — the test cancels it below,
+    // simulating a client that disconnects mid-stream.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+      },
+    });
+
+    let response!: Response;
+    await runWithRequestContext(requestContext, () => {
+      after(() => {
+        called = true;
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    expect(called).toBe(false);
+    await response.body!.cancel();
+
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("closeAfterResponseWithBody keeps the after-lifecycle completion wired to ctx.executionContext.waitUntil", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise: Promise<unknown>) {
+        waitUntilCalls.push(promise);
+      },
+    };
+    const requestContext = createRequestContext({ executionContext });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(() => {
+        called = true;
+      });
+      response = closeAfterResponseWithBody(new Response("streamed"), requestContext);
+    });
+
+    expect(waitUntilCalls).toHaveLength(1);
+    await response.text();
+    await waitUntilCalls[0];
+    expect(called).toBe(true);
   });
 
   // Next.js uses an unbounded PromiseQueue for after callbacks, so callbacks
@@ -22596,11 +22934,11 @@ describe("image optimization request parsing", () => {
       16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840,
     ];
     const params = parseImageParams(
-      new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=64&q=75"),
+      new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=16&q=75"),
       allowedWidths,
     );
     expect(params).not.toBeNull();
-    expect(params!.width).toBe(64);
+    expect(params!.width).toBe(16);
   });
 
   it("negotiateImageFormat prefers AVIF over WebP", async () => {
@@ -22648,11 +22986,15 @@ describe("image optimization request parsing", () => {
     expect(isImageOptimizationPath("/")).toBe(false);
   });
 
-  it("exports DEFAULT_DEVICE_SIZES and DEFAULT_IMAGE_SIZES matching Next.js defaults", async () => {
-    const { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } =
+  it("uses Next.js default widths for image optimization requests", async () => {
+    const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    expect(DEFAULT_DEVICE_SIZES).toEqual([640, 750, 828, 1080, 1200, 1920, 2048, 3840]);
-    expect(DEFAULT_IMAGE_SIZES).toEqual([16, 32, 48, 64, 96, 128, 256, 384]);
+    const request = (width: number) =>
+      new URL(`http://localhost/_next/image?url=%2Fimg.jpg&w=${width}&q=75`);
+
+    expect(parseImageParams(request(16))).toBeNull();
+    expect(parseImageParams(request(32))?.width).toBe(32);
+    expect(parseImageParams(request(640))?.width).toBe(640);
   });
 });
 

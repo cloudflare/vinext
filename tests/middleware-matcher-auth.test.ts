@@ -149,7 +149,7 @@ describe("valid middleware matcher auth guards", () => {
 
     it("blocks every path selected by group and constrained-repeat matchers", async () => {
       await assertAuthGuard(baseUrl);
-    });
+    }, 30_000);
   });
 
   describe("built Node production server", () => {

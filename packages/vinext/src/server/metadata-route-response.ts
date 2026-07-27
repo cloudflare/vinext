@@ -10,6 +10,7 @@ import {
   type SitemapEntry,
 } from "./metadata-routes.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { markFullyBufferedBody } from "vinext/shims/unified-request-context";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
@@ -223,12 +224,15 @@ async function handleGeneratedSitemap(
   if (!isSitemapEntries(result)) {
     throw new TypeError("Metadata sitemap routes must return an array.");
   }
-  return new Response(sitemapToXml(result), {
-    headers: {
-      "Content-Type": route.contentType,
-      "Cache-Control": metadataRouteCacheHeader(route),
-    },
-  });
+  // Body serialized to a string here — fully materialized, no producer left.
+  return markFullyBufferedBody(
+    new Response(sitemapToXml(result), {
+      headers: {
+        "Content-Type": route.contentType,
+        "Cache-Control": metadataRouteCacheHeader(route),
+      },
+    }),
+  );
 }
 
 function findGeneratedImageId(
@@ -327,12 +331,15 @@ async function callDynamicMetadataRoute(
     body = JSON.stringify(result);
   }
 
-  return new Response(body, {
-    headers: {
-      "Content-Type": route.contentType,
-      "Cache-Control": metadataRouteCacheHeader(route),
-    },
-  });
+  // Every branch above serialized `result` to a string — fully materialized.
+  return markFullyBufferedBody(
+    new Response(body, {
+      headers: {
+        "Content-Type": route.contentType,
+        "Cache-Control": metadataRouteCacheHeader(route),
+      },
+    }),
+  );
 }
 
 function serveStaticMetadataRoute(route: MetadataRuntimeRoute): Response {
@@ -348,12 +355,15 @@ function serveStaticMetadataRoute(route: MetadataRuntimeRoute): Response {
     for (let index = 0; index < binary.length; index++) {
       bytes[index] = binary.charCodeAt(index);
     }
-    return new Response(bytes, {
-      headers: {
-        "Content-Type": route.contentType,
-        "Cache-Control": metadataRouteCacheHeader(route),
-      },
-    });
+    // Static file bytes, fully in memory — no producer left.
+    return markFullyBufferedBody(
+      new Response(bytes, {
+        headers: {
+          "Content-Type": route.contentType,
+          "Cache-Control": metadataRouteCacheHeader(route),
+        },
+      }),
+    );
   } catch (error) {
     const reason = error instanceof Error && error.message ? `: ${error.message}` : "";
     throw new Error(

@@ -2319,6 +2319,7 @@ describe("app page dispatch", () => {
       findIntercept() {
         return {
           interceptBranchSegments: ["(.)photos", "[id]"],
+          interceptionGraphId: "graph-interception:/feed->/photos/:id",
           matchedParams: { id: "123" },
           notFound: { default: "modal-not-found" },
           notFoundTreePosition: 2,
@@ -2337,6 +2338,7 @@ describe("app page dispatch", () => {
     expect(response.headers.get("x-from-middleware")).toBe("yes");
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
     expect(capturedInterceptOpts).toMatchObject({
+      interceptGraphId: "graph-interception:/feed->/photos/:id",
       interceptBranchSegments: ["(.)photos", "[id]"],
       interceptNotFound: { default: "modal-not-found" },
       interceptNotFoundTreePosition: 2,

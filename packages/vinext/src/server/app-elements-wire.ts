@@ -14,6 +14,7 @@ import type {
 import type { ClientReuseManifestSkipDisposition } from "./client-reuse-manifest.js";
 import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 import { releaseAppElementRenderDependency } from "./app-render-dependency.js";
+import type { BfcacheSegmentIdentity } from "./bfcache-identity.js";
 import { compareStrings } from "../utils/compare.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -32,6 +33,8 @@ export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_SKIPPED_LAYOUT_IDS_KEY = "__skippedLayoutIds";
 export const APP_SOURCE_PAGE_KEY = "__sourcePage";
 export const APP_SLOT_BINDINGS_KEY = "__slotBindings";
+/** Opaque per-segment identities derived at the server route-graph boundary. */
+export const APP_BFCACHE_SEGMENT_IDENTITIES_KEY = "__bfcacheSegmentIdentities";
 /**
  * Static sibling segment names for the matched route, surfaced so the client
  * router can determine if a cached prefetch of a dynamic route can be reused
@@ -152,6 +155,7 @@ export type AppElementValue =
   | string
   | null
   | LayoutFlags
+  | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
   | AppElementsInterception
@@ -162,6 +166,7 @@ type AppWireElementValue =
   | string
   | null
   | LayoutFlags
+  | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
   | AppElementsInterception
@@ -190,6 +195,8 @@ export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
  */
 export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
 
+export type AppElementsBfcacheSegmentIdentities = Readonly<Record<string, BfcacheSegmentIdentity>>;
+
 type AppElementsMetadata = {
   artifactCompatibility: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
@@ -200,6 +207,7 @@ type AppElementsMetadata = {
   layoutFlags: LayoutFlags;
   routeId: string;
   rootLayoutTreePath: string | null;
+  bfcacheSegmentIdentities: AppElementsBfcacheSegmentIdentities;
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
   sourcePage: string | null;
@@ -219,6 +227,7 @@ type AppElementsWireMetadataInput = {
   layoutIds?: readonly string[];
   routeId: string;
   rootLayoutTreePath: string | null;
+  bfcacheSegmentIdentities?: AppElementsBfcacheSegmentIdentities;
   slotBindings?: readonly AppElementsSlotBinding[];
   sourcePage?: string | null;
 };
@@ -230,6 +239,7 @@ type AppElementsWireMetadataEntries = Readonly<{
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
   [APP_LAYOUT_IDS_KEY]: readonly string[];
   [APP_ROOT_LAYOUT_KEY]: string | null;
+  [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]?: AppElementsBfcacheSegmentIdentities;
   [APP_SOURCE_PAGE_KEY]?: string;
   [APP_SLOT_BINDINGS_KEY]?: readonly AppElementsSlotBinding[];
 }>;
@@ -245,6 +255,7 @@ export type AppOutgoingElements = Readonly<
     string,
     | ReactNode
     | LayoutFlags
+    | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
     | AppElementsInterception
@@ -266,6 +277,7 @@ type AppElementsWireKeys = {
   readonly renderObservation: typeof APP_RENDER_OBSERVATION_KEY;
   readonly rootLayout: typeof APP_ROOT_LAYOUT_KEY;
   readonly route: typeof APP_ROUTE_KEY;
+  readonly bfcacheSegmentIdentities: typeof APP_BFCACHE_SEGMENT_IDENTITIES_KEY;
   readonly skippedLayoutIds: typeof APP_SKIPPED_LAYOUT_IDS_KEY;
   readonly slotBindings: typeof APP_SLOT_BINDINGS_KEY;
   readonly sourcePage: typeof APP_SOURCE_PAGE_KEY;
@@ -387,6 +399,11 @@ function parseAppElementsWireElementKey(key: string): AppElementsWireElementKey 
   return null;
 }
 
+function isAppElementsWireBfcacheIdentityId(key: string): boolean {
+  const kind = parseAppElementsWireElementKey(key)?.kind;
+  return kind === "page" || kind === "layout" || kind === "template" || kind === "slot";
+}
+
 function isAppElementsWireSlotId(key: string): boolean {
   if (!key.startsWith("slot:")) return false;
   const body = key.slice("slot:".length);
@@ -406,6 +423,12 @@ function createAppElementsWireMetadataEntries(
     ...(input.dynamicStaleTimeSeconds === undefined
       ? {}
       : { [APP_DYNAMIC_STALE_TIME_KEY]: input.dynamicStaleTimeSeconds }),
+    // Omitted when empty: an absent map round-trips as {} and means "no carried
+    // identity proof", so consumers fall back to a fresh-mint identity rather
+    // than inferring a binding from transport shape.
+    ...(input.bfcacheSegmentIdentities && Object.keys(input.bfcacheSegmentIdentities).length > 0
+      ? { [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: input.bfcacheSegmentIdentities }
+      : {}),
     ...(input.sourcePage === null || input.sourcePage === undefined
       ? {}
       : { [APP_SOURCE_PAGE_KEY]: input.sourcePage }),
@@ -663,6 +686,7 @@ export function buildOutgoingAppPayload(input: {
     string,
     | ReactNode
     | LayoutFlags
+    | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
     | AppElementsInterception
@@ -802,6 +826,19 @@ function parseCacheEntryReuseProofMetadata(value: unknown): CacheEntryReuseProof
   return createMissingCacheEntryReuseProof();
 }
 
+function parseBfcacheSegmentIdentities(value: unknown): AppElementsBfcacheSegmentIdentities {
+  // Absent metadata round-trips as {}. Treat the map as one proof-bearing unit:
+  // if any entry is malformed, discard every entry so a valid-looking neighbour
+  // cannot remain authoritative beside untrusted metadata.
+  if (!isUnknownRecord(value)) return {};
+  const parsed: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== "string" || !isAppElementsWireBfcacheIdentityId(key)) return {};
+    parsed[key] = entry;
+  }
+  return parsed;
+}
+
 export function readAppElementsMetadata(
   elements: Readonly<Record<string, unknown>>,
 ): AppElementsMetadata {
@@ -846,6 +883,9 @@ export function readAppElementsMetadata(
       ? dynamicStaleTime
       : undefined;
   const sourcePage = readSourcePageMetadata(elements[APP_SOURCE_PAGE_KEY]);
+  const bfcacheSegmentIdentities = parseBfcacheSegmentIdentities(
+    elements[APP_BFCACHE_SEGMENT_IDENTITIES_KEY],
+  );
 
   return {
     artifactCompatibility,
@@ -857,6 +897,7 @@ export function readAppElementsMetadata(
     layoutFlags,
     routeId,
     rootLayoutTreePath,
+    bfcacheSegmentIdentities,
     skippedLayoutIds,
     slotBindings,
     sourcePage,
@@ -877,6 +918,7 @@ export const AppElementsWire: AppElementsWireCodec = {
     renderObservation: APP_RENDER_OBSERVATION_KEY,
     rootLayout: APP_ROOT_LAYOUT_KEY,
     route: APP_ROUTE_KEY,
+    bfcacheSegmentIdentities: APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
     skippedLayoutIds: APP_SKIPPED_LAYOUT_IDS_KEY,
     slotBindings: APP_SLOT_BINDINGS_KEY,
     sourcePage: APP_SOURCE_PAGE_KEY,

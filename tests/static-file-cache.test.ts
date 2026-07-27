@@ -74,7 +74,7 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/_next/static/index-abc123.js");
 
     expect(entry).toBeDefined();
-    expect(entry!.original.headers["Content-Type"]).toBe("application/javascript");
+    expect(entry!.original.headers["Content-Type"]).toBe("application/javascript; charset=utf-8");
     expect(entry!.original.headers["Content-Length"]).toBe("12"); // "const x = 1;"
     expect(entry!.original.path).toBe(
       toSlash(path.join(clientDir, "_next/static/index-abc123.js")),
@@ -322,10 +322,10 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
 
     expect(cache.lookup("/_next/static/style-aaa.css")!.original.headers["Content-Type"]).toBe(
-      "text/css",
+      "text/css; charset=utf-8",
     );
     expect(cache.lookup("/_next/static/data-bbb.json")!.original.headers["Content-Type"]).toBe(
-      "application/json",
+      "application/json; charset=utf-8",
     );
     expect(cache.lookup("/logo.svg")!.original.headers["Content-Type"]).toBe("image/svg+xml");
     expect(cache.lookup("/photo.webp")!.original.headers["Content-Type"]).toBe("image/webp");
@@ -339,6 +339,34 @@ describe("StaticFileCache", () => {
     expect(cache.lookup("/_next/static/data-ccc.xyz")!.original.headers["Content-Type"]).toBe(
       "application/octet-stream",
     );
+  });
+
+  it("serves common web assets with their standard content types", async () => {
+    await Promise.all([
+      writeFile(clientDir, "module.wasm", "wasm"),
+      writeFile(clientDir, "movie.mp4", "video"),
+      writeFile(clientDir, "document.pdf", "pdf"),
+      writeFile(clientDir, "site.webmanifest", "{}"),
+      writeFile(clientDir, "feed.xml", "<feed />"),
+    ]);
+
+    const cache = await StaticFileCache.create(clientDir);
+
+    expect(cache.lookup("/module.wasm")!.original.headers["Content-Type"]).toBe("application/wasm");
+    expect(cache.lookup("/movie.mp4")!.original.headers["Content-Type"]).toBe("video/mp4");
+    expect(cache.lookup("/document.pdf")!.original.headers["Content-Type"]).toBe("application/pdf");
+    expect(cache.lookup("/site.webmanifest")!.original.headers["Content-Type"]).toBe(
+      "application/manifest+json",
+    );
+    expect(cache.lookup("/feed.xml")!.original.headers["Content-Type"]).toBe("application/xml");
+  });
+
+  it("matches file extensions case-insensitively", async () => {
+    await writeFile(clientDir, "logo.SVG", "<svg />");
+
+    const cache = await StaticFileCache.create(clientDir);
+
+    expect(cache.lookup("/logo.SVG")!.original.headers["Content-Type"]).toBe("image/svg+xml");
   });
 
   // ── Nested directory scanning ──────────────────────────────────

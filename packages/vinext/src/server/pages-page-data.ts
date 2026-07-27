@@ -16,7 +16,6 @@ import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
   buildPagesNextDataScript,
-  etagMatches,
   generatePagesETag,
   isPagesStreamingBot,
   requestsNoCache,
@@ -24,6 +23,7 @@ import {
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
+import { matchesIfNoneMatch } from "./http-conditional.js";
 import {
   createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,
@@ -973,7 +973,7 @@ function applyBotETagAndCheck(
   const etag = generatePagesETag(html);
   cachedResponse.headers.set("ETag", etag);
   const noCacheRequested = requestsNoCache(options.requestCacheControl);
-  if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+  if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
     return {
       kind: "response",
       response: new Response(null, {

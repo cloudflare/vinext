@@ -125,6 +125,7 @@ type AppPageBackgroundRegenerator = (
 ) => void;
 
 type AppPageDispatchIntercept<TPage = unknown> = {
+  interceptionGraphId?: string | null;
   // Lazy-loaded layout modules: typed `unknown` because they arrive as
   // dynamically-imported modules (read sites cast to AppPageModule). Matches the
   // transport-level `interceptLayouts` on the route-matching/request types so an
@@ -144,9 +145,12 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   slotKey: string;
   sourceRouteIndex: number;
   sourcePageSegments?: readonly string[] | null;
+  targetPatternParts?: readonly string[];
+  targetRouteGraphId?: string | null;
 };
 
 type AppPageDispatchInterceptOptions<TPage = unknown> = {
+  interceptGraphId?: string | null;
   interceptionContext: string | null;
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
@@ -162,6 +166,8 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptSlotKey: string;
   interceptSourceMatchedUrl?: string | null;
   interceptSourcePageSegments?: readonly string[] | null;
+  interceptTargetPatternParts?: readonly string[] | null;
+  interceptTargetRouteGraphId?: string | null;
 };
 
 type AppPageModule = {
@@ -591,6 +597,7 @@ function toInterceptOptions(
   intercept: AppPageDispatchIntercept,
 ): AppPageDispatchInterceptOptions {
   return {
+    interceptGraphId: intercept.interceptionGraphId ?? null,
     interceptionContext,
     interceptLayouts: intercept.interceptLayouts,
     interceptLayoutSegments: intercept.interceptLayoutSegments,
@@ -606,6 +613,8 @@ function toInterceptOptions(
     interceptSlotKey: intercept.slotKey,
     interceptSourceMatchedUrl: interceptionContext,
     interceptSourcePageSegments: intercept.sourcePageSegments ?? null,
+    interceptTargetPatternParts: intercept.targetPatternParts ?? null,
+    interceptTargetRouteGraphId: intercept.targetRouteGraphId ?? null,
   };
 }
 
