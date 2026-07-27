@@ -80,6 +80,9 @@ type WranglerConfig = {
   accountId?: string;
   kvNamespaceId?: string;
   customDomain?: string;
+  routePathLike?: string;
+  routeZoneId?: string;
+  routeZoneName?: string;
   name?: string;
   legacyEnv?: boolean;
   env?: Record<string, WranglerEnvironmentConfig>;
@@ -88,6 +91,13 @@ type WranglerConfig = {
 export type WranglerEnvironmentConfig = {
   customDomain?: string;
   name?: string;
+};
+
+type WranglerRouteTarget = {
+  hostname: string;
+  pathLike?: string;
+  zoneId?: string;
+  zoneName?: string;
 };
 
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
@@ -275,8 +285,16 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   }
 
   // Custom domain — check routes[] and custom_domains[]
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
-  if (domain) result.customDomain = domain;
+  const routeTarget = extractRouteTarget(config.routes);
+  if (routeTarget) {
+    result.customDomain = routeTarget.hostname;
+    result.routePathLike = routeTarget.pathLike;
+    result.routeZoneId = routeTarget.zoneId;
+    result.routeZoneName = routeTarget.zoneName;
+  } else {
+    const domain = extractDomainFromCustomDomains(config);
+    if (domain) result.customDomain = domain;
+  }
 
   const env = extractEnvConfigs(config.env);
   if (env) result.env = env;
@@ -303,18 +321,19 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
   }
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  const domain =
+    extractRouteTarget(config.routes)?.hostname ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
   return result;
 }
 
-function extractDomainFromRoutes(routes: unknown): string | null {
+function extractRouteTarget(routes: unknown): WranglerRouteTarget | null {
   if (!Array.isArray(routes)) return null;
 
   for (const route of routes) {
     if (typeof route === "string") {
-      const domain = cleanDomain(route);
-      if (domain && !domain.includes("workers.dev")) return domain;
+      const target = parseRoutePattern(route);
+      if (target && !target.hostname.includes("workers.dev")) return target;
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
       const pattern =
@@ -324,12 +343,39 @@ function extractDomainFromRoutes(routes: unknown): string | null {
             ? r.zone_name
             : null;
       if (pattern) {
-        const domain = cleanDomain(pattern);
-        if (domain && !domain.includes("workers.dev")) return domain;
+        const target = parseRoutePattern(pattern);
+        if (target && !target.hostname.includes("workers.dev")) {
+          return {
+            ...target,
+            zoneId: typeof r.zone_id === "string" ? r.zone_id : undefined,
+            zoneName: typeof r.zone_name === "string" ? r.zone_name.toLowerCase() : undefined,
+          };
+        }
       }
     }
   }
   return null;
+}
+
+function parseRoutePattern(raw: string): WranglerRouteTarget | null {
+  const withoutProtocol = raw.replace(/^https?:\/\//i, "");
+  const slashIndex = withoutProtocol.indexOf("/");
+  const hostname = (slashIndex === -1 ? withoutProtocol : withoutProtocol.slice(0, slashIndex))
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  if (!hostname || hostname.includes("*")) return null;
+
+  const routePath = slashIndex === -1 ? "" : withoutProtocol.slice(slashIndex);
+  if (!routePath || routePath === "/*") return { hostname };
+
+  // Cloudflare GraphQL uses SQL LIKE syntax. Preserve literal URL-encoded
+  // percent signs and underscores while translating route wildcards.
+  const pathLike = routePath
+    .replaceAll("\\", "\\\\")
+    .replaceAll("%", "\\%")
+    .replaceAll("_", "\\_")
+    .replaceAll("*", "%");
+  return { hostname, pathLike };
 }
 
 function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
@@ -346,15 +392,7 @@ function extractDomainFromCustomDomains(config: Record<string, unknown>): string
 
 /** Strip protocol and trailing wildcards from a route pattern to get a bare domain. */
 function cleanDomain(raw: string): string | null {
-  const cleaned = raw
-    .replace(/^https?:\/\//, "")
-    .replace(/\/\*$/, "")
-    .replace(/\/+$/, "")
-    .split("/")[0] // Take only the host part
-    ?.toLowerCase();
-  // A wildcard route does not identify the concrete hostname whose traffic
-  // should be ranked or which Host header the local prerender should use.
-  return cleaned && !cleaned.includes("*") ? cleaned : null;
+  return parseRoutePattern(raw)?.hostname ?? null;
 }
 
 /**
@@ -394,9 +432,10 @@ function extractFromTOML(content: string): WranglerConfig {
   // route = "example.com/*"
   const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
   if (routeMatch) {
-    const domain = cleanDomain(routeMatch[1]);
-    if (domain && !domain.includes("workers.dev")) {
-      result.customDomain = domain;
+    const target = parseRoutePattern(routeMatch[1]);
+    if (target && !target.hostname.includes("workers.dev")) {
+      result.customDomain = target.hostname;
+      result.routePathLike = target.pathLike;
     }
   }
 
@@ -407,9 +446,12 @@ function extractFromTOML(content: string): WranglerConfig {
       const block = routeBlocks[i].split(/\[\[/)[0];
       const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
       if (patternMatch) {
-        const domain = cleanDomain(patternMatch[1]);
-        if (domain && !domain.includes("workers.dev")) {
-          result.customDomain = domain;
+        const target = parseRoutePattern(patternMatch[1]);
+        if (target && !target.hostname.includes("workers.dev")) {
+          result.customDomain = target.hostname;
+          result.routePathLike = target.pathLike;
+          result.routeZoneId = block.match(/^zone_id\s*=\s*"([^"]+)"/m)?.[1];
+          result.routeZoneName = block.match(/^zone_name\s*=\s*"([^"]+)"/m)?.[1]?.toLowerCase();
           break;
         }
       }
@@ -543,48 +585,81 @@ type ResolvedZone = {
   accountId?: string;
 };
 
+type ZoneApiResponse = {
+  success: boolean;
+  result?: ResolvedZoneApiResult | ResolvedZoneApiResult[];
+  errors?: Array<{ message?: string }>;
+};
+
+type ResolvedZoneApiResult = {
+  id: string;
+  account?: { id?: string };
+};
+
+async function requestZone(url: string, apiToken: string): Promise<ZoneApiResponse> {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Zone lookup failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as ZoneApiResponse;
+  if (!data.success) {
+    const detail = data.errors
+      ?.map((error) => error.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(`Zone lookup failed${detail ? `: ${detail}` : ""}`);
+  }
+  return data;
+}
+
+function resolvedZone(result: ResolvedZoneApiResult): ResolvedZone {
+  return { id: result.id, accountId: result.account?.id };
+}
+
+async function resolveZoneByName(name: string, apiToken: string): Promise<ResolvedZone | null> {
+  const data = await requestZone(
+    `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(name)}`,
+    apiToken,
+  );
+  const result = Array.isArray(data.result) ? data.result[0] : undefined;
+  return result ? resolvedZone(result) : null;
+}
+
+async function resolveZoneById(id: string, apiToken: string): Promise<ResolvedZone | null> {
+  const data = await requestZone(
+    `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(id)}`,
+    apiToken,
+  );
+  const result = !Array.isArray(data.result) ? data.result : undefined;
+  return result ? resolvedZone(result) : null;
+}
+
 /** Resolve zone ID from a domain name via the Cloudflare API. */
 async function resolveZone(domain: string, apiToken: string): Promise<ResolvedZone | null> {
-  // Prefer the longest matching zone. A token can have access to both a
-  // parent zone and a delegated child zone, and DNS uses the child for the
-  // hostname in that case. This also avoids mistaking an accessible public
-  // suffix for the application's zone.
+  // Prefer the longest matching zone when Wrangler did not provide an
+  // explicit zone selector. DNS uses a delegated child zone over its parent.
   for (const candidate of domainCandidates(domain).reverse()) {
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(candidate)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-      },
-    );
-
-    if (!response.ok) {
-      throw new Error(`Zone lookup failed: ${response.status} ${response.statusText}`);
-    }
-
-    const data = (await response.json()) as {
-      success: boolean;
-      result?: Array<{ id: string; account?: { id?: string } }>;
-      errors?: Array<{ message?: string }>;
-    };
-    if (!data.success) {
-      const detail = data.errors
-        ?.map((error) => error.message)
-        .filter(Boolean)
-        .join("; ");
-      throw new Error(`Zone lookup failed${detail ? `: ${detail}` : ""}`);
-    }
-    if (data.success && data.result?.length) {
-      return {
-        id: data.result[0].id,
-        accountId: data.result[0].account?.id,
-      };
-    }
+    const zone = await resolveZoneByName(candidate, apiToken);
+    if (zone) return zone;
   }
 
   return null;
+}
+
+async function resolveConfiguredZone(
+  config: WranglerConfig,
+  apiToken: string,
+): Promise<ResolvedZone | null> {
+  if (config.routeZoneId) return resolveZoneById(config.routeZoneId, apiToken);
+  if (config.routeZoneName) return resolveZoneByName(config.routeZoneName, apiToken);
+  return config.customDomain ? resolveZone(config.customDomain, apiToken) : null;
 }
 
 /** Resolve zone ID from a domain name via the Cloudflare API. */
@@ -624,15 +699,18 @@ export async function queryTraffic(
   apiToken: string,
   windowHours: number,
   hostname: string,
+  pathLike?: string,
 ): Promise<TrafficEntry[]> {
   const now = new Date();
   const start = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
 
+  const pathVariableDeclaration = pathLike ? "\n    $pathLike: string!" : "";
+  const pathFilter = pathLike ? "\n            clientRequestPath_like: $pathLike" : "";
   const query = `query TPRTraffic(
     $zoneTag: string!
     $start: Time!
     $end: Time!
-    $hostname: string!
+    $hostname: string!${pathVariableDeclaration}
   ) {
     viewer {
       zones(filter: { zoneTag: $zoneTag }) {
@@ -643,7 +721,32 @@ export async function queryTraffic(
             datetime_geq: $start
             datetime_lt: $end
             clientRequestHTTPHost: $hostname
+            edgeResponseStatus_lt: 400${pathFilter}
             requestSource: "eyeball"
+            AND: [
+              { clientRequestPath_neq: "/api" }
+              { clientRequestPath_notlike: "/api/%" }
+              { clientRequestPath_neq: "/_next" }
+              { clientRequestPath_notlike: "/_next/%" }
+              { clientRequestPath_neq: "/__vinext" }
+              { clientRequestPath_notlike: "/__vinext/%" }
+              { clientRequestPath_notlike: "%.js" }
+              { clientRequestPath_notlike: "%.css" }
+              { clientRequestPath_notlike: "%.png" }
+              { clientRequestPath_notlike: "%.jpg" }
+              { clientRequestPath_notlike: "%.jpeg" }
+              { clientRequestPath_notlike: "%.gif" }
+              { clientRequestPath_notlike: "%.svg" }
+              { clientRequestPath_notlike: "%.ico" }
+              { clientRequestPath_notlike: "%.woff" }
+              { clientRequestPath_notlike: "%.woff2" }
+              { clientRequestPath_notlike: "%.ttf" }
+              { clientRequestPath_notlike: "%.eot" }
+              { clientRequestPath_notlike: "%.map" }
+              { clientRequestPath_notlike: "%.webp" }
+              { clientRequestPath_notlike: "%.avif" }
+              { clientRequestPath_notlike: "%.rsc" }
+            ]
           }
         ) {
           count
@@ -666,6 +769,7 @@ export async function queryTraffic(
         start: start.toISOString(),
         end: now.toISOString(),
         hostname,
+        ...(pathLike ? { pathLike } : {}),
       },
     }),
   });
@@ -711,9 +815,15 @@ export function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
       return false;
     // API routes
-    if (e.path.startsWith("/api/")) return false;
+    if (e.path === "/api" || e.path.startsWith("/api/")) return false;
     // Internal routes
-    if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
+    if (
+      e.path === "/_next" ||
+      e.path.startsWith("/_next/") ||
+      e.path === "/__vinext" ||
+      e.path.startsWith("/__vinext/")
+    )
+      return false;
     // RSC requests
     if (e.path.endsWith(".rsc")) return false;
     return true;
@@ -1092,7 +1202,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
 
   let zone: ResolvedZone | null;
   try {
-    zone = await resolveZone(wranglerConfig.customDomain, apiToken);
+    zone = await resolveConfiguredZone(wranglerConfig, apiToken);
   } catch (err) {
     return skip(err instanceof Error ? err.message : `zone lookup failed: ${String(err)}`);
   }
@@ -1112,7 +1222,13 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   // ── 6. Query traffic data ─────────────────────────────────────
   let traffic: TrafficEntry[];
   try {
-    traffic = await queryTraffic(zone.id, apiToken, windowHours, wranglerConfig.customDomain);
+    traffic = await queryTraffic(
+      zone.id,
+      apiToken,
+      windowHours,
+      wranglerConfig.customDomain,
+      wranglerConfig.routePathLike,
+    );
   } catch (err) {
     return skip(`analytics query failed: ${err instanceof Error ? err.message : String(err)}`);
   }

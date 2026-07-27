@@ -3231,11 +3231,15 @@ describe("parseWranglerConfig — custom domain extraction", () => {
       tmpDir,
       "wrangler.jsonc",
       JSON.stringify({
-        routes: [{ pattern: "APP.example.com/*", zone_name: "example.com" }],
+        routes: [{ pattern: "APP.example.com/blog/*", zone_name: "example.com" }],
       }),
     );
     const config = parseWranglerConfig(tmpDir);
-    expect(config?.customDomain).toBe("app.example.com");
+    expect(config).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneName: "example.com",
+    });
   });
 
   it("does not treat a wildcard route as one concrete traffic hostname", () => {
@@ -3332,6 +3336,26 @@ pattern = "staging.example.com/*"
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
+    });
+  });
+
+  it("preserves top-level TOML route zone and path selectors", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+name = "my-worker"
+
+[[routes]]
+pattern = "app.example.com/blog/*"
+zone_name = "example.com"
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneName: "example.com",
     });
   });
 });

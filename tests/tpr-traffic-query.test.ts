@@ -25,6 +25,7 @@ type AnalyticsPayload = {
     start: string;
     end: string;
     hostname: string;
+    pathLike?: string;
   };
 };
 
@@ -75,19 +76,23 @@ describe("queryTraffic", () => {
     vi.setSystemTime(new Date("2026-07-27T12:00:00.000Z"));
     const { calls } = mockAnalytics([]);
     const hostname = 'app.example.com" }) { injected } #';
-    await queryTraffic("zone-tag", "token", 24, hostname);
+    const pathLike = '/blog/%" }) { injected } #';
+    await queryTraffic("zone-tag", "token", 24, hostname, pathLike);
     const call = calls[0];
 
     // Worker-to-worker and internal subrequests are not pages a visitor asked
     // for, so pre-rendering them would spend the budget on the wrong routes.
     expect(call.payload.query).toContain('requestSource: "eyeball"');
     expect(call.payload.query).toContain("clientRequestHTTPHost: $hostname");
+    expect(call.payload.query).toContain("clientRequestPath_like: $pathLike");
     expect(call.payload.query).not.toContain(hostname);
+    expect(call.payload.query).not.toContain(pathLike);
     expect(call.payload.variables).toEqual({
       zoneTag: "zone-tag",
       start: "2026-07-26T12:00:00.000Z",
       end: "2026-07-27T12:00:00.000Z",
       hostname,
+      pathLike,
     });
   });
 
@@ -141,6 +146,31 @@ describe("queryTraffic", () => {
     await expect(queryTraffic("zone-tag", "token", 24, "app.example.com")).rejects.toThrow(
       "Zone analytics query failed: 403 Forbidden",
     );
+  });
+
+  it("excludes non-page rows before applying the 10,000-row limit", async () => {
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+      if (typeof init.body !== "string") throw new Error("Expected a JSON request body");
+      const { query } = JSON.parse(init.body) as AnalyticsPayload;
+      const hasServerExclusions =
+        query.includes('clientRequestPath_notlike: "%.js"') &&
+        query.includes('clientRequestPath_notlike: "/api/%"') &&
+        query.includes('clientRequestPath_notlike: "/_next/%"');
+      const groups = hasServerExclusions
+        ? [{ count: 42, dimensions: { clientRequestPath: "/real-page" } }]
+        : Array.from({ length: 10_000 }, (_, index) => ({
+            count: 100_000 - index,
+            dimensions: { clientRequestPath: `/_next/static/chunk-${index}.js` },
+          }));
+      return new Response(
+        JSON.stringify({ data: { viewer: { zones: [{ httpRequestsAdaptiveGroups: groups }] } } }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    await expect(queryTraffic("zone-tag", "token", 24, "app.example.com")).resolves.toEqual([
+      { path: "/real-page", requests: 42 },
+    ]);
   });
 });
 
@@ -260,6 +290,114 @@ describe("runTPR traffic lookup", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("honors an explicit route zone while filtering by route hostname and path", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-route-zone-"));
+    fs.writeFileSync(
+      path.join(root, "wrangler.json"),
+      JSON.stringify({
+        routes: [
+          {
+            pattern: "app.example.com/blog/*",
+            zone_name: "example.com",
+          },
+        ],
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "kv-id" }],
+      }),
+    );
+
+    const previousToken = process.env.CLOUDFLARE_API_TOKEN;
+    process.env.CLOUDFLARE_API_TOKEN = "token";
+    try {
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        if (url.includes("/zones?")) {
+          expect(new URL(url).searchParams.get("name")).toBe("example.com");
+          return new Response(
+            JSON.stringify({
+              success: true,
+              result: [{ id: "parent-zone", account: { id: "parent-account" } }],
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/graphql")) {
+          if (typeof init.body !== "string") throw new Error("Expected a JSON request body");
+          const payload = JSON.parse(init.body) as AnalyticsPayload;
+          expect(payload.variables).toMatchObject({
+            zoneTag: "parent-zone",
+            hostname: "app.example.com",
+            pathLike: "/blog/%",
+          });
+          return new Response(
+            JSON.stringify({
+              data: { viewer: { zones: [{ httpRequestsAdaptiveGroups: [] }] } },
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected API request: ${url}`);
+      });
+
+      await expect(runTPR({ root, coverage: 90, limit: 1000, window: 24 })).resolves.toMatchObject({
+        skipped: "no traffic data available (first deploy?)",
+      });
+    } finally {
+      if (previousToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = previousToken;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers an explicit route zone_id without performing a name lookup", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-route-zone-id-"));
+    fs.writeFileSync(
+      path.join(root, "wrangler.json"),
+      JSON.stringify({
+        routes: [
+          {
+            pattern: "app.example.com/*",
+            zone_id: "explicit/zone",
+            zone_name: "example.com",
+          },
+        ],
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "kv-id" }],
+      }),
+    );
+
+    const previousToken = process.env.CLOUDFLARE_API_TOKEN;
+    process.env.CLOUDFLARE_API_TOKEN = "token";
+    try {
+      vi.stubGlobal("fetch", async (url: string) => {
+        if (url.includes("/zones/")) {
+          expect(url.endsWith("/zones/explicit%2Fzone")).toBe(true);
+          return new Response(
+            JSON.stringify({
+              success: true,
+              result: { id: "explicit/zone", account: { id: "route-account" } },
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/graphql")) {
+          return new Response(
+            JSON.stringify({
+              data: { viewer: { zones: [{ httpRequestsAdaptiveGroups: [] }] } },
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected API request: ${url}`);
+      });
+
+      await expect(runTPR({ root, coverage: 90, limit: 1000, window: 24 })).resolves.toMatchObject({
+        skipped: "no traffic data available (first deploy?)",
+      });
+    } finally {
+      if (previousToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = previousToken;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("filterTrafficPaths", () => {
@@ -271,7 +409,10 @@ describe("filterTrafficPaths", () => {
       { path: "/styles/app.css", requests: 7 },
       { path: "/logo.svg", requests: 6 },
       { path: "/api/revalidate", requests: 5 },
+      { path: "/api", requests: 5 },
       { path: "/__vinext/internal", requests: 4 },
+      { path: "/__vinext", requests: 4 },
+      { path: "/_next", requests: 4 },
       { path: "/blog/post.rsc", requests: 3 },
       { path: "not-a-path", requests: 2 },
     ];
