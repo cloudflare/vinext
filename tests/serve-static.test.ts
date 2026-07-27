@@ -7,6 +7,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import zlib from "node:zlib";
+import http from "node:http";
 import { StaticFileCache } from "../packages/vinext/src/server/static-file-cache.js";
 import { tryServeStatic } from "../packages/vinext/src/server/prod-server.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -131,7 +132,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(served).toBe(true);
     expect(captured.headers["Content-Encoding"]).toBe("br");
     expect(captured.headers["Content-Length"]).toBe(String(brContent.length));
-    expect(captured.headers["Content-Type"]).toBe("application/javascript");
+    expect(captured.headers["Content-Type"]).toBe("application/javascript; charset=utf-8");
     // Body should be the precompressed brotli content
     const decompressed = zlib.brotliDecompressSync(captured.body).toString();
     expect(decompressed).toBe(jsContent);
@@ -480,7 +481,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(served).toBe(true);
     expect(captured.status).toBe(200);
-    expect(captured.headers["Content-Type"]).toBe("application/javascript");
+    expect(captured.headers["Content-Type"]).toBe("application/javascript; charset=utf-8");
     expect(captured.headers["Content-Length"]).toBe(String(jsContent.length));
     expect(captured.body.length).toBe(0); // no body for HEAD
   });
@@ -729,7 +730,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(served).toBe(true);
     expect(captured.status).toBe(200);
-    expect(captured.headers["Content-Type"]).toBe("application/javascript");
+    expect(captured.headers["Content-Type"]).toBe("application/javascript; charset=utf-8");
     expect(captured.body.toString()).toBe("slow path content");
   });
 
@@ -795,6 +796,63 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.body.length).toBe(0);
   });
 
+  it("serves Next-compatible MIME types over a real HTTP response", async () => {
+    // Next.js uses its bundled `send` MIME database, which adds UTF-8 to
+    // text/*, application/javascript, and application/json responses.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/serve-static.ts
+    await Promise.all([
+      writeFile(clientDir, "script.js", "console.log('ok')"),
+      writeFile(clientDir, "style.css", "body {}"),
+      writeFile(clientDir, "data.json", "{}"),
+      writeFile(clientDir, "script.js.map", "{}"),
+      writeFile(clientDir, "table.csv", "name,value"),
+      writeFile(clientDir, "module.wasm", Buffer.from([0, 97, 115, 109])),
+    ]);
+
+    for (const cache of [await StaticFileCache.create(clientDir), undefined]) {
+      const server = http.createServer((req, res) => {
+        void tryServeStatic(req, res, clientDir, req.url ?? "/", false, cache)
+          .then((served) => {
+            if (!served) {
+              res.statusCode = 404;
+              res.end();
+            }
+          })
+          .catch((error: Error) => res.destroy(error));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("HTTP server did not bind");
+        const origin = `http://127.0.0.1:${address.port}`;
+
+        for (const [pathname, expected] of [
+          ["/script.js", "application/javascript; charset=utf-8"],
+          ["/style.css", "text/css; charset=utf-8"],
+          ["/data.json", "application/json; charset=utf-8"],
+          ["/script.js.map", "application/json; charset=utf-8"],
+          ["/table.csv", "text/csv; charset=utf-8"],
+          ["/module.wasm", "application/wasm"],
+        ] as const) {
+          const response = await fetch(origin + pathname);
+          expect(response.status).toBe(200);
+          expect(response.headers.get("content-type")).toBe(expected);
+        }
+
+        const headResponse = await fetch(origin + "/script.js", { method: "HEAD" });
+        expect(headResponse.headers.get("content-type")).toBe(
+          "application/javascript; charset=utf-8",
+        );
+        expect(await headResponse.text()).toBe("");
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    }
+  });
+
   // ── URL-encoded characters in path ─────────────────────────────
   //
   // Regression test for https://github.com/cloudflare/vinext/issues/1472
@@ -829,7 +887,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(served).toBe(true);
     expect(captured.status).toBe(200);
-    expect(captured.headers["Content-Type"]).toBe("text/css");
+    expect(captured.headers["Content-Type"]).toBe("text/css; charset=utf-8");
     expect(captured.body.toString()).toBe(cssContent);
   });
 
@@ -851,7 +909,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(served).toBe(true);
     expect(captured.status).toBe(200);
-    expect(captured.headers["Content-Type"]).toBe("text/css");
+    expect(captured.headers["Content-Type"]).toBe("text/css; charset=utf-8");
     expect(captured.body.toString()).toBe(cssContent);
   });
 
@@ -880,7 +938,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(served).toBe(true);
     expect(captured.status).toBe(200);
-    expect(captured.headers["Content-Type"]).toBe("text/css");
+    expect(captured.headers["Content-Type"]).toBe("text/css; charset=utf-8");
     expect(captured.body.toString()).toBe(cssContent);
   });
 

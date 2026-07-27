@@ -24,7 +24,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "pathslash";
 import zlib from "node:zlib";
-import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
+import { StaticFileCache, contentTypeForPath, etagFromFilenameHash } from "./static-file-cache.js";
 import {
   isImageOptimizationPath,
   IMAGE_CONTENT_SECURITY_POLICY,
@@ -690,7 +690,7 @@ async function tryServeStatic(
   if (!resolved) return false;
 
   const ext = path.extname(resolved.path);
-  const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
+  const ct = contentTypeForPath(resolved.path);
   // Mirror the StaticFileCache's `isHashed` rule: assets under Vite's
   // `assetsDir` carry a content hash. `pathname` always has a leading `/`,
   // so a single `includes` covers both the root-level `/<ASSET_PREFIX_URL_DIR>/...`
@@ -1446,8 +1446,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
       // Block SVG and other unsafe content types by checking the file extension.
       // SVG is only allowed when dangerouslyAllowSVG is enabled in next.config.js.
-      const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
+      const ct = contentTypeForPath(params.imageUrl);
       if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
@@ -1799,8 +1798,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
       // Block SVG and other unsafe content types.
       // SVG is only allowed when dangerouslyAllowSVG is enabled.
-      const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
+      const ct = contentTypeForPath(params.imageUrl);
       if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
