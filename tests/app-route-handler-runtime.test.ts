@@ -267,6 +267,27 @@ describe("app route handler runtime helpers", () => {
     expect(tracked.didAccessDynamicRequest()).toBe(true);
   });
 
+  it("marks derived Headers, cookies, and searchParams before prototype access", () => {
+    const accesses: string[] = [];
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://example.com/demo?tenant=a", {
+        headers: { cookie: "session=a" },
+      }),
+      {
+        onDynamicAccess(access) {
+          accesses.push(access);
+        },
+      },
+    );
+
+    tracked.request.headers.valueOf();
+    tracked.request.cookies.valueOf();
+    tracked.request.nextUrl.searchParams.valueOf();
+
+    expect(accesses).toEqual(["request.headers", "request.cookies", "nextUrl.searchParams"]);
+    expect(tracked.didAccessDynamicRequest()).toBe(true);
+  });
+
   it("tracks body-reading request methods without breaking Request internals", async () => {
     const accesses: string[] = [];
     const tracked = createTrackedAppRouteRequest(

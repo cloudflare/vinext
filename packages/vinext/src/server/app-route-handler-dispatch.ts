@@ -42,6 +42,7 @@ import {
   type RouteHandlerCacheSetter,
 } from "./app-route-handler-execution.js";
 import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
+import { appRouteHandlerRequestMayBeUsed } from "./app-route-handler-request-usage.js";
 import {
   applyRouteHandlerMiddlewareContext,
   finalizeRouteHandlerResponse,
@@ -219,6 +220,11 @@ export async function dispatchAppRouteHandler(
   }
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
+  const resolvedMethod = isAutoHead ? "GET" : method;
+  const requestMayBeUsed = appRouteHandlerRequestMayBeUsed(
+    handler as Record<string, unknown>,
+    resolvedMethod,
+  );
 
   // Route handler fetches observe the handler's segment config the same way
   // page fetches do: upstream's app-route module copies `userland.fetchCache`
@@ -241,6 +247,7 @@ export async function dispatchAppRouteHandler(
       isDraftMode: isDraftMode || hasDraftModeTransition,
       isProduction,
       method,
+      requestMayBeUsed,
       revalidateSeconds,
     }) &&
     resolvedHandlerFn
@@ -267,6 +274,7 @@ export async function dispatchAppRouteHandler(
       middlewareContext: options.middlewareContext,
       params: options.params,
       requestUrl: options.request.url,
+      requestMayBeUsed,
       revalidateSearchParams: options.searchParams,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
@@ -334,6 +342,7 @@ export async function dispatchAppRouteHandler(
         void reportRequestError(error, request, context);
       },
       request: options.request,
+      requestMayBeUsed,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
       routePattern: route.pattern,

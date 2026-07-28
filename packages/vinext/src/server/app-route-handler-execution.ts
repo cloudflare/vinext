@@ -83,6 +83,7 @@ type RunAppRouteHandlerOptions = {
    */
   params: AppRouteParams | null;
   request: Request;
+  requestMayBeUsed?: boolean;
   routePattern?: string;
   setHeadersAccessPhase?: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
@@ -154,6 +155,17 @@ export async function runAppRouteHandler(
 ): Promise<RunAppRouteHandlerResult> {
   options.consumeDynamicUsage();
   configureAppRouteStaticGenerationContext(options);
+  if (
+    options.requestMayBeUsed &&
+    options.dynamicConfig !== "force-static" &&
+    options.dynamicConfig !== "error"
+  ) {
+    // A native Request re-wrap bypasses JavaScript property accessors entirely.
+    // Build-time metadata therefore marks a handler dynamic before invocation
+    // whenever its request binding may be used. This is O(1) and preserves the
+    // precise accessor tracking path for handlers proven not to use it.
+    options.markDynamicUsage();
+  }
   const trackedRequest = createTrackedAppRouteRequest(options.request, {
     basePath: options.basePath,
     i18n: options.i18n,
@@ -176,9 +188,10 @@ export async function runAppRouteHandler(
       routePattern: options.routePattern ?? new URL(options.request.url).pathname,
     },
     () =>
-      options.handlerFn(trackedRequest.request, {
-        params: options.params,
-      }),
+      Reflect.apply(options.handlerFn, undefined, [
+        trackedRequest.request,
+        { params: options.params },
+      ]),
   );
 
   return {

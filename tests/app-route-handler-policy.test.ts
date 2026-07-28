@@ -101,6 +101,14 @@ describe("app route handler policy helpers", () => {
     };
 
     expect(shouldReadAppRouteHandlerCache(base)).toBe(true);
+    expect(shouldReadAppRouteHandlerCache({ ...base, requestMayBeUsed: true })).toBe(false);
+    expect(
+      shouldReadAppRouteHandlerCache({
+        ...base,
+        dynamicConfig: "force-static",
+        requestMayBeUsed: true,
+      }),
+    ).toBe(true);
     expect(shouldReadAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" })).toBe(false);
     expect(shouldReadAppRouteHandlerCache({ ...base, isKnownDynamic: true })).toBe(false);
     expect(shouldReadAppRouteHandlerCache({ ...base, method: "POST" })).toBe(false);

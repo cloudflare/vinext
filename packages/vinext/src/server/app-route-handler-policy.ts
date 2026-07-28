@@ -31,6 +31,7 @@ type AppRouteHandlerCacheReadOptions = {
   isDraftMode?: boolean;
   isProduction: boolean;
   method: string;
+  requestMayBeUsed?: boolean;
   revalidateSeconds: number | null;
 };
 
@@ -121,6 +122,15 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
     options.revalidateSeconds > 0 &&
     options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
+    // Auto-mode request tracking uses own accessors so the value remains a
+    // genuine Request on workerd. Native `new Request(request)` copies internal
+    // slots without invoking those accessors, so handlers whose request binding
+    // may be used must execute before any pathname-keyed ISR entry can be read.
+    !(
+      options.requestMayBeUsed &&
+      options.dynamicConfig !== "force-static" &&
+      options.dynamicConfig !== "error"
+    ) &&
     !options.isDraftMode &&
     !options.isKnownDynamic &&
     (options.method === "GET" || options.isAutoHead) &&
