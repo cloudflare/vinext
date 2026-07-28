@@ -215,7 +215,6 @@ import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vi
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
-import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import "vinext/router-state";
 import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
@@ -292,9 +291,7 @@ async function _renderIsrPassToStringAsync(element) {
   // intact: this second pass still belongs to the same request.
   return await runWithServerInsertedHTMLState(() =>
     runWithHeadState(() =>
-      _runWithCacheState(() =>
-        runWithPrivateCache(() => runWithFetchCache(async () => _renderToStringAsync(element))),
-      ),
+      _runWithCacheState(() => runWithFetchCache(async () => _renderToStringAsync(element))),
     ),
   );
 }

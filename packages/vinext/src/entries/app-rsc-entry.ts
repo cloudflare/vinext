@@ -289,17 +289,12 @@ import {
   createTemporaryReferenceSet,`
       : ""
   }
-} from ${JSON.stringify(
-    hasServerActions ? "@vitejs/plugin-rsc/rsc" : "@vitejs/plugin-rsc/react/rsc",
-  )};
-import { createClientManifest as _createClientManifest } from "@vitejs/plugin-rsc/core/rsc";
-import { prerender as _prerender } from "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge";
+} from "@vitejs/plugin-rsc/rsc/server";
+import { prerender as _prerender } from "@vitejs/plugin-rsc/rsc/static";
 import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
 
 const renderToReadableStream = createRscRenderer(_renderToReadableStream);
-const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
-  _prerender(model, _createClientManifest(), options),
-);
+const prerenderToReadableStream = createRscPrerenderer(_prerender);
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";

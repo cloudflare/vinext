@@ -1244,7 +1244,11 @@ describe("App Router entry templates", () => {
       hasServerActions: false,
     });
 
-    expect(code).toContain('from "@vitejs/plugin-rsc/react/rsc"');
+    expect(code).toContain('from "@vitejs/plugin-rsc/rsc/server"');
+    expect(code).toContain('from "@vitejs/plugin-rsc/rsc/static"');
+    expect(code).not.toContain("@vitejs/plugin-rsc/react/");
+    expect(code).not.toContain("@vitejs/plugin-rsc/core/");
+    expect(code).not.toContain("@vitejs/plugin-rsc/vendor/");
     expect(code).not.toContain("app-server-action-execution.js");
     expect(code).not.toContain("decodeAction,");
     expect(code).not.toContain("decodeFormState,");

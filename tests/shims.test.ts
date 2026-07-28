@@ -7141,7 +7141,7 @@ describe('"use cache" runtime', () => {
   });
 
   it("falls back to JSON when RSC module is unavailable (test environment)", async () => {
-    // In vitest, @vitejs/plugin-rsc/react/rsc is not available (no Vite RSC
+    // In vitest, @vitejs/plugin-rsc/rsc entries are not available (no Vite RSC
     // environment). The runtime should gracefully fall back to JSON.stringify
     // for cache values and stableStringify for cache keys.
     const { registerCachedFunction } =

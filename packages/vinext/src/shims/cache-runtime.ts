@@ -167,7 +167,7 @@ export function getCacheContext(): CacheContext | null {
 // ---------------------------------------------------------------------------
 
 /**
- * RSC serialization APIs from @vitejs/plugin-rsc/react/rsc.
+ * RSC serialization APIs from @vitejs/plugin-rsc/rsc/server and /rsc/client.
  * Lazily loaded because these are only available in the Vite RSC environment
  * (they depend on virtual modules set up by @vitejs/plugin-rsc).
  * In test environments, the import fails and we fall back to JSON.
@@ -232,7 +232,11 @@ let _rscModule: RscModule | null | typeof NOT_LOADED = NOT_LOADED;
 async function getRscModule(): Promise<RscModule | null> {
   if (_rscModule !== NOT_LOADED) return _rscModule;
   try {
-    _rscModule = (await import("@vitejs/plugin-rsc/react/rsc")) as RscModule;
+    const [server, client] = await Promise.all([
+      import("@vitejs/plugin-rsc/rsc/server"),
+      import("@vitejs/plugin-rsc/rsc/client"),
+    ]);
+    _rscModule = { ...server, ...client } as RscModule;
   } catch {
     _rscModule = null;
   }

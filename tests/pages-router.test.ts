@@ -1410,7 +1410,6 @@ export default function Page({ marker }: { marker: string }) {
     expect(firstRes.headers.get("x-vinext-cache")).toBeNull();
     const firstHtml = await firstRes.text();
     expect(firstHtml).toContain('data-testid="head-before">0<');
-    expect(firstHtml).toContain('data-testid="private-cache-before">0<');
     expect(firstHtml).toContain('data-testid="inserted-html-before">0<');
 
     const secondRes = await fetch(`${baseUrl}/isr-second-render-state`);
@@ -1418,7 +1417,6 @@ export default function Page({ marker }: { marker: string }) {
     expect(secondRes.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await secondRes.text();
     expect(secondHtml).toContain('data-testid="head-before">0<');
-    expect(secondHtml).toContain('data-testid="private-cache-before">0<');
     expect(secondHtml).toContain('data-testid="inserted-html-before">0<');
   });
 
@@ -6178,7 +6176,6 @@ export default function CounterPage() {
       expect(isrFirstRes.headers.get("x-vinext-cache")).toBe("MISS");
       const isrFirstHtml = await isrFirstRes.text();
       expect(isrFirstHtml).toContain('data-testid="head-before">0<');
-      expect(isrFirstHtml).toContain('data-testid="private-cache-before">0<');
       expect(isrFirstHtml).toContain('data-testid="inserted-html-before">0<');
 
       const isrSecondRes = await fetch(`${prodUrl}/isr-second-render-state`);
@@ -6186,7 +6183,6 @@ export default function CounterPage() {
       expect(isrSecondRes.headers.get("x-vinext-cache")).toBe("HIT");
       const isrSecondHtml = await isrSecondRes.text();
       expect(isrSecondHtml).toContain('data-testid="head-before">0<');
-      expect(isrSecondHtml).toContain('data-testid="private-cache-before">0<');
       expect(isrSecondHtml).toContain('data-testid="inserted-html-before">0<');
 
       // Test: SSR page with getServerSideProps
