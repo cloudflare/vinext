@@ -1,5 +1,17 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { build } from "vite";
 import { createExtensionlessDynamicImportPlugin } from "../packages/vinext/src/plugins/extensionless-dynamic-import.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const tempDir of tempDirs.splice(0)) {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
 
 function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
@@ -11,6 +23,27 @@ function createTransform(extensions?: string[]): Function {
     unwrapHook(plugin.configResolved).call(plugin, { resolve: { extensions } });
   }
   return unwrapHook(plugin.transform).bind(plugin);
+}
+
+function createPackageFixture(
+  packageName: string,
+  exports: Record<string, unknown>,
+  files: Record<string, string> = { "index.js": "export {};\n" },
+) {
+  const root = mkdtempSync(path.join(tmpdir(), "vinext-package-dynamic-import-"));
+  tempDirs.push(root);
+  const packageRoot = path.join(root, "node_modules", ...packageName.split("/"));
+  mkdirSync(packageRoot, { recursive: true });
+  writeFileSync(
+    path.join(packageRoot, "package.json"),
+    JSON.stringify({ name: packageName, type: "module", exports }),
+  );
+  for (const [filename, contents] of Object.entries(files)) {
+    const target = path.join(packageRoot, filename);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, contents);
+  }
+  return { root, packageRoot, importer: path.join(root, "entry.ts") };
 }
 
 describe("vinext:extensionless-dynamic-import", () => {
@@ -125,6 +158,209 @@ describe("vinext:extensionless-dynamic-import", () => {
     const result = transform("await import(`${packageName}`)", "/app/page.tsx");
 
     expect(result).toBeNull();
+  });
+
+  it("expands variable package subpath imports through wildcard exports", () => {
+    // Mirrors nodejs.org's workspace package and import:
+    // https://github.com/nodejs/nodejs.org/blob/main/packages/i18n/package.json
+    // https://github.com/nodejs/nodejs.org/blob/main/apps/site/i18n.tsx
+    const root = mkdtempSync(path.join(tmpdir(), "vinext-package-dynamic-import-"));
+    tempDirs.push(root);
+    const appRoot = path.join(root, "apps", "site");
+    const packageRoot = path.join(root, "packages", "i18n");
+    mkdirSync(path.join(packageRoot, "src", "locales"), { recursive: true });
+    writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@node-core/website-i18n",
+        type: "module",
+        exports: {
+          "./*": ["./src/*", "./src/*.d.ts", "./src/*.mjs", "./src/*.json"],
+          ".": "./src/index.mjs",
+        },
+      }),
+    );
+    writeFileSync(path.join(packageRoot, "src", "index.mjs"), "export const locales = ['en'];\n");
+    const packageLink = path.join(appRoot, "node_modules", "@node-core", "website-i18n");
+    mkdirSync(path.dirname(packageLink), { recursive: true });
+    symlinkSync(packageRoot, packageLink, process.platform === "win32" ? "junction" : "dir");
+
+    const transform = createTransform();
+    const importer = path.join(appRoot, "i18n.tsx");
+    const result = transform(
+      "await import(`@node-core/website-i18n/locales/${locale}.json`)",
+      importer,
+    );
+
+    expect(result.code).toContain('"../../packages/i18n/src/locales/*.json"');
+    expect(result.code).toContain("{ exhaustive: true }");
+    expect(result.code).toContain('"@node-core/website-i18n/".length');
+    expect(result.code).toContain('"../../packages/i18n/src/" + __vinextCapture');
+  });
+
+  it("honors the most specific wildcard export and explicit null targets", () => {
+    const packageName = "private-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./src/*",
+      "./private/*": null,
+    });
+
+    const transform = createTransform();
+    expect(
+      transform("await import(`private-locales/private/${locale}.json`)", importer),
+    ).toBeNull();
+  });
+
+  it("does not let a variable cross into a more-specific null export", () => {
+    const packageName = "variable-private-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./src/*",
+      "./private/*": null,
+    });
+
+    const transform = createTransform();
+    expect(transform("await import(`variable-private-locales/${name}.json`)", importer)).toBeNull();
+  });
+
+  it("does not let a variable cross into an exact export", () => {
+    const packageName = "variable-exact-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./src/*",
+      "./special.json": "./special.js",
+    });
+
+    const transform = createTransform();
+    expect(transform("await import(`variable-exact-locales/${name}.json`)", importer)).toBeNull();
+  });
+
+  it("selects the most specific wildcard export independent of insertion order", () => {
+    const packageName = "specific-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./src/*",
+      "./locales/*": "./translations/*",
+    });
+
+    const result = createTransform()(
+      "await import(`specific-locales/locales/${locale}.json`)",
+      importer,
+    );
+    expect(result.code).toContain('"./node_modules/specific-locales/translations/*.json"');
+    expect(result.code).not.toContain("/src/");
+  });
+
+  it("does not skip a valid unsupported first exports-array target", () => {
+    const packageName = "array-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": ["./shared.js", "./src/*"],
+    });
+
+    expect(createTransform()("await import(`array-locales/${locale}.json`)", importer)).toBeNull();
+  });
+
+  it("uses each Vite environment's export conditions and production state", () => {
+    const packageName = "conditional-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./locales/*": {
+        "react-server": {
+          development: "./rsc-development/*",
+          production: "./rsc-production/*",
+        },
+        default: "./client/*",
+      },
+    });
+    const plugin = createExtensionlessDynamicImportPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const source = "await import(`conditional-locales/locales/${locale}.json`)";
+    const extensions = [".js", ".json"];
+
+    const rsc = transform.call(
+      {
+        environment: {
+          config: {
+            isProduction: true,
+            resolve: {
+              extensions,
+              conditions: ["react-server", "node", "development|production"],
+            },
+          },
+        },
+      },
+      source,
+      importer,
+    );
+    const client = transform.call(
+      {
+        environment: {
+          config: {
+            isProduction: false,
+            resolve: { extensions, conditions: ["browser", "development|production"] },
+          },
+        },
+      },
+      source,
+      importer,
+    );
+
+    expect(rsc.code).toContain("/rsc-production/");
+    expect(client.code).toContain("/client/");
+    expect(client).not.toBe(rsc);
+  });
+
+  it("bundles wildcard exports from packages physically installed in node_modules", async () => {
+    const packageName = "installed-locales";
+    const { root, importer } = createPackageFixture(
+      packageName,
+      { "./*": "./messages[prod]/*" },
+      {
+        "messages[prod]/en.json": '{"message":"English installed package"}',
+        "messages[prod]/locales/de.json": '{"message":"German nested installed package"}',
+      },
+    );
+    writeFileSync(
+      importer,
+      `export async function load(subpath: string) {
+  return (await import(\`installed-locales/\${subpath}\`)).default;
+}\n`,
+    );
+
+    const result = await build({
+      root,
+      logLevel: "silent",
+      plugins: [createExtensionlessDynamicImportPlugin()],
+      build: {
+        lib: { entry: importer, formats: ["es"] },
+        write: false,
+      },
+    });
+    const outputs = (Array.isArray(result) ? result : [result]).flatMap((item) =>
+      "output" in item ? item.output : [],
+    );
+    const emittedCode = outputs
+      .filter((item) => item.type === "chunk")
+      .map((item) => item.code)
+      .join("\n");
+
+    expect(emittedCode).toContain("English installed package");
+    expect(emittedCode).toContain("German nested installed package");
+  });
+
+  it("rejects Node-forbidden runtime package subpath segments", () => {
+    const packageName = "validated-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./src/*",
+    });
+
+    const result = createTransform()("await import(`validated-locales/${subpath}`)", importer);
+    expect(result.code).toContain("decodeURIComponent(__vinextSegment)");
+    expect(result.code).toContain('__vinextDecodedSegment.toLowerCase() === "node_modules"');
+    expect(result.code).toContain("!./node_modules/validated-locales/src/**/node_modules/**");
   });
 
   it("filters out dependency imports before invoking the handler", () => {
