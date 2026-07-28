@@ -123,7 +123,7 @@ jobs:
 
       - name: Run Next.js Tracker
         if: steps.commits.outputs.has_commits == 'true'
-        uses: ask-bonk/ask-bonk/github@8c7a8314f4f4865e2e41e5718dfabc4ab7a2274b # main
+        uses: ask-bonk/ask-bonk/github@7e2b3f7e46741f8f7739540f49702729caba7677 # main
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
