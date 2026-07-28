@@ -17,7 +17,11 @@ import {
 import { resolveBodyParserConfig } from "./pages-body-parser-config.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { cloneRequestWithUrl } from "./request-pipeline.js";
-import { isEdgeApiRuntime } from "./edge-api-runtime.js";
+import {
+  finalizeEdgeApiResponse,
+  isEdgeApiRuntime,
+  type EdgeApiExecutionRuntime,
+} from "./edge-api-runtime.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
 
@@ -92,6 +96,7 @@ type HandlePagesApiRouteOptions = {
    * response. Omit on Node.js dev where no Workers lifecycle exists.
    */
   ctx?: ExecutionContextLike;
+  edgeRuntime?: EdgeApiExecutionRuntime;
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
@@ -163,7 +168,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       );
       const response = await route.module.default(nextRequest);
       if (response instanceof Response) {
-        return response;
+        return finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
       }
 
       throw new Error("Edge API route did not return a Response");

@@ -6,6 +6,7 @@ import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -101,6 +102,13 @@ export async function finalizeAppRscResponse(
     requestContext: options.requestContext,
     basePathState: { basePath: options.basePath, hadBasePath },
   });
+
+  // Static-file 405 responses are synthesized before config headers run.
+  // Reassert their body metadata afterward so a matching headers() rule cannot
+  // describe a different body or replace the canonical Allow value.
+  if (response.status === 405 && response.headers.get("Allow") === "GET, HEAD") {
+    sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");
+  }
 
   return response;
 }

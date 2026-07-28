@@ -290,7 +290,13 @@ describe("resolvePublicFileRoute", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/logo.svg",
       middlewareContext: {
-        headers: new Headers({ "x-from-middleware": "1" }),
+        headers: new Headers({
+          "content-encoding": "gzip",
+          "content-length": "999",
+          "content-type": "application/wrong",
+          "transfer-encoding": "chunked",
+          "x-from-middleware": "1",
+        }),
         status: 203,
       },
       pathname: "/logo.svg",
@@ -304,19 +310,28 @@ describe("resolvePublicFileRoute", () => {
     expect(response!.headers.get("x-from-middleware")).toBe("1");
   });
 
-  it("does not signal non-GET/HEAD, RSC, or missing public file requests", () => {
+  it("returns 405 for unsupported methods only after a public file match", async () => {
     const publicFiles = new Set(["/logo.svg", "/about.rsc"]);
     const middlewareContext = { headers: null, status: null };
 
-    expect(
-      resolvePublicFileRoute({
-        cleanPathname: "/logo.svg",
-        middlewareContext,
-        pathname: "/logo.svg",
-        publicFiles,
-        request: new Request("https://example.com/logo.svg", { method: "POST" }),
-      }),
-    ).toBeNull();
+    const mutationResponse = resolvePublicFileRoute({
+      cleanPathname: "/logo.svg",
+      middlewareContext: {
+        headers: new Headers({ "x-from-middleware": "1" }),
+        status: null,
+      },
+      pathname: "/logo.svg",
+      publicFiles,
+      request: new Request("https://example.com/logo.svg", { method: "POST" }),
+    });
+    expect(mutationResponse?.status).toBe(405);
+    expect(mutationResponse?.headers.get("allow")).toBe("GET, HEAD");
+    expect(mutationResponse?.headers.get("x-from-middleware")).toBe("1");
+    expect(mutationResponse?.headers.get("content-encoding")).toBeNull();
+    expect(mutationResponse?.headers.get("content-length")).toBeNull();
+    expect(mutationResponse?.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(mutationResponse?.headers.get("transfer-encoding")).toBeNull();
+    await expect(mutationResponse?.text()).resolves.toBe("Method Not Allowed");
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/about.rsc",
@@ -335,6 +350,19 @@ describe("resolvePublicFileRoute", () => {
         request: new Request("https://example.com/missing.svg"),
       }),
     ).toBeNull();
+  });
+
+  it("matches decoded request variants against encoded public-file keys", () => {
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/hello copy.txt",
+      middlewareContext: { headers: null, status: null },
+      pathname: "/hello%20copy.txt",
+      publicFiles: new Set(["/hello copy.txt", "/hello%20copy.txt"]),
+      request: new Request("https://example.com/hello%20copy.txt", { method: "POST" }),
+    });
+
+    expect(response?.status).toBe(405);
+    expect(response?.headers.get("allow")).toBe("GET, HEAD");
   });
 
   it("creates standalone static file signals from normal modules", () => {

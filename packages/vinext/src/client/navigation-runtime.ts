@@ -16,6 +16,12 @@ export type NavigationRuntimeRscBootstrap = {
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
   rsc: NavigationRuntimeRscChunk[];
+  /**
+   * Client reuse bound in seconds resolved from the initial render's completed
+   * `cacheLife` — the done-script sibling of `dynamicStaleTimeSeconds`, which
+   * carries the `experimental.staleTimes` config value instead.
+   */
+  staleTimeSeconds?: number;
 };
 
 type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
@@ -23,6 +29,11 @@ type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
 type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
 
 export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
+
+type NavigationRuntimePrefetchRouterState = {
+  pathAndSearch: string;
+  routeId: string;
+};
 
 type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
@@ -54,6 +65,7 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
+  getPrefetchRouterState?: () => NavigationRuntimePrefetchRouterState | null;
   /**
    * Called at the start of every App Router navigation so the <Link> shim can
    * reset any link that is still showing a `useLinkStatus()` pending state but
@@ -63,6 +75,7 @@ export type NavigationRuntimeFunctions = {
    */
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
+  preparePrefetchResponse?: (response: Response) => Promise<unknown>;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -115,8 +128,10 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRouterState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))
+    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse"))
   );
 }
 
@@ -161,23 +176,26 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
   const rsc = Reflect.get(value, "rsc");
+  const staleTimeSeconds = Reflect.get(value, "staleTimeSeconds");
   // getNavigationRuntime() runs at bootstrap/read boundaries, not per chunk.
   // Keep full validation here so malformed ambient state is rejected before
   // hydration consumes it instead of caching a stale validation result.
   return (
     (done === undefined || typeof done === "boolean") &&
-    (dynamicStaleTimeSeconds === undefined ||
-      (typeof dynamicStaleTimeSeconds === "number" &&
-        Number.isFinite(dynamicStaleTimeSeconds) &&
-        dynamicStaleTimeSeconds >= 0)) &&
+    isOptionalStaleTimeSeconds(dynamicStaleTimeSeconds) &&
     (initialCacheKind === undefined ||
       initialCacheKind === "dynamic" ||
       initialCacheKind === "static") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
     Array.isArray(rsc) &&
-    rsc.every(isNavigationRuntimeRscChunk)
+    rsc.every(isNavigationRuntimeRscChunk) &&
+    isOptionalStaleTimeSeconds(staleTimeSeconds)
   );
+}
+
+function isOptionalStaleTimeSeconds(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
 function isReadonlyStringArray(value: unknown): value is readonly string[] {

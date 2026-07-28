@@ -35,7 +35,15 @@ export default function Page() {
         <button
           type="button"
           id="router-prefetch-pages"
-          onClick={() => router.prefetch("/pages-dir/foobar")}
+          onClick={() => {
+            router.prefetch("/pages-dir/foobar");
+            // Positive control for the e2e assertion. The subject prefetch
+            // above is expected to issue no request at all, which is
+            // indistinguishable from a click lost before hydration. This
+            // second target is App-owned and no <Link> on this page points
+            // at it, so its RSC request appears only when this handler runs.
+            router.prefetch("/prefetch-control");
+          }}
         >
           router.prefetch(/pages-dir/foobar)
         </button>

@@ -129,6 +129,25 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
 
     expect(finalScripts).toContain('"initialCacheKind":"static"');
     expect(finalScripts).not.toContain("dynamicStaleTimeSeconds");
+    expect(finalScripts).not.toContain("staleTimeSeconds");
+  });
+
+  it("emits the completed render's cacheLife stale time in the done script", async () => {
+    // The getter runs at finalize() time — after the RSC stream drains — so a
+    // cacheLife claim registered mid-stream still reaches the done script.
+    let staleTimeSeconds: number | undefined;
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
+      kind: "static",
+      ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds }),
+    }));
+
+    staleTimeSeconds = 30;
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).toContain('"staleTimeSeconds":30');
+    expect(finalScripts.indexOf("staleTimeSeconds")).toBeLessThan(
+      finalScripts.indexOf(".done=true"),
+    );
   });
 
   it("rejects getRawBuffer when the stream errors (#1002)", async () => {

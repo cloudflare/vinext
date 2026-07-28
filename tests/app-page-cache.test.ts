@@ -21,12 +21,13 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
+import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
 function buildISRCacheEntry(
   value: CachedAppPageValue,
   isStale = false,
-  cacheControl?: { revalidate: number; expire?: number },
+  cacheControl?: { revalidate: number; expire?: number; stale?: number },
 ): ISRCacheEntry {
   return {
     isStale,
@@ -124,6 +125,70 @@ describe("app page cache helpers", () => {
     expect(rscResponse?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(rscResponse?.headers.get("x-nextjs-cache")).toBe("STALE");
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
+  });
+
+  it("replays the entry's client stale time on cache hits", async () => {
+    // The claim was resolved by the render that produced these bytes and
+    // persisted onto the entry. Replaying it is what keeps a warm hit from
+    // serving identical output under a wider client-reuse window than the
+    // fresh render that produced it.
+    const rscData = new TextEncoder().encode("flight").buffer;
+    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", rscData);
+
+    const htmlResponse = buildAppPageCachedResponse(cachedValue, {
+      cacheControl: { revalidate: 1, expire: 60, stale: 30 },
+      cacheState: "HIT",
+      isRscRequest: false,
+      revalidateSeconds: 60,
+    });
+    // `stale` exceeds `revalidate` in the `seconds` profile by design, so the
+    // shared-cache window must not clamp the client-router bound.
+    expect(htmlResponse?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("30");
+
+    const rscResponse = buildAppPageCachedResponse(cachedValue, {
+      cacheControl: { revalidate: 1, expire: 60, stale: 30 },
+      cacheState: "HIT",
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+    expect(rscResponse?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("30");
+    // `stale` governs client-router reuse only; shared caches keep following
+    // revalidate/expire, so it must not appear in Cache-Control.
+    expect(htmlResponse?.headers.get("cache-control")).toBe(
+      "s-maxage=1, stale-while-revalidate=59",
+    );
+  });
+
+  it("replays the client stale time verbatim, unclamped by expire and entry age", () => {
+    // Deliberate Next.js parity: the stored header is re-emitted unchanged on
+    // every hit (app-page-runtime.ts replays cached headers verbatim), and the
+    // cached HTML body embeds the same original value in its done-script, so
+    // aging or clamping only this header would make one entry's two artifacts
+    // disagree. `expire` is enforced server-side instead — entries past it are
+    // blocking misses, never replayed.
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {
+      cacheControl: { revalidate: 60, expire: 45, stale: 300 },
+      cacheState: "STALE",
+      isRscRequest: false,
+      revalidateSeconds: 60,
+    });
+
+    expect(response?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("300");
+  });
+
+  it("advertises no client stale time when the entry carries no claim", () => {
+    // The `default` profile is { revalidate: 900, expire: 4294967294 } with no
+    // `stale`. Synthesizing one from those would license ~136 years of client
+    // reuse without a refresh; omitting the header leaves the client on its
+    // configured experimental.staleTimes value.
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {
+      cacheControl: { revalidate: 900, expire: 4294967294 },
+      cacheState: "HIT",
+      isRscRequest: false,
+      revalidateSeconds: 900,
+    });
+
+    expect(response?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
   });
 
   it("merges middleware response headers into cached HTML responses", async () => {
@@ -669,7 +734,7 @@ describe("app page cache helpers", () => {
       key: string;
       expireSeconds: number | undefined;
       linkHeader: string | string[] | undefined;
-      revalidateSeconds: number;
+      revalidateSeconds: number | false;
     }> = [];
     const rscData = new TextEncoder().encode("fresh-flight").buffer;
 
@@ -684,12 +749,12 @@ describe("app page cache helpers", () => {
       isrRscKey(pathname, mountedSlotsHeader) {
         return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
       },
-      async isrSet(key, data, revalidateSeconds, _tags, expireSeconds) {
+      async isrSet(key, data, policy) {
         isrSetCalls.push({
           key,
-          expireSeconds,
+          expireSeconds: policy.cacheControl.expire,
           linkHeader: data.headers?.link,
-          revalidateSeconds,
+          revalidateSeconds: policy.cacheControl.revalidate,
         });
       },
       mountedSlotsHeader: "slot:forged:/",
@@ -733,7 +798,7 @@ describe("app page cache helpers", () => {
     const isrSetCalls: Array<{
       key: string;
       expireSeconds: number | undefined;
-      revalidateSeconds: number;
+      revalidateSeconds: number | false;
     }> = [];
     const rscData = new TextEncoder().encode("fresh-flight").buffer;
 
@@ -750,11 +815,11 @@ describe("app page cache helpers", () => {
       isrRscKey(pathname, mountedSlotsHeader) {
         return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
       },
-      async isrSet(key, _data, revalidateSeconds, _tags, expireSeconds) {
+      async isrSet(key, _data, policy) {
         isrSetCalls.push({
           key,
-          expireSeconds,
-          revalidateSeconds,
+          expireSeconds: policy.cacheControl.expire,
+          revalidateSeconds: policy.cacheControl.revalidate,
         });
       },
       revalidateSeconds: 3,
@@ -1030,7 +1095,7 @@ describe("app page cache helpers", () => {
       hasRscData: boolean;
       linkHeader: string | string[] | undefined;
       expireSeconds: number | undefined;
-      revalidateSeconds: number;
+      revalidateSeconds: number | false;
       tags: string[];
     }> = [];
     const debugCalls: Array<[string, string]> = [];
@@ -1065,15 +1130,15 @@ describe("app page cache helpers", () => {
         isrRscKey(pathname) {
           return "rsc:" + pathname;
         },
-        async isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
+        async isrSet(key, data, policy) {
           isrSetCalls.push({
             key,
             html: data.html,
             hasRscData: Boolean(data.rscData),
             linkHeader: data.headers?.link,
-            expireSeconds,
-            revalidateSeconds,
-            tags,
+            expireSeconds: policy.cacheControl.expire,
+            revalidateSeconds: policy.cacheControl.revalidate,
+            tags: policy.tags ?? [],
           });
         },
         expireSeconds: 300,
@@ -1231,7 +1296,7 @@ describe("app page cache helpers", () => {
       html: string;
       hasRscData: boolean;
       expireSeconds: number | undefined;
-      revalidateSeconds: number;
+      revalidateSeconds: number | false;
       tags: string[];
     }> = [];
 
@@ -1251,14 +1316,14 @@ describe("app page cache helpers", () => {
       isrRscKey(pathname) {
         return "rsc:" + pathname;
       },
-      async isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
+      async isrSet(key, data, policy) {
         isrSetCalls.push({
           key,
           html: data.html,
           hasRscData: Boolean(data.rscData),
-          expireSeconds,
-          revalidateSeconds,
-          tags,
+          expireSeconds: policy.cacheControl.expire,
+          revalidateSeconds: policy.cacheControl.revalidate,
+          tags: policy.tags ?? [],
         });
       },
       expireSeconds: 300,

@@ -13,6 +13,7 @@ import {
   ISR_NEVER_CACHE_CONTROL,
   ISR_NO_STORE_CACHE_CONTROL,
 } from "./isr-decision.js";
+import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
@@ -27,8 +28,13 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import {
+  applyDocumentAssetProps,
+  extractDocumentAssetProps,
+} from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
+import { matchesIfNoneMatch } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -54,28 +60,6 @@ export function isPagesStreamingBot(userAgent: string): boolean {
 
 export function generatePagesETag(payload: string): string {
   return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
-}
-
-/**
- * Mirrors Next.js `sendEtagResponse` semantics (weak/strong comparison).
- *
- * A weak ETag `W/"..."` matches both `W/"..."` and `"..."` in `If-None-Match`.
- * A strong ETag `"..."` only matches the same strong token.
- * `*` always matches.
- */
-export function etagMatches(etag: string, ifNoneMatch: string): boolean {
-  if (ifNoneMatch === "*") return true;
-  // Normalise: strip the W/ prefix for comparison. Next.js's
-  // `sendEtagResponse` (packages/next/src/server/send-payload.ts) uses the
-  // `fresh` package, which treats a weak token in `If-None-Match` as matching
-  // the corresponding strong ETag and vice versa (RFC 7232 §2.3.2 weak
-  // comparison). We replicate that behaviour here.
-  const normalize = (t: string) => t.replace(/^W\//, "");
-  const etagNorm = normalize(etag.trim());
-  for (const token of ifNoneMatch.split(",")) {
-    if (normalize(token.trim()) === etagNorm) return true;
-  }
-  return false;
 }
 
 /**
@@ -178,13 +162,7 @@ type RenderPagesPageResponseOptions = {
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
   isStaticPropsRoute?: boolean;
-  isrSet: (
-    key: string,
-    data: CachedPagesValue,
-    revalidateSeconds: number | false,
-    tags?: string[],
-    expireSeconds?: number,
-  ) => Promise<void>;
+  isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
   /**
    * True when rendering a `getStaticPaths` fallback shell for a path that
@@ -204,6 +182,8 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  crossOrigin?: string;
+  disableOptimizedLoading: boolean;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
@@ -247,7 +227,7 @@ function buildPagesFontHeadHtml(
   for (const preload of fontPreloads) {
     // Font files are content-hashed immutable assets. Keep the preload URL
     // byte-identical to the @font-face source so the browser consumes it.
-    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
+    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin="anonymous" />\n  `;
   }
 
   if (fontStyles.length > 0) {
@@ -316,7 +296,7 @@ async function buildPagesShellHtml(
   nextDataScript: string,
   options: Pick<
     RenderPagesPageResponseOptions,
-    "assetTags" | "DocumentComponent" | "renderDocumentToString"
+    "assetTags" | "disableOptimizedLoading" | "DocumentComponent" | "renderDocumentToString"
   > & {
     ssrHeadHTML: string;
     /**
@@ -326,6 +306,7 @@ async function buildPagesShellHtml(
      * second time). `null` means use the normal fast path.
      */
     resolvedDocProps?: Record<string, unknown> | null;
+    crossOrigin?: string;
   },
 ): Promise<string> {
   if (options.DocumentComponent) {
@@ -334,17 +315,31 @@ async function buildPagesShellHtml(
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
-    let html = await options.renderDocumentToString(docElement);
+    const renderedDocument = extractDocumentAssetProps(
+      await options.renderDocumentToString(docElement),
+    );
+    let html = renderedDocument.html;
+    const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
+      configuredCrossOrigin: options.crossOrigin,
+      // Next.js emits optimized framework scripts from Head. When optimized
+      // loading is disabled, NextScript owns those same script tags instead.
+      scriptOwner: options.disableOptimizedLoading ? "next-script" : "head",
+    });
+    const generatedNextDataScript = applyDocumentAssetProps(
+      nextDataScript,
+      renderedDocument.props,
+      { configuredCrossOrigin: options.crossOrigin },
+    );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || options.assetTags || fontHeadHTML) {
+    if (options.ssrHeadHTML || generatedAssetTags || fontHeadHTML) {
       html = html.replace(
         "</head>",
-        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${options.assetTags}\n</head>`,
+        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${generatedAssetTags}\n</head>`,
       );
     }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
     if (!html.includes("__NEXT_DATA__")) {
-      html = html.replace("</body>", `  ${nextDataScript}\n</body>`);
+      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
     }
     return html;
   }
@@ -352,13 +347,27 @@ async function buildPagesShellHtml(
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
   // defaultHead seeds them with data-next-head=""), matching Next.js's
   // canonical ordering. Don't duplicate them here.
+  const generatedAssetTags = applyDocumentAssetProps(
+    options.assetTags,
+    {},
+    {
+      configuredCrossOrigin: options.crossOrigin,
+    },
+  );
+  const generatedNextDataScript = applyDocumentAssetProps(
+    nextDataScript,
+    {},
+    {
+      configuredCrossOrigin: options.crossOrigin,
+    },
+  );
   return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
     `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
-    `  ${options.assetTags}\n` +
+    `  ${generatedAssetTags}\n` +
     "</head>\n<body>\n" +
     `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${nextDataScript}\n` +
+    `  ${generatedNextDataScript}\n` +
     "</body>\n</html>"
   );
 }
@@ -434,9 +443,11 @@ async function writePagesIsrCache(options: {
       headers: undefined,
       status: options.status,
     },
-    options.revalidateSeconds,
-    undefined,
-    options.expireSeconds,
+    {
+      cacheControl: isrCacheControl(options.revalidateSeconds, {
+        expireSeconds: options.expireSeconds,
+      }),
+    },
   );
 }
 
@@ -593,6 +604,7 @@ export async function renderPagesPageResponse(
   }
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
+    disableOptimizedLoading: options.disableOptimizedLoading,
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
     ssrHeadHTML,
@@ -600,6 +612,7 @@ export async function renderPagesPageResponse(
     // resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
     resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
+    crossOrigin: options.crossOrigin,
   });
 
   options.clearSsrContext();
@@ -731,7 +744,7 @@ export async function renderPagesPageResponse(
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
-    if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+    if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
       return new Response(null, {
         status: 304,
         headers: responseHeaders,

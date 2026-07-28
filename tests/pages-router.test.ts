@@ -749,6 +749,38 @@ describe("Pages Router integration", () => {
     expect(await res.text()).toContain("Method Not Allowed");
   });
 
+  it("returns 405 for an existing public file after middleware, but lets misses route", async () => {
+    const get = await fetch(`${baseUrl}/dedupe-script.js`);
+    expect(get.status).toBe(200);
+    expect(await get.text()).toContain("window.__vinextScriptDedupeExecutions");
+
+    const head = await fetch(`${baseUrl}/dedupe-script.js`, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+
+    const existing = await fetch(`${baseUrl}/dedupe-script.js`, { method: "POST" });
+    expect(existing.status).toBe(405);
+    expect(existing.headers.get("allow")).toBe("GET, HEAD");
+    expect(existing.headers.get("x-custom-middleware")).toBe("active");
+    expect(await existing.text()).toBe("Method Not Allowed");
+
+    const missing = await fetch(`${baseUrl}/missing-public-file.js`, { method: "POST" });
+    expect(missing.status).not.toBe(405);
+  });
+
+  it("does not classify files under a disabled Vite publicDir as static assets", async () => {
+    const disabled = await startFixtureServer(FIXTURE_DIR, { publicDir: false });
+    try {
+      const get = await fetch(`${disabled.baseUrl}/dedupe-script.js`);
+      expect(get.status).not.toBe(200);
+
+      const post = await fetch(`${disabled.baseUrl}/dedupe-script.js`, { method: "POST" });
+      expect(post.status).not.toBe(405);
+    } finally {
+      await disabled.server.close();
+    }
+  });
+
   // Refs #1463: GSP (getStaticProps) pages are also "static" from the
   // routing perspective; POST should produce 405. Mirrors the Next.js
   // condition `(typeof components.Component === 'string' || isSSG)` in
@@ -1501,6 +1533,80 @@ export default function Page({ marker }: { marker: string }) {
     expect(html).toContain("A vinext test app");
     // Custom _document sets className on body
     expect(html).toContain("custom-body");
+  });
+
+  // Next.js requires special Pages files to carry the configured compound
+  // extension too (for example `_app.page.tsx`).
+  // https://nextjs.org/docs/pages/api-reference/config/next-config-js/pageExtensions
+  it("loads custom _app and _document files with compound pageExtensions in dev", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-special-extensions-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "next.config.mjs"),
+        `export default { pageExtensions: ["page.tsx", "page.ts"] };\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "_app.page.tsx"),
+        `export default function App({ Component, pageProps }) {
+  return <main data-testid="compound-app"><Component {...pageProps} /></main>;
+}
+`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "_document.page.tsx"),
+        `import Document, { Head, Html, Main, NextScript } from "next/document";
+export default class CustomDocument extends Document {
+  render() {
+    return <Html><Head /><body data-testid="compound-document"><Main /><NextScript /></body></Html>;
+  }
+}
+`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.page.tsx"),
+        `export default function Home() { return <p>compound extension page</p>; }\n`,
+      );
+
+      const started = await startFixtureServer(tmpRoot);
+      try {
+        const response = await fetch(`${started.baseUrl}/`);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain('data-testid="compound-app"');
+        expect(html).toContain('data-testid="compound-document"');
+
+        const nextDataMatch = html.match(
+          /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+        );
+        expect(nextDataMatch).toBeTruthy();
+        const nextData = JSON.parse(nextDataMatch![1]);
+        expect(nextData.__vinext.appModuleUrl).toBe("/pages/_app.page.tsx");
+
+        const hydrationProxyPath = html.match(
+          /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
+        )?.[1];
+        expect(hydrationProxyPath).toBeDefined();
+        const hydrationProxy = await fetch(new URL(hydrationProxyPath!, started.baseUrl)).then(
+          (proxyResponse) => proxyResponse.text(),
+        );
+        expect(hydrationProxy).toContain("/pages/_app.page.tsx");
+
+        const notFoundResponse = await fetch(`${started.baseUrl}/missing`);
+        expect(notFoundResponse.status).toBe(404);
+        const notFoundHtml = await notFoundResponse.text();
+        expect(notFoundHtml).toContain('data-testid="compound-app"');
+        expect(notFoundHtml).toContain('data-testid="compound-document"');
+      } finally {
+        await started.server.close();
+      }
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   // --- API Routes ---
@@ -6515,6 +6621,14 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("GET, HEAD");
     expect(await res.text()).toContain("Method Not Allowed");
+  });
+
+  it("returns 405 with Allow: GET, HEAD on POST to an existing public file (prod)", async () => {
+    const res = await fetch(`${prodUrl}/dedupe-script.js`, { method: "POST" });
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET, HEAD");
+    expect(await res.text()).toBe("Method Not Allowed");
   });
 
   // Regression for #1331: after a middleware rewrite, the rewrite target

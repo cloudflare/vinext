@@ -20,9 +20,9 @@ test.describe("parallel routes under a static root param", () => {
   }
 
   test("rejects an unknown root param with a valid generated leaf", async ({ request }) => {
-    expect((await request.get("/parallel-root-param/es/gsp/stories/static-123")).status()).toBe(
-      404,
-    );
+    const response = await request.get("/parallel-root-param/es/gsp/stories/static-123");
+    expect(response.status()).toBe(404);
+    expect(await response.text()).toContain("404 - Page Not Found");
   });
 
   test("keeps child params dynamic during soft navigation", async ({ page }) => {
@@ -46,6 +46,7 @@ test.describe("parallel routes under a static root param", () => {
     expect((await page.goto("/parallel-root-param/en/gsp/stories/dynamic-123"))?.status()).toBe(
       404,
     );
+    await expect(page.getByRole("heading", { name: "404 - Page Not Found" })).toBeVisible();
   });
 
   test("preserves each mixed parallel generator result", async ({ request }) => {
@@ -89,11 +90,13 @@ test.describe("parallel routes under a static root param", () => {
     await page.getByRole("link", { name: "Unknown static child" }).click();
 
     await expect(page).toHaveURL(/\/parallel-root-param\/en\/gsp\/stories\/dynamic-123$/);
-    await expect(page.getByText("This page could not be found", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "404 - Page Not Found" })).toBeVisible();
   });
 
   test("enforces generated params on the root page", async ({ request }) => {
     expect((await request.get("/parallel-root-param/en")).status()).toBe(200);
-    expect((await request.get("/parallel-root-param/es")).status()).toBe(404);
+    const response = await request.get("/parallel-root-param/es");
+    expect(response.status()).toBe(404);
+    expect(await response.text()).toContain("404 - Page Not Found");
   });
 });

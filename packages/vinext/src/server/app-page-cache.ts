@@ -8,9 +8,15 @@ import {
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
-import { applyEdgeRuntimeHeader } from "./app-page-response.js";
+import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import {
+  buildAppPageCacheValue,
+  isrCacheControl,
+  type AppPageCacheSetter,
+  type ISRCacheEntry,
+} from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
@@ -24,13 +30,6 @@ export {
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
-type AppPageCacheSetter = (
-  key: string,
-  data: CachedAppPageValue,
-  revalidateSeconds: number,
-  tags: string[],
-  expireSeconds?: number,
-) => Promise<void>;
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 type AppPageRscCacheKeyBuilder = (
   pathname: string,
@@ -163,6 +162,7 @@ function buildAppPageCachedHeaders(options: {
   isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
+  staleTimeSeconds?: number;
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
@@ -186,6 +186,8 @@ function buildAppPageCachedHeaders(options: {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
 
+  applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
+
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
   return headers;
 }
@@ -201,11 +203,11 @@ function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean
   );
 }
 
-function resolveRegeneratedAppPageCachePolicy(options: {
+function resolveRegeneratedAppPageCacheControl(options: {
   expireSeconds?: number;
   renderCacheControl?: CacheControlMetadata;
   routeRevalidateSeconds: number;
-}): { expireSeconds?: number; revalidateSeconds: number } {
+}): CacheControlMetadata {
   let revalidateSeconds = options.routeRevalidateSeconds;
   const renderRevalidateSeconds = options.renderCacheControl?.revalidate;
   // An indefinite nested cache lifetime does not tighten the route's own
@@ -217,10 +219,12 @@ function resolveRegeneratedAppPageCachePolicy(options: {
         : renderRevalidateSeconds;
   }
 
-  return {
+  return isrCacheControl(revalidateSeconds, {
     expireSeconds: options.renderCacheControl?.expire ?? options.expireSeconds,
-    revalidateSeconds,
-  };
+    // Carry the regenerating render's own claim onto the refreshed entry, so a
+    // background regen does not quietly drop it and widen client reuse.
+    staleSeconds: resolveClientStaleTimeSeconds(options.renderCacheControl),
+  });
 }
 
 export function buildAppPageCachedResponse(
@@ -237,6 +241,10 @@ export function buildAppPageCachedResponse(
     expireSeconds: options.expireSeconds,
     cacheControlMeta: options.cacheControl,
   });
+  // Replay the producing render's claim verbatim, not aged — Next.js re-emits
+  // the stored header unchanged on every hit, and the cached HTML body embeds
+  // the same original value in its done-script.
+  const staleTimeSeconds = resolveClientStaleTimeSeconds(options.cacheControl);
   if (options.isRscRequest) {
     if (!cachedValue.rscData) {
       return null;
@@ -249,6 +257,7 @@ export function buildAppPageCachedResponse(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      staleTimeSeconds,
     });
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
@@ -270,6 +279,7 @@ export function buildAppPageCachedResponse(
     isEdgeRuntime: options.isEdgeRuntime,
     linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
+    staleTimeSeconds,
   });
 
   return new Response(cachedValue.html, {
@@ -441,7 +451,7 @@ export async function readAppPageCacheResponse(
       // reuse it instead of recomputing the hash.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
-        const cachePolicy = resolveRegeneratedAppPageCachePolicy({
+        const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
           renderCacheControl: revalidatedPage.cacheControl,
           routeRevalidateSeconds: options.revalidateSeconds,
@@ -465,9 +475,7 @@ export async function readAppPageCacheResponse(
               200,
               revalidatedPage.rscRenderObservation,
             ),
-            cachePolicy.revalidateSeconds,
-            revalidatedPage.tags,
-            cachePolicy.expireSeconds,
+            { cacheControl, tags: revalidatedPage.tags },
           ),
         ];
 
@@ -486,9 +494,7 @@ export async function readAppPageCacheResponse(
                 revalidatedPage.htmlRenderObservation,
                 revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
               ),
-              cachePolicy.revalidateSeconds,
-              revalidatedPage.tags,
-              cachePolicy.expireSeconds,
+              { cacheControl, tags: revalidatedPage.tags },
             ),
           );
         }

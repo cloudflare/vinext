@@ -32,6 +32,7 @@ export type KVBulkPair = {
 type CacheControlMetadata = {
   revalidate: number;
   expire?: number;
+  stale?: number;
 };
 
 function resolveContainedFile(rootDir: string, relativePath: string): string {
@@ -55,13 +56,16 @@ function buildCacheEntry(
   now: number,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
+  staleSeconds: number | undefined,
 ): string {
   const cacheControl: CacheControlMetadata | undefined =
     revalidateSeconds === undefined
       ? undefined
-      : expireSeconds === undefined
-        ? { revalidate: revalidateSeconds }
-        : { revalidate: revalidateSeconds, expire: expireSeconds };
+      : {
+          revalidate: revalidateSeconds,
+          ...(expireSeconds === undefined ? {} : { expire: expireSeconds }),
+          ...(staleSeconds === undefined ? {} : { stale: staleSeconds }),
+        };
 
   return JSON.stringify({
     value,
@@ -123,8 +127,10 @@ export function buildPrerenderKVPairs(
     if (typeof route.revalidate === "number" && route.revalidate <= 0) continue;
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
+    const staleSeconds =
+      typeof route.stale === "number" && route.stale >= 0 ? route.stale : undefined;
     const expirationTtl = revalidateSeconds === undefined ? undefined : ttlSeconds;
-    const tags = buildAppPageCacheTags(cachePathname, []);
+    const tags = buildAppPageCacheTags(cachePathname, route.tags ?? []);
     const metadata = buildMetadata(tags);
     const htmlKey = appIsrCacheKey(cachePathname, "html", manifest.buildId);
     const rscKey = appIsrCacheKey(cachePathname, "rsc", manifest.buildId);
@@ -141,6 +147,7 @@ export function buildPrerenderKVPairs(
         now,
         revalidateSeconds,
         expireSeconds,
+        staleSeconds,
       ),
       ...(expirationTtl !== undefined ? { expiration_ttl: expirationTtl } : {}),
       ...(metadata ? { metadata } : {}),
@@ -160,6 +167,7 @@ export function buildPrerenderKVPairs(
           now,
           revalidateSeconds,
           expireSeconds,
+          staleSeconds,
         ),
         ...(expirationTtl !== undefined ? { expiration_ttl: expirationTtl } : {}),
         ...(metadata ? { metadata } : {}),

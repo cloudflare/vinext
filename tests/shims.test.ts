@@ -152,6 +152,44 @@ describe("slot BFCache entry ordering", () => {
     expect(order).toEqual(["one", "three", "two"]);
   });
 
+  it("does not evict a committed snapshot during a discarded render", async () => {
+    const { stageBfcacheSlotEntryForRender } = await import("../packages/vinext/src/shims/slot.js");
+    const entry = (stateKey: string) => ({ content: stateKey, stateKey });
+    const snapshots = new Map([
+      ["one", entry("one")],
+      ["two", entry("two")],
+      ["three", entry("three")],
+    ]);
+    const committedOrder = ["one", "two", "three"];
+
+    const discarded = stageBfcacheSlotEntryForRender(snapshots, committedOrder, entry("four"), 3);
+    expect(discarded.order).toEqual(["four", "one", "two"]);
+    expect(snapshots.has("three")).toBe(true);
+    expect(snapshots.has("four")).toBe(false);
+
+    const resumed = stageBfcacheSlotEntryForRender(snapshots, committedOrder, entry("one"), 3);
+    expect(resumed.entries.map((snapshot) => snapshot.stateKey)).toEqual(["one", "two", "three"]);
+
+    const overwritten = stageBfcacheSlotEntryForRender(
+      snapshots,
+      committedOrder,
+      { content: "speculative one", stateKey: "one" },
+      3,
+    );
+    expect(overwritten.entries[0]?.content).toBe("speculative one");
+    expect(snapshots.get("one")?.content).toBe("one");
+
+    const winningRender = stageBfcacheSlotEntryForRender(
+      snapshots,
+      committedOrder,
+      entry("two"),
+      3,
+    );
+    expect(winningRender.entries.find((snapshot) => snapshot.stateKey === "one")?.content).toBe(
+      "one",
+    );
+  });
+
   it("keeps a single retained entry when the limit is one", async () => {
     const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
 
@@ -5031,6 +5069,306 @@ describe("next/server shim", () => {
     expect(completed).toBe(true);
   });
 
+  it("returns a fully-buffered-marked response unchanged when no after() work is registered", async () => {
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markFullyBufferedBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const original = markFullyBufferedBody(
+      new Response("buffered", {
+        status: 201,
+        statusText: "Created",
+        headers: { "x-custom": "value" },
+      }),
+    );
+
+    const response = await runWithRequestContext(requestContext, () =>
+      closeAfterResponseWithBody(original, requestContext),
+    );
+
+    // Same object, not rebuilt through a TransformStream.
+    expect(response).toBe(original);
+    expect(response.status).toBe(201);
+    expect(response.statusText).toBe("Created");
+    expect(response.headers.get("x-custom")).toBe("value");
+    expect(await response.text()).toBe("buffered");
+  });
+
+  it("still wraps a fully-buffered-marked response when after() is registered", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markFullyBufferedBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const original = markFullyBufferedBody(new Response("buffered"));
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(() => {
+        called = true;
+      });
+      response = closeAfterResponseWithBody(original, requestContext);
+    });
+
+    expect(response).not.toBe(original);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+
+    await response.text();
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  // Ported from Next.js: packages/next/src/server/after/after-context.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/after/after-context.test.ts
+  it("runs after() callbacks added from after(promise) after a fully buffered response returns", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markFullyBufferedBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      executionContext: {
+        waitUntil(promise: Promise<unknown>) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+    let releasePromise!: () => void;
+    const promiseGate = new Promise<void>((resolve) => {
+      releasePromise = resolve;
+    });
+    let called = false;
+    let original!: Response;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(
+        (async () => {
+          await promiseGate;
+          after(() => {
+            called = true;
+          });
+        })(),
+      );
+      original = markFullyBufferedBody(new Response("buffered"));
+      response = closeAfterResponseWithBody(original, requestContext);
+    });
+
+    // The outstanding promise keeps close tracking enabled. A callback it
+    // registers must wait for the body to close, not run as soon as the
+    // promise settles while the response is still being delivered.
+    expect(response).not.toBe(original);
+    releasePromise();
+    await vi.waitFor(() => expect(requestContext.afterContext.callbacks).toHaveLength(1));
+    expect(called).toBe(false);
+
+    expect(await response.text()).toBe("buffered");
+    await vi.waitFor(() => expect(called).toBe(true));
+    await Promise.all(waitUntilCalls);
+  });
+
+  it("wraps an unmarked response even with no after() work registered yet", async () => {
+    // No fully-buffered marker (e.g. a hand-written Route Handler returning
+    // new Response(stream), or a page render whose Suspense-wrapped async
+    // Server Components can still call after() later) — must stay wrapped.
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const original = new Response("streamed");
+
+    const response = await runWithRequestContext(requestContext, () =>
+      closeAfterResponseWithBody(original, requestContext),
+    );
+
+    expect(response).not.toBe(original);
+    expect(await response.text()).toBe("streamed");
+  });
+
+  it("defers a late after() call registered from an unmarked still-producing stream until it completes", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      // No after() call has happened yet when closeAfterResponseWithBody runs.
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await streamGate;
+          after(() => {
+            called = true;
+          });
+          controller.enqueue(new TextEncoder().encode("streamed"));
+          controller.close();
+        },
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    releaseStream();
+    await Promise.resolve();
+    await Promise.resolve();
+    // after() has just been registered but the stream hasn't closed yet.
+    expect(called).toBe(false);
+
+    await response.text();
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("runs a late after() call from an unmarked still-producing stream when the client cancels instead of consuming it", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await streamGate;
+          after(() => {
+            called = true;
+          });
+          controller.enqueue(new TextEncoder().encode("streamed"));
+          // Deliberately no controller.close() — the client below cancels
+          // instead of the producer ever finishing on its own.
+        },
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    releaseStream();
+    await Promise.resolve();
+    await Promise.resolve();
+    await response.body!.cancel();
+
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("keeps a late after() call from an unmarked still-producing stream wired to ctx.executionContext.waitUntil", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise: Promise<unknown>) {
+        waitUntilCalls.push(promise);
+      },
+    };
+    const requestContext = createRequestContext({ executionContext });
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await streamGate;
+          after(() => {
+            called = true;
+          });
+          controller.enqueue(new TextEncoder().encode("streamed"));
+          controller.close();
+        },
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    // Nothing registered yet, so no waitUntil call has happened.
+    expect(waitUntilCalls).toHaveLength(0);
+
+    releaseStream();
+    await response.text();
+    await vi.waitFor(() => expect(waitUntilCalls).toHaveLength(1));
+    await waitUntilCalls[0];
+    expect(called).toBe(true);
+  });
+
+  it("closeAfterResponseWithBody still resolves queued after() work when the client cancels the body instead of consuming it", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    let called = false;
+
+    // Deliberately never closes on its own — the test cancels it below,
+    // simulating a client that disconnects mid-stream.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+      },
+    });
+
+    let response!: Response;
+    await runWithRequestContext(requestContext, () => {
+      after(() => {
+        called = true;
+      });
+      response = closeAfterResponseWithBody(new Response(body), requestContext);
+    });
+
+    expect(called).toBe(false);
+    await response.body!.cancel();
+
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("closeAfterResponseWithBody keeps the after-lifecycle completion wired to ctx.executionContext.waitUntil", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { closeAfterResponseWithBody, createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise: Promise<unknown>) {
+        waitUntilCalls.push(promise);
+      },
+    };
+    const requestContext = createRequestContext({ executionContext });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(() => {
+        called = true;
+      });
+      response = closeAfterResponseWithBody(new Response("streamed"), requestContext);
+    });
+
+    expect(waitUntilCalls).toHaveLength(1);
+    await response.text();
+    await waitUntilCalls[0];
+    expect(called).toBe(true);
+  });
+
   // Next.js uses an unbounded PromiseQueue for after callbacks, so callbacks
   // registered together start concurrently rather than blocking each other.
   it("after() starts sibling callbacks concurrently", async () => {
@@ -6506,6 +6844,89 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
   });
 
+  it("a use cache hit re-registers its client stale time on the request scope", async () => {
+    // The enclosing render's minimum is what gets persisted onto the page cache
+    // entry. If a warm `use cache` hit contributed revalidate/expire but dropped
+    // `stale`, the page entry would advertise a wider client-reuse window than
+    // the identical cold render did — the same output under two different
+    // freshness claims depending only on data-cache temperature.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const {
+      setCacheHandler,
+      MemoryCacheHandler,
+      cacheLife,
+      _peekRequestScopedCacheLife,
+      _runWithCacheState,
+    } = await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(async () => {
+      // `seconds` is { stale: 30, revalidate: 1, expire: 60 }.
+      cacheLife("seconds");
+      callCount++;
+      return { data: "value" };
+    }, "test:stale-replay");
+
+    const coldStale = await _runWithCacheState(async () => {
+      await cached();
+      return _peekRequestScopedCacheLife()?.stale;
+    });
+    expect(callCount).toBe(1);
+    expect(coldStale).toBe(30);
+
+    const warmStale = await _runWithCacheState(async () => {
+      await cached();
+      return _peekRequestScopedCacheLife()?.stale;
+    });
+    expect(callCount).toBe(1);
+    expect(warmStale).toBe(30);
+  });
+
+  it("a nested use cache hit constrains the enclosing cache entry's lifetime", async () => {
+    // Mirrors the MISS path's `parentCtx.lifeConfigs.push`: an inner HIT during
+    // an outer MISS must still constrain the outer entry, or the child's stale
+    // claim disappears once the outer itself goes warm.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const {
+      setCacheHandler,
+      MemoryCacheHandler,
+      cacheLife,
+      _peekRequestScopedCacheLife,
+      _runWithCacheState,
+    } = await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let innerCalls = 0;
+    let outerCalls = 0;
+    const inner = registerCachedFunction(async () => {
+      cacheLife({ stale: 30, revalidate: 300, expire: 600 });
+      innerCalls++;
+      return "inner";
+    }, "test:nested-inner");
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return await inner();
+    }, "test:nested-outer");
+
+    // Warm the inner entry alone, then run the outer cold: the inner HITs
+    // inside the outer's execution.
+    await _runWithCacheState(() => inner());
+    await _runWithCacheState(() => outer());
+    expect(innerCalls).toBe(1);
+    expect(outerCalls).toBe(1);
+
+    // Outer warm HIT — its stored entry must carry the inner's stale claim.
+    const warmStale = await _runWithCacheState(async () => {
+      await outer();
+      return _peekRequestScopedCacheLife()?.stale;
+    });
+    expect(outerCalls).toBe(1);
+    expect(warmStale).toBe(30);
+  });
+
   it("registerCachedFunction collects cacheTag", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -7222,7 +7643,9 @@ describe('"use cache" runtime', () => {
         await import("../packages/vinext/src/shims/cache.js");
       setCacheHandler(new MemoryCacheHandler());
 
+      let innerCalls = 0;
       const innerFn = async () => {
+        innerCalls++;
         cacheLife({ expire: 60 }); // 1 minute, under 5 minute threshold
         return "inner";
       };
@@ -7234,19 +7657,26 @@ describe('"use cache" runtime', () => {
       };
       const outerCached = registerCachedFunction(outerFn, "test:nested-short-outer");
 
-      let thrown: Error | undefined;
-      try {
-        await outerCached();
-      } catch (e) {
-        thrown = e as Error;
-      }
+      // The first outer call executes and stores the inner value before the
+      // outer validation throws. The second outer call therefore reads a warm
+      // inner HIT; it must surface the same nested-dynamic error rather than
+      // making correctness depend on cache temperature.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let thrown: Error | undefined;
+        try {
+          await outerCached();
+        } catch (e) {
+          thrown = e as Error;
+        }
 
-      expect(thrown).toBeDefined();
-      expect(thrown!.message).toContain("expire");
-      expect(thrown!.message).toContain('"use cache"');
-      expect(thrown!.message).toContain("not allowed");
-      expect(thrown!.cause).toBeDefined();
-      expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+        expect(thrown).toBeDefined();
+        expect(thrown!.message).toContain("expire");
+        expect(thrown!.message).toContain('"use cache"');
+        expect(thrown!.message).toContain("not allowed");
+        expect(thrown!.cause).toBeDefined();
+        expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+      }
+      expect(innerCalls).toBe(1);
     });
   });
 
@@ -15205,6 +15635,80 @@ describe("app router scroll document-top fallback", () => {
     ],
   };
 
+  it("defers hash fallback scrolling and ignores a stale animation frame", async () => {
+    const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
+      await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+    const { applyAppRouterScrollFallback } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const scrollIntoView = vi.fn();
+    let frame: (() => void) | null = null;
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "requestAnimationFrame",
+    );
+
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        documentElement: { scrollTop: 0 },
+        getElementById: () => ({ scrollIntoView }),
+        getElementsByName: () => [],
+        head: { querySelectorAll: () => [] },
+      },
+    });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+    Object.defineProperty(globalThis, "requestAnimationFrame", {
+      configurable: true,
+      value: (callback: () => void) => {
+        frame = callback;
+        return 1;
+      },
+    });
+
+    try {
+      clearAppRouterScrollIntent();
+      const intent = beginAppRouterScrollIntent("#target");
+      applyAppRouterScrollFallback(intent);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(frame).not.toBeNull();
+      frame!();
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto" });
+
+      scrollIntoView.mockClear();
+      frame = null;
+      const staleIntent = beginAppRouterScrollIntent("#stale");
+      applyAppRouterScrollFallback(staleIntent);
+      expect(frame).not.toBeNull();
+      beginAppRouterScrollIntent("#new");
+      frame!();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      clearAppRouterScrollIntent();
+      frame = null;
+      const clearedIntent = beginAppRouterScrollIntent("#cleared");
+      applyAppRouterScrollFallback(clearedIntent);
+      expect(frame).not.toBeNull();
+      clearAppRouterScrollIntent();
+      frame!();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      clearAppRouterScrollIntent();
+      for (const [key, descriptor] of [
+        ["document", originalDocument],
+        ["window", originalWindow],
+        ["requestAnimationFrame", originalRequestAnimationFrame],
+      ] as const) {
+        if (descriptor) {
+          Object.defineProperty(globalThis, key, descriptor);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+    }
+  });
+
   it("scrolls to the document top even when hoisted stylesheets exist in <head>", async () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
@@ -22522,11 +23026,11 @@ describe("image optimization request parsing", () => {
       16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840,
     ];
     const params = parseImageParams(
-      new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=64&q=75"),
+      new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=16&q=75"),
       allowedWidths,
     );
     expect(params).not.toBeNull();
-    expect(params!.width).toBe(64);
+    expect(params!.width).toBe(16);
   });
 
   it("negotiateImageFormat prefers AVIF over WebP", async () => {
@@ -22574,11 +23078,15 @@ describe("image optimization request parsing", () => {
     expect(isImageOptimizationPath("/")).toBe(false);
   });
 
-  it("exports DEFAULT_DEVICE_SIZES and DEFAULT_IMAGE_SIZES matching Next.js defaults", async () => {
-    const { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } =
+  it("uses Next.js default widths for image optimization requests", async () => {
+    const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    expect(DEFAULT_DEVICE_SIZES).toEqual([640, 750, 828, 1080, 1200, 1920, 2048, 3840]);
-    expect(DEFAULT_IMAGE_SIZES).toEqual([16, 32, 48, 64, 96, 128, 256, 384]);
+    const request = (width: number) =>
+      new URL(`http://localhost/_next/image?url=%2Fimg.jpg&w=${width}&q=75`);
+
+    expect(parseImageParams(request(16))).toBeNull();
+    expect(parseImageParams(request(32))?.width).toBe(32);
+    expect(parseImageParams(request(640))?.width).toBe(640);
   });
 });
 

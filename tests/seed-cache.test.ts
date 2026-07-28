@@ -385,6 +385,47 @@ describe("seedMemoryCacheFromPrerender", () => {
     ]);
   });
 
+  it("seeds the prerender's client stale time onto both artifacts", async () => {
+    // A prerendered page's `cacheLife` resolves before the artifact is written,
+    // so the seeded entry can carry the claim. Without it, a page served from
+    // the seed would be reusable for the configured staleTimes default while an
+    // identical runtime-rendered entry honored `cacheLife`.
+    const writes: { key: string; staleSeconds?: number }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "seed-stale-test",
+        routes: [
+          {
+            route: "/isr",
+            status: "rendered",
+            revalidate: 60,
+            expire: 300,
+            stale: 30,
+            router: "app",
+          },
+        ],
+      },
+      {
+        "isr.html": "<html>ISR</html>",
+        "isr.rsc": "RSC isr",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(key, _data, metadata): Promise<void> {
+        writes.push({ key, staleSeconds: metadata.staleSeconds });
+      },
+    });
+
+    const baseKey = isrCacheKey("app", "/isr", "seed-stale-test");
+    expect(writes).toEqual([
+      { key: baseKey + ":html", staleSeconds: 30 },
+      { key: baseKey + ":rsc", staleSeconds: 30 },
+    ]);
+  });
+
   it("can use injected runtime app page cache key builders", async () => {
     const keys: string[] = [];
 
@@ -464,6 +505,42 @@ describe("seedMemoryCacheFromPrerender", () => {
 
     // revalidatePath should invalidate both seeded artifacts.
     await Promise.resolve(revalidatePath("/posts"));
+
+    expect(await getCacheHandler().get(htmlKey)).toBeNull();
+    expect(await getCacheHandler().get(rscKey)).toBeNull();
+  });
+
+  it("user cache tags from the prerender manifest invalidate seeded entries", async () => {
+    const buildId = "revalidate-seeded-user-tag-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/update-tag-test",
+            status: "rendered",
+            revalidate: false,
+            router: "app",
+            tags: ["test-update-tag"],
+          },
+        ],
+      },
+      {
+        "update-tag-test.html": "<html>Seeded data</html>",
+        "update-tag-test.rsc": "RSC seeded data",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/update-tag-test", buildId);
+    const htmlKey = baseKey + ":html";
+    const rscKey = baseKey + ":rsc";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+    expect(await getCacheHandler().get(rscKey)).not.toBeNull();
+
+    await getCacheHandler().revalidateTag("test-update-tag");
 
     expect(await getCacheHandler().get(htmlKey)).toBeNull();
     expect(await getCacheHandler().get(rscKey)).toBeNull();

@@ -1,0 +1,10 @@
+.frame {
+  position: relative;
+  width: 100%;
+  max-width: 24rem;
+  aspect-ratio: 3 / 2;
+}
+
+.art {
+  object-fit: cover;
+}

@@ -6,7 +6,11 @@ import {
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
-import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
+import {
+  forbiddenResponse,
+  methodNotAllowedResponse,
+  notFoundResponse,
+} from "./http-error-responses.js";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 
 export { isOpenRedirectShaped } from "./open-redirect.js";
@@ -139,12 +143,17 @@ export function createStaticFileSignal(
  *
  * Public files are checked after middleware and before afterFiles/fallback
  * rewrites. The generated App Router entry provides the public-file set; this
- * helper owns the request-method and RSC exclusions plus static-file signaling.
+ * helper owns the RSC exclusion, existence-first method enforcement, and
+ * static-file signaling. Missing mutation targets continue through routing.
  */
 export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
-  if (options.request.method !== "GET" && options.request.method !== "HEAD") return null;
   if (options.pathname.endsWith(".rsc")) return null;
   if (!options.publicFiles.has(options.cleanPathname)) return null;
+  if (options.request.method !== "GET" && options.request.method !== "HEAD") {
+    return methodNotAllowedResponse("GET, HEAD", {
+      headers: options.middlewareContext.headers ?? undefined,
+    });
+  }
   return createStaticFileSignal(options.cleanPathname, options.middlewareContext);
 }
 

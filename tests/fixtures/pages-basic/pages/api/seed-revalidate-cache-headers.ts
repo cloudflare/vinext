@@ -16,8 +16,12 @@ export default async function handler(_req: NextApiRequest, res: NextApiResponse
   // Dev does not expose a build ID; production does. Seed both fixture keys so
   // this endpoint remains useful in either server mode.
   await Promise.all([
-    isrSet(isrCacheKey("pages", "/revalidate-parity-target"), value, 3600),
-    isrSet(isrCacheKey("pages", "/revalidate-parity-target", "test-build-id"), value, 3600),
+    isrSet(isrCacheKey("pages", "/revalidate-parity-target"), value, {
+      cacheControl: { revalidate: 3600 },
+    }),
+    isrSet(isrCacheKey("pages", "/revalidate-parity-target", "test-build-id"), value, {
+      cacheControl: { revalidate: 3600 },
+    }),
   ]);
   res.json({ seeded: true });
 }

@@ -39,6 +39,7 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
+  NEXT_CACHE_TAGS_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -58,6 +59,7 @@ import {
 } from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import {
   createAppPprFallbackShells,
@@ -143,6 +145,8 @@ export type PrerenderRouteResult =
       outputFiles: string[];
       revalidate: number | false;
       expire?: number;
+      /** Client-router reuse bound resolved from the prerender's `cacheLife`. */
+      stale?: number;
       /**
        * The concrete prerendered URL path, e.g. `/blog/hello-world`.
        * Only present when the route is dynamic and `path` differs from `route`.
@@ -153,6 +157,8 @@ export type PrerenderRouteResult =
       router: "app" | "pages";
       /** Response headers that must be replayed with the prerendered artifact. */
       headers?: Record<string, string>;
+      /** Cache tags collected while rendering this route. */
+      tags?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
     }
@@ -1444,6 +1450,7 @@ export async function prerenderApp({
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
+            const cacheTags = readPrerenderCacheTagsHeader(response.headers);
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1452,6 +1459,7 @@ export async function prerenderApp({
                 html: null,
                 ok: response.ok,
                 requestCacheLife: null,
+                tags: [],
                 status: response.status,
               };
             }
@@ -1468,6 +1476,7 @@ export async function prerenderApp({
               ok: true,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
+              tags: cacheTags,
             };
           },
         );
@@ -1565,6 +1574,9 @@ export async function prerenderApp({
               : Math.min(revalidate, renderedCacheControl.revalidate)
             : (renderedCacheControl.revalidate ?? revalidate);
 
+        // Seed the same unclamped claim the runtime write path persists.
+        const renderedStale = resolveClientStaleTimeSeconds(htmlRender.requestCacheLife);
+
         return {
           route: routePattern,
           status: "rendered",
@@ -1573,7 +1585,9 @@ export async function prerenderApp({
           ...(typeof renderedRevalidate === "number"
             ? { expire: renderedCacheControl.expire }
             : {}),
+          ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
+          ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
@@ -1679,8 +1693,11 @@ export async function prerenderApp({
   }
 }
 
+/** Cache life recovered from a prerendered response; `stale` seeds the ISR entry. */
+type PrerenderCacheLife = { expire?: number; revalidate?: number; stale?: number };
+
 function resolveRenderedCacheControl(
-  requestCacheLife: { expire?: number; revalidate?: number },
+  requestCacheLife: PrerenderCacheLife,
   cacheControl: string,
   fallbackExpireSeconds: number,
 ): { expire: number; revalidate?: number } {
@@ -1700,25 +1717,40 @@ function resolveRenderedCacheControl(
   };
 }
 
-function readPrerenderCacheLifeHeader(
-  headers: Headers,
-): { expire?: number; revalidate?: number } | null {
+function readPrerenderCacheLifeHeader(headers: Headers): PrerenderCacheLife | null {
   const value = headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
   if (!value) return null;
 
   try {
-    const parsed = JSON.parse(value) as { expire?: unknown; revalidate?: unknown };
-    const cacheLife: { expire?: number; revalidate?: number } = {};
+    const parsed = JSON.parse(value) as {
+      expire?: unknown;
+      revalidate?: unknown;
+      stale?: unknown;
+    };
+    const cacheLife: PrerenderCacheLife = {};
     if (typeof parsed.revalidate === "number" && Number.isFinite(parsed.revalidate)) {
       cacheLife.revalidate = parsed.revalidate;
     }
     if (typeof parsed.expire === "number" && Number.isFinite(parsed.expire)) {
       cacheLife.expire = parsed.expire;
     }
-    return cacheLife.revalidate === undefined && cacheLife.expire === undefined ? null : cacheLife;
+    if (typeof parsed.stale === "number" && Number.isFinite(parsed.stale) && parsed.stale >= 0) {
+      cacheLife.stale = parsed.stale;
+    }
+    return cacheLife.revalidate === undefined &&
+      cacheLife.expire === undefined &&
+      cacheLife.stale === undefined
+      ? null
+      : cacheLife;
   } catch {
     return null;
   }
+}
+
+function readPrerenderCacheTagsHeader(headers: Headers): string[] {
+  const value = headers.get(NEXT_CACHE_TAGS_HEADER);
+  if (!value) return [];
+  return [...new Set(value.split(",").filter(Boolean))];
 }
 
 function resolveRenderedExpireSeconds(options: {
@@ -1772,7 +1804,9 @@ export function writePrerenderIndex(
         status: r.status,
         revalidate: r.revalidate,
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
+        ...(typeof r.stale === "number" ? { stale: r.stale } : {}),
         router: r.router,
+        ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),

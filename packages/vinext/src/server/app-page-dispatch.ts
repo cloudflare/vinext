@@ -6,7 +6,6 @@ import {
   _consumeRequestScopedCacheLife,
   _peekRequestScopedCacheLife,
 } from "vinext/shims/cache-request-state";
-import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
@@ -89,7 +88,7 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
-import type { ISRCacheEntry } from "./isr-cache.js";
+import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
   isAppLayoutObservationUnsafeForStaticReuse,
@@ -105,13 +104,6 @@ export type AppPageBoundaryOnError = (
   errorContext: unknown,
 ) => unknown;
 type AppPageDebugLogger = (event: string, detail: string) => void;
-type AppPageCacheSetter = (
-  key: string,
-  data: CachedAppPageValue,
-  revalidateSeconds: number,
-  tags: string[],
-  expireSeconds?: number,
-) => Promise<void>;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
 type AppPageBackgroundRegenerationErrorContext = {
   routerKind: "App Router";
@@ -125,6 +117,7 @@ type AppPageBackgroundRegenerator = (
 ) => void;
 
 type AppPageDispatchIntercept<TPage = unknown> = {
+  interceptionGraphId?: string | null;
   // Lazy-loaded layout modules: typed `unknown` because they arrive as
   // dynamically-imported modules (read sites cast to AppPageModule). Matches the
   // transport-level `interceptLayouts` on the route-matching/request types so an
@@ -144,9 +137,12 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   slotKey: string;
   sourceRouteIndex: number;
   sourcePageSegments?: readonly string[] | null;
+  targetPatternParts?: readonly string[];
+  targetRouteGraphId?: string | null;
 };
 
 type AppPageDispatchInterceptOptions<TPage = unknown> = {
+  interceptGraphId?: string | null;
   interceptionContext: string | null;
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
@@ -162,6 +158,8 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptSlotKey: string;
   interceptSourceMatchedUrl?: string | null;
   interceptSourcePageSegments?: readonly string[] | null;
+  interceptTargetPatternParts?: readonly string[] | null;
+  interceptTargetRouteGraphId?: string | null;
 };
 
 type AppPageModule = {
@@ -591,6 +589,7 @@ function toInterceptOptions(
   intercept: AppPageDispatchIntercept,
 ): AppPageDispatchInterceptOptions {
   return {
+    interceptGraphId: intercept.interceptionGraphId ?? null,
     interceptionContext,
     interceptLayouts: intercept.interceptLayouts,
     interceptLayoutSegments: intercept.interceptLayoutSegments,
@@ -606,6 +605,8 @@ function toInterceptOptions(
     interceptSlotKey: intercept.slotKey,
     interceptSourceMatchedUrl: interceptionContext,
     interceptSourcePageSegments: intercept.sourcePageSegments ?? null,
+    interceptTargetPatternParts: intercept.targetPatternParts ?? null,
+    interceptTargetRouteGraphId: intercept.targetRouteGraphId ?? null,
   };
 }
 
@@ -855,13 +856,26 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // resolves and exact-matches generateStaticParams for the same route.
   if (options.skipStaticParamsValidation !== true && !(options.isProduction && isForceDynamic)) {
     const dynamicParamsResponse = await validateAppPageDynamicParams({
-      clearRequestContext: options.clearRequestContext,
       enforceStaticParamsOnly: options.dynamicParamsConfig === false,
       generateStaticParams: options.generateStaticParams,
       isDynamicRoute: route.isDynamic,
       params: options.staticParamsValidationParams ?? options.params,
     });
     if (dynamicParamsResponse) {
+      // A generated-param miss belongs to a matched App route, so render the
+      // route's not-found boundary just like a page-level notFound() signal.
+      // The plain response remains a defensive fallback if boundary rendering
+      // is unavailable, but the normal path must include Next.js's canonical
+      // not-found markup (and custom not-found.tsx when present).
+      const renderedNotFound = await options.renderHttpAccessFallbackPage(
+        404,
+        { matchedParams: options.params },
+        options.middlewareContext,
+      );
+      if (renderedNotFound) {
+        return renderedNotFound;
+      }
+      options.clearRequestContext();
       return dynamicParamsResponse;
     }
   }

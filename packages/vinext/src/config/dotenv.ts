@@ -2,8 +2,6 @@ import fs from "node:fs";
 import path from "pathslash";
 import { parseEnv } from "node:util";
 
-type VinextEnvMode = "development" | "production" | "test";
-
 /**
  * Environment-variable bag accepted by {@link loadDotenv}.
  *
@@ -17,12 +15,12 @@ type EnvBag = Record<string, string | undefined>;
 
 type LoadDotenvOptions = {
   root: string;
-  mode: VinextEnvMode;
+  mode: string;
   processEnv?: EnvBag;
 };
 
 type LoadDotenvResult = {
-  mode: VinextEnvMode;
+  mode: string;
   loadedFiles: string[];
   loadedEnv: Record<string, string>;
 };
@@ -30,7 +28,7 @@ type LoadDotenvResult = {
 /**
  * Next.js-compatible dotenv lookup order (highest priority first).
  */
-export function getDotenvFiles(mode: VinextEnvMode): string[] {
+export function getDotenvFiles(mode: string): string[] {
   return [`.env.${mode}.local`, ...(mode === "test" ? [] : [".env.local"]), `.env.${mode}`, ".env"];
 }
 
@@ -89,47 +87,49 @@ export function loadDotenv({
   };
 }
 
-const ENV_REF_RE = /(\\)?\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
-
 function expandEnv(parsed: Record<string, string>, processEnv: EnvBag): Record<string, string> {
-  const expanded: Record<string, string> = {};
-  const resolving = new Set<string>();
-  const context: Record<string, string | undefined> = {
-    ...parsed,
-    ...processEnv,
-  };
+  const expanded = { ...parsed };
+  for (const key of Object.keys(expanded)) {
+    const processValue = processEnv[key];
+    const value =
+      processValue && processValue !== expanded[key]
+        ? processValue
+        : expandValue(expanded[key], processEnv, expanded);
+    expanded[key] = value.replace(/\\\$/g, "$");
+  }
+  return expanded;
+}
 
-  function resolveValue(key: string): string {
-    const cached = expanded[key];
-    if (cached !== undefined) return cached;
+function expandValue(value: string, processEnv: EnvBag, parsed: Record<string, string>): string {
+  const env: EnvBag = { ...parsed, ...processEnv };
+  const envRefRe = /(?<!\\)\${([^{}]+)}|(?<!\\)\$([A-Za-z_][A-Za-z0-9_]*)/g;
+  const seen = new Set<string>();
+  let result = value;
+  let match: RegExpExecArray | null;
 
-    if (resolving.has(key)) {
-      return context[key] ?? "";
+  while ((match = envRefRe.exec(result)) !== null) {
+    seen.add(result);
+    const [template, braced, bare] = match;
+    const expression = (braced || bare) as string;
+    const operator = expression.match(/(:\+|\+|:-|-)/)?.[0];
+    const parts = operator ? expression.split(operator) : [expression];
+    const refKey = parts.shift() as string;
+    const operand = parts.join(operator ?? "");
+    const refValue = env[refKey];
+
+    let replacement: string;
+    if (operator === ":+" || operator === "+") {
+      replacement = refValue ? operand : "";
+    } else if (refValue) {
+      replacement = seen.has(refValue) ? operand : refValue;
+    } else {
+      replacement = operand;
     }
 
-    const raw = context[key];
-    if (raw === undefined) return "";
-
-    resolving.add(key);
-    let value = raw.replace(ENV_REF_RE, (match, escaped, braced, bare) => {
-      if (escaped) return match.slice(1);
-
-      const refKey = (braced || bare) as string;
-      return resolveValue(refKey);
-    });
-    // Strip remaining \$ escapes not caught by the regex (e.g. \$100 where
-    // what follows $ isn't a valid variable name).
-    value = value.replace(/\\\$/g, "$");
-    resolving.delete(key);
-
-    expanded[key] = value;
-    context[key] = value;
-    return value;
+    result = result.replace(template, replacement);
+    if (result === parsed[refKey]) break;
+    envRefRe.lastIndex = 0;
   }
 
-  for (const key of Object.keys(parsed)) {
-    resolveValue(key);
-  }
-
-  return expanded;
+  return result;
 }

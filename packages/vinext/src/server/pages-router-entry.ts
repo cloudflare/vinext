@@ -68,6 +68,7 @@ const {
   hasMiddleware,
   matchPageRoute,
   normalizeDataRequest,
+  publicFiles,
   renderPage,
   runMiddleware,
   vinextConfig,
@@ -212,12 +213,17 @@ async function handleRequest(
           : null,
       handleApi:
         typeof handleApiRoute === "function"
-          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)
+          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")
           : null,
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
         if (!env?.ASSETS) return false;
-        return fetchWorkerFilesystemRoute(request, requestPathname, phase, (assetRequest) =>
-          Promise.resolve(env.ASSETS!.fetch(assetRequest)),
+        return fetchWorkerFilesystemRoute(
+          request,
+          requestPathname,
+          phase,
+          (assetRequest) => Promise.resolve(env.ASSETS!.fetch(assetRequest)),
+          publicFiles,
+          missingBuildAsset,
         );
       },
     };
