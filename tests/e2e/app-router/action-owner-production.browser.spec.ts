@@ -20,6 +20,7 @@ type ProductionApp = {
     cookieOwner: string;
     dynamicProtected: string;
     loop: string;
+    objectWrapped: string;
     protected: string;
     protectedClient: string;
     redirectTo: string;
@@ -103,6 +104,7 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
       loop: findActionId(builtSource, "$$hoist_0_loopAction"),
+      objectWrapped: findActionId(builtSource, "objectWrappedAction"),
       protected: findActionId(builtSource, "protectedAction"),
       protectedClient: findActionId(builtSource, "protectedClientAction"),
       redirectTo: findActionId(builtSource, "redirectTo"),
@@ -402,6 +404,24 @@ test.describe("production server action ownership", () => {
       return response.status;
     });
     expect(status).toBe(404);
+  });
+
+  test("fails closed when a client module receives an action through an object", async ({
+    page,
+  }) => {
+    await page.goto(`${app.baseUrl}/ownership/object-wrapped`);
+    await waitForAppRouterHydration(page);
+
+    const responsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.request().headers()["next-action"] === app.actionIds.objectWrapped,
+    );
+    await page.getByTestId("object-wrapped").click();
+    const response = await responsePromise;
+
+    expect(response.status()).toBe(404);
+    expect(await response.text()).not.toContain("OBJECT_WRAPPED_OK");
   });
 
   test("does not grant ownership through side-effect-only imports", async ({ page }) => {
