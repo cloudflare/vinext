@@ -25,14 +25,18 @@ import {
   markDynamicUsage as _markDynamic,
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { scheduleBackgroundCacheRevalidation } from "./internal/cache-revalidation.js";
 import { fnv1a64 } from "../utils/hash.js";
-import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import {
+  createCacheRevalidationContext,
+  runWithRequestContext,
+} from "./unified-request-context.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
@@ -42,17 +46,16 @@ import {
   _queuePendingRevalidation,
   _setRequestScopedCacheLife,
   cacheLifeProfiles,
+  decideCacheRead,
+  getFunctionCacheRevalidationMode,
   getRegisteredCacheContext,
   markActionRevalidation,
   recordUnstableCacheObservation,
-  shouldServeStaleUnstableCacheEntry,
   type CacheLifeConfig,
 } from "./cache-request-state.js";
 
 export * from "./cache-handler.js";
 export * from "./cache-request-state.js";
-
-const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 
 // ---------------------------------------------------------------------------
 // Request-scoped ExecutionContext ALS
@@ -513,46 +516,6 @@ type UnstableCacheOptions = {
   tags?: string[];
 };
 
-const _UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for(
-  "vinext.unstableCache.pendingRevalidations",
-);
-
-function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
-  const existing = _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY];
-  if (existing instanceof Map) return existing;
-
-  const pending = new Map<string, Promise<void>>();
-  _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY] = pending;
-  return pending;
-}
-
-function waitUntilUnstableCacheRevalidation(promise: Promise<void>): void {
-  if (!isInsideUnifiedScope()) return;
-  getRequestContext().executionContext?.waitUntil(promise);
-}
-
-function scheduleUnstableCacheBackgroundRevalidation(
-  cacheKey: string,
-  refresh: () => Promise<unknown>,
-): void {
-  const pending = getPendingUnstableCacheRevalidations();
-  if (pending.has(cacheKey)) return;
-
-  const revalidation = refresh()
-    .then(() => undefined)
-    .catch((err) => {
-      console.error(`[vinext] unstable_cache background revalidation failed for ${cacheKey}:`, err);
-    });
-  const trackedRevalidation = revalidation.finally(() => {
-    if (pending.get(cacheKey) === trackedRevalidation) {
-      pending.delete(cacheKey);
-    }
-  });
-
-  pending.set(cacheKey, trackedRevalidation);
-  waitUntilUnstableCacheRevalidation(trackedRevalidation);
-}
-
 async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   fn: (...args: Args) => Promise<Result>,
   args: Args,
@@ -627,8 +590,8 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     const isDraftMode = isDraftModeEnabled();
     if (!isDraftMode) {
       // Try to get from cache. Stale entries are usable in normal App Router
-      // requests, but foreground-refresh inside revalidation scopes so the
-      // regenerated page/route stores fresh data.
+      // requests, but revalidation scopes and unusable states must refresh in
+      // the foreground so the caller receives fresh data.
       const softTags = getCurrentFetchSoftTags();
       const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
         ? null
@@ -638,20 +601,39 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
             softTags,
           });
       if (existing?.value && existing.value.kind === "FETCH") {
-        const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
-        if (cached.ok) {
-          if (existing.cacheState === "stale") {
-            if (shouldServeStaleUnstableCacheEntry()) {
-              scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
-                refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+        const cacheReadAction = decideCacheRead(
+          existing.cacheState,
+          getFunctionCacheRevalidationMode(),
+        );
+        if (cacheReadAction !== "revalidate") {
+          const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
+          if (cached.ok) {
+            if (cacheReadAction === "serve-and-revalidate") {
+              // The detached refresh is a synthetic cache work unit, not a
+              // continuation of the triggering request: it runs in an isolated
+              // context so cached fetches and observations inside the callback
+              // cannot mutate this request's output containers, and its
+              // foreground mode forces nested stale dependencies to refresh
+              // before the regenerated entry is stored.
+              scheduleBackgroundCacheRevalidation(
+                cacheKey,
+                () =>
+                  runWithRequestContext(createCacheRevalidationContext(softTags), () =>
+                    refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+                  ),
+                (error) => {
+                  console.error(
+                    `[vinext] unstable_cache background revalidation failed for ${cacheKey}:`,
+                    error,
+                  );
+                },
               );
-              return cached.value;
             }
-          } else {
             return cached.value;
           }
         }
-        // Corrupted entries fall through to a foreground refresh.
+        // Expired, unrecognized, and corrupted entries fall through to a
+        // foreground refresh.
       }
     }
 

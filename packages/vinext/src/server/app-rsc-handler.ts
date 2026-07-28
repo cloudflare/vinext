@@ -1432,7 +1432,14 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const requestContext = createRequestContext({
       headersContext,
       executionContext,
-      unstableCacheRevalidation: "background",
+      // Ordinary runtime requests serve stale `use cache` data and refresh in
+      // the background. A build/prerender request (VINEXT_PRERENDER=1) instead
+      // bakes the response into a static artifact, so it must await the refresh
+      // in the foreground — otherwise a stale persistent entry would be written
+      // into the generated artifact. Matches the static-generation dispatch
+      // paths, which also force foreground during prerendering.
+      functionCacheRevalidationMode:
+        process.env.VINEXT_PRERENDER === "1" ? "foreground" : "background",
     });
 
     const responsePromise = runWithRequestContext(requestContext, () =>

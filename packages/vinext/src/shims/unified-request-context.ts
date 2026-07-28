@@ -113,7 +113,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     serverInsertedHTMLCallbacks: [],
     requestScopedCacheLife: null,
     unstableCacheObservations: new Map(),
-    unstableCacheRevalidation: "foreground",
+    functionCacheRevalidationMode: "foreground",
     _privateCache: null,
     cacheableFetchUrls: new Set<string>(),
     currentRequestTags: [],
@@ -140,6 +140,50 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     rootParams: null,
     ...opts,
   };
+}
+
+/**
+ * Create the isolated request state used to regenerate a shared data-cache
+ * entry after serving stale data.
+ *
+ * Cache callbacks retain only supported cache-scope inputs from the triggering
+ * request, while request headers, cookies, and every response-owned output
+ * container start fresh. The refresh runs in foreground mode so nested stale
+ * dependencies are resolved before the refreshed entry is stored.
+ */
+export function createCacheRevalidationContext(
+  fallbackSoftTags: readonly string[] = [],
+): UnifiedRequestContext {
+  const outer = _als.getStore();
+  const rootParams = outer?.rootParams
+    ? Object.fromEntries(
+        Object.entries(outer.rootParams).map(([name, value]) => [
+          name,
+          Array.isArray(value) ? [...value] : value,
+        ]),
+      )
+    : null;
+
+  return createRequestContext({
+    executionContext: outer ? outer.executionContext : _getInheritedExecutionContext(),
+    // draftMode().isEnabled is readable inside public cache scopes. Preserve
+    // that API with a disabled provider, without exposing request data to the
+    // detached refresh. headers() and cookies() remain blocked by cache scope.
+    headersContext: {
+      headers: new Headers(),
+      cookies: new Map<string, string>(),
+      draftModeEnabled: false,
+      draftModeSecret: outer?.headersContext?.draftModeSecret,
+    },
+    pendingRevalidatedTags: new Set(outer?.pendingRevalidatedTags ?? []),
+    currentFetchSoftTags: [...(outer?.currentFetchSoftTags ?? fallbackSoftTags)],
+    currentFetchCacheMode: outer?.currentFetchCacheMode ?? null,
+    currentForceDynamicFetchDefault: outer?.currentForceDynamicFetchDefault ?? false,
+    isFetchDedupeActive: outer?.isFetchDedupeActive ?? false,
+    currentFetchDedupeEntries: new Map(),
+    rootParams,
+    functionCacheRevalidationMode: "foreground",
+  });
 }
 
 function ensureAfterCompletion(ctx: UnifiedRequestContext): void {

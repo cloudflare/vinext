@@ -1051,6 +1051,46 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it("seeds foreground function-cache revalidation only while prerendering", async () => {
+    // Ordinary runtime requests serve stale "use cache"/unstable_cache data and
+    // refresh in the background. A build/prerender request (VINEXT_PRERENDER=1)
+    // bakes the response into a static artifact, so it must await the refresh in
+    // the foreground — otherwise a stale persistent entry would be written into
+    // the generated artifact. Regression for the mode seeded at the handler's
+    // createRequestContext call.
+    const { getFunctionCacheRevalidationMode } =
+      await import("../packages/vinext/src/shims/cache-request-state.js");
+
+    async function observeMode(): Promise<string> {
+      let observed = "";
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async () => {
+          observed = getFunctionCacheRevalidationMode();
+          return new Response("page", { status: 200 });
+        },
+      });
+      const response = await handler(new Request("https://example.test/docs/about"), null);
+      expect(response.status).toBe(200);
+      return observed;
+    }
+
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    try {
+      delete process.env.VINEXT_PRERENDER;
+      expect(await observeMode()).toBe("background");
+
+      process.env.VINEXT_PRERENDER = "1";
+      expect(await observeMode()).toBe("foreground");
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+    }
+  });
+
   it("ignores encoded prerender route params from a different rewritten route pattern", async () => {
     const previousPrerender = process.env.VINEXT_PRERENDER;
     process.env.VINEXT_PRERENDER = "1";
