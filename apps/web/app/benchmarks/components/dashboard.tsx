@@ -1,15 +1,15 @@
 "use client";
 
 import { Suspense } from "react";
-import { Badge } from "@cloudflare/kumo/components/badge";
-import { Table } from "@cloudflare/kumo/components/table";
+import { Badge, Table } from "../../_components/ui";
 import {
   PerformanceResultsTable,
   PerformanceTrends,
-  type PerformanceMeasurement,
   type PerformanceRun,
 } from "./performance-results";
 import { CustomProfileViewer } from "./custom-profile-viewer";
+import { formatUtcDate, formatUtcDateTime } from "./format";
+import { recentMedianMeasurements } from "./recent-median-measurements";
 
 const RECENT_BASELINE_RUNS = 10;
 
@@ -17,7 +17,7 @@ export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
   if (runs.length === 0) {
     return (
       <div className="space-y-8">
-        <div className="rounded-lg border border-gray-200 bg-white px-6 py-12 text-center text-gray-400">
+        <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-6 py-12 text-center text-[var(--mute)]">
           No benchmark data yet. Results will appear after the first merge to main.
         </div>
         <CustomProfileViewer />
@@ -43,8 +43,8 @@ export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
           <a href={`/benchmarks/commit/${latest.commitSha}`}>
             <Badge variant="secondary">{latest.shortSha}</Badge>
           </a>
-          <span className="text-xs text-gray-400">
-            {new Date(latest.measuredAt).toLocaleDateString()}
+          <span className="text-xs whitespace-nowrap text-[var(--mute)]">
+            {formatUtcDate(latest.measuredAt)}
           </span>
         </div>
         <div className="space-y-5">
@@ -56,7 +56,7 @@ export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
               <div className="mb-2 flex items-baseline gap-2">
                 <h3 className="font-medium">Bundle sizes</h3>
                 {baselineRuns.length > 0 && (
-                  <span className="text-xs text-gray-500">
+                  <span className="text-xs text-[var(--sub)]">
                     vs prior {baselineRuns.length}-run median
                   </span>
                 )}
@@ -75,7 +75,7 @@ export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
         <h2 className="mb-3 text-lg font-semibold">Performance Trends</h2>
         <Suspense
           fallback={
-            <div className="h-[374px] animate-pulse rounded-lg border border-gray-200 bg-gray-50" />
+            <div className="h-[374px] animate-pulse rounded-lg border border-[var(--line)] bg-[var(--surface-2)]" />
           }
         >
           <PerformanceTrends runs={[...runs].reverse()} />
@@ -92,37 +92,9 @@ export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
   );
 }
 
-export function recentMedianMeasurements(
-  currentMeasurements: PerformanceMeasurement[],
-  baselineRuns: PerformanceRun[],
-): PerformanceMeasurement[] {
-  return currentMeasurements.flatMap((current) => {
-    const historical = baselineRuns.flatMap((run) => {
-      const measurement = run.measurements.find(
-        (candidate) => candidate.benchmarkId === current.benchmarkId,
-      );
-      return measurement ? [measurement] : [];
-    });
-    if (historical.length === 0) return [];
-
-    return [
-      {
-        ...current,
-        median: median(historical.map((measurement) => measurement.median)),
-      },
-    ];
-  });
-}
-
-function median(values: number[]) {
-  const sorted = values.toSorted((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
-}
-
 function PerformanceRunHistory({ runs }: { runs: PerformanceRun[] }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+    <div className="overflow-x-auto rounded-lg border border-[var(--line)] bg-[var(--surface)]">
       <Table>
         <Table.Header>
           <Table.Row>
@@ -137,7 +109,7 @@ function PerformanceRunHistory({ runs }: { runs: PerformanceRun[] }) {
               <Table.Cell className="font-mono text-xs">
                 <a
                   href={`/benchmarks/commit/${run.commitSha}`}
-                  className="text-blue-700 hover:underline"
+                  className="text-[var(--orange-soft)] hover:underline"
                 >
                   {run.shortSha}
                 </a>
@@ -146,8 +118,8 @@ function PerformanceRunHistory({ runs }: { runs: PerformanceRun[] }) {
                 {new Set(run.measurements.map((measurement) => measurement.scenarioId)).size} ·{" "}
                 {run.measurements.length} measurements
               </Table.Cell>
-              <Table.Cell className="text-xs text-gray-500">
-                {new Date(run.measuredAt).toLocaleString()}
+              <Table.Cell className="text-xs text-[var(--sub)]">
+                {formatUtcDateTime(run.measuredAt)}
               </Table.Cell>
             </Table.Row>
           ))}

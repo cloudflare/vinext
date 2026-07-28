@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "@cloudflare/kumo/components/badge";
-import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { Badge, Dialog } from "@/app/_components/ui";
 import { ArrowSquareOut, Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
 import type { FlameGraphData, PerformanceComparisonData } from "@/app/lib/benchmarks/server";
-import { formatMs } from "./format";
+import { formatMs, formatUtcDateTime } from "./format";
 import { PerformanceResultsTable, type PerformanceMeasurement } from "./performance-results";
 import { profileToFlameGraph, readGzipProfile } from "./profile";
 import { filteredTraceGraph, selfValue, type TraceCategory } from "./trace";
@@ -13,7 +12,7 @@ import { filteredTraceGraph, selfValue, type TraceCategory } from "./trace";
 export type FlameGraphNode = FlameGraphData;
 
 const TRACE_CATEGORIES: Array<{ category: TraceCategory; color: string; label: string }> = [
-  { category: "vinext", color: "#f97316", label: "vinext" },
+  { category: "vinext", color: "var(--orange)", label: "vinext" },
   { category: "vite", color: "#8b5cf6", label: "Vite" },
   { category: "rolldown", color: "#ec4899", label: "Rolldown" },
   { category: "node", color: "#22c55e", label: "Node.js" },
@@ -30,7 +29,7 @@ export type Comparison = PerformanceComparisonData;
 export function PerformanceComparison({ comparison }: { comparison: Comparison }) {
   if (comparison.measurements.length === 0) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800">
+      <div className="rounded-xl border border-[color:var(--partial)]/30 bg-[color:var(--partial)]/10 p-5 text-sm text-[var(--partial)]">
         No comparable performance measurements are available.
       </div>
     );
@@ -55,11 +54,11 @@ export function PerformanceComparison({ comparison }: { comparison: Comparison }
 
   return (
     <div className="space-y-6">
-      <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-100 bg-gradient-to-r from-blue-50 via-white to-emerald-50 px-6 py-6">
+      <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--surface)] shadow-sm">
+        <div className="border-b border-[var(--line-soft)] bg-[radial-gradient(120%_180%_at_100%_0,rgba(var(--orange-rgb),.12),transparent_60%),var(--surface)] px-6 py-6">
           <div>
             <div>
-              <div className="mb-2 flex items-center gap-2 text-sm text-gray-500">
+              <div className="mb-2 flex items-center gap-2 text-sm text-[var(--sub)]">
                 <Badge variant="secondary">{comparison.badge}</Badge>
                 <span>{hasBaseline ? "Performance comparison" : "Performance results"}</span>
               </div>
@@ -68,19 +67,19 @@ export function PerformanceComparison({ comparison }: { comparison: Comparison }
                   href={comparison.githubUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 hover:text-blue-700 hover:underline"
+                  className="inline-flex items-center gap-2 hover:text-[var(--orange-soft)] hover:underline"
                 >
                   {comparison.title}
                   <ArrowSquareOut aria-hidden="true" className="size-5 shrink-0" />
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
               </h1>
-              <p className="mt-2 max-w-2xl text-sm text-gray-500">{comparison.description}</p>
+              <p className="mt-2 max-w-2xl text-sm text-[var(--sub)]">{comparison.description}</p>
             </div>
           </div>
         </div>
         <div
-          className={`grid gap-px bg-gray-200 ${hasBaseline ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}
+          className={`grid gap-px bg-[var(--line)] ${hasBaseline ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}
         >
           <RunCard
             label={comparison.currentLabel}
@@ -96,12 +95,12 @@ export function PerformanceComparison({ comparison }: { comparison: Comparison }
               date={comparison.baseline.measuredAt}
             />
           )}
-          <div className="bg-white px-6 py-4">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Measurement</div>
+          <div className="bg-[var(--surface)] px-6 py-4">
+            <div className="text-xs uppercase tracking-wide text-[var(--mute)]">Measurement</div>
             <div className="mt-1 font-medium">
               {scenarioCount} {scenarioCount === 1 ? "scenario" : "scenarios"}
             </div>
-            <div className="mt-1 text-xs text-gray-500">
+            <div className="mt-1 text-xs text-[var(--sub)]">
               {hasProfiles ? "Profiles available where captured" : "Measurements only"}
             </div>
           </div>
@@ -169,7 +168,7 @@ function layoutFrames(root: FlameGraphNode) {
 }
 
 function frameColor(frame: PositionedFrame) {
-  if (frame.node.category === "vinext") return "#f97316";
+  if (frame.node.category === "vinext") return "var(--orange)";
   if (frame.node.category === "vite") return "#8b5cf6";
   if (frame.node.category === "rolldown") return "#ec4899";
   if (frame.node.category === "node") return "#22c55e";
@@ -207,16 +206,13 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
   return (
     <Dialog.Root onOpenChange={(open) => open && void loadProfile()}>
       <Dialog.Trigger
-        className="font-medium text-blue-700 underline decoration-blue-300 underline-offset-4 hover:text-blue-900 hover:decoration-blue-500"
+        className="font-medium text-[var(--orange-soft)] underline decoration-[color:var(--orange)]/40 underline-offset-4 hover:text-[var(--orange)] hover:decoration-[var(--orange)]"
         aria-label={`Open ${measurement.implementationLabel} ${measurement.label} flame graph`}
         title="Open flame graph"
       >
         {measurement.implementationLabel}
       </Dialog.Trigger>
-      <Dialog
-        size="xl"
-        className="flex max-h-[92vh] w-[min(94vw,76rem)] max-w-none flex-col overflow-hidden border border-slate-700 bg-slate-950 p-0 text-white shadow-2xl ring-1 ring-black/30"
-      >
+      <Dialog className="flex max-h-[92vh] w-[min(94vw,76rem)] max-w-none flex-col overflow-hidden border border-slate-700 bg-slate-950 p-0 text-white shadow-2xl ring-1 ring-black/30">
         <div className="flex items-start justify-between gap-6 border-b border-slate-800 bg-slate-900/80 px-6 py-5">
           <div className="min-w-0">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-orange-400">
@@ -671,19 +667,19 @@ function RunCard({
   date: string | null;
 }) {
   return (
-    <div className="bg-white px-6 py-4">
-      <div className="text-xs uppercase tracking-wide text-gray-400">{label}</div>
+    <div className="bg-[var(--surface)] px-6 py-4">
+      <div className="text-xs uppercase tracking-wide text-[var(--mute)]">{label}</div>
       <a
         href={`https://github.com/cloudflare/vinext/commit/${fullSha}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="mt-1 inline-flex items-center gap-1 font-mono text-sm font-semibold text-blue-700 hover:underline"
+        className="mt-1 inline-flex items-center gap-1 font-mono text-sm font-semibold text-[var(--orange-soft)] hover:underline"
       >
         {sha}
         <ArrowSquareOut aria-hidden="true" className="size-3.5 shrink-0" />
         <span className="sr-only"> (opens in a new tab)</span>
       </a>
-      {date && <div className="mt-1 text-xs text-gray-500">{new Date(date).toLocaleString()}</div>}
+      {date && <div className="mt-1 text-xs text-[var(--sub)]">{formatUtcDateTime(date)}</div>}
     </div>
   );
 }

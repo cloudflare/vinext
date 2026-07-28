@@ -1,13 +1,914 @@
-@import "@cloudflare/kumo/styles";
 @import "tailwindcss";
 
-@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+/* Tailwind v4 already gates `hover:` behind `(hover: hover)`, but hybrid and
+   some Android browsers report that and still latch the hover state after a
+   tap. Redefining the variant here also fixes every variant derived from it
+   (`group-hover:`, `peer-hover:`), so components keep using plain `hover:`.
+   `:focus-visible` remains the keyboard path and is untouched. */
+@custom-variant hover {
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      @slot;
+    }
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+.landing-root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* The canonical prototype names its typefaces directly. next/font exposes
+   those same files through generated variables, so bind the port's inline
+   declarations to the bundled faces instead of relying on local fonts. */
+#app,
+#app [style*="Geist"] {
+  font-family: var(--font-geist-sans), "Geist", system-ui, sans-serif !important;
+}
+#app [style*="JetBrains Mono"] {
+  font-family: var(--font-geist-mono), "JetBrains Mono", monospace !important;
+}
+
+.landing-viewport-height {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.token-dialog {
+  opacity: 0;
+  transform: scale(0.96);
+  transform-origin: center;
+  transition:
+    opacity 220ms var(--ease-out),
+    transform 220ms var(--ease-out),
+    overlay 220ms allow-discrete,
+    display 220ms allow-discrete;
+}
+.token-dialog[open] {
+  opacity: 1;
+  transform: scale(1);
+}
+.token-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.68);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition:
+    opacity 220ms var(--ease-out),
+    overlay 220ms allow-discrete,
+    display 220ms allow-discrete;
+}
+.token-dialog[open]::backdrop {
+  opacity: 1;
+}
+@starting-style {
+  .token-dialog[open] {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  .token-dialog[open]::backdrop {
+    opacity: 0;
+  }
+}
+html {
+  scroll-behavior: smooth;
+}
+/* Deep links (vinext.dev/#compat, #deploy, …) must not land the section's
+   first line under the fixed site chrome, whose scrim runs ~96px tall. */
+section[id] {
+  scroll-margin-top: 84px;
+}
+body {
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection {
+  background: var(--orange);
+  color: var(--on-accent);
+}
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 7px;
+  border: 3px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+/* Theme swap fades the page ground only. `.theme-fade *` put background,
+   color, border and shadow transitions on every element in the document — over
+   400 on the landing page — so one toggle click repainted the whole tree. */
+.theme-fade,
+.theme-fade body,
+.theme-fade #app {
+  transition:
+    background-color 0.24s cubic-bezier(0.23, 1, 0.32, 1),
+    color 0.24s cubic-bezier(0.23, 1, 0.32, 1) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+  [data-intro],
+  [data-rv],
+  [data-gpin] {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: opacity 200ms var(--ease-out) !important;
+    transition-delay: 0ms !important;
+  }
+  [data-el="l1"],
+  [data-el="l2"],
+  [data-el="heroTop"],
+  [data-el="heroBottom"],
+  [data-el="globe"] {
+    transform: none !important;
+  }
+  .token-dialog {
+    transform: none;
+    transition:
+      opacity 200ms var(--ease-out),
+      overlay 200ms allow-discrete,
+      display 200ms allow-discrete;
+  }
+}
+/* The server render is complete and visible. Hydration opts into the inline
+   reveal states only after the motion controller has captured its elements;
+   a delayed or failed client bundle therefore cannot blank the page. */
+html:not(.motion-ready) [data-intro],
+html:not(.motion-ready) [data-rv] {
+  opacity: 1 !important;
+  transform: none !important;
+}
+a,
+button {
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 3px;
+  border-radius: 10px;
+}
+h1,
+h2 {
+  text-wrap: balance;
+}
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 100;
+  transform: translate(-50%, -160%);
+  padding: 10px 15px;
+  border-radius: 10px;
+  background: var(--orange);
+  color: var(--on-accent);
+  font-family: var(--font-geist-sans), "Geist", system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
+  box-shadow: 0 12px 30px -10px var(--orange-glow);
+}
+.skip-link:focus {
+  transform: translate(-50%, 0);
+}
+[data-copy] {
+  position: relative;
+}
+.copy-button {
+  flex: none;
+  display: grid;
+  grid-template-columns: 14px 42px;
+  align-items: center;
+  justify-content: center;
+  column-gap: 7px;
+  height: 32px;
+  min-width: 80px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: none;
+  color: var(--mute);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    scale 150ms var(--ease-out),
+    color 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease;
+}
+.copy-button:hover,
+.copy-button:focus-visible {
+  border-color: var(--faint);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.copy-button:active {
+  scale: 0.96 !important;
+}
+.copy-button-icons {
+  position: relative;
+  width: 14px;
+  height: 14px;
+}
+.copy-button-icon {
+  position: absolute;
+  inset: 0;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition:
+    opacity 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+.copy-button-icon--check {
+  opacity: 0;
+  transform: scale(0.75);
+}
+.copy-button-label {
+  grid-column: 2;
+  grid-row: 1;
+  white-space: nowrap;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+.copy-button-label--copied,
+.copy-button-label--error {
+  opacity: 0;
+  transform: scale(0.92);
+}
+.copy-button[data-copy-state="copied"] .copy-button-icon--copy,
+.copy-button[data-copy-state="copied"] .copy-button-label--idle,
+.copy-button[data-copy-state="error"] .copy-button-label--idle {
+  opacity: 0;
+  transform: scale(0.75);
+}
+.copy-button[data-copy-state="copied"] .copy-button-icon--check,
+.copy-button[data-copy-state="copied"] .copy-button-label--copied,
+.copy-button[data-copy-state="error"] .copy-button-label--error {
+  opacity: 1;
+  transform: scale(1);
+}
+@media (hover: hover) and (pointer: fine) {
+  .copy-button:hover {
+    scale: 1.02;
+  }
+  .copy-button:not([data-copy-state="error"]):hover .copy-button-icon--copy {
+    opacity: 0;
+    transform: scale(0.75);
+  }
+  .copy-button:not([data-copy-state="error"]):hover .copy-button-icon--check {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+[data-copy]::after,
+.theme-toggle::after,
+.chrome-link::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+a[href]:active,
+button:active {
+  scale: 0.97 !important;
+  transition: scale 140ms var(--ease-out) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  a[href]:active,
+  button:active {
+    scale: 1 !important;
+  }
+  .copy-button,
+  .copy-button-icon,
+  .copy-button-label {
+    transition-duration: 0ms;
+  }
+}
+
+.compatibility-line {
+  transition: d 260ms var(--ease-in-out);
+}
+.compatibility-point {
+  transition:
+    cx 260ms var(--ease-in-out),
+    cy 260ms var(--ease-in-out);
+}
+/* Grid dots reflow when the router filter changes; sliding them matches the
+   260ms morph the line chart already does for the same filter, so the two
+   visualisations move as one. Entering/leaving dots still pop — only the
+   surviving majority animates. */
+.compat-dot {
+  transition:
+    x 260ms var(--ease-in-out),
+    y 260ms var(--ease-in-out);
+}
+.benchmark-series {
+  transition: opacity 180ms var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .compatibility-line,
+  .compatibility-point,
+  .compat-dot {
+    transition: none;
+  }
+  .benchmark-series {
+    transition-duration: 120ms;
+  }
+}
+/* 404 terminal card: output lines print in sequence like a real CLI run.
+   `backwards` holds each line invisible through its stagger delay. */
+.nf-line {
+  animation: nf-line-in 300ms var(--ease-out) backwards;
+}
+@keyframes nf-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nf-line {
+    animation-name: nf-line-fade;
+    animation-duration: 200ms;
+  }
+}
+@keyframes nf-line-fade {
+  from {
+    opacity: 0;
+  }
+}
+/* Copy outcome is carried by the icon, label, and a restrained state tint. */
+[data-copy][data-copy-state="copied"] {
+  color: var(--ok) !important;
+  border-color: rgba(70, 211, 154, 0.35) !important;
+}
+[data-copy][data-copy-state="error"] {
+  color: var(--partial) !important;
+  border-color: rgba(242, 176, 74, 0.35) !important;
+}
+[data-el="vinextFill"],
+[data-el="nextFill"] {
+  transform-origin: left center;
+  will-change: transform;
+}
+.engine-plate::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid rgba(var(--orange-rgb), 0.62);
+  border-radius: inherit;
+  box-shadow: 0 0 88px rgba(var(--orange-rgb), 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.7s var(--ease-out);
+}
+.engine-plate.is-swapped::before {
+  opacity: 1;
+}
+[data-theme="light"] .engine-plate::before {
+  border-color: rgba(var(--orange-rgb), 0.45);
+  box-shadow: 0 0 44px rgba(var(--orange-rgb), 0.2);
+}
+/* Base lives on the class, not inline. The port set color + border-bottom
+   inline on every .text-link, and inline declarations outrank the stylesheet
+   `:hover` rule (no !important), so the hover was dead on all of them. */
+.text-link {
+  color: var(--orange-soft);
+  border-bottom: 1px solid transparent;
+  transition:
+    border-color 0.2s,
+    color 0.2s;
+}
+@media (hover: hover) and (pointer: fine) {
+  .text-link:hover {
+    color: var(--orange);
+    border-color: currentColor;
+  }
+  .subtle-link:hover {
+    color: var(--ink);
+  }
+  /* One effect, no movement or boxes: label firms to ink, icon comes up to
+     full strength with it. */
+  .chrome-link:hover svg {
+    opacity: 1;
+  }
+  .footer-link:hover {
+    color: var(--orange);
+  }
+}
+@media (max-width: 760px) {
+  #compatGrid {
+    grid-template-columns: 1fr !important;
+  }
+}
+/* Benchmark: claim rail beside the race bars collapses to a single column once
+   the bars would be too narrow to read the speed gap. */
+@media (max-width: 860px) {
+  #benchLayout {
+    grid-template-columns: 1fr !important;
+  }
+}
+/* The globe is the deploy section's right column. It is absolutely positioned
+   against this container (not the viewport) so it clears the 520px target
+   table at every width — including above 1180px, where the container starts
+   centering and the table's right edge outruns any `vw` offset. */
+.deploy-inner {
+  /* 32px container padding + 520px table + 24px gutter puts the box edge at
+     576px, but globe.svg carries ~96px of transparent left padding at render
+     size, so the box starts 480px in for the *dots* to sit one gutter off the
+     table. Below 940px the globe is display:none, so the tightest live case
+     (940px, uncentered container) still clears the table by ~100px. */
+  --globe-column: 480px;
+  display: flex;
+  flex-direction: column;
+}
+/* Below this there is no room for a globe beside the table. It is decoration
+   (aria-hidden, lazy <img>), so drop it rather than let it crowd the content —
+   display:none also means narrow viewports never fetch the asset. */
+@media (max-width: 939px) {
+  [data-el="globe"] {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  /* Icon-only chrome: the labels wrap the bar at this width, but hiding the
+     links outright left the site with no navigation at all. The label stays in
+     the accessibility tree so each link keeps its name. */
+  .chrome-link {
+    padding: 10px;
+  }
+  .chrome-link svg {
+    width: 16px;
+    height: 16px;
+    opacity: 1;
+  }
+  .chrome-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  [style*="backdrop-filter"] {
+    background: var(--surface) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+@media (prefers-contrast: more) {
+  a:focus-visible,
+  button:focus-visible {
+    outline-width: 3px;
+  }
+}
+
+:root {
+  color-scheme: dark;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --bg: #0a0b0d;
+  --bg-rgb: 10, 11, 13;
+  --surface: #161a23;
+  --surface-rgb: 22, 26, 35;
+  --surface-2: #11141b;
+  --surface-2-rgb: 17, 20, 27;
+  --line: rgba(238, 241, 245, 0.09);
+  --line-soft: rgba(238, 241, 245, 0.05);
+  --ink: #eef1f5;
+  --ink-rgb: 238, 241, 245;
+  /* --mute is the smallest text on cards (--surface): #7b8492 is the minimum
+       value clearing WCAG 4.5:1 there. --faint fails as text — border/rule use only. */
+  --ink-sub: #aeb5c2;
+  --sub: #8b94a3;
+  --mute: #7b8492;
+  --faint: #454c58;
+  --orange: #f6821f;
+  --orange-rgb: 246, 130, 31;
+  --amber: #fead41;
+  --orange-soft: #f59b4a;
+  --ok: #46d39a;
+  --partial: #f2b04a;
+  --unsupported: #ef5b5b;
+  /* Compatibility-scope classifications (suite-support.ts). Distinct hues from
+     the raw pass/fail set so a dot's classification never reads as a result. */
+  --deferred: #6f9bd8;
+  --vite-equivalent: #a78bda;
+  /* Grid-dot fills. In dark mode the text tokens double fine as fills; the
+     aliases exist so light mode can swap in dot-specific values (below)
+     without touching text colors. */
+  --dot-pass: var(--ok);
+  --dot-partial: var(--partial);
+  --dot-fail: var(--unsupported);
+  --dot-skip: var(--mute);
+  --dot-deferred: var(--deferred);
+  --dot-vite-equivalent: var(--vite-equivalent);
+  --scrollbar-thumb: #262b35;
+  --scrollbar-thumb-hover: #323844;
+  --aur2-rgb: 96, 130, 184;
+  --next-bar-1: #3a4150;
+  --next-bar-2: #4a5261;
+  --pin-shadow: 0 12px 28px -6px rgba(0, 0, 0, 0.22);
+  --orange-glow: rgba(var(--orange-rgb), 0.5);
+  --orange-glow-hover: rgba(var(--orange-rgb), 0.6);
+  --on-accent: #0a0b0d;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  /* Warm paper: every neutral leans toward the brand orange's hue family so
+       light mode feels designed-for, not an inverted dark theme. */
+  --bg: #faf8f3;
+  --bg-rgb: 250, 248, 243;
+  --surface: #fffdf9;
+  --surface-rgb: 255, 253, 249;
+  --surface-2: #f2eee6;
+  --surface-2-rgb: 242, 238, 230;
+  --line: rgba(62, 54, 40, 0.13);
+  --line-soft: rgba(62, 54, 40, 0.075);
+  --ink: #211d16;
+  --ink-rgb: 33, 29, 22;
+  /* --mute must clear WCAG 4.5:1 on --surface (#fffdf9): #675f52 ≈ 5.5:1. */
+  --ink-sub: #4e483d;
+  --sub: #6e675a;
+  --mute: #675f52;
+  --faint: #c2bbac;
+  --orange: #f6821f;
+  --orange-rgb: 246, 130, 31;
+  --amber: #fead41;
+  --orange-soft: #a2540a;
+  --ok: #147a53;
+  --partial: #8f6009;
+  --unsupported: #b42318;
+  --deferred: #3d6ca3;
+  --vite-equivalent: #6d4fa8;
+  /* Light text tokens are tuned for 4.5:1 text contrast, which makes 12px
+     dot fills read muddy. Dot-only replacements, derived in OKLCH with the
+     dark palette's hue anchors. Each hue sits at its own best depth — near
+     max sRGB chroma at a hue-appropriate lightness (yellow must stay light
+     or it turns olive; red/blue/purple carry depth) — so the rare statuses
+     pop from the dominant green field (small areas earn stronger color).
+     Every fill clears the 3:1 non-text floor on --surface. */
+  /* Pass drifts off the dark anchor hue (162 -> 148): teal-emerald has almost
+     no sRGB chroma at any legal lightness, and since pass is ~95% of dots its
+     dullness muted the whole graph. Leaf-green sits on the gamut ridge —
+     near-max chroma while still clearing 3:1. */
+  --dot-pass: #1fa748; /* oklch(.64 .175 148) 3.1:1 */
+  --dot-partial: #bf8525; /* oklch(.66 .127  75) 3.1:1 */
+  --dot-fail: #db2b33; /* oklch(.58 .210  25) 4.7:1 */
+  --dot-skip: #79818c; /* oklch(.60 .020 259) 3.9:1 */
+  --dot-deferred: #1a71dc; /* oklch(.56 .182 257) 4.7:1 */
+  --dot-vite-equivalent: #8a4ada; /* oklch(.56 .210 300) 5.1:1 */
+  --scrollbar-thumb: #d8d2c4;
+  --scrollbar-thumb-hover: #aca492;
+  --aur2-rgb: 205, 193, 172;
+  --next-bar-1: #d8d2c6;
+  --next-bar-2: #c3bcae;
+  --pin-shadow: 0 12px 28px -6px rgba(64, 52, 30, 0.16);
+  --orange-glow: rgba(var(--orange-rgb), 0.16);
+  --orange-glow-hover: rgba(var(--orange-rgb), 0.28);
+  --on-accent: #211d16;
+}
+.site-chrome {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  right: 18px;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+}
+/* Boxless legibility: full-width scrim fading from the page ground keeps the
+   bare chrome readable when display headings scroll under it. z-index -1 sits
+   it behind the links but above all page content (chrome is z 90). */
+.site-chrome::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: -18px;
+  right: -18px;
+  height: 96px;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(var(--bg-rgb), 0.88) 0%,
+    rgba(var(--bg-rgb), 0.55) 52%,
+    transparent 100%
+  );
+}
+/* Bare wordmark, no pill: brand is identity, not a control. Padding keeps
+   the hit target honest without drawing a box. */
+.site-wordmark {
+  pointer-events: auto;
+  padding: 8px 4px;
+  color: var(--ink);
+  font-family: var(--font-geist-mono), "JetBrains Mono", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-decoration: none;
+  transition: color 0.18s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .site-wordmark:hover {
+    color: var(--orange);
+  }
+}
+/* Bare text chrome: no pill, no separators. The links are quiet mono labels
+   that firm up on hover; the fixed dark/paper ground keeps them legible
+   without a frosted box. */
+.site-actions {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chrome-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  color: var(--sub);
+  font-family: var(--font-geist-mono), "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  transition: color 0.18s ease;
+}
+/* Icons sit a step quieter than their labels so the pill doesn't read busy;
+   hover brings icon and text up together via currentColor. */
+.chrome-link svg {
+  opacity: 0.72;
+  transition: opacity 0.18s ease;
+}
+.theme-toggle {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sub);
+  transition:
+    color 0.18s ease,
+    transform 0.16s var(--ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .theme-toggle:hover {
+    color: var(--orange);
+    border-color: rgba(var(--orange-rgb), 0.5);
+    transform: translateY(-1px);
+  }
+}
+/* Cross-fade + rotate, not a display swap: display isn't animatable, and a
+   hard cut here stood out next to the color/lift transition on the rest of
+   the toggle. transform-box scopes the rotation to each icon's own box
+   instead of the shared 24x24 viewBox origin. */
+.theme-toggle .sun,
+.theme-toggle .moon {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 0.25s var(--ease-out),
+    transform 0.25s var(--ease-out);
+}
+.theme-toggle .sun {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.6);
+}
+.theme-toggle .moon {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+[data-theme="light"] .theme-toggle .sun {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+[data-theme="light"] .theme-toggle .moon {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.6);
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle {
+    transition: none;
+  }
+}
+/* Globe is the dot-vector globe.svg (brand orange baked in), replacing the
+     raster Figma export whose glow rim read as a sticker. It must load via
+     <img>, not a CSS mask: Chrome fetches mask images in CORS mode, which
+     fails when the page is opened from file:// — the element goes invisible.
+     Same reason the brand marks below are inline <svg>/<img>, never masks. */
+.globe-art {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1140/764;
+  opacity: 0.92;
+}
+/* Light-mode form shading. A single filter recolors every dot to the same
+   value, which flattens the sphere into a map cutout — on dark ground the
+   baked glow supplied the light-to-shade ramp, on paper there is none. Build
+   the ramp in two layers instead: the base <img> is the lit pass (warm,
+   saturated), and ::after stacks a darkened desaturated copy of the same art,
+   masked so it only shows away from the light source at 63%/108% (the same
+   point the dark theme's glow radiates from). Warm advances, cool recedes:
+   the value+saturation falloff is what makes it read as a lit sphere.
+   The mask is a generated gradient — no image fetch, so the CORS/file://
+   trap documented above for url() masks does not apply. */
+[data-theme="light"] .globe-art {
+  opacity: 1;
+  filter: brightness(0.85) saturate(1.2);
+}
+[data-theme="light"] [data-el="globe"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  aspect-ratio: 1140/764;
+  background: url("/img/globe.svg") center / 100% 100% no-repeat;
+  filter: brightness(0.45) saturate(0.65);
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(circle at 63% 108%, transparent 24%, #000 58%);
+  mask-image: radial-gradient(circle at 63% 108%, transparent 24%, #000 58%);
+}
+/* The shade copy is painted after the pin markers in the same stacking
+   context; lift the pins back above it. */
+[data-theme="light"] [data-el="globe"] [data-gpin] {
+  z-index: 1;
+}
+/* Soft atmosphere behind the dots (the raster export's baked rim was the janky
+     part, not the glow itself). Bottom mask fades it out before the section's
+     overflow:hidden clips it into a hard horizon line. z-index:-1 keeps it under
+     the dots; the wrapper's will-change:transform scopes the stacking context. */
+[data-el="globe"]::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -8% -6%;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at 63% 108%,
+      rgba(var(--orange-rgb), 0.32),
+      rgba(var(--orange-rgb), 0.12) 44%,
+      transparent 68%
+    ),
+    radial-gradient(circle at 63% 108%, rgba(255, 214, 170, 0.16), transparent 36%);
+  mask: linear-gradient(180deg, #000 74%, transparent 98%);
+  -webkit-mask: linear-gradient(180deg, #000 74%, transparent 98%);
+}
+/* Additive glow needs a dark ground — on paper it can only wash toward white,
+   so the dark theme's halo read as a peach stain. Multiply instead: a warm
+   apricot wash that *darkens* the paper around the dots (outer layer) with a
+   deeper terracotta core (inner layer), which is how atmosphere reads on a
+   light ground. The box is oversized so the wash halos the whole globe, and
+   the mask must finish before the section's overflow:hidden edge (the box
+   bottom crosses it) or the wash cuts off in a straight seam. */
+[data-theme="light"] [data-el="globe"]::before {
+  mix-blend-mode: multiply;
+  inset: -22% -18%;
+  background:
+    radial-gradient(
+      circle at 63% 92%,
+      rgba(233, 150, 72, 0.34),
+      rgba(236, 168, 100, 0.16) 40%,
+      transparent 66%
+    ),
+    radial-gradient(circle at 63% 92%, rgba(166, 80, 8, 0.22), transparent 46%);
+  mask: linear-gradient(180deg, #000 46%, transparent 72%);
+  -webkit-mask: linear-gradient(180deg, #000 46%, transparent 72%);
+}
+/* Aurora blobs are tuned for dark; on paper they read as stains at full strength */
+[data-theme="light"] [data-el="heroBg"] > div:nth-child(-n + 3) {
+  opacity: 0.45;
+}
+/* Constellation artwork behind the hero. Desktop-only: backgrounds inside a
+   non-matching media query are never fetched, so phones skip the download
+   entirely, and only the active theme's image loads (landing-motion mirrors
+   this 940px gate before decoding/prefetching). z-index -1 keeps it under
+   the aurora blobs and vignette (heroBg's explicit z-index makes it a
+   stacking context, so -1 can't escape behind the page). The parent heroBg
+   layer already owns scroll fade-out and reduced-motion hiding.
+
+   Entrance: landing-motion sets data-ready only after the AVIF has decoded,
+   so the settle never plays over a half-loaded image. Materialize, don't
+   just fade — the backdrop settles down from a 4.5% overscan (clipped by
+   heroBg's overflow:hidden) while the headline rises toward the viewer;
+   opposing directions read as depth, and the fade lands before the drift
+   ends so the tail of the motion is subliminal. First-load-only, so the
+   slow timing is deliberate. The inner -art div carries the image and is
+   transformed per-frame by the hero scroll loop, so the one-shot entrance
+   and the continuous drift each own one element's transform and never
+   retarget each other. */
+@media (min-width: 940px) {
+  .hero-constellation {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    opacity: 0;
+    transform: scale(1.045);
+    transition:
+      opacity 2s var(--ease-out) 0.15s,
+      transform 3.2s var(--ease-out) 0.15s;
+  }
+  .hero-constellation[data-ready] {
+    opacity: 1;
+    transform: scale(1);
+  }
+  .hero-constellation-art {
+    position: absolute;
+    inset: 0;
+    background: url("/img/hero-constellation-dark.avif") center / cover no-repeat;
+  }
+  [data-theme="light"] .hero-constellation-art {
+    background-image: url("/img/hero-constellation-light.avif");
+  }
+}
+/* Light-mode adaptation: this design is dark-native. Glow halos, outlined
+     text-stroke, frosted backdrop, and overlay grain all collapse or muddy on
+     a light ground, so neutralise them per-theme rather than via token swap. */
+[data-theme="light"] [data-el="l2"] [style*="text-shadow"],
+[data-theme="light"] [data-el="viteLabel"],
+[data-theme="light"] [data-el="payoff"] [style*="text-shadow"] {
+  text-shadow: none !important;
+}
+[data-theme="light"] [data-el="conn"] {
+  background: linear-gradient(180deg, rgba(var(--orange-rgb), 0.5), transparent) !important;
+}
+[data-theme="light"] [style*="backdrop-filter"] {
+  background: var(--surface) !important;
+  backdrop-filter: none !important;
+}
+[data-theme="light"] [style*="mix-blend-mode:overlay"],
+[data-theme="light"] [style*="mix-blend-mode: overlay"] {
+  mix-blend-mode: multiply !important;
+  opacity: 0.035 !important;
+}
+[data-theme="light"] [data-el="plate"] {
+  background: linear-gradient(180deg, var(--surface), var(--surface-2)) !important;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 28px -10px rgba(15, 23, 42, 0.1) !important;
+}
+[data-theme="light"] [style*="radial-gradient(130% 200% at 100% 0"] {
+  background:
+    linear-gradient(135deg, rgba(var(--orange-rgb), 0.08), transparent 60%), var(--surface) !important;
+}
+/* Tailwind preflight forces img/svg to display:block for layout safety, but
+   these brand marks sit inline next to text (the Vite wordmark, the deploy
+   platform rows). Block display drops them to their own line. */
+[data-el="viteLabel"] svg,
+[data-name] img,
+[data-name] svg {
+  display: inline;
+}
 
 @theme inline {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --color-chart-nextjs: #f97316;
-  --color-chart-vinext: #3b82f6;
+  --color-chart-vinext: var(--orange);
+  --color-chart-nextjs: var(--next-bar-2);
 }
 
 html,

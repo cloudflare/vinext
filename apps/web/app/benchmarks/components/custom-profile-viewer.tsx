@@ -42,12 +42,12 @@ export function CustomProfileViewer() {
   };
 
   return (
-    <section className="rounded-lg border border-gray-200 bg-white">
+    <section className="rounded-lg border border-[var(--line)] bg-[var(--surface)]">
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div>
           <h2 className="text-lg font-semibold">Custom Profile</h2>
           {profileState.status === "ready" && (
-            <div className="mt-1 font-mono text-xs text-gray-500">{profileState.fileName}</div>
+            <div className="mt-1 font-mono text-xs text-[var(--sub)]">{profileState.fileName}</div>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -65,7 +65,7 @@ export function CustomProfileViewer() {
             <button
               type="button"
               onClick={clearProfile}
-              className="inline-flex size-9 items-center justify-center rounded-lg border border-gray-200 text-gray-500 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+              className="inline-flex size-9 items-center justify-center rounded-lg border border-[var(--line)] text-[var(--sub)] transition hover:border-[var(--faint)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
               aria-label="Clear custom profile"
               title="Clear custom profile"
             >
@@ -75,7 +75,7 @@ export function CustomProfileViewer() {
           <button
             type="button"
             onClick={chooseProfile}
-            className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-black disabled:cursor-wait disabled:bg-gray-500"
+            className="inline-flex items-center gap-2 rounded-lg bg-[var(--orange)] px-3 py-2 text-sm font-medium text-[var(--on-accent)] transition hover:brightness-110 disabled:cursor-wait disabled:opacity-50"
             disabled={profileState.status === "loading"}
           >
             <FileArrowUp size={16} />
@@ -84,12 +84,12 @@ export function CustomProfileViewer() {
         </div>
       </div>
       {profileState.status === "error" && (
-        <div className="border-t border-red-100 bg-red-50 px-5 py-3 text-sm text-red-700">
+        <div className="border-t border-red-500/20 bg-red-500/10 px-5 py-3 text-sm text-red-400">
           {profileState.message}
         </div>
       )}
       {profileState.status === "ready" && (
-        <div className="border-t border-gray-200 bg-slate-950 p-5 text-white">
+        <div className="border-t border-[var(--line)] bg-slate-950 p-5 text-white">
           <FlameGraph
             key={profileState.profileKey}
             flameGraph={profileState.flameGraph}

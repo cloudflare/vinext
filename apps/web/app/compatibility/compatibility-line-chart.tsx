@@ -126,7 +126,7 @@ export function CompatibilityLineChart({
 
   if (!view || series.length === 0) {
     return (
-      <div className="text-sm text-kumo-subtle">
+      <div className="text-sm text-[var(--sub)]">
         No historical data yet. Once multiple runs are recorded, a trend line will appear here.
       </div>
     );
@@ -162,8 +162,7 @@ export function CompatibilityLineChart({
                 x2={W - PADDING.right}
                 y1={y}
                 y2={y}
-                stroke="currentColor"
-                strokeOpacity={0.1}
+                stroke="var(--line-soft)"
                 strokeDasharray="2 3"
               />
               <text
@@ -171,8 +170,8 @@ export function CompatibilityLineChart({
                 y={y + 3}
                 fontSize={10}
                 textAnchor="end"
-                fill="currentColor"
-                fillOpacity={0.55}
+                fontFamily="var(--font-geist-mono)"
+                fill="var(--mute)"
               >
                 {Math.round(t * 100)}%
               </text>
@@ -192,22 +191,32 @@ export function CompatibilityLineChart({
                 y={H - 8}
                 fontSize={10}
                 textAnchor="middle"
-                fill="currentColor"
-                fillOpacity={0.55}
+                fontFamily="var(--font-geist-mono)"
+                fill="var(--mute)"
               >
                 {formatDate(series[idx].createdAt)}
               </text>
             );
           })}
 
-        {/* Overall raw rate, including deferred and out-of-scope files. */}
-        <path d={overallPath} fill="none" stroke="#0969da" strokeWidth={2} strokeLinejoin="round" />
+        {/* Overall raw rate, including deferred and out-of-scope files. Muted
+            so the supported-surface rate reads as the headline series. */}
+        <path
+          className="compatibility-line"
+          d={overallPath}
+          fill="none"
+          stroke="var(--mute)"
+          strokeWidth={2}
+          strokeLinejoin="round"
+          opacity={0.6}
+        />
 
         {/* Supported-surface rate. */}
         <path
+          className="compatibility-line"
           d={supportedPath}
           fill="none"
-          stroke="#2da44e"
+          stroke="var(--orange)"
           strokeWidth={2}
           strokeLinejoin="round"
         />
@@ -215,12 +224,13 @@ export function CompatibilityLineChart({
         {/* Points */}
         {view.xy.map((p, i) => (
           <circle
+            className="compatibility-point"
             key={series[i].createdAt}
             cx={p.x}
             cy={p.supportedY}
             r={4}
-            fill="#2da44e"
-            stroke="var(--color-kumo-base, #fff)"
+            fill="var(--orange)"
+            stroke="var(--surface)"
             strokeWidth={1.5}
             onMouseEnter={() => setHover({ index: i, x: p.x, y: p.supportedY })}
             onMouseLeave={() => setHover(null)}
@@ -231,7 +241,7 @@ export function CompatibilityLineChart({
 
       {hover ? (
         <div
-          className="pointer-events-none absolute z-10 rounded-md bg-kumo-elevated px-3 py-2 text-xs text-kumo-default shadow-lg ring ring-kumo-hairline"
+          className="pointer-events-none absolute z-10 rounded-md border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--ink)] shadow-lg"
           style={{
             left: `${(hover.x / W) * 100}%`,
             top: `${(hover.y / H) * 100}%`,
@@ -247,28 +257,28 @@ export function CompatibilityLineChart({
                 <div className="font-medium">
                   {(p.supportedPassRate * 100).toFixed(1)}% supported
                 </div>
-                <div className="text-kumo-subtle">
+                <div className="text-[var(--sub)]">
                   {p.counts.supportedPassed}/{supportedDenom} supported tests passed
                 </div>
                 <div className="mt-1 font-medium">
                   {(p.overallPassRate * 100).toFixed(1)}% overall
                 </div>
-                <div className="text-kumo-subtle">
+                <div className="text-[var(--sub)]">
                   {p.counts.passed}/{overallDenom} tests passed
                   {p.counts.skipped > 0 ? `, ${p.counts.skipped} skipped` : ""}
                 </div>
-                <div className="mt-1 text-kumo-subtle">{formatDateTime(p.createdAt)}</div>
+                <div className="mt-1 text-[var(--sub)]">{formatDateTime(p.createdAt)}</div>
               </>
             );
           })()}
         </div>
       ) : null}
-      <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-kumo-subtle">
+      <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-[var(--sub)]">
         <span className="flex items-center gap-2">
-          <span className="h-0.5 w-5 bg-[#2da44e]" aria-hidden="true" /> Supported
+          <span className="h-0.5 w-5 bg-[var(--orange)]" aria-hidden="true" /> Supported
         </span>
         <span className="flex items-center gap-2">
-          <span className="h-0.5 w-5 bg-[#0969da]" aria-hidden="true" /> Overall
+          <span className="h-0.5 w-5 bg-[var(--mute)] opacity-60" aria-hidden="true" /> Overall
         </span>
       </div>
     </div>

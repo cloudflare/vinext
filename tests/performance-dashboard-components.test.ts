@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { recentMedianMeasurements } from "../apps/web/app/benchmarks/components/dashboard";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { recentMedianMeasurements } from "../apps/web/app/benchmarks/components/recent-median-measurements";
 import type {
   PerformanceMeasurement,
   PerformanceRun,
 } from "../apps/web/app/benchmarks/components/performance-results";
+import { PerformanceResultsTable } from "../apps/web/app/benchmarks/components/performance-results";
 
 function measurement(benchmarkId: string, median: number, unit = "bytes"): PerformanceMeasurement {
   return {
@@ -69,5 +72,41 @@ describe("performance dashboard rolling baseline", () => {
     expect(baseline.map(({ benchmarkId, median }) => [benchmarkId, median])).toEqual([
       ["server", 200],
     ]);
+  });
+
+  it("keeps a row-spanned scenario in one hover group", () => {
+    const html = renderToStaticMarkup(
+      createElement(PerformanceResultsTable, {
+        measurements: [
+          {
+            ...measurement("nextjs-cold-start", 300, "ms"),
+            scenarioId: "cold-start",
+            label: "Cold start",
+            implementationId: "nextjs",
+            implementationLabel: "Next.js",
+          },
+          {
+            ...measurement("vinext-cold-start", 600, "ms"),
+            scenarioId: "cold-start",
+            label: "Cold start",
+          },
+          {
+            ...measurement("vinext-bundle", 1_000),
+            scenarioId: "bundle-size",
+            label: "Bundle size",
+          },
+        ],
+      }),
+    );
+
+    const spannedScenarioRow = html.match(
+      /<tbody class="group\/scenario[^"]*"><tr class="([^"]*)"><td[^>]*rowSpan="2"/,
+    );
+
+    expect(spannedScenarioRow).not.toBeNull();
+    expect(html.match(/<tbody/g)).toHaveLength(2);
+    expect(html).toContain("group/scenario");
+    expect(html).toContain("group-hover/scenario:bg-[var(--surface-2)]");
+    expect(spannedScenarioRow?.[1]).not.toContain("hover:bg-[var(--surface-2)]");
   });
 });

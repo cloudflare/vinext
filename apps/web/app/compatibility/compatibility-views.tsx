@@ -14,7 +14,7 @@
  * run) from the server and picks the right slice based on the filter, so no
  * extra fetches happen when the user changes the tab.
  */
-import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { Tabs } from "@/app/_components/ui";
 import { useMemo, useState } from "react";
 import { CompatibilityLineChart, type TrendPoint } from "./compatibility-line-chart";
 import { CompatibilityTableDialog, ContributionGrid, type GridCell } from "./contribution-grid";
@@ -55,9 +55,7 @@ export function CompatibilityViews({ cells, trend }: { cells: GridCell[]; trend:
     () =>
       TABS.map((t) => ({
         value: t.value,
-        // Kumo Tabs accepts ReactNode as a label, but we use a plain string
-        // with a parenthesised count — keeps the segmented control compact
-        // and matches the dashboard's typography elsewhere.
+        // A plain label with a parenthesised count keeps the control compact.
         label: `${t.label} (${counts[t.value]})`,
       })),
     [counts],
@@ -66,25 +64,23 @@ export function CompatibilityViews({ cells, trend }: { cells: GridCell[]; trend:
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
-        <Tabs
-          tabs={tabItems}
-          value={filter}
-          onValueChange={(v) => setFilter(v as RouterFilter)}
-          variant="segmented"
-          size="sm"
-        />
+        <Tabs tabs={tabItems} value={filter} onValueChange={setFilter} variant="segmented" />
       </div>
 
       <section>
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h3 className="text-sm font-medium text-kumo-subtle">Test files</h3>
+          <h3 className="font-mono text-[11px] tracking-[0.08em] text-[var(--mute)] uppercase">
+            Test files
+          </h3>
           <CompatibilityTableDialog cells={filteredCells} />
         </div>
         <ContributionGrid cells={cells} filter={filter} />
       </section>
 
       <section>
-        <h3 className="mb-3 text-sm font-medium text-kumo-subtle">Compatibility over time</h3>
+        <h3 className="mb-3 font-mono text-[11px] tracking-[0.08em] text-[var(--mute)] uppercase">
+          Compatibility over time
+        </h3>
         <CompatibilityLineChart points={trend} filter={filter} />
       </section>
     </div>

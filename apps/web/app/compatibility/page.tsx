@@ -9,8 +9,7 @@
  * Data is read from the `DB` D1 binding via Drizzle. Results are filtered by
  * `kind` (defaults to "deploy"; future suites can be selected via ?kind=...).
  */
-import { LinkButton } from "@cloudflare/kumo/components/button";
-import { Text } from "@cloudflare/kumo/components/text";
+import type { Metadata } from "next";
 import { ArrowSquareOutIcon } from "@phosphor-icons/react/dist/ssr";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/app/lib/db/client";
@@ -31,6 +30,12 @@ import { getSuiteSupport, NON_SUPPORTED_SUITES } from "./suite-support";
 // and keeps the page snappy without re-querying D1 on every request.
 export const revalidate = 300;
 
+export const metadata: Metadata = {
+  title: "Compatibility",
+  description:
+    "How much of the Next.js test suite passes on vinext today — per-file results and pass-rate trend over time.",
+};
+
 /**
  * The `kind` discriminator on stored runs. The schema is designed to support
  * multiple kinds in the future (e.g. ecosystem, vitest), but for now the
@@ -39,7 +44,8 @@ export const revalidate = 300;
  */
 const KIND = "deploy" as const;
 
-const CARD = "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline";
+const CARD =
+  "flex w-full flex-col gap-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-6";
 
 // Pinned-locale date formatter so the dashboard renders identically regardless
 // of where (server / which browser) it's drawn. Matches the formatter used by
@@ -320,31 +326,34 @@ export default async function CompatibilityPage() {
 
   return (
     <>
-      <section className="mx-auto w-full max-w-6xl px-6 pt-16 pb-10">
-        <h1 className="text-4xl font-semibold tracking-tight text-kumo-default sm:text-5xl">
+      <section className="mx-auto w-full max-w-6xl px-6 pt-24 pb-10">
+        <div className="mb-3 font-mono text-[11px] tracking-[0.16em] text-[var(--orange-soft)] uppercase">
+          Deploy-suite parity
+        </div>
+        <h1 className="text-4xl font-semibold tracking-tight text-[var(--ink)] sm:text-5xl">
           Next.js compatibility
         </h1>
-        <p className="mt-4 max-w-2xl text-kumo-subtle">
+        <p className="mt-4 max-w-2xl text-[var(--ink-sub)]">
           Results from the Next.js deploy test suite, run against vinext. Each dot below is one test
-          file. Hover for details. The line chart tracks supported and overall pass rates across
-          runs.
+          file. Hover or select a dot for details; selecting keeps them open and lets you copy them.
+          The line chart tracks supported and overall pass rates across runs.
         </p>
         {latestRun ? (
-          <p className="mt-3 text-sm text-kumo-subtle">
+          <p className="mt-3 text-sm text-[var(--sub)]">
             Latest run:{" "}
-            <span className="text-kumo-default">
+            <span className="text-[var(--ink)]">
               {FULL_DATETIME.format(new Date(latestRun.createdAt))}
             </span>
             {latestRun.nextRef ? (
               <>
                 {" · "}Next.js{" "}
-                <code className="font-mono text-kumo-default">{latestRun.nextRef}</code>
+                <code className="font-mono text-[var(--ink)]">{latestRun.nextRef}</code>
               </>
             ) : null}
             {latestRun.vinextRef ? (
               <>
                 {" · "}vinext{" "}
-                <code className="font-mono text-kumo-default">{latestRun.vinextRef}</code>
+                <code className="font-mono text-[var(--ink)]">{latestRun.vinextRef}</code>
               </>
             ) : null}
           </p>
@@ -353,7 +362,7 @@ export default async function CompatibilityPage() {
 
       {error ? (
         <section className="mx-auto w-full max-w-6xl px-6 pb-6">
-          <div className="rounded-lg bg-kumo-base p-4 text-sm text-kumo-default ring ring-kumo-hairline">
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 text-sm text-[var(--ink)]">
             <strong>Compatibility data unavailable.</strong> {error}
           </div>
         </section>
@@ -362,60 +371,58 @@ export default async function CompatibilityPage() {
       <section className="mx-auto w-full max-w-6xl px-6 pb-10">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className={CARD}>
-            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+            <div className="text-3xl font-semibold tracking-tight text-[var(--ink)]">
               {supportedPassRate.toFixed(1)}%
             </div>
-            <div className="text-sm text-kumo-subtle">Supported pass rate</div>
+            <div className="text-sm text-[var(--sub)]">Supported pass rate</div>
           </div>
           <div className={CARD}>
-            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+            <div className="text-3xl font-semibold tracking-tight text-[var(--ink)]">
               {overallPassRate.toFixed(1)}%
             </div>
-            <div className="text-sm text-kumo-subtle">Overall pass rate</div>
+            <div className="text-sm text-[var(--sub)]">Overall pass rate</div>
           </div>
           <div className={CARD}>
-            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+            <div className="text-3xl font-semibold tracking-tight text-[var(--ink)]">
               {supportedCoverage.toFixed(1)}%
             </div>
-            <div className="text-sm text-kumo-subtle">Supported surface coverage</div>
+            <div className="text-sm text-[var(--sub)]">Supported surface coverage</div>
           </div>
           <div className={CARD}>
-            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+            <div className="text-3xl font-semibold tracking-tight text-[var(--ink)]">
               {supportedFailingFiles}
             </div>
-            <div className="text-sm text-kumo-subtle">Supported files with failures</div>
+            <div className="text-sm text-[var(--sub)]">Supported files with failures</div>
           </div>
         </div>
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6 pb-10">
         <div className="mb-4">
-          <Text variant="heading2" as="h2">
-            By router
-          </Text>
+          <h2 className="text-lg font-semibold">By router</h2>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className={CARD}>
-            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+            <div className="text-3xl font-semibold tracking-tight text-[var(--ink)]">
               {bucketSupportedPassRate(byRouter.app).toFixed(1)}%
             </div>
-            <div className="text-sm text-kumo-subtle">
+            <div className="text-sm text-[var(--sub)]">
               App Router supported · {bucketPassRate(byRouter.app).toFixed(1)}% overall
             </div>
           </div>
           <div className={CARD}>
-            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+            <div className="text-3xl font-semibold tracking-tight text-[var(--ink)]">
               {bucketSupportedPassRate(byRouter.pages).toFixed(1)}%
             </div>
-            <div className="text-sm text-kumo-subtle">
+            <div className="text-sm text-[var(--sub)]">
               Pages Router supported · {bucketPassRate(byRouter.pages).toFixed(1)}% overall
             </div>
           </div>
           <div className={CARD}>
-            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+            <div className="text-3xl font-semibold tracking-tight text-[var(--ink)]">
               {bucketSupportedPassRate(byRouter.both).toFixed(1)}%
             </div>
-            <div className="text-sm text-kumo-subtle">
+            <div className="text-sm text-[var(--sub)]">
               Mixed supported · {bucketPassRate(byRouter.both).toFixed(1)}% overall
             </div>
           </div>
@@ -424,10 +431,8 @@ export default async function CompatibilityPage() {
 
       <section className="mx-auto w-full max-w-6xl px-6 pb-20">
         <div className="mb-4 flex items-baseline justify-between">
-          <Text variant="heading2" as="h2">
-            Test files and trend
-          </Text>
-          <span className="text-sm text-kumo-subtle">
+          <h2 className="text-lg font-semibold">Test files and trend</h2>
+          <span className="text-sm text-[var(--sub)]">
             {latestFiles.length} files in the latest run · last {trend.length} run
             {trend.length === 1 ? "" : "s"}
           </span>
@@ -438,11 +443,9 @@ export default async function CompatibilityPage() {
       </section>
 
       <section className="mx-auto w-full max-w-4xl px-6 pb-24">
-        <div className="flex flex-col items-start gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline">
-          <Text variant="heading3" as="h3">
-            How this works
-          </Text>
-          <p className="text-sm leading-relaxed text-kumo-subtle">
+        <div className="flex flex-col items-start gap-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-6">
+          <h3 className="text-base font-semibold">How this works</h3>
+          <p className="text-sm leading-relaxed text-[var(--ink-sub)]">
             The Next.js deploy test suite runs nightly against vinext. The GitHub Actions workflow
             aggregates each test file&apos;s pass / fail / skip counts and POSTs the results to this
             app&apos;s ingest endpoint, where they are stored in a D1 database. Each suite is
@@ -453,27 +456,27 @@ export default async function CompatibilityPage() {
             <code>kind</code> so additional suites (e.g. ecosystem apps, Vitest) can be added later
             without schema changes.
           </p>
-          <p className="text-sm leading-relaxed text-kumo-subtle">
+          <p className="text-sm leading-relaxed text-[var(--ink-sub)]">
             The supported pass rate excludes suites classified as deferred, specific to the Next.js
             compiler, or awaiting equivalent Vite coverage. The overall pass rate retains their raw
             results. Both rates exclude tests skipped by Next.js itself. Support classifications are
             joined when this page is read, so they apply consistently to historical runs without
             rewriting stored results.
           </p>
-          <p className="text-sm leading-relaxed text-kumo-subtle">
+          <p className="text-sm leading-relaxed text-[var(--ink-sub)]">
             Router and support classifications are both applied at read time. Reclassifying a suite
             therefore updates its supported rate, color, and router bucket across every historical
             run while leaving the stored raw results and overall rate unchanged.
           </p>
-          <LinkButton
-            variant="outline"
-            size="sm"
-            icon={<ArrowSquareOutIcon />}
+          <a
             href="https://github.com/cloudflare/vinext/actions/workflows/nextjs-deploy-suite.yml"
-            external
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-link inline-flex items-center gap-2 border-b border-transparent font-mono text-xs text-[var(--orange-soft)] no-underline"
           >
             View deploy suite runs
-          </LinkButton>
+            <ArrowSquareOutIcon aria-hidden="true" className="size-4" />
+          </a>
         </div>
       </section>
     </>

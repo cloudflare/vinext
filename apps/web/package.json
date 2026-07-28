@@ -15,14 +15,12 @@
     "db:migrate:remote": "wrangler d1 migrations apply vinext-metrics --remote"
   },
   "dependencies": {
-    "@cloudflare/kumo": "catalog:",
     "@phosphor-icons/react": "catalog:",
     "@vinext/cloudflare": "workspace:*",
     "drizzle-orm": "catalog:",
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "shiki": "catalog:",
     "vinext": "workspace:*"
   },
   "devDependencies": {

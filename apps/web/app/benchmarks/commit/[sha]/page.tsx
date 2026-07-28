@@ -10,9 +10,9 @@ export default async function CommitPage({ params }: { params: Promise<{ sha: st
   const comparison = await getCommitComparison(sha);
   if (!comparison) notFound();
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <div className="mx-auto w-full max-w-6xl px-6 pt-24 pb-10">
       <div className="mb-6">
-        <Link href="/benchmarks" className="text-sm text-blue-600 hover:underline">
+        <Link href="/benchmarks" className="text-sm text-[var(--orange-soft)] hover:underline">
           &larr; Back to dashboard
         </Link>
       </div>

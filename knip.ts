@@ -90,6 +90,18 @@ export default {
       ],
       project: ["src/**/*.{ts,tsx}"],
     },
+    "apps/web": {
+      // vinext app, so knip's Next.js plugin doesn't auto-detect the routing
+      // conventions; list them explicitly. Scoping `project` to source dirs
+      // keeps knip out of `dist/` — the root .gitignore's negated patterns
+      // (`!packages/types/next/upstream/dist/**`) defeat knip's gitignore
+      // handling, so a stale local build otherwise fails the pre-commit run.
+      entry: ["app/**/{page,layout,not-found}.tsx", "app/**/route.ts"],
+      project: ["app/**/*.{ts,tsx}", "worker/**/*.ts"],
+      // Consumed from CSS (`@import "tailwindcss"` in globals.css), which
+      // knip cannot trace.
+      ignoreDependencies: ["tailwindcss"],
+    },
     "packages/cloudflare": {
       entry: [...entriesFromPackageJson("packages/cloudflare/package.json")],
       project: ["src/**/*.{ts,tsx}"],

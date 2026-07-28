@@ -1,11 +1,9 @@
 "use client";
 
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Badge } from "@cloudflare/kumo/components/badge";
-import { Tabs } from "@cloudflare/kumo/components/tabs";
-import { Table } from "@cloudflare/kumo/components/table";
+import { Badge, Table, Tabs } from "../../_components/ui";
 import { TrendChart } from "./chart";
 import { formatBytes, formatMs, RUNNER_COLORS } from "./format";
 import { benchmarkSelectionUrl, resolveSelectedBenchmarkFromSearch } from "./benchmark-url-state";
@@ -73,7 +71,7 @@ export function PerformanceResultsTable({
     .toSorted(([, left], [, right]) => left[0].label.localeCompare(right[0].label));
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+    <div className="overflow-x-auto rounded-lg border border-[var(--line)] bg-[var(--surface)]">
       <Table>
         <Table.Header>
           <Table.Row>
@@ -82,13 +80,23 @@ export function PerformanceResultsTable({
             {comparisonMode && <Table.Head>{baselineLabel}</Table.Head>}
             <Table.Head>{comparisonMode ? "Current" : "Median"}</Table.Head>
             {comparisonMode && <Table.Head>Change</Table.Head>}
-            <Table.Head>Range</Table.Head>
-            <Table.Head>Rounds</Table.Head>
+            {/* Secondary columns. On narrow screens they pushed the median and
+                its result badge past the viewport; they reappear under the
+                median value instead of forcing a horizontal scroll. */}
+            <Table.Head className="hidden sm:table-cell">Range</Table.Head>
+            <Table.Head className="hidden sm:table-cell">Rounds</Table.Head>
           </Table.Row>
         </Table.Header>
-        <Table.Body>
-          {scenarioGroups.flatMap(([, group], groupIndex) =>
-            group.map((measurement, index) => {
+        {/* One tbody per scenario: rows in a group share the rowSpan'd scenario
+            cell, so per-row hover paints partial/bleeding highlights (a row's bg
+            covers the full height of cells anchored in it). Hovering highlights
+            the whole group instead — the unit the spanned cell actually binds. */}
+        {scenarioGroups.map(([scenarioId, group]) => (
+          <Table.Body
+            key={scenarioId}
+            className="group/scenario border-b border-[var(--line-soft)] last:border-b-0"
+          >
+            {group.map((measurement, index) => {
               const baseline = baselineByBenchmark.get(measurement.benchmarkId);
               const smallestMedian = Math.min(...group.map((item) => item.median));
               const largestMedian = Math.max(...group.map((item) => item.median));
@@ -105,12 +113,13 @@ export function PerformanceResultsTable({
                 change !== null && (measurement.lowerIsBetter ? change <= 0 : change >= 0);
               const neutral = change !== null && Math.abs(change) < 1.5;
               return (
-                <Table.Row key={measurement.benchmarkId}>
+                <Table.Row
+                  key={measurement.benchmarkId}
+                  hoverable={false}
+                  className="last:border-b-0 group-hover/scenario:bg-[var(--surface-2)]"
+                >
                   {index === 0 && (
-                    <Table.Cell
-                      rowSpan={group.length}
-                      className={`align-middle font-medium ${groupIndex === scenarioGroups.length - 1 ? "!border-b-0" : ""}`}
-                    >
+                    <Table.Cell rowSpan={group.length} className="align-middle font-medium">
                       {measurement.label}
                     </Table.Cell>
                   )}
@@ -133,27 +142,30 @@ export function PerformanceResultsTable({
                     </Table.Cell>
                   )}
                   <Table.Cell>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-sm">
                         {formatPerformanceValue(measurement.median, measurement.unit)}
                       </span>
                       {!comparisonMode && smallerBy !== null && (
-                        <span
-                          style={
-                            {
-                              "--framework-color":
-                                RUNNER_COLORS[measurement.implementationId] ?? "#6b7280",
-                            } as CSSProperties
-                          }
-                        >
+                        <span>
                           <Badge
                             variant="primary"
-                            className="!bg-[var(--framework-color)] !text-white font-semibold"
+                            className="font-semibold text-white"
+                            style={{
+                              backgroundColor:
+                                RUNNER_COLORS[measurement.implementationId] ?? "#6b7280",
+                              borderColor: RUNNER_COLORS[measurement.implementationId] ?? "#6b7280",
+                            }}
                           >
                             {smallerBy.toFixed(1)}% smaller
                           </Badge>
                         </span>
                       )}
+                    </div>
+                    <div className="mt-1 text-xs whitespace-nowrap text-[var(--sub)] sm:hidden">
+                      {formatPerformanceValue(measurement.min, measurement.unit)}–
+                      {formatPerformanceValue(measurement.max, measurement.unit)} ·{" "}
+                      {measurement.rounds} rounds
                     </div>
                   </Table.Cell>
                   {comparisonMode && (
@@ -175,16 +187,16 @@ export function PerformanceResultsTable({
                       )}
                     </Table.Cell>
                   )}
-                  <Table.Cell className="text-xs text-gray-500">
+                  <Table.Cell className="hidden text-xs text-[var(--sub)] sm:table-cell">
                     {formatPerformanceValue(measurement.min, measurement.unit)}–
                     {formatPerformanceValue(measurement.max, measurement.unit)}
                   </Table.Cell>
-                  <Table.Cell>{measurement.rounds}</Table.Cell>
+                  <Table.Cell className="hidden sm:table-cell">{measurement.rounds}</Table.Cell>
                 </Table.Row>
               );
-            }),
-          )}
-        </Table.Body>
+            })}
+          </Table.Body>
+        ))}
       </Table>
     </div>
   );
@@ -277,9 +289,9 @@ function PerformanceTrendChart({
   }));
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
       <div className="mb-1 font-medium">{scenario.label}</div>
-      <div className="mb-4 text-xs text-gray-400">
+      <div className="mb-4 text-xs text-[var(--mute)]">
         {scenario.suite} · {scenario.lowerIsBetter ? "Lower is better" : "Higher is better"}
       </div>
       <TrendChart
@@ -299,5 +311,5 @@ function PerformanceTrendChart({
 function formatPerformanceValue(value: number, unit: string) {
   if (unit === "ms") return formatMs(value);
   if (unit === "bytes") return formatBytes(value);
-  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)} ${unit}`;
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)} ${unit}`;
 }
