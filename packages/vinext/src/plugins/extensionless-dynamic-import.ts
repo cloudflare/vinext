@@ -2,7 +2,7 @@ import MagicString from "magic-string";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Plugin } from "vite";
+import { parseAst, type Alias, type Plugin } from "vite";
 import {
   DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
@@ -59,6 +59,7 @@ type PackageJson = {
 };
 
 type TransformConfig = {
+  aliases: readonly Alias[];
   moduleExtensions: readonly string[];
   exportConditions: ReadonlySet<string>;
 };
@@ -66,6 +67,7 @@ type TransformConfig = {
 type TransformEnvironmentConfig = {
   isProduction?: boolean;
   resolve: {
+    alias?: readonly Alias[];
     conditions?: readonly string[];
     extensions: readonly string[];
   };
@@ -73,6 +75,7 @@ type TransformEnvironmentConfig = {
 
 export function createExtensionlessDynamicImportPlugin(): Plugin {
   let transformConfig: TransformConfig = {
+    aliases: [],
     moduleExtensions: MODULE_EXTENSIONS,
     exportConditions: new Set(["import", "module", "node", "development", "default"]),
   };
@@ -207,7 +210,13 @@ function parseExtensionlessImport(
   if (!isImportPrefix(code.slice(node.start, source.start))) return null;
   if (texts.some((text) => /[*?[\]{}()!?#]/.test(text))) return null;
   if (!(first.startsWith("./") || first.startsWith("../"))) {
-    const resolution = resolvePackageImport(first, texts, id, config.exportConditions);
+    const resolution = resolvePackageImport(
+      first,
+      texts,
+      id,
+      config.exportConditions,
+      config.aliases,
+    );
     return resolution
       ? {
           kind: "package",
@@ -242,11 +251,16 @@ function resolvePackageImport(
   texts: readonly string[],
   id: string,
   exportConditions: ReadonlySet<string>,
+  aliases: readonly Alias[],
 ): PackageImportResolution | null {
   const packageName = parsePackageName(first);
   if (packageName === null || first === packageName || !first.startsWith(`${packageName}/`)) {
     return null;
   }
+  // Rewriting to the physical package would bypass Vite's configured alias.
+  // Leave any template that may intersect an alias to the normal resolver.
+  const requestSpecifierPattern = [first, ...texts.slice(1)].join("*");
+  if (aliasesMayMatch(aliases, requestSpecifierPattern)) return null;
 
   const packageInfo = resolvePackageInfo(packageName, id);
   if (packageInfo === null || !isUnknownRecord(packageInfo.packageJson.exports)) return null;
@@ -258,13 +272,15 @@ function resolvePackageImport(
   const { keyMatch, exportValue } = matchedExport;
   for (const target of resolveExportTargets(exportValue, exportConditions)) {
     if (!target.startsWith("./")) continue;
-    const targetParts = splitSingleWildcard(target);
+    const targetParts = decodePackageTarget(target);
     if (targetParts === null) continue;
 
     const [targetPrefix, targetSuffix] = targetParts;
+    const decodedCapture = decodeRequestCapturePattern(keyMatch.capture);
+    if (decodedCapture === null) continue;
     const absoluteGlob = path.resolve(
       packageInfo.packageRoot,
-      `${targetPrefix.slice(2)}${keyMatch.capture}${targetSuffix}`,
+      `${targetPrefix.slice(2)}${decodedCapture}${targetSuffix}`,
     );
     const absolutePrefix = path.resolve(packageInfo.packageRoot, targetPrefix.slice(2));
     if (
@@ -280,7 +296,7 @@ function resolvePackageImport(
     if (globPath === null || resolvedPrefixPath === null) return null;
     const resolvedPrefix =
       resolvedPrefixPath.replace(/\/+$/, "") + (targetPrefix.endsWith("/") ? "/" : "");
-    const globPattern = buildPackageGlobPatterns(resolvedPrefix, keyMatch.capture, targetSuffix);
+    const globPattern = buildPackageGlobPatterns(resolvedPrefix, decodedCapture, targetSuffix);
     if (globPattern === null) return null;
     return {
       globPattern,
@@ -380,12 +396,101 @@ function parsePackageName(specifierPrefix: string): string | null {
   return segments[0] || null;
 }
 
+function aliasesMayMatch(aliases: readonly Alias[], requestPattern: string): boolean {
+  const requestPrefix = requestPattern.slice(0, requestPattern.indexOf("*"));
+  return aliases.some((alias) => {
+    const { find } = alias;
+    // Arbitrary regular-expression/template intersection is not decidable.
+    if (find instanceof RegExp) return !isViteInternalAlias(alias);
+    if (matchesTemplatePattern(requestPattern, find)) return true;
+    const aliasPrefix = `${find}/`;
+    return requestPrefix.startsWith(aliasPrefix) || aliasPrefix.startsWith(requestPrefix);
+  });
+}
+
+function isViteInternalAlias(alias: Alias): boolean {
+  if (!(alias.find instanceof RegExp)) return false;
+  const replacement = toSlash(alias.replacement);
+  const source = replacement.endsWith("/vite/client/env.mjs")
+    ? "@vite/env"
+    : replacement.endsWith("/vite/client/client.mjs")
+      ? "@vite/client"
+      : null;
+  if (source === null) return false;
+  alias.find.lastIndex = 0;
+  const matches = alias.find.test(source);
+  alias.find.lastIndex = 0;
+  return matches;
+}
+
+function decodePackageTarget(target: string): [prefix: string, suffix: string] | null {
+  // Raw URL query/fragment delimiters are not filesystem characters in Node's
+  // package-target URL resolution. Their percent-encoded forms remain valid.
+  if (target.includes("?") || target.includes("#")) return null;
+  const targetParts = splitSingleWildcard(target);
+  if (targetParts === null) return null;
+  const [rawPrefix, rawSuffix] = targetParts;
+  // A percent escape can span the wildcard boundary. Supporting that would
+  // require a runtime-derived glob, so preserve the native import instead.
+  if (/%[\da-f]?$/i.test(rawPrefix) || /^[\da-f]/i.test(rawSuffix)) return null;
+  for (const segment of target.slice(2).split("/")) {
+    let decodedSegment: string;
+    try {
+      decodedSegment = decodeURIComponent(segment);
+    } catch {
+      return null;
+    }
+    if (
+      decodedSegment === "." ||
+      decodedSegment === ".." ||
+      decodedSegment.toLowerCase() === "node_modules" ||
+      decodedSegment.includes("/") ||
+      decodedSegment.includes("\\")
+    ) {
+      return null;
+    }
+  }
+  const wildcard = target.indexOf("*");
+  try {
+    return [
+      decodeURIComponent(target.slice(0, wildcard)),
+      decodeURIComponent(target.slice(wildcard + 1)),
+    ];
+  } catch {
+    return null;
+  }
+}
+
+function decodeRequestCapturePattern(pattern: string): string | null {
+  const parts = pattern.split("*");
+  for (let index = 0; index < parts.length - 1; index++) {
+    if (/%[\da-f]?$/i.test(parts[index]) || /^[\da-f]/i.test(parts[index + 1])) return null;
+  }
+
+  const decodedParts: string[] = [];
+  for (const part of parts) {
+    const decodedSegments: string[] = [];
+    for (const segment of part.split("/")) {
+      let decodedSegment: string;
+      try {
+        decodedSegment = decodeURIComponent(segment);
+      } catch {
+        return null;
+      }
+      if (decodedSegment.includes("/") || decodedSegment.includes("\\")) return null;
+      decodedSegments.push(decodedSegment);
+    }
+    decodedParts.push(decodedSegments.join("/"));
+  }
+  return decodedParts.join("*");
+}
+
 function resolvePackageInfo(
   packageName: string,
   id: string,
 ): { packageRoot: string; packageJson: PackageJson } | null {
   const cleanId = id.split(/[?#]/, 1)[0];
-  const selfPackage = findPackageInfo(path.dirname(cleanId), packageName);
+  const selfPackage = findNearestPackageInfo(path.dirname(cleanId), packageName);
   if (selfPackage !== null) return selfPackage;
 
   let resolver: NodeRequire;
@@ -412,6 +517,23 @@ function resolvePackageInfo(
   }
 
   return null;
+}
+
+function findNearestPackageInfo(
+  startDirectory: string,
+  packageName: string,
+): { packageRoot: string; packageJson: PackageJson } | null {
+  let directory = startDirectory;
+  while (true) {
+    const filename = path.join(directory, "package.json");
+    if (fs.existsSync(filename)) {
+      const packageJson = readPackageJson(filename);
+      return packageJson?.name === packageName ? { packageRoot: directory, packageJson } : null;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
 }
 
 function findPackageInfo(
@@ -589,9 +711,24 @@ function getExportConditions(config: TransformEnvironmentConfig): ReadonlySet<st
 
 function createTransformConfig(config: TransformEnvironmentConfig): TransformConfig {
   return {
+    aliases: config.resolve.alias ?? [],
     moduleExtensions: getModuleExtensions(config),
     exportConditions: getExportConditions(config),
   };
+}
+
+const JAVASCRIPT_STRING_ESCAPE_MAP: Readonly<Record<string, string>> = {
+  "<": "\\u003C",
+  ">": "\\u003E",
+  "\u2028": "\\u2028",
+  "\u2029": "\\u2029",
+};
+
+function serializeJavaScriptValue(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[<>\u2028\u2029]/g,
+    (character) => JAVASCRIPT_STRING_ESCAPE_MAP[character],
+  );
 }
 
 function buildReplacement(
@@ -599,14 +736,14 @@ function buildReplacement(
   globPattern: string | readonly string[],
   moduleExtensions: readonly string[],
 ): string {
-  const extensions = JSON.stringify(moduleExtensions);
-  return `((__vinextPath, __vinextModules = import.meta.glob(${JSON.stringify(globPattern)}), __vinextExtensions = ${extensions}) => { const __vinextLoader = __vinextModules[__vinextPath] ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + __vinextExtension]).find(Boolean) ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + "/index" + __vinextExtension]).find(Boolean); return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
+  const extensions = serializeJavaScriptValue(moduleExtensions);
+  return `((__vinextPath, __vinextModules = import.meta.glob(${serializeJavaScriptValue(globPattern)}), __vinextExtensions = ${extensions}) => { const __vinextLoader = __vinextModules[__vinextPath] ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + __vinextExtension]).find(Boolean) ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + "/index" + __vinextExtension]).find(Boolean); return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
 }
 
 function buildPackageReplacement(source: string, resolution: PackageImportResolution): string {
   const captureEnd = resolution.requestSuffix
-    ? `-${JSON.stringify(resolution.requestSuffix)}.length`
+    ? `-${serializeJavaScriptValue(resolution.requestSuffix)}.length`
     : "undefined";
   const packageSubpathStart = resolution.packageName.length + 1;
-  return `((__vinextPath, __vinextModules = import.meta.glob(${JSON.stringify(resolution.globPattern)}, { exhaustive: true })) => { const __vinextInvalidSubpath = __vinextPath.slice(${packageSubpathStart}).split("/").some((__vinextSegment) => { if (!__vinextSegment) return true; try { const __vinextDecodedSegment = decodeURIComponent(__vinextSegment); return __vinextDecodedSegment === "." || __vinextDecodedSegment === ".." || __vinextDecodedSegment.toLowerCase() === "node_modules" || __vinextDecodedSegment.includes("/") || __vinextDecodedSegment.includes("\\\\"); } catch { return true; } }); if (__vinextInvalidSubpath) return Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); const __vinextCapture = __vinextPath.slice(${JSON.stringify(resolution.requestPrefix)}.length, ${captureEnd}); const __vinextResolvedPath = ${JSON.stringify(resolution.resolvedPrefix)} + __vinextCapture + ${JSON.stringify(resolution.resolvedSuffix)}; const __vinextLoader = __vinextModules[__vinextResolvedPath]; return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
+  return `((__vinextPath, __vinextModules = import.meta.glob(${serializeJavaScriptValue(resolution.globPattern)}, { exhaustive: true })) => { const __vinextSegments = __vinextPath.slice(${packageSubpathStart}).split("/"); let __vinextDecodedSegments, __vinextCapture; try { __vinextDecodedSegments = __vinextSegments.map((__vinextSegment) => decodeURIComponent(__vinextSegment)); __vinextCapture = __vinextPath.slice(${serializeJavaScriptValue(resolution.requestPrefix)}.length, ${captureEnd}).split("/").map((__vinextSegment) => decodeURIComponent(__vinextSegment)).join("/"); } catch { return Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); } const __vinextInvalidSubpath = __vinextPath.includes("?") || __vinextPath.includes("#") || __vinextDecodedSegments.some((__vinextSegment) => __vinextSegment === "." || __vinextSegment === ".." || __vinextSegment.toLowerCase() === "node_modules" || __vinextSegment.includes("/") || __vinextSegment.includes("\\\\")); if (__vinextInvalidSubpath) return Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); const __vinextResolvedPath = (${serializeJavaScriptValue(resolution.resolvedPrefix)} + __vinextCapture + ${serializeJavaScriptValue(resolution.resolvedSuffix)}).replace(/\\/+/g, "/"); const __vinextLoader = __vinextModules[__vinextResolvedPath]; return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
 }

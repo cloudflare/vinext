@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { build } from "vite";
 import { createExtensionlessDynamicImportPlugin } from "../packages/vinext/src/plugins/extensionless-dynamic-import.js";
 
@@ -312,6 +313,87 @@ describe("vinext:extensionless-dynamic-import", () => {
     expect(client).not.toBe(rsc);
   });
 
+  it("does not bypass Vite aliases when resolving package imports", () => {
+    const packageName = "aliased-locales";
+    const { root, importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./physical-a/*",
+    });
+    const aliasedPackageRoot = path.join(root, "node_modules", "replacement-locales");
+    mkdirSync(aliasedPackageRoot, { recursive: true });
+    writeFileSync(
+      path.join(aliasedPackageRoot, "package.json"),
+      JSON.stringify({
+        name: "replacement-locales",
+        type: "module",
+        exports: { ".": "./index.js", "./*": "./physical-b/*" },
+      }),
+    );
+    writeFileSync(path.join(aliasedPackageRoot, "index.js"), "export {};\n");
+
+    const plugin = createExtensionlessDynamicImportPlugin();
+    unwrapHook(plugin.configResolved).call(plugin, {
+      resolve: {
+        alias: [{ find: packageName, replacement: "replacement-locales" }],
+        conditions: [],
+        extensions: [".js", ".json"],
+      },
+    });
+    const result = unwrapHook(plugin.transform).call(
+      plugin,
+      "await import(`aliased-locales/${locale}.json`)",
+      importer,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it.each([
+    { find: "aliased-locales/special.json", replacement: "replacement-locales/special.json" },
+    { find: /^aliased-locales\/.+/, replacement: "replacement-locales/$&" },
+  ])("does not let a variable package import cross alias $find", (alias) => {
+    const packageName = "aliased-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./physical/*",
+    });
+    const plugin = createExtensionlessDynamicImportPlugin();
+    unwrapHook(plugin.configResolved).call(plugin, {
+      resolve: {
+        alias: [alias],
+        conditions: [],
+        extensions: [".js", ".json"],
+      },
+    });
+
+    expect(
+      unwrapHook(plugin.transform).call(
+        plugin,
+        "await import(`aliased-locales/${locale}.json`)",
+        importer,
+      ),
+    ).toBeNull();
+  });
+
+  it("does not cross a nested package scope for package self-resolution", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "vinext-package-dynamic-import-"));
+    tempDirs.push(root);
+    writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "root-locales", exports: { "./*": "./messages/*" } }),
+    );
+    const appRoot = path.join(root, "apps", "site");
+    mkdirSync(appRoot, { recursive: true });
+    writeFileSync(path.join(appRoot, "package.json"), JSON.stringify({ name: "site" }));
+
+    const result = createTransform()(
+      "await import(`root-locales/${locale}.json`)",
+      path.join(appRoot, "entry.ts"),
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("bundles wildcard exports from packages physically installed in node_modules", async () => {
     const packageName = "installed-locales";
     const { root, importer } = createPackageFixture(
@@ -350,6 +432,46 @@ describe("vinext:extensionless-dynamic-import", () => {
     expect(emittedCode).toContain("German nested installed package");
   });
 
+  it("decodes package export targets and runtime captures like Node", async () => {
+    const packageName = "encoded-locales";
+    const { root, importer } = createPackageFixture(
+      packageName,
+      { "./*": "./messages%20files/*" },
+      {
+        "messages files/hello world.js": 'export default "decoded package import";\n',
+        "messages files/hash#file.js": 'export default "decoded hash import";\n',
+        "messages files/foo/bar.js": 'export default "normalized slash import";\n',
+      },
+    );
+    writeFileSync(
+      importer,
+      `export async function load(subpath) {
+  return (await import(\`encoded-locales/\${subpath}\`)).default;
+}
+export async function loadStaticPrefix(name) {
+  return (await import(\`encoded-locales/hello%20\${name}.js\`)).default;
+}\n`,
+    );
+
+    await build({
+      root,
+      logLevel: "silent",
+      plugins: [createExtensionlessDynamicImportPlugin()],
+      build: {
+        lib: { entry: importer, formats: ["es"], fileName: () => "entry.mjs" },
+        outDir: "dist",
+      },
+    });
+    const output = await import(pathToFileURL(path.join(root, "dist", "entry.mjs")).href);
+
+    await expect(output.load("hello%20world.js")).resolves.toBe("decoded package import");
+    await expect(output.loadStaticPrefix("world")).resolves.toBe("decoded package import");
+    await expect(output.load("hash%23file.js")).resolves.toBe("decoded hash import");
+    await expect(output.load("hash#file.js")).rejects.toThrow("Cannot find module");
+    await expect(output.load("foo//bar.js")).resolves.toBe("normalized slash import");
+    await expect(output.load("/foo/bar.js")).resolves.toBe("normalized slash import");
+  });
+
   it("rejects Node-forbidden runtime package subpath segments", () => {
     const packageName = "validated-locales";
     const { importer } = createPackageFixture(packageName, {
@@ -359,8 +481,40 @@ describe("vinext:extensionless-dynamic-import", () => {
 
     const result = createTransform()("await import(`validated-locales/${subpath}`)", importer);
     expect(result.code).toContain("decodeURIComponent(__vinextSegment)");
-    expect(result.code).toContain('__vinextDecodedSegment.toLowerCase() === "node_modules"');
+    expect(result.code).toContain('__vinextSegment.toLowerCase() === "node_modules"');
     expect(result.code).toContain("!./node_modules/validated-locales/src/**/node_modules/**");
+  });
+
+  it.each([
+    "./src/../private/*",
+    "./src/%2e%2e/private/*",
+    "./src/node_modules/*",
+    "./src#fragment/*",
+    "./src?query/*",
+  ])("leaves Node-invalid package export target %s unchanged", (target) => {
+    const packageName = "invalid-target-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": target,
+    });
+
+    expect(
+      createTransform()(`await import(\`invalid-target-locales/\${locale}.json\`)`, importer),
+    ).toBeNull();
+  });
+
+  it("escapes package export metadata embedded in generated JavaScript", () => {
+    const packageName = "escaped-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./prefix</script>/*</script>": "./messages</script>/*</script>",
+    });
+
+    const importSource = "`escaped-locales/prefix</script>/${locale}</script>`";
+    const result = createTransform()(`await import(${importSource})`, importer);
+
+    expect(result.code.replace(importSource, "")).not.toContain("</script>");
+    expect(result.code).toContain("\\u003C/script\\u003E");
   });
 
   it("filters out dependency imports before invoking the handler", () => {
@@ -381,6 +535,18 @@ describe("vinext:extensionless-dynamic-import", () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it("preserves native imports when percent escapes can span an export wildcard", () => {
+    const packageName = "split-escape-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./foo*0bar": "./src/*0file.js",
+    });
+
+    expect(
+      createTransform()(`await import(\`split-escape-locales/foo\${value}0bar\`)`, importer),
+    ).toBeNull();
   });
 
   it.each([
