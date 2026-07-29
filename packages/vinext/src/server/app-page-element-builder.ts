@@ -41,6 +41,8 @@ import {
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import { createAppRenderDependency, type AppRenderDependency } from "./app-render-dependency.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -495,9 +497,14 @@ export async function buildPageElements<
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
+  const pageRenderDependency =
+    EffectivePageComponent && !isReactOwnedPageComponent(EffectivePageComponent)
+      ? createAppRenderDependency()
+      : null;
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
+    renderDependency?: AppRenderDependency | null,
   ) => {
     if (isReactOwnedPageComponent(PageComponent)) {
       const invocationProps = { ...props };
@@ -521,7 +528,17 @@ export async function buildPageElements<
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }
-      return ServerPageComponent(invocationProps);
+      try {
+        const result = ServerPageComponent(invocationProps);
+        if (isPromiseLike(result)) {
+          return Promise.resolve(result).finally(() => renderDependency?.release());
+        }
+        renderDependency?.release();
+        return result;
+      } catch (error) {
+        renderDependency?.release();
+        throw error;
+      }
     };
     return createElement(PageInvoker as unknown as AppPageComponent);
   };
@@ -538,7 +555,7 @@ export async function buildPageElements<
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
   let siblingInterceptElement: ReturnType<typeof createElement> | null =
     isSiblingIntercept && EffectivePageComponent
-      ? createPageElement(EffectivePageComponent, pageProps)
+      ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
       : null;
   if (isSiblingIntercept && siblingInterceptElement !== null) {
     const layoutIndexesByTreePosition = new Map<number, number[]>();
@@ -596,7 +613,7 @@ export async function buildPageElements<
     element: isSiblingIntercept
       ? siblingInterceptElement
       : EffectivePageComponent
-        ? createPageElement(EffectivePageComponent, pageProps)
+        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
         : null,
     createPageElement,
     // Fall back to vinext's built-in default global error module so that
@@ -610,6 +627,7 @@ export async function buildPageElements<
     mountedSlotIds,
     makeThenableParams,
     matchedParams: params,
+    pageRenderDependency,
     metadataPlacement,
     resolvedMetadata,
     resolvedMetadataPathname: routePath,

@@ -30,6 +30,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -155,11 +156,20 @@ async function renderNode(node: React.ReactNode): Promise<string> {
 
 async function renderRouteEntry(elements: AppElements, routeId: string): Promise<string> {
   const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  // Production Flight serialization starts every entry in the flat payload.
+  // Include the page entry beside the route so page/layout ordering tests use
+  // the same concurrent render shape instead of creating a route-only cycle.
+  const pageEntry = Object.entries(elements).find(([key]) => key.startsWith("page:"))?.[1];
   return renderNode(
     React.createElement(
       ElementsContext.Provider,
       { value: elements },
-      React.createElement(Slot, { id: routeId }),
+      React.createElement(
+        React.Fragment,
+        null,
+        pageEntry as React.ReactNode,
+        React.createElement(Slot, { id: routeId }),
+      ),
     ),
   );
 }
@@ -215,6 +225,77 @@ describe("buildPageElements", () => {
   beforeEach(() => {
     markDynamicUsageMock.mockClear();
     markRenderRequestApiUsageMock.mockClear();
+  });
+
+  it("renders the page before layouts that consume page-initialized request state", async () => {
+    // Regression from nodejs.org's next-intl integration, where the page calls
+    // setRequestLocale() before the parent layout renders NextIntlClientProvider.
+    // https://github.com/nodejs/nodejs.org/commit/5eace3f956c10da92880be7ce16e942bbcb47ff7
+    let requestLocale = "en";
+
+    async function LocalePage({ params }: { params: Promise<{ locale: string }> }) {
+      const { locale } = await params;
+      await Promise.resolve();
+      requestLocale = locale;
+      return React.createElement("main", null, `page:${requestLocale}`);
+    }
+
+    async function LocaleLayout(props: Record<string, unknown>) {
+      await Promise.resolve();
+      return React.createElement(
+        "section",
+        null,
+        `layout:${requestLocale}`,
+        props.children as React.ReactNode,
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(LocalePage),
+      layouts: [createSyntheticPageModule(LocaleLayout)],
+      layoutTreePositions: [1],
+      routeSegments: ["[locale]"],
+      pattern: "/:locale",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
+    );
+    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    expect(html).toContain("layout:de");
+    expect(html).toContain("page:de");
+    expect(html).not.toContain("layout:en");
+  });
+
+  it("does not wait for an omitted page during loading-shell prefetches", async () => {
+    const Page = vi.fn(() => React.createElement("main", null, "Page content"));
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(Page),
+      layouts: [
+        createSyntheticPageModule((props: { children?: React.ReactNode }) =>
+          React.createElement("section", null, props.children),
+        ),
+      ],
+      layoutTreePositions: [0],
+      loading: createSyntheticPageModule(() => React.createElement("p", null, "Loading shell")),
+      routeSegments: ["slow"],
+      pattern: "/slow",
+    });
+    const options = createBaseOptions({ route, routePath: "/slow" });
+
+    const result = await buildPageElements({
+      ...options,
+      pageRequest: {
+        ...options.pageRequest,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      },
+    });
+    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    expect(html).toContain("Loading shell");
+    expect(html).not.toContain("Page content");
+    expect(Page).not.toHaveBeenCalled();
   });
 
   it("returns an error element record when a page module has no default export", async () => {

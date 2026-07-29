@@ -246,6 +246,9 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
 
 async function renderRouteDocument(elements: AppElements, routeId: string): Promise<string> {
   const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  // Match production Flight serialization, which starts the flat page and
+  // route entries concurrently before the decoded route tree is rendered.
+  const pageEntry = Object.entries(elements).find(([key]) => key.startsWith("page:"))?.[1];
   return renderHtml(
     createElement(
       "html",
@@ -257,7 +260,12 @@ async function renderRouteDocument(elements: AppElements, routeId: string): Prom
         createElement(
           ElementsContext.Provider,
           { value: elements },
-          createElement(Slot, { id: routeId }),
+          createElement(
+            Fragment,
+            null,
+            pageEntry as ReactNode,
+            createElement(Slot, { id: routeId }),
+          ),
         ),
       ),
     ),

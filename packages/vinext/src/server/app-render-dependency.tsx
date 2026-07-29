@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { use, type ReactNode } from "react";
 
 export type AppRenderDependency = {
   promise: Promise<void>;
@@ -53,8 +53,10 @@ export function renderAfterAppDependencies(
     return children;
   }
 
-  async function AwaitAppRenderDependencies() {
-    await Promise.all(dependencies.map((dependency) => dependency.promise));
+  const pendingDependencies = Promise.all(dependencies.map((dependency) => dependency.promise));
+
+  function AwaitAppRenderDependencies() {
+    use(pendingDependencies);
     return children;
   }
 

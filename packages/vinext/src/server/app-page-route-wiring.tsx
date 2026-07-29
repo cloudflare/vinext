@@ -242,6 +242,7 @@ type BuildAppPageRouteElementOptions<
     component: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode;
+  pageRenderDependency?: AppRenderDependency | null;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -833,6 +834,9 @@ export function buildAppPageElements<
   };
   const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+  // Loading-shell prefetches intentionally omit the page, so they cannot wait
+  // on a dependency that only the page invocation can release.
+  const pageRenderDependency = isPrefetchLoadingShell ? null : options.pageRenderDependency;
   const prefetchLoadingEntry = isPrefetchLoadingShell
     ? getPrefetchLoadingEntry(options.route)
     : null;
@@ -1045,7 +1049,9 @@ export function buildAppPageElements<
 
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
-    : renderAfterAppDependencies(options.element, pageDependencies);
+    : pageRenderDependency
+      ? options.element
+      : renderAfterAppDependencies(options.element, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
@@ -1080,10 +1086,10 @@ export function buildAppPageElements<
         </Suspense>
       );
     }
-    elements[templateEntry.id] = renderAfterAppDependencies(
-      templateElement,
-      templateDependenciesBeforeById.get(templateEntry.id) ?? [],
-    );
+    elements[templateEntry.id] = renderAfterAppDependencies(templateElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(templateDependenciesBeforeById.get(templateEntry.id) ?? []),
+    ]);
   }
 
   for (let index = 0; index < layoutEntries.length; index++) {
@@ -1149,10 +1155,10 @@ export function buildAppPageElements<
         </Suspense>
       );
     }
-    elements[layoutEntry.id] = renderAfterAppDependencies(
-      layoutElement,
-      layoutDependenciesBefore[index] ?? [],
-    );
+    elements[layoutEntry.id] = renderAfterAppDependencies(layoutElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(layoutDependenciesBefore[index] ?? []),
+    ]);
   }
 
   for (const slotPlan of segmentPlan.slots) {
@@ -1710,7 +1716,7 @@ export function buildAppPageElements<
     </GlobalErrorBoundary>
   );
 
-  elements[routeId] = (
+  const routeElement = (
     <>
       {createAppPageRouteHead(
         options.resolvedMetadata,
@@ -1730,6 +1736,9 @@ export function buildAppPageElements<
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
   );
+  elements[routeId] = pageRenderDependency
+    ? renderAfterAppDependencies(routeElement, [pageRenderDependency])
+    : routeElement;
 
   // Merge only after rendering is complete so metadata never participates in
   // element construction, without copying the rendered element map on return.
