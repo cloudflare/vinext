@@ -175,7 +175,11 @@ async function renderReactNodeText(node: unknown): Promise<string> {
   }
   if (!React.isValidElement<{ children?: unknown }>(node)) return "";
 
-  if (node.type === React.Fragment || typeof node.type === "string") {
+  if (
+    node.type === React.Fragment ||
+    node.type === React.Suspense ||
+    typeof node.type === "string"
+  ) {
     return renderReactNodeText(node.props.children);
   }
   if (typeof node.type === "function") {
