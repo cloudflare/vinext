@@ -375,6 +375,38 @@ describe("vinext:extensionless-dynamic-import", () => {
     ).toBeNull();
   });
 
+  it.each([
+    { find: /^@vite\/env$/, filename: "env.mjs" },
+    { find: /^@vite\/client$/, filename: "client.mjs" },
+  ])("ignores Vite's dist client alias $find", ({ find, filename }) => {
+    const packageName = "vite-internal-alias-locales";
+    const { importer } = createPackageFixture(packageName, {
+      ".": "./index.js",
+      "./*": "./messages/*",
+    });
+    const plugin = createExtensionlessDynamicImportPlugin();
+    unwrapHook(plugin.configResolved).call(plugin, {
+      resolve: {
+        alias: [
+          {
+            find,
+            replacement: `/workspace/node_modules/vite/dist/client/${filename}`,
+          },
+        ],
+        conditions: [],
+        extensions: [".js", ".json"],
+      },
+    });
+
+    const result = unwrapHook(plugin.transform).call(
+      plugin,
+      "await import(`vite-internal-alias-locales/${locale}.json`)",
+      importer,
+    );
+
+    expect(result?.code).toContain("import.meta.glob");
+  });
+
   it("does not cross a nested package scope for package self-resolution", () => {
     const root = mkdtempSync(path.join(tmpdir(), "vinext-package-dynamic-import-"));
     tempDirs.push(root);

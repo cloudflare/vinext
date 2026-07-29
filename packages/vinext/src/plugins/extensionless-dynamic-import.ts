@@ -411,11 +411,14 @@ function aliasesMayMatch(aliases: readonly Alias[], requestPattern: string): boo
 function isViteInternalAlias(alias: Alias): boolean {
   if (!(alias.find instanceof RegExp)) return false;
   const replacement = toSlash(alias.replacement);
-  const source = replacement.endsWith("/vite/client/env.mjs")
-    ? "@vite/env"
-    : replacement.endsWith("/vite/client/client.mjs")
-      ? "@vite/client"
-      : null;
+  const source =
+    replacement.endsWith("/vite/client/env.mjs") ||
+    replacement.endsWith("/vite/dist/client/env.mjs")
+      ? "@vite/env"
+      : replacement.endsWith("/vite/client/client.mjs") ||
+          replacement.endsWith("/vite/dist/client/client.mjs")
+        ? "@vite/client"
+        : null;
   if (source === null) return false;
   alias.find.lastIndex = 0;
   const matches = alias.find.test(source);
