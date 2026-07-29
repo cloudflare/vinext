@@ -351,6 +351,12 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain("<script");
   });
 
+  it("bundles a static CommonJS request encoded with String.fromCharCode", async () => {
+    const res = await fetch(`${baseUrl}/char-code-require`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("loaded from a character-code require");
+  });
+
   it("serves static asset byte ranges from the identity representation", async () => {
     const html = await (await fetch(`${baseUrl}/`)).text();
     const href = html.match(/["'](\/_next\/static\/[^"']+\.(?:js|css))["']/)?.[1];

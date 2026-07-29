@@ -18,6 +18,8 @@
  * - dist/server/ssr/index.js — SSR entry (imported by RSC entry at runtime)
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createRequire } from "node:module";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable, pipeline } from "node:stream";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
@@ -172,9 +174,54 @@ export function rememberCurrentServerEntryImportMtime(entryPath: string): void {
   bareServerEntryMtimes.set(href, mtime);
 }
 
+type ServerEntryRequire = ReturnType<typeof createRequire>;
+
+const serverEntryRequireStorage = new AsyncLocalStorage<ServerEntryRequire>();
+const inheritedGlobalRequire =
+  typeof globalThis.require === "function" ? globalThis.require : undefined;
+
+function activeServerEntryRequire(): ServerEntryRequire {
+  const activeRequire = serverEntryRequireStorage.getStore() ?? inheritedGlobalRequire;
+  if (activeRequire) return activeRequire;
+  throw new Error("require() was called outside a Node production server entry context");
+}
+
+const serverEntryRequireDispatcher = new Proxy(
+  ((request: string) => activeServerEntryRequire()(request)) as ServerEntryRequire,
+  {
+    apply(_target, thisArg, argumentsList) {
+      return Reflect.apply(activeServerEntryRequire(), thisArg, argumentsList);
+    },
+    get(_target, property) {
+      return Reflect.get(activeServerEntryRequire(), property);
+    },
+    set(_target, property, value) {
+      return Reflect.set(activeServerEntryRequire(), property, value);
+    },
+  },
+);
+
+function runWithServerEntryRequire<T>(entryRequire: ServerEntryRequire, callback: () => T): T {
+  // Keep one process-global dispatcher installed for the lifetime of the Node
+  // adapter. The resolver itself is entry-scoped through AsyncLocalStorage;
+  // calls made by the embedding outside an entry context use the inherited
+  // resolver captured above, or intentionally throw the adapter-specific
+  // error from activeServerEntryRequire when no resolver existed.
+  globalThis.require = serverEntryRequireDispatcher;
+  return serverEntryRequireStorage.run(entryRequire, callback);
+}
+
+function createServerEntryRequire(entryPath: string): ServerEntryRequire {
+  return createRequire(pathToFileURL(entryPath));
+}
+
 // oxlint-disable-next-line typescript/no-explicit-any -- built entry modules are untyped, matching the previous inline `await import(...)`
 export async function importServerEntryModule(entryPath: string): Promise<any> {
-  return import(resolveServerEntryImportUrl(entryPath));
+  const entryRequire = createServerEntryRequire(entryPath);
+  return runWithServerEntryRequire(
+    entryRequire,
+    () => import(resolveServerEntryImportUrl(entryPath)),
+  );
 }
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
@@ -1316,7 +1363,7 @@ function resolveAppRouterHandler(
   if (entry && typeof entry === "object" && "fetch" in entry) {
     const workerEntry = entry as WorkerAppRouterEntry;
     if (typeof workerEntry.fetch === "function") {
-      return (request, ctx) => Promise.resolve(workerEntry.fetch(request, undefined, ctx));
+      return (request, ctx) => Promise.resolve(workerEntry.fetch(request, process.env, ctx));
     }
   }
 
@@ -1503,6 +1550,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // instance, and only cache-busts when this function runs again after a
   // rebuild to the same path (e.g. across test describe blocks).
   const rscModule = await importServerEntryModule(rscEntryPath);
+  const rscEntryRequire = createServerEntryRequire(rscEntryPath);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
 
   // `assetPrefix` is embedded as a compile-time constant in the generated
@@ -1562,7 +1610,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
   const seedPrerenderedRoutes = resolveAppRouterPrerenderSeeder(rscModule);
-  const seededRoutes = await seedPrerenderedRoutes(path.dirname(rscEntryPath));
+  const seededRoutes = await runWithServerEntryRequire(rscEntryRequire, () =>
+    seedPrerenderedRoutes(path.dirname(rscEntryPath)),
+  );
   if (seededRoutes > 0) {
     console.log(
       `[vinext] Seeded ${seededRoutes} pre-rendered route${seededRoutes !== 1 ? "s" : ""} into memory cache`,
@@ -1772,7 +1822,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   };
 
   const server = createServer((req, res) => {
-    void handleRequest(req, res);
+    void runWithServerEntryRequire(rscEntryRequire, () => handleRequest(req, res));
   });
 
   await new Promise<void>((resolve) => {
@@ -1842,6 +1892,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // module instance, and only cache-busts when this function runs again after
   // a rebuild to the same output path.
   const serverEntry = await importServerEntryModule(serverEntryPath);
+  const serverEntryRequire = createServerEntryRequire(serverEntryPath);
   const {
     renderPage,
     handleApiRoute: handleApi,
@@ -2283,7 +2334,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   };
 
   const server = createServer((req, res) => {
-    void handleRequest(req, res);
+    void runWithServerEntryRequire(serverEntryRequire, () => handleRequest(req, res));
   });
 
   await new Promise<void>((resolve) => {
