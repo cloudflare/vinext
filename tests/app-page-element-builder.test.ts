@@ -235,7 +235,6 @@ describe("buildPageElements", () => {
 
     async function LocalePage({ params }: { params: Promise<{ locale: string }> }) {
       const { locale } = await params;
-      await Promise.resolve();
       requestLocale = locale;
       return React.createElement("main", null, `page:${requestLocale}`);
     }
@@ -262,6 +261,48 @@ describe("buildPageElements", () => {
       createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
     );
     const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    expect(html).toContain("layout:de");
+    expect(html).toContain("page:de");
+    expect(html).not.toContain("layout:en");
+  });
+
+  it("keeps layouts suspended when a sync page suspends before initializing request state", async () => {
+    let resolveLocale!: (locale: string) => void;
+    const pendingLocale = new Promise<string>((resolve) => {
+      resolveLocale = resolve;
+    });
+    let requestLocale = "en";
+
+    function LocalePage() {
+      requestLocale = React.use(pendingLocale);
+      return React.createElement("main", null, `page:${requestLocale}`);
+    }
+
+    function LocaleLayout(props: Record<string, unknown>) {
+      return React.createElement(
+        "section",
+        null,
+        `layout:${requestLocale}`,
+        props.children as React.ReactNode,
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(LocalePage),
+      layouts: [createSyntheticPageModule(LocaleLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["suspended-locale"],
+      pattern: "/suspended-locale",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, routePath: "/suspended-locale" }),
+    );
+    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+    await Promise.resolve();
+    resolveLocale("de");
+    const html = await htmlPromise;
 
     expect(html).toContain("layout:de");
     expect(html).toContain("page:de");

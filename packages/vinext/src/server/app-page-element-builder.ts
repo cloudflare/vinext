@@ -70,6 +70,17 @@ function isReactOwnedPageComponent(component: AppPageComponent): boolean {
   );
 }
 
+function isReactSuspension(error: unknown): boolean {
+  if (isPromiseLike(error)) {
+    return true;
+  }
+
+  return (
+    error instanceof Error &&
+    error.message.startsWith("Suspense Exception: This is not a real error!")
+  );
+}
+
 /**
  * Route shape passed from the generated entry. Extends the wiring route with
  * the page module reference (used to extract the default export for the page
@@ -531,11 +542,25 @@ export async function buildPageElements<
       try {
         const result = ServerPageComponent(invocationProps);
         if (isPromiseLike(result)) {
-          return Promise.resolve(result).finally(() => renderDependency?.release());
+          // Async components execute synchronously until their first await. Let
+          // one continuation run before layouts consume request state (for
+          // example `await params; setRequestLocale(locale)`), but do not wait
+          // for the whole page promise: loading.tsx must still be able to stream
+          // while the page performs slower data work.
+          if (renderDependency) {
+            void Promise.resolve().then(() => renderDependency.release());
+          }
+          return result;
         }
         renderDependency?.release();
         return result;
       } catch (error) {
+        // React's use() implementation suspends by throwing an internal value.
+        // It must reach React unchanged and without releasing dependent layouts;
+        // React will retry this component after the thenable resolves.
+        if (isReactSuspension(error)) {
+          throw error;
+        }
         renderDependency?.release();
         throw error;
       }
