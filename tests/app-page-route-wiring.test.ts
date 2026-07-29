@@ -40,6 +40,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
+import { createAppRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
 
 /**
  * Build the resolved semantic branch the route matcher hands to slot overrides.
@@ -3533,6 +3534,69 @@ describe("app page route wiring helpers", () => {
 
     expect(body).toContain("page:de");
     expect(body).not.toContain("page:en");
+  });
+
+  it("waits for page initialization before serializing parallel slot entries", async () => {
+    let activeLocale = "en";
+    const pageRenderDependency = createAppRenderDependency();
+
+    function LocaleSlot() {
+      return createElement("aside", null, `slot:${activeLocale}`);
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement("main", null, "Page content"),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      pageRenderDependency,
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: -1,
+            loading: null,
+            name: "sidebar",
+            page: { default: LocaleSlot },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    let slotRenderSettled = false;
+    const slotHtmlPromise = renderHtml(readChildren(elements[slotId])).then((html) => {
+      slotRenderSettled = true;
+      return html;
+    });
+
+    await Promise.resolve();
+    expect(slotRenderSettled).toBe(false);
+
+    activeLocale = "de";
+    pageRenderDependency.release();
+    const html = await withTimeout(slotHtmlPromise, 1_000);
+
+    expect(html).toContain("slot:de");
+    expect(html).not.toContain("slot:en");
   });
 
   it("preserves parent-before-child execution under an ancestor loading boundary", async () => {

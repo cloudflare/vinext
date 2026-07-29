@@ -70,15 +70,8 @@ function isReactOwnedPageComponent(component: AppPageComponent): boolean {
   );
 }
 
-function isReactSuspension(error: unknown): boolean {
-  if (isPromiseLike(error)) {
-    return true;
-  }
-
-  return (
-    error instanceof Error &&
-    error.message.startsWith("Suspense Exception: This is not a real error!")
-  );
+function isDeclaredAsyncFunction(component: (...args: never[]) => unknown): boolean {
+  return component.constructor.name === "AsyncFunction";
 }
 
 /**
@@ -539,14 +532,26 @@ export async function buildPageElements<
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }
+
+      // Sync server components must remain owned by React so hooks such as
+      // use(promise) suspend inside the route's loading boundary. The
+      // request-state ordering guarantee is only needed for declared async
+      // pages, which can initialize state immediately after awaiting params.
+      if (!isDeclaredAsyncFunction(ServerPageComponent)) {
+        renderDependency?.release();
+        return createElement(ServerPageComponent as unknown as AppPageComponent, invocationProps);
+      }
+
       try {
         const result = ServerPageComponent(invocationProps);
         if (isPromiseLike(result)) {
-          // Async components execute synchronously until their first await. Let
-          // one continuation run before layouts consume request state (for
-          // example `await params; setRequestLocale(locale)`), but do not wait
-          // for the whole page promise: loading.tsx must still be able to stream
-          // while the page performs slower data work.
+          // Consumers have already suspended on the dependency via use().
+          // Releasing it from a queued microtask schedules their replay behind
+          // the page's immediate post-params continuation (for example
+          // `await params; setRequestLocale(locale)`). Do not wait for the full
+          // page promise: loading.tsx must still stream during slower data work.
+          // Request state needed by a parent must therefore be established in
+          // that immediate continuation, before the page starts slower awaits.
           if (renderDependency) {
             void Promise.resolve().then(() => renderDependency.release());
           }
@@ -555,12 +560,6 @@ export async function buildPageElements<
         renderDependency?.release();
         return result;
       } catch (error) {
-        // React's use() implementation suspends by throwing an internal value.
-        // It must reach React unchanged and without releasing dependent layouts;
-        // React will retry this component after the thenable resolves.
-        if (isReactSuspension(error)) {
-          throw error;
-        }
         renderDependency?.release();
         throw error;
       }

@@ -174,6 +174,24 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
   );
 }
 
+async function renderElementEntry(elements: AppElements, elementId: string): Promise<string> {
+  const record = elements as Record<string, React.ReactNode>;
+  const element = record[elementId];
+  if (!React.isValidElement(element)) {
+    throw new Error(`Expected React element for ${elementId}`);
+  }
+
+  if (elementId.startsWith("page:")) {
+    return renderNode(element);
+  }
+
+  // Production Flight serialization starts every flat entry concurrently.
+  // Rendering the primary page beside a dependent slot lets its invocation
+  // release the page-initialization barrier just as production does.
+  const pageEntry = Object.entries(record).find(([key]) => key.startsWith("page:"))?.[1];
+  return renderNode(React.createElement(React.Fragment, null, pageEntry, element));
+}
+
 async function buildAndRenderElement(
   route: AppPageBuildRoute,
   elementId: string,
@@ -195,7 +213,7 @@ async function buildAndRenderElement(
 
   markDynamicUsageMock.mockClear();
   markRenderRequestApiUsageMock.mockClear();
-  return renderNode(element);
+  return renderElementEntry(result, elementId);
 }
 
 function expectNoSearchParamsObservation(): void {
@@ -267,16 +285,14 @@ describe("buildPageElements", () => {
     expect(html).not.toContain("layout:en");
   });
 
-  it("keeps layouts suspended when a sync page suspends before initializing request state", async () => {
-    let resolveLocale!: (locale: string) => void;
-    const pendingLocale = new Promise<string>((resolve) => {
-      resolveLocale = resolve;
-    });
+  it("preserves page initialization when async syntax is lowered to a Promise return", async () => {
     let requestLocale = "en";
 
-    function LocalePage() {
-      requestLocale = React.use(pendingLocale);
-      return React.createElement("main", null, `page:${requestLocale}`);
+    function LoweredLocalePage({ params }: { params: Promise<{ locale: string }> }) {
+      return params.then(({ locale }) => {
+        requestLocale = locale;
+        return React.createElement("main", null, `page:${requestLocale}`);
+      });
     }
 
     function LocaleLayout(props: Record<string, unknown>) {
@@ -289,20 +305,17 @@ describe("buildPageElements", () => {
     }
 
     const route = createSyntheticRoute({
-      page: createSyntheticPageModule(LocalePage),
+      page: createSyntheticPageModule(LoweredLocalePage),
       layouts: [createSyntheticPageModule(LocaleLayout)],
       layoutTreePositions: [0],
-      routeSegments: ["suspended-locale"],
-      pattern: "/suspended-locale",
+      routeSegments: ["[locale]"],
+      pattern: "/:locale",
     });
 
     const result = await buildPageElements(
-      createBaseOptions({ route, routePath: "/suspended-locale" }),
+      createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
     );
-    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
-    await Promise.resolve();
-    resolveLocale("de");
-    const html = await htmlPromise;
+    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
 
     expect(html).toContain("layout:de");
     expect(html).toContain("page:de");
@@ -757,9 +770,7 @@ describe("buildPageElements", () => {
 
     const result = await buildPageElements(createBaseOptions({ route, routePath: "/exotic-slot" }));
 
-    await expect(
-      renderNode((result as Record<string, React.ReactNode>)["slot:modal:/"]),
-    ).resolves.toContain("memo slot");
+    await expect(renderElementEntry(result, "slot:modal:/")).resolves.toContain("memo slot");
   });
 
   it("records serialized queryless searchParams without marking client pages dynamic", async () => {
@@ -1464,7 +1475,7 @@ describe("buildPageElements", () => {
 
       markDynamicUsageMock.mockClear();
       markRenderRequestApiUsageMock.mockClear();
-      return renderNode(element);
+      return renderElementEntry(result, "slot:modal:/");
     };
 
     await expectCachedRenderIgnoresQuery({
@@ -1596,7 +1607,7 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await renderNode(slotElement);
+    await renderElementEntry(result, "slot:modal:/");
     await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
@@ -1642,7 +1653,7 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await renderNode(slotElement);
+    await renderElementEntry(result, "slot:modal:/");
     await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
@@ -1698,7 +1709,7 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     const slotElement = record["slot:bc:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await renderNode(slotElement);
+    await renderElementEntry(result, "slot:bc:/");
     const slotParams = await capturedParams;
     // Without the fix, urlParts would be ["base","distinct","alice"], the
     // pattern match would fail, and slotParams would silently fall back to

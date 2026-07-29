@@ -1416,10 +1416,10 @@ export function buildAppPageElements<
       );
     }
 
-    elements[slotId] = renderAfterAppDependencies(
-      slotElement,
-      targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : [],
-    );
+    elements[slotId] = renderAfterAppDependencies(slotElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : []),
+    ]);
   }
 
   let routeChildren: ReactNode = (

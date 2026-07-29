@@ -53,6 +53,9 @@ export function renderAfterAppDependencies(
     return children;
   }
 
+  // AppRenderDependency promises are resolve-only by construction. If an
+  // abort/reject path is added later, use() will deliberately surface that
+  // rejection through the render error-boundary path.
   const pendingDependencies = Promise.all(dependencies.map((dependency) => dependency.promise));
 
   function AwaitAppRenderDependencies() {
