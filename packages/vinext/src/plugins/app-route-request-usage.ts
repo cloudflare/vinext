@@ -401,7 +401,14 @@ export type AppRouteRequestUsageAnalysis = {
 };
 
 export function analyzeAppRouteRequestUsage(code: string): AppRouteRequestUsageAnalysis {
-  const ast = parseAst(code);
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code);
+  } catch {
+    // Missing metadata fails closed at runtime, so malformed input must leave
+    // the module untouched instead of aborting the whole Vite transform.
+    return { collision: false, hasRouteMethodCandidate: false, metadata: {} };
+  }
   const body = ast.body as unknown as AstNode[];
   const bindings = collectTopLevelBindings(body);
   const written = collectWrittenBindings(body);

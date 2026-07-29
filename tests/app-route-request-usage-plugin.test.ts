@@ -206,6 +206,12 @@ describe("app route request usage transform", () => {
     ).toBeNull();
   });
 
+  it("fails closed without aborting the transform for malformed route source", () => {
+    expect(
+      transformAppRouteRequestUsage(`export function GET(`, "/app/api/demo/route.js"),
+    ).toBeNull();
+  });
+
   it("rejects a user collision with the reserved export", () => {
     expect(() =>
       transformAppRouteRequestUsage(
