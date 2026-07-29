@@ -4,10 +4,15 @@ import {
   type RouteHandlerHttpMethod,
   type RouteHandlerModule,
 } from "./app-route-handler-runtime.js";
+import {
+  APP_ROUTE_REQUEST_USAGE_EXPORT,
+  type AppRouteRequestUsageMetadata,
+} from "./app-route-handler-request-usage.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 
 export type AppRouteHandlerModule = {
+  [APP_ROUTE_REQUEST_USAGE_EXPORT]?: AppRouteRequestUsageMetadata;
   dynamic?: string;
   fetchCache?: unknown;
   revalidate?: unknown;
