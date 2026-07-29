@@ -22,6 +22,7 @@ import {
   createAppPageLayoutEntries,
   probeAppPageLayoutWithTracking,
   resolveAppPageChildSegments,
+  resolveAppPageLoadingModuleAtOrAbove,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
@@ -447,6 +448,33 @@ function LayoutWithoutChildren() {
 }
 
 describe("app page route wiring helpers", () => {
+  it("selects the nearest positioned loading module with a default export", () => {
+    const legacyLoading = { default: () => null };
+    const rootLoading = { default: () => null };
+    const leafWithoutDefault = { generateMetadata: () => null };
+
+    expect(
+      resolveAppPageLoadingModuleAtOrAbove(
+        {
+          loading: legacyLoading,
+          loadings: [rootLoading, leafWithoutDefault],
+          loadingTreePositions: [0, 2],
+        },
+        2,
+      ),
+    ).toBe(rootLoading);
+    expect(
+      resolveAppPageLoadingModuleAtOrAbove(
+        {
+          loading: legacyLoading,
+          loadings: [rootLoading],
+          loadingTreePositions: [],
+        },
+        2,
+      ),
+    ).toBe(legacyLoading);
+  });
+
   it("probes returned layout children with param and revalidate tracking", async () => {
     const calls: string[] = [];
     const layoutParamAccess = createAppLayoutParamAccessTracker();

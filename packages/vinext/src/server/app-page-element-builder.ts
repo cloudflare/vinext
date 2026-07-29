@@ -14,6 +14,7 @@ import {
   buildAppPageElements,
   createAppPageSourcePage,
   createAppPageTreePath,
+  resolveAppPageLoadingModuleAtOrAbove,
   type AppPageErrorModule,
   type AppPageModule,
   type AppPageRouteWiringRoute,
@@ -509,21 +510,17 @@ export async function buildPageElements<
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
-  const hasLoadingModuleAtOrAbovePage = (
-    modules: readonly (TModule | null | undefined)[] | null | undefined,
-    treePositions: readonly number[] | null | undefined,
-  ): boolean =>
-    (modules ?? []).some((module, index) => {
-      const treePosition = treePositions?.[index];
-      return (
-        Boolean(module?.default) && treePosition !== undefined && treePosition <= pageTreePosition
-      );
-    });
   const hasPageLoadingBoundary =
-    Boolean(route.loading?.default) ||
-    hasLoadingModuleAtOrAbovePage(route.loadings, route.loadingTreePositions) ||
+    resolveAppPageLoadingModuleAtOrAbove(route, pageTreePosition) !== null ||
     (isSiblingIntercept &&
-      hasLoadingModuleAtOrAbovePage(opts?.interceptLoadings, opts?.interceptLoadingTreePositions));
+      resolveAppPageLoadingModuleAtOrAbove(
+        {
+          loading: null,
+          loadings: opts?.interceptLoadings,
+          loadingTreePositions: opts?.interceptLoadingTreePositions,
+        },
+        pageTreePosition,
+      ) !== null);
   const pageRenderDependency =
     EffectivePageComponent && !isReactOwnedPageComponent(EffectivePageComponent)
       ? createAppRenderDependency()

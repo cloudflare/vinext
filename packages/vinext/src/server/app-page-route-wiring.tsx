@@ -471,6 +471,27 @@ function createAppPageLoadingEntries<TModule extends AppPageModule>(
   });
 }
 
+export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModule>(
+  route: Pick<AppPageRouteWiringRoute<TModule>, "loading" | "loadings" | "loadingTreePositions">,
+  treePosition: number,
+): TModule | null {
+  let nearest: AppPageLoadingEntry<TModule> | null = null;
+  for (const entry of createAppPageLoadingEntries(route)) {
+    if (
+      entry.treePosition <= treePosition &&
+      getDefaultExport(entry.loadingModule) !== null &&
+      (nearest === null || entry.treePosition > nearest.treePosition)
+    ) {
+      nearest = entry;
+    }
+  }
+
+  if (nearest?.loadingModule) {
+    return nearest.loadingModule;
+  }
+  return getDefaultExport(route.loading) === null ? null : (route.loading ?? null);
+}
+
 function getPrefetchLoadingEntry<TModule extends AppPageModule>(
   route: Pick<
     AppPageRouteWiringRoute<TModule>,
@@ -1047,16 +1068,17 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  const pageLoadingEntry = findNearestLoadingEntryAtOrAbove(routeSegments.length);
+  const pageLoadingModule = resolveAppPageLoadingModuleAtOrAbove(
+    options.route,
+    routeSegments.length,
+  );
   // The page and route are sibling values in vinext's flat Flight record. The
   // route-level Suspense below cannot catch the page value suspending while the
   // record itself is serialized, so the page entry needs its own boundary to
   // expose the fallback. Once <Slot> reconnects the entries this is nested
   // inside the route boundary; that duplication is an intentional transport
   // artifact, not two independently selected loading conventions.
-  const PageLoadingComponent = pageRenderDependency
-    ? (getDefaultExport(pageLoadingEntry?.loadingModule) ?? routeLoadingComponent)
-    : null;
+  const PageLoadingComponent = pageRenderDependency ? getDefaultExport(pageLoadingModule) : null;
   const pageElement = PageLoadingComponent ? (
     <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
       {options.element}

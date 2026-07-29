@@ -322,6 +322,46 @@ describe("buildPageElements", () => {
     expect(html).not.toContain("layout:en");
   });
 
+  it("waits for a sync use() page before a synchronous layout without loading UI", async () => {
+    let resolveLocale!: (locale: string) => void;
+    const localePromise = new Promise<string>((resolve) => {
+      resolveLocale = resolve;
+    });
+    let requestLocale = "en";
+
+    function LocalePage() {
+      requestLocale = React.use(localePromise);
+      return React.createElement("main", null, `page:${requestLocale}`);
+    }
+
+    function LocaleLayout(props: Record<string, unknown>) {
+      return React.createElement(
+        "section",
+        null,
+        `layout:${requestLocale}`,
+        props.children as React.ReactNode,
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(LocalePage),
+      layouts: [createSyntheticPageModule(LocaleLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["sync-use"],
+      pattern: "/sync-use",
+    });
+
+    const result = await buildPageElements(createBaseOptions({ route, routePath: "/sync-use" }));
+    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+    await Promise.resolve();
+    resolveLocale("de");
+    const html = await htmlPromise;
+
+    expect(html).toContain("layout:de");
+    expect(html).toContain("page:de");
+    expect(html).not.toContain("layout:en");
+  });
+
   it("does not wait for an omitted page during loading-shell prefetches", async () => {
     const Page = vi.fn(() => React.createElement("main", null, "Page content"));
     const route = createSyntheticRoute({
