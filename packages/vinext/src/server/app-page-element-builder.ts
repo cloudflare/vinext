@@ -70,8 +70,15 @@ function isReactOwnedPageComponent(component: AppPageComponent): boolean {
   );
 }
 
-function isDeclaredAsyncFunction(component: (...args: never[]) => unknown): boolean {
-  return component.constructor.name === "AsyncFunction";
+function isReactSuspension(error: unknown): boolean {
+  if (isPromiseLike(error)) {
+    return true;
+  }
+
+  return (
+    error instanceof Error &&
+    error.message.startsWith("Suspense Exception: This is not a real error!")
+  );
 }
 
 /**
@@ -533,15 +540,6 @@ export async function buildPageElements<
           : makeThenableParams(pageSearchParams);
       }
 
-      // Sync server components must remain owned by React so hooks such as
-      // use(promise) suspend inside the route's loading boundary. The
-      // request-state ordering guarantee is only needed for declared async
-      // pages, which can initialize state immediately after awaiting params.
-      if (!isDeclaredAsyncFunction(ServerPageComponent)) {
-        renderDependency?.release();
-        return createElement(ServerPageComponent as unknown as AppPageComponent, invocationProps);
-      }
-
       try {
         const result = ServerPageComponent(invocationProps);
         if (isPromiseLike(result)) {
@@ -560,6 +558,15 @@ export async function buildPageElements<
         renderDependency?.release();
         return result;
       } catch (error) {
+        if (isReactSuspension(error)) {
+          // React requires its internal use() suspension value to be rethrown
+          // immediately. Release from a microtask so the page-entry Suspense
+          // boundary can serialize its fallback and dependent entries can run.
+          if (renderDependency) {
+            void Promise.resolve().then(() => renderDependency.release());
+          }
+          throw error;
+        }
         renderDependency?.release();
         throw error;
       }

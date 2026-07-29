@@ -1047,11 +1047,22 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
+  const pageLoadingEntry = findNearestLoadingEntryAtOrAbove(routeSegments.length);
+  const PageLoadingComponent = pageRenderDependency
+    ? (getDefaultExport(pageLoadingEntry?.loadingModule) ?? routeLoadingComponent)
+    : null;
+  const pageElement = PageLoadingComponent ? (
+    <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
+      {options.element}
+    </Suspense>
+  ) : (
+    options.element
+  );
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
     : pageRenderDependency
-      ? options.element
-      : renderAfterAppDependencies(options.element, pageDependencies);
+      ? pageElement
+      : renderAfterAppDependencies(pageElement, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
