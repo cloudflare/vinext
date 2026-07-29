@@ -508,6 +508,22 @@ export async function buildPageElements<
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
+  const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
+  const hasLoadingModuleAtOrAbovePage = (
+    modules: readonly (TModule | null | undefined)[] | null | undefined,
+    treePositions: readonly number[] | null | undefined,
+  ): boolean =>
+    (modules ?? []).some((module, index) => {
+      const treePosition = treePositions?.[index];
+      return (
+        Boolean(module?.default) && treePosition !== undefined && treePosition <= pageTreePosition
+      );
+    });
+  const hasPageLoadingBoundary =
+    Boolean(route.loading?.default) ||
+    hasLoadingModuleAtOrAbovePage(route.loadings, route.loadingTreePositions) ||
+    (isSiblingIntercept &&
+      hasLoadingModuleAtOrAbovePage(opts?.interceptLoadings, opts?.interceptLoadingTreePositions));
   const pageRenderDependency =
     EffectivePageComponent && !isReactOwnedPageComponent(EffectivePageComponent)
       ? createAppRenderDependency()
@@ -543,15 +559,23 @@ export async function buildPageElements<
       try {
         const result = ServerPageComponent(invocationProps);
         if (isPromiseLike(result)) {
-          // Consumers have already suspended on the dependency via use().
-          // Releasing it from a queued microtask schedules their replay behind
-          // the page's immediate post-params continuation (for example
-          // `await params; setRequestLocale(locale)`). Do not wait for the full
-          // page promise: loading.tsx must still stream during slower data work.
-          // Request state needed by a parent must therefore be established in
-          // that immediate continuation, before the page starts slower awaits.
           if (renderDependency) {
-            void Promise.resolve().then(() => renderDependency.release());
+            if (hasPageLoadingBoundary) {
+              // A loading boundary needs the dependent route/layout entries to
+              // serialize while the page is still pending so its fallback can
+              // stream. Request state consumed by those entries must therefore
+              // be established in the page's first continuation; an async
+              // consumer gets its own continuation before reading that state.
+              void Promise.resolve().then(() => renderDependency.release());
+            } else {
+              // With no loading UI to stream, preserve the stronger ordering
+              // contract: even a synchronous layout cannot observe request
+              // state until the async page has finished initializing it.
+              void Promise.resolve(result).then(
+                () => renderDependency.release(),
+                () => renderDependency.release(),
+              );
+            }
           }
           return result;
         }
@@ -560,9 +584,12 @@ export async function buildPageElements<
       } catch (error) {
         if (isReactSuspension(error)) {
           // React requires its internal use() suspension value to be rethrown
-          // immediately. Release from a microtask so the page-entry Suspense
-          // boundary can serialize its fallback and dependent entries can run.
-          if (renderDependency) {
+          // immediately. With loading UI, release from a microtask so the
+          // page-entry Suspense boundary can serialize its fallback. Without
+          // loading UI, the page retry releases the dependency after it can
+          // render, preserving the same page-before-layout ordering as an
+          // ordinary async return.
+          if (renderDependency && hasPageLoadingBoundary) {
             void Promise.resolve().then(() => renderDependency.release());
           }
           throw error;

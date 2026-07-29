@@ -253,12 +253,12 @@ describe("buildPageElements", () => {
 
     async function LocalePage({ params }: { params: Promise<{ locale: string }> }) {
       const { locale } = await params;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       requestLocale = locale;
       return React.createElement("main", null, `page:${requestLocale}`);
     }
 
-    async function LocaleLayout(props: Record<string, unknown>) {
-      await Promise.resolve();
+    function LocaleLayout(props: Record<string, unknown>) {
       return React.createElement(
         "section",
         null,

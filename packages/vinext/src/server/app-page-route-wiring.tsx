@@ -1048,6 +1048,12 @@ export function buildAppPageElements<
   }
 
   const pageLoadingEntry = findNearestLoadingEntryAtOrAbove(routeSegments.length);
+  // The page and route are sibling values in vinext's flat Flight record. The
+  // route-level Suspense below cannot catch the page value suspending while the
+  // record itself is serialized, so the page entry needs its own boundary to
+  // expose the fallback. Once <Slot> reconnects the entries this is nested
+  // inside the route boundary; that duplication is an intentional transport
+  // artifact, not two independently selected loading conventions.
   const PageLoadingComponent = pageRenderDependency
     ? (getDefaultExport(pageLoadingEntry?.loadingModule) ?? routeLoadingComponent)
     : null;
