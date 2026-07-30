@@ -1966,6 +1966,7 @@ function bootstrapHydration(
         let navResponse: Response | undefined;
         let navResponseExpiresAt: number | undefined;
         let navResponseUrl: string | null = null;
+        let consumedPrefetchSnapshot: CachedRscResponse | undefined;
         let prefetchedElements: AppElements | undefined;
         let fallbackReuseDecision = reuseDecision;
         if (reuseDecision.kind === "consumePrefetch") {
@@ -1982,7 +1983,9 @@ function bootstrapHydration(
             ));
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (prefetchedResponse) {
-            prefetchedElements = prefetchedResponse.preparedElements;
+            const { preparedElements, ...responseSnapshot } = prefetchedResponse;
+            consumedPrefetchSnapshot = responseSnapshot;
+            prefetchedElements = preparedElements;
             navResponse = restoreRscResponse(prefetchedResponse, false);
             navResponseExpiresAt = prefetchedResponse.expiresAt;
             navResponseUrl = resolvePrefetchNavigationResponseUrl({
@@ -2259,13 +2262,15 @@ function bootstrapHydration(
           const renderedElements = await rscPayload;
           if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
           const metadata = AppElementsWire.readMetadata(renderedElements);
-          const cacheBuffer = await cacheBufferPromise;
           if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
-          const responseSnapshot = createCachedRscResponseSnapshot(
-            navResponse,
-            cacheBuffer,
-            navResponseUrl,
-          );
+          // A consumed prefetch was fully buffered before navigation could take
+          // ownership of it. Reuse that snapshot instead of waiting for the
+          // redundant cache tee to drain: otherwise an immediate back
+          // navigation can expose a window where the committed destination is
+          // absent from both caches and an explicit prefetch refetches it.
+          const responseSnapshot =
+            consumedPrefetchSnapshot ??
+            createCachedRscResponseSnapshot(navResponse, await cacheBufferPromise, navResponseUrl);
           const completedResponseResolvedDynamic =
             responseSnapshot.completedDynamicStaleTimeSeconds !== undefined;
           const cacheRestorable =
