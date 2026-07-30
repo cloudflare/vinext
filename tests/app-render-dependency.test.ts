@@ -109,30 +109,42 @@ describe("app render dependency helpers", () => {
         } = await vite.ssrLoadModule(
           "/packages/vinext/src/server/app-render-dependency.tsx",
         );
-        const dependency = createAppRenderDependency();
         const events = [];
 
-        async function Layout() {
-          events.push("layout:start");
-          await new Promise((resolve) => setTimeout(resolve, 25));
-          events.push("layout:end");
-          return React.createElement("section", null, "layout");
+        function createLayout(name) {
+          return async function Layout() {
+            events.push(name + ":layout:start");
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            events.push(name + ":layout:end");
+            return React.createElement("section", null, name + " layout");
+          };
         }
 
-        async function Page() {
-          await dependency.promise;
-          events.push("page");
-          return React.createElement("p", null, "page");
+        const layouts = {
+          plain: createLayout("plain"),
+          memo: React.memo(createLayout("memo")),
+          lazy: React.lazy(async () => ({ default: createLayout("lazy") })),
+          forwardRef: React.forwardRef(createLayout("forwardRef")),
+        };
+        const model = {};
+
+        for (const [name, Layout] of Object.entries(layouts)) {
+          const dependency = createAppRenderDependency();
+          model[name + ":layout"] = renderAppComponentWithDependencyBarrier(
+            Layout,
+            {},
+            dependency,
+          );
+          model[name + ":page"] = React.createElement(async function Page() {
+            await dependency.promise;
+            events.push(name + ":page");
+            return React.createElement("p", null, name + " page");
+          });
         }
 
-        const stream = renderToReadableStream(
-          {
-            layout: renderAppComponentWithDependencyBarrier(Layout, {}, dependency),
-            page: React.createElement(Page),
-          },
-          null,
-          { onError: () => "digest" },
-        );
+        const stream = renderToReadableStream(model, null, {
+          onError: () => "digest",
+        });
         const reader = stream.getReader();
         while (!(await reader.read()).done) {}
         process.stdout.write(JSON.stringify(events));
@@ -151,6 +163,12 @@ describe("app render dependency helpers", () => {
       },
     );
 
-    expect(JSON.parse(stdout)).toEqual(["layout:start", "layout:end", "page"]);
+    const events = JSON.parse(stdout) as string[];
+    for (const name of ["plain", "memo", "lazy", "forwardRef"]) {
+      expect(events.indexOf(`${name}:layout:start`)).toBeLessThan(
+        events.indexOf(`${name}:layout:end`),
+      );
+      expect(events.indexOf(`${name}:layout:end`)).toBeLessThan(events.indexOf(`${name}:page`));
+    }
   });
 });
