@@ -1,4 +1,5 @@
-import { use, type ReactNode } from "react";
+import { createElement, use, type ComponentType, type ReactNode } from "react";
+import { isPromiseLike } from "../utils/promise.js";
 
 export type AppRenderDependency = {
   promise: Promise<void>;
@@ -65,6 +66,17 @@ export function createAppPageRenderDependency(): AppPageRenderDependency {
   };
 }
 
+export function isAppRenderSuspension(error: unknown): boolean {
+  if (isPromiseLike(error)) {
+    return true;
+  }
+
+  return (
+    error instanceof Error &&
+    error.message.startsWith("Suspense Exception: This is not a real error!")
+  );
+}
+
 export function renderAfterAppDependencies(
   children: ReactNode,
   dependencies: readonly AppRenderDependency[],
@@ -86,25 +98,63 @@ export function renderAfterAppDependencies(
   return <AwaitAppRenderDependencies />;
 }
 
-export function renderWithAppDependencyBarrier(
-  children: ReactNode,
+export function renderAppComponentWithDependencyBarrier(
+  component: ComponentType<Record<string, unknown>>,
+  props: Readonly<Record<string, unknown>>,
   dependency: AppRenderDependency,
 ): ReactNode {
-  function ReleaseAppRenderDependency() {
-    // This render-time release is intentional. The dependency barrier is only
-    // used inside the RSC render graph, where producing this leaf means the
-    // owning entry has reached the serialization point that downstream entries
-    // are allowed to observe. If Phase 2 adds AbortSignal-based render
-    // timeouts, this dependency will also need an abort/reject path so stuck
-    // async layouts do not suspend downstream entries forever.
-    dependency.release();
-    return null;
+  const candidate = component as ComponentType<Record<string, unknown>> & {
+    $$typeof?: symbol;
+    prototype?: { isReactComponent?: unknown };
+  };
+  const isReactOwnedComponent =
+    typeof candidate !== "function" ||
+    candidate.$$typeof === Symbol.for("react.client.reference") ||
+    candidate.prototype?.isReactComponent != null;
+
+  if (isReactOwnedComponent) {
+    function ReactOwnedComponentBarrier() {
+      dependency.release();
+      return createElement(component, props);
+    }
+
+    return createElement(ReactOwnedComponentBarrier);
   }
 
-  return (
-    <>
-      {children}
-      <ReleaseAppRenderDependency />
-    </>
-  );
+  const ServerComponent = component as unknown as (
+    props: Readonly<Record<string, unknown>>,
+  ) => ReactNode | Promise<ReactNode>;
+
+  function AppComponentDependencyBarrier() {
+    try {
+      const result = ServerComponent(props);
+      if (isPromiseLike(result)) {
+        return Promise.resolve(result).then(
+          (resolvedResult) => {
+            dependency.release();
+            return resolvedResult;
+          },
+          (error: unknown) => {
+            dependency.release();
+            throw error;
+          },
+        );
+      }
+
+      dependency.release();
+      return result;
+    } catch (error) {
+      // A thrown thenable is React-owned suspension. Releasing here would let
+      // dependent flat Flight entries run before this component's retry has
+      // produced its result. Ordinary errors cannot retry, so release them to
+      // avoid leaving sibling entries suspended forever while the error is
+      // serialized by the owning boundary.
+      if (!isAppRenderSuspension(error)) {
+        dependency.release();
+      }
+      throw error;
+    }
+  }
+
+  return createElement(AppComponentDependencyBarrier);
 }

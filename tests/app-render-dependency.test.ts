@@ -1,11 +1,15 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createElement } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRenderDependency,
   renderAfterAppDependencies,
-  renderWithAppDependencyBarrier,
+  renderAppComponentWithDependencyBarrier,
 } from "../packages/vinext/src/server/app-render-dependency.js";
+
+const execFileAsync = promisify(execFile);
 
 async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader();
@@ -61,7 +65,7 @@ describe("app render dependency helpers", () => {
     async function LocaleLayout() {
       await Promise.resolve();
       activeLocale = "de";
-      return createElement("div", null, renderWithAppDependencyBarrier("layout", layoutDependency));
+      return createElement("div", null, "layout");
     }
 
     function LocalePage() {
@@ -72,12 +76,81 @@ describe("app render dependency helpers", () => {
       createElement(
         "div",
         null,
-        createElement(LocaleLayout),
+        renderAppComponentWithDependencyBarrier(LocaleLayout, {}, layoutDependency),
         renderAfterAppDependencies(createElement(LocalePage), [layoutDependency]),
       ),
     );
 
     expect(body).toContain("page:de");
     expect(body).not.toContain("page:en");
+  });
+
+  it("releases a dependency after an async component produces its Flight result", async () => {
+    // Run the real helper through React Flight in a react-server subprocess.
+    // React DOM schedules the old fragment-sibling barrier differently and did
+    // not expose the production ordering regression.
+    const script = String.raw`
+      import React from "react";
+      import { createServer } from "vite";
+      import { renderToReadableStream } from "./node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/server.edge.js";
+
+      const vite = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        mode: "production",
+        server: { middlewareMode: true },
+      });
+
+      try {
+        const {
+          createAppRenderDependency,
+          renderAppComponentWithDependencyBarrier,
+        } = await vite.ssrLoadModule(
+          "/packages/vinext/src/server/app-render-dependency.tsx",
+        );
+        const dependency = createAppRenderDependency();
+        const events = [];
+
+        async function Layout() {
+          events.push("layout:start");
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          events.push("layout:end");
+          return React.createElement("section", null, "layout");
+        }
+
+        async function Page() {
+          await dependency.promise;
+          events.push("page");
+          return React.createElement("p", null, "page");
+        }
+
+        const stream = renderToReadableStream(
+          {
+            layout: renderAppComponentWithDependencyBarrier(Layout, {}, dependency),
+            page: React.createElement(Page),
+          },
+          null,
+          { onError: () => "digest" },
+        );
+        const reader = stream.getReader();
+        while (!(await reader.read()).done) {}
+        process.stdout.write(JSON.stringify(events));
+      } finally {
+        await vite.close();
+      }
+    `;
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["--conditions", "react-server", "--input-type=module", "-e", script],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, NODE_ENV: "production" },
+        timeout: 10_000,
+      },
+    );
+
+    expect(JSON.parse(stdout)).toEqual(["layout:start", "layout:end", "page"]);
   });
 });

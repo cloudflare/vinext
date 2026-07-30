@@ -44,6 +44,7 @@ import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import {
   createAppPageRenderDependency,
+  isAppRenderSuspension,
   renderAfterAppDependencies,
   type AppPageRenderDependency,
 } from "./app-render-dependency.js";
@@ -72,17 +73,6 @@ function isReactOwnedPageComponent(component: AppPageComponent): boolean {
   };
   return (
     candidate.$$typeof === REACT_CLIENT_REFERENCE || candidate.prototype?.isReactComponent != null
-  );
-}
-
-function isReactSuspension(error: unknown): boolean {
-  if (isPromiseLike(error)) {
-    return true;
-  }
-
-  return (
-    error instanceof Error &&
-    error.message.startsWith("Suspense Exception: This is not a real error!")
   );
 }
 
@@ -585,7 +575,7 @@ export async function buildPageElements<
             )
           : result;
       } catch (error) {
-        if (isReactSuspension(error)) {
+        if (isAppRenderSuspension(error)) {
           // React requires its internal use() suspension value to be rethrown
           // immediately. With loading UI, release from a microtask so the
           // page-entry Suspense boundary can serialize its fallback. Without

@@ -41,7 +41,7 @@ import {
   createAppRenderDependency,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
-  renderWithAppDependencyBarrier,
+  renderAppComponentWithDependencyBarrier,
   type AppPageRenderDependency,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
@@ -1106,10 +1106,9 @@ export function buildAppPageElements<
     const TemplateComponent = templateComponent;
     const templateDependency = templateDependenciesById.get(templateEntry.id);
     let templateElement: ReactNode = templateDependency ? (
-      renderWithAppDependencyBarrier(
-        <TemplateComponent>
-          <Children />
-        </TemplateComponent>,
+      renderAppComponentWithDependencyBarrier(
+        TemplateComponent,
+        { children: <Children /> },
         templateDependency,
       )
     ) : (
@@ -1175,10 +1174,9 @@ export function buildAppPageElements<
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
     let layoutElement: ReactNode = layoutDependency ? (
-      renderWithAppDependencyBarrier(
-        <LayoutComponent {...layoutProps}>
-          <Children />
-        </LayoutComponent>,
+      renderAppComponentWithDependencyBarrier(
+        LayoutComponent,
+        { ...layoutProps, children: <Children /> },
         layoutDependency,
       )
     ) : (
