@@ -23,7 +23,7 @@ export type GenerateRouteTypesResult = {
 
 type ParamShape = Map<string, "string" | "string[]" | "string[]?">;
 
-export function nextEnvFileContent(hasNext: boolean, hasAppDir: boolean, eol = "\n"): string {
+function nextEnvFileContent(hasNext: boolean, hasAppDir: boolean, eol = "\n"): string {
   const typeReference = hasNext
     ? `/// <reference types="next" />
 /// <reference types="next/image-types/global" />
