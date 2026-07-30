@@ -58,6 +58,7 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 // @ts-expect-error — resolved by the vinext build plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { memoizeModuleLoader } from "../utils/memoize-module-loader.js";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
 
 setPagesClientAssets(pagesClientAssets as PagesClientAssets);
@@ -111,7 +112,7 @@ function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPr
   );
 }
 
-async function loadStaticPrerender(): Promise<StaticPrerender> {
+async function loadStaticPrerenderImpl(): Promise<StaticPrerender> {
   // Prefer the stable ESM entry in all environments. Future React dev builds
   // may export prerender() here, so this is the first path we attempt.
   const staticRenderer: unknown = await import("react-dom/static.edge");
@@ -160,6 +161,8 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
 
   throw new Error("[vinext] react-dom/static.edge did not expose prerender().");
 }
+
+const loadStaticPrerender = memoizeModuleLoader(loadStaticPrerenderImpl);
 
 function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -755,6 +758,27 @@ export async function handleSsr(
   }) as Promise<AppSsrRenderResult>;
 }
 
+type RscEntryModule = {
+  default(request: Request): Promise<Response | string | null | undefined>;
+};
+
+const loadRscModuleInProduction = memoizeModuleLoader(() =>
+  import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index"),
+);
+
+function loadRscModule(): Promise<RscEntryModule> {
+  // In dev, the Vite module runner must re-import so HMR invalidations of the
+  // RSC entry (which bundles user code) are picked up. In production the
+  // target module is immutable, so memoize to avoid a dynamic import() on
+  // every request (each one round-trips through registered ESM loader hooks).
+  // Gated on the Vite serve/build mode rather than NODE_ENV, which projects
+  // may define as "production" while still running the dev server.
+  if (!import.meta.env.PROD) {
+    return import.meta.viteRsc.loadModule<RscEntryModule>("rsc", "index");
+  }
+  return loadRscModuleInProduction();
+}
+
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -764,9 +788,7 @@ export default {
       return notFoundResponse();
     }
 
-    const rscModule = await import.meta.viteRsc.loadModule<{
-      default(request: Request): Promise<Response | string | null | undefined>;
-    }>("rsc", "index");
+    const rscModule = await loadRscModule();
     const result = await rscModule.default(request);
 
     if (result instanceof Response) {

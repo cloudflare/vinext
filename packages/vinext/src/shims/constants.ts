@@ -112,8 +112,11 @@ export const CONFIG_FILES = [
   "next.config.js",
   "next.config.mjs",
   "next.config.ts",
-  // process.features can be undefined on Edge runtime
-  ...(process?.features?.typescript ? ["next.config.mts"] : []),
+  // `process` is not defined in browser bundles (this shim is a valid client
+  // import via `next/constants`), and process.features can be undefined on
+  // Edge runtime. Optional chaining does not guard an undeclared identifier,
+  // so the typeof check is required for the client.
+  ...(typeof process !== "undefined" && process.features?.typescript ? ["next.config.mts"] : []),
 ];
 export const BUILD_ID_FILE = "BUILD_ID";
 export const BLOCKED_PAGES = ["/_document", "/_app", "/_error"];

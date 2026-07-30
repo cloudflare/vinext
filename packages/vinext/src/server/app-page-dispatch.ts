@@ -95,6 +95,13 @@ import {
   type AppLayoutParamAccessTracker,
 } from "./app-layout-param-observation.js";
 
+let loadAppPageCachePromise: Promise<typeof import("./app-page-cache.js")> | undefined;
+const loadAppPageCache = () =>
+  (loadAppPageCachePromise ??= import("./app-page-cache.js").catch((error) => {
+    loadAppPageCachePromise = undefined;
+    throw error;
+  }));
+
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
 export type AppPageRenderableElement = ReactNode | AppOutgoingElements;
@@ -710,7 +717,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       scriptNonce: options.scriptNonce,
     })
   ) {
-    const { readAppPageCacheResponse } = await import("./app-page-cache.js");
+    const { readAppPageCacheResponse } = await loadAppPageCache();
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,

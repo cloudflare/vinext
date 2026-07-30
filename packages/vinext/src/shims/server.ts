@@ -1262,6 +1262,13 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
  * (not a static/cached response). Opts the page out of ISR caching
  * and sets Cache-Control: no-store on the response.
  */
+let loadHeadersShimPromise: Promise<typeof import("./headers.js")> | undefined;
+const loadHeadersShim = () =>
+  (loadHeadersShimPromise ??= import("./headers.js").catch((error) => {
+    loadHeadersShimPromise = undefined;
+    throw error;
+  }));
+
 export async function connection(): Promise<void> {
   const {
     getHeadersContext,
@@ -1269,7 +1276,7 @@ export async function connection(): Promise<void> {
     markRenderRequestApiUsage,
     suspendConnectionProbe,
     throwIfInsideCacheScope,
-  } = await import("./headers.js");
+  } = await loadHeadersShim();
   if (getHeadersContext()?.forceStatic) {
     return;
   }
