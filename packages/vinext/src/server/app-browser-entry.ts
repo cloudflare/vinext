@@ -22,7 +22,6 @@ import { notifyAppRouterTransitionStart } from "../client/instrumentation-client
 import {
   __basePath,
   appRouterInstance,
-  consumePrefetchResponse,
   commitClientNavigationState,
   consumePrefetchResponseForNavigation,
   createCachedRscResponseSnapshot,
@@ -170,6 +169,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
+  peekSettledPrefetchResponseForNavigation,
   prepareConsumedPrefetchResponseForPublication,
   resolvePrefetchNavigationResponseUrl,
 } from "./app-browser-prefetch-response.js";
@@ -1793,18 +1793,17 @@ function bootstrapHydration(
             ? [rewrittenNavigationHref]
             : [];
         // A settled prefetch is already indexed by its rendered path/search, so
-        // consume it before recomputing the async RSC cache-busting digest. This
-        // keeps a click on a fully prefetched Link in the same browser task while
-        // the pending/missing paths retain the exact request-header digest below.
-        const settledPrefetchedResponse =
-          navigationKind === "navigate" && !shouldBypassNavigationCache
-            ? consumePrefetchResponse(
-                targetPathAndSearch,
-                requestInterceptionContext,
-                mountedSlotsHeader,
-                { additionalRscUrls: additionalPrefetchPathAndSearch },
-              )
-            : null;
+        // peek before recomputing the async RSC cache-busting digest. Ownership
+        // transfers only if the reuse planner chooses the prefetch; a visited
+        // response hit must leave it available to visible Links after back-nav.
+        const settledPrefetchedResponse = peekSettledPrefetchResponseForNavigation({
+          additionalRscUrls: additionalPrefetchPathAndSearch,
+          bypassNavigationCache: shouldBypassNavigationCache,
+          interceptionContext: requestInterceptionContext,
+          mountedSlotsHeader,
+          navigationKind,
+          targetPathAndSearch,
+        });
         const rscUrl = settledPrefetchedResponse
           ? resolvePrefetchNavigationResponseUrl({
               additionalRscUrls: additionalPrefetchPathAndSearch,
@@ -1973,17 +1972,15 @@ function bootstrapHydration(
         let prefetchedElements: AppElements | undefined;
         let fallbackReuseDecision = reuseDecision;
         if (reuseDecision.kind === "consumePrefetch") {
-          const prefetchedResponse =
-            settledPrefetchedResponse ??
-            (await consumePrefetchResponseForNavigation(
-              rscUrl,
-              requestInterceptionContext,
-              mountedSlotsHeader,
-              {
-                additionalRscUrls: additionalPrefetchRscUrls,
-                shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
-              },
-            ));
+          const prefetchedResponse = await consumePrefetchResponseForNavigation(
+            rscUrl,
+            requestInterceptionContext,
+            mountedSlotsHeader,
+            {
+              additionalRscUrls: additionalPrefetchRscUrls,
+              shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
+            },
+          );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (prefetchedResponse) {
             navResponse = restoreRscResponse(prefetchedResponse, false);
@@ -2299,12 +2296,11 @@ function bootstrapHydration(
             // A navigation that consumes prefetched Flight data keeps that
             // prefetch freshness window when committed, matching Next's
             // segment-cache handoff instead of recomputing dynamic freshness.
-            // The exception is a response whose completion footer records
-            // dynamic request usage: its final dynamic bound is more precise
-            // than the provisional prefetch expiry.
-            ...(navResponseExpiresAt !== undefined && !completedResponseResolvedDynamic
-              ? { expiresAt: navResponseExpiresAt }
-              : {}),
+            // The consumed entry was buffered through completion before its
+            // expiry was calculated, so this is already the final freshness
+            // window. Keep its original deadline instead of restarting the
+            // clock when delayed cache publication eventually runs.
+            ...(navResponseExpiresAt !== undefined ? { expiresAt: navResponseExpiresAt } : {}),
             mountedSlotsHeader: getMountedSlotIdsHeader(renderedElements),
           };
           const interceptionContext = resolveVisitedResponseInterceptionContext(
@@ -2342,7 +2338,7 @@ function bootstrapHydration(
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
               committedElements,
-              !completedResponseResolvedDynamic,
+              true,
             );
           }
         } catch {

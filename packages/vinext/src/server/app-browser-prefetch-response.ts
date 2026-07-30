@@ -1,5 +1,25 @@
 import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
-import type { CachedRscResponse } from "vinext/shims/navigation";
+import { peekPrefetchResponseForNavigation, type CachedRscResponse } from "vinext/shims/navigation";
+
+export function peekSettledPrefetchResponseForNavigation(options: {
+  additionalRscUrls: readonly string[];
+  bypassNavigationCache: boolean;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+  navigationKind: "navigate" | "refresh" | "traverse";
+  peek?: typeof peekPrefetchResponseForNavigation;
+  targetPathAndSearch: string;
+}): CachedRscResponse | null {
+  if (options.navigationKind !== "navigate" || options.bypassNavigationCache) {
+    return null;
+  }
+  return (options.peek ?? peekPrefetchResponseForNavigation)(
+    options.targetPathAndSearch,
+    options.interceptionContext,
+    options.mountedSlotsHeader,
+    { additionalRscUrls: options.additionalRscUrls },
+  );
+}
 
 function normalizeBrowserRscUrlForReuse(
   url: string | null | undefined,

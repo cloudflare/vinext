@@ -33,6 +33,7 @@ import {
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
+  peekSettledPrefetchResponseForNavigation,
   prepareConsumedPrefetchResponseForPublication,
   resolvePrefetchNavigationResponseUrl,
 } from "../packages/vinext/src/server/app-browser-prefetch-response.js";
@@ -836,6 +837,34 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("peeks at a settled prefetch without transferring ownership before reuse planning", () => {
+    const snapshot = {
+      buffer: new ArrayBuffer(0),
+      contentType: "text/x-component",
+      expiresAt: 123,
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: "/source?_rsc=prefetch-digest",
+    };
+    const peek = vi.fn(() => snapshot);
+
+    expect(
+      peekSettledPrefetchResponseForNavigation({
+        additionalRscUrls: ["/source"],
+        bypassNavigationCache: false,
+        interceptionContext: "/parent",
+        mountedSlotsHeader: "slot:children:/target",
+        navigationKind: "navigate",
+        peek,
+        targetPathAndSearch: "/target",
+      }),
+    ).toBe(snapshot);
+    expect(peek).toHaveBeenCalledWith("/target", "/parent", "slot:children:/target", {
+      additionalRscUrls: ["/source"],
+    });
+  });
+
   it("normalizes consumed prefetch snapshots for committed-cache publication", () => {
     const preparedElements = { route: "prepared" } as unknown as AppElements;
     const publication = prepareConsumedPrefetchResponseForPublication(

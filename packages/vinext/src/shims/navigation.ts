@@ -492,7 +492,15 @@ function resolvePrefetchedRscResponseExpiresAt(
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
   }
-  const seconds = resolveRscResponseStaleTimeSeconds(cached);
+  // Next's runtime-prefetch stale time comes from the completed cacheLife
+  // claim. `staleTimes.dynamic` independently bounds visited/BFCache reuse and
+  // is only the prefetch fallback when the render made no cacheLife claim.
+  const serverSeconds = serverStaleTimeSeconds(cached.serverStaleTime);
+  const seconds =
+    serverSeconds ??
+    (isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
+      ? cached.dynamicStaleTimeSeconds
+      : undefined);
   if (seconds === undefined) {
     return timestamp + Math.max(fallbackTtlMs, minimumTtlMs);
   }
@@ -1417,11 +1425,13 @@ export function peekPrefetchResponseForNavigation(
   rscUrl: string,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
+  options?: { additionalRscUrls?: readonly string[] },
 ): CachedRscResponse | null {
   const match = findPrefetchCacheEntryForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
+    options?.additionalRscUrls,
   );
   if (!match) return null;
 
