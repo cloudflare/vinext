@@ -235,6 +235,31 @@ export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
   return config;
 }
 
+/**
+ * Capture access to the current request's cache-life slot for work that may
+ * finish after the AsyncLocalStorage request scope has returned. RSC response
+ * bodies are consumed by the server runtime later, so resolving the active
+ * store from a stream-finalization callback can otherwise read a detached
+ * context and lose cacheLife claims made while rendering the body.
+ */
+export function _captureRequestScopedCacheLifeAccessors(): {
+  consume: () => CacheLifeConfig | null;
+  peek: () => CacheLifeConfig | null;
+} {
+  const state = getCacheState();
+  return {
+    consume() {
+      const config = state.requestScopedCacheLife;
+      state.requestScopedCacheLife = null;
+      return config;
+    },
+    peek() {
+      const config = state.requestScopedCacheLife;
+      return config === null ? null : { ...config };
+    },
+  };
+}
+
 export function recordUnstableCacheObservation(observation: UnstableCacheObservation): void {
   getCacheState().unstableCacheObservations.set(observation.keyHash, observation);
 }
