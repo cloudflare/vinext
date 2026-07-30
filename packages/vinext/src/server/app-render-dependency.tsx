@@ -16,7 +16,10 @@ type AppDependencyComponent = ComponentType<Record<string, unknown>> & {
   _init?: (payload: unknown) => AppDependencyComponent;
   _payload?: unknown;
   prototype?: { isReactComponent?: unknown };
-  render?: (props: Readonly<Record<string, unknown>>, ref: null) => ReactNode | Promise<ReactNode>;
+  render?: (
+    props: Readonly<Record<string, unknown>>,
+    ref: undefined,
+  ) => ReactNode | Promise<ReactNode>;
   type?: AppDependencyComponent;
 };
 
@@ -131,7 +134,7 @@ export function renderAppComponentWithDependencyBarrier(
     }
 
     if (candidate.$$typeof === REACT_FORWARD_REF && candidate.render) {
-      return candidate.render(props, null);
+      return candidate.render(props, undefined);
     }
 
     if (

@@ -120,11 +120,15 @@ describe("app render dependency helpers", () => {
           };
         }
 
+        const forwardRefLayout = createLayout("forwardRef");
         const layouts = {
           plain: createLayout("plain"),
           memo: React.memo(createLayout("memo")),
           lazy: React.lazy(async () => ({ default: createLayout("lazy") })),
-          forwardRef: React.forwardRef(createLayout("forwardRef")),
+          forwardRef: React.forwardRef((props, ref) => {
+            events.push("forwardRef:ref:" + String(ref));
+            return forwardRefLayout(props);
+          }),
         };
         const model = {};
 
@@ -170,5 +174,7 @@ describe("app render dependency helpers", () => {
       );
       expect(events.indexOf(`${name}:layout:end`)).toBeLessThan(events.indexOf(`${name}:page`));
     }
+    expect(events).toContain("forwardRef:ref:undefined");
+    expect(events).not.toContain("forwardRef:ref:null");
   });
 });
