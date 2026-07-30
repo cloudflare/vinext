@@ -403,6 +403,8 @@ export const config = {
     "/api/pages-og",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",
+    "/pages/middleware-headers-node",
+    "/pages/middleware-headers-edge",
     "/revalidate-test",
     "/script-nonce/:path*",
     "/script-manual-nonce",

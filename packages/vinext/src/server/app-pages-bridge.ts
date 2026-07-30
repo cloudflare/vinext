@@ -3,6 +3,7 @@ import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import { mergeHeaders } from "./worker-utils.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
@@ -190,7 +191,28 @@ export async function renderPagesFallback(
         middlewareContext.requestHeaders,
       );
   if (pagesRes.status === 404 && pageMatch === null) return null;
-  return applyDraftModeCookie(pagesRes, getDraftModeCookieHeader());
+  return applyDraftModeCookie(
+    mergePagesResponseWithMiddleware(pagesRes, middlewareContext),
+    getDraftModeCookieHeader(),
+  );
+}
+
+export function mergePagesResponseWithMiddleware(
+  response: Response,
+  middlewareContext: Pick<AppMiddlewareContext, "headers" | "status">,
+): Response {
+  if (!middlewareContext.headers && middlewareContext.status == null) return response;
+
+  const middlewareHeaders: Record<string, string | string[]> = {};
+  if (middlewareContext.headers) {
+    middlewareContext.headers.forEach((value, key) => {
+      if (key !== "set-cookie") middlewareHeaders[key] = value;
+    });
+    const cookies = middlewareContext.headers.getSetCookie?.() ?? [];
+    if (cookies.length > 0) middlewareHeaders["set-cookie"] = cookies;
+  }
+
+  return mergeHeaders(response, middlewareHeaders, middlewareContext.status ?? undefined);
 }
 
 /**

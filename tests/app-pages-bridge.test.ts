@@ -1,6 +1,7 @@
 import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  mergePagesResponseWithMiddleware,
   renderPagesFallback,
   type PagesEntry,
 } from "../packages/vinext/src/server/app-pages-bridge.js";
@@ -10,6 +11,96 @@ import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+
+describe("mergePagesResponseWithMiddleware", () => {
+  it("lets the page response win singular header conflicts", () => {
+    const merged = mergePagesResponseWithMiddleware(
+      new Response("page", {
+        headers: {
+          "cache-control": "private, no-store",
+          "content-type": "text/html; charset=utf-8",
+          "x-shared": "page",
+        },
+      }),
+      {
+        headers: new Headers({
+          "cache-control": "public, max-age=60",
+          "content-type": "application/json",
+          "x-middleware": "present",
+          "x-shared": "middleware",
+        }),
+        status: null,
+      },
+    );
+
+    expect(merged.headers.get("cache-control")).toBe("private, no-store");
+    expect(merged.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(merged.headers.get("x-shared")).toBe("page");
+    expect(merged.headers.get("x-middleware")).toBe("present");
+  });
+
+  it("preserves page and middleware Set-Cookie headers", () => {
+    const responseHeaders = new Headers();
+    responseHeaders.append("set-cookie", "page=1; Path=/");
+    responseHeaders.append("set-cookie", "page-two=2; Path=/");
+    const middlewareHeaders = new Headers();
+    middlewareHeaders.append("set-cookie", "middleware=1; Path=/");
+    middlewareHeaders.append("set-cookie", "middleware-two=2; Path=/");
+
+    const merged = mergePagesResponseWithMiddleware(
+      new Response("page", { headers: responseHeaders }),
+      { headers: middlewareHeaders, status: null },
+    );
+
+    expect(merged.headers.getSetCookie()).toEqual([
+      "middleware=1; Path=/",
+      "middleware-two=2; Path=/",
+      "page=1; Path=/",
+      "page-two=2; Path=/",
+    ]);
+  });
+
+  it("uses middleware status while preserving a normal page body", async () => {
+    const merged = mergePagesResponseWithMiddleware(new Response("page", { status: 200 }), {
+      headers: null,
+      status: 202,
+    });
+
+    expect(merged.status).toBe(202);
+    expect(await merged.text()).toBe("page");
+  });
+
+  it("preserves page redirects and errors without a middleware status override", async () => {
+    const redirect = mergePagesResponseWithMiddleware(
+      new Response(null, { status: 307, headers: { location: "/page" } }),
+      { headers: new Headers({ location: "/middleware" }), status: null },
+    );
+    const error = mergePagesResponseWithMiddleware(
+      new Response("page error", { status: 500, headers: { "content-type": "text/plain" } }),
+      { headers: new Headers({ "x-middleware": "present" }), status: null },
+    );
+
+    expect(redirect.status).toBe(307);
+    expect(redirect.headers.get("location")).toBe("/page");
+    expect(error.status).toBe(500);
+    expect(await error.text()).toBe("page error");
+  });
+
+  it("drops the page body for a no-body middleware status", async () => {
+    const merged = mergePagesResponseWithMiddleware(
+      new Response("page", {
+        headers: { "content-type": "text/html", "content-length": "4" },
+      }),
+      { headers: new Headers({ "x-middleware": "present" }), status: 204 },
+    );
+
+    expect(merged.status).toBe(204);
+    expect(merged.body).toBeNull();
+    expect(merged.headers.get("content-type")).toBeNull();
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(await merged.text()).toBe("");
+  });
+});
 
 describe("renderPagesFallback", () => {
   const defaultDeps = {
@@ -498,6 +589,45 @@ describe("renderPagesFallback", () => {
     expect(renderPage.mock.calls[0][1]).toBe("/about us?foo=bar");
     expect(res).not.toBeNull();
     expect(await res!.text()).toBe("page-response");
+  });
+
+  it("uses Pages merge semantics in the production fallback bridge", async () => {
+    const applyRouteHandlerMiddlewareContext = vi.fn(() => {
+      throw new Error("Pages responses must not use App Route merge semantics");
+    });
+    const responseHeaders = new Headers({ location: "/page", "x-shared": "page" });
+    responseHeaders.append("set-cookie", "page=1; Path=/");
+    const middlewareHeaders = new Headers({
+      location: "/middleware",
+      "x-middleware": "present",
+      "x-shared": "middleware",
+    });
+    middlewareHeaders.append("set-cookie", "middleware=1; Path=/");
+
+    const res = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: middlewareHeaders, requestHeaders: null, status: null },
+        request: new Request("http://localhost/page"),
+        url: new URL("http://localhost/page"),
+      },
+      {
+        ...defaultDeps,
+        applyRouteHandlerMiddlewareContext,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({ route: { isDynamic: false, pattern: "/page" } }),
+          renderPage: () => new Response(null, { status: 307, headers: responseHeaders }),
+        }),
+      },
+    );
+
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(307);
+    expect(res!.headers.get("location")).toBe("/page");
+    expect(res!.headers.get("x-shared")).toBe("page");
+    expect(res!.headers.get("x-middleware")).toBe("present");
+    expect(res!.headers.getSetCookie()).toEqual(["middleware=1; Path=/", "page=1; Path=/"]);
+    expect(applyRouteHandlerMiddlewareContext).not.toHaveBeenCalled();
   });
 
   it("filters static and dynamic Pages matches by ownership phase", async () => {

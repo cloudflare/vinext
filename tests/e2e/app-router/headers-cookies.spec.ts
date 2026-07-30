@@ -150,6 +150,18 @@ test.describe("Middleware header/cookie behavior (OpenNext compat)", () => {
     expect(apiRes.headers()["x-mw-ran"]).toBeUndefined();
   });
 
+  test("middleware response headers reach hybrid Pages Router pages", async ({ request }) => {
+    // Ported from Next.js: test/e2e/import-conditions/import-conditions.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/import-conditions/import-conditions.test.ts
+    for (const pathname of ["/pages/middleware-headers-node", "/pages/middleware-headers-edge"]) {
+      const response = await request.get(`${BASE}${pathname}`);
+
+      expect(response.status()).toBe(200);
+      expect(response.headers()["x-mw-ran"]).toBe("true");
+      expect(response.headers()["x-mw-pathname"]).toBe(pathname);
+    }
+  });
+
   test("request headers available in server component RSC rendering", async ({ request }) => {
     // Ref: opennextjs-cloudflare headers.test.ts "Request header should be available in RSC"
     const res = await request.get(`${BASE}/headers-test`, {
