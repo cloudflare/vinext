@@ -982,9 +982,10 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
     expect(result!.get("x-added")).toBe("1");
   });
 
-  it("keeps base headers when middleware sends no override list at all", () => {
+  it("ignores forwarded header values when middleware sends no override list", () => {
     // NextResponse.next() without `request` emits no override list; that is the
-    // "unchanged" signal, and only then are base headers carried through.
+    // "unchanged" signal. Next.js skips the complete mutation block, including
+    // any stray forwarded values that appear without their required list.
     const baseHeaders = new Headers({
       authorization: "Bearer token",
       cookie: "session=abc",
@@ -993,10 +994,7 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
 
     const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
 
-    expect(result).not.toBeNull();
-    expect(result!.get("authorization")).toBe("Bearer token");
-    expect(result!.get("cookie")).toBe("session=abc");
-    expect(result!.get("x-added")).toBe("1");
+    expect(result).toBeNull();
   });
 });
 

@@ -4107,6 +4107,7 @@ describe("next/headers shim", () => {
 
     // Simulate middleware updating the cookie header
     const middlewareResponseHeaders = new Headers({
+      "x-middleware-override-headers": "cookie",
       "x-middleware-request-cookie": "a=2; b=3",
     });
 
@@ -4133,6 +4134,7 @@ describe("next/headers shim", () => {
     await runWithHeadersContext(ctx, async () => {
       applyMiddlewareRequestHeaders(
         new Headers({
+          "x-middleware-override-headers": "cookie",
           "x-middleware-request-cookie": "a=1; a=2; b=4",
         }),
       );
@@ -4164,6 +4166,7 @@ describe("next/headers shim", () => {
     await runWithHeadersContext(ctx, async () => {
       applyMiddlewareRequestHeaders(
         new Headers({
+          "x-middleware-override-headers": "cookie",
           "x-middleware-request-cookie": "empty=; flag",
         }),
       );

@@ -18,8 +18,7 @@ function getMiddlewareHeaderValue(source: MiddlewareHeaderSource, key: string): 
   return Array.isArray(value) ? (value[0] ?? null) : value;
 }
 
-function parseOverrideHeaderNames(rawValue: string | null): string[] | null {
-  if (rawValue === null) return null;
+function parseOverrideHeaderNames(rawValue: string): string[] {
   return rawValue
     .split(",")
     .map((key) => key.trim())
@@ -47,14 +46,6 @@ function getForwardedRequestHeaders(source: MiddlewareHeaderSource): Map<string,
   return forwardedHeaders;
 }
 
-function cloneHeaders(source: Headers): Headers {
-  const cloned = new Headers();
-  for (const [key, value] of source.entries()) {
-    cloned.append(key, value);
-  }
-  return cloned;
-}
-
 export function encodeMiddlewareRequestHeaders(
   targetHeaders: Headers,
   requestHeaders: Headers,
@@ -76,33 +67,21 @@ export function encodeMiddlewareRequestHeaders(
  * override and leaves the request unchanged.
  */
 export function buildRequestHeadersFromMiddlewareResponse(
-  baseHeaders: Headers,
+  _baseHeaders: Headers,
   middlewareHeaders: MiddlewareHeaderSource,
 ): Headers | null {
   const rawOverrideHeader = getMiddlewareHeaderValue(
     middlewareHeaders,
     MIDDLEWARE_OVERRIDE_HEADERS,
   );
-  // Next.js guards the override block with this header's truthiness, so the
-  // empty value emitted for `new Headers()` ignores even stray forwarded
-  // headers from malformed combinations that our encoder cannot produce.
-  if (rawOverrideHeader === "") return null;
+  // Next.js guards the entire mutation block with this header's truthiness.
+  // Missing and empty values therefore ignore even stray forwarded headers
+  // from malformed combinations that our encoder cannot produce.
+  if (!rawOverrideHeader) return null;
 
   const overrideHeaderNames = parseOverrideHeaderNames(rawOverrideHeader);
   const forwardedHeaders = getForwardedRequestHeaders(middlewareHeaders);
-
-  if (overrideHeaderNames === null && forwardedHeaders.size === 0) {
-    return null;
-  }
-
-  const nextHeaders = overrideHeaderNames === null ? cloneHeaders(baseHeaders) : new Headers();
-
-  if (overrideHeaderNames === null) {
-    for (const [key, value] of forwardedHeaders) {
-      nextHeaders.set(key, value);
-    }
-    return nextHeaders;
-  }
+  const nextHeaders = new Headers();
 
   for (const key of overrideHeaderNames) {
     const value = forwardedHeaders.get(key);
