@@ -41,7 +41,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
-import { createAppRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
+import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
 
 /**
  * Build the resolved semantic branch the route matcher hands to slot overrides.
@@ -3566,7 +3566,7 @@ describe("app page route wiring helpers", () => {
 
   it("waits for page initialization before serializing parallel slot entries", async () => {
     let activeLocale = "en";
-    const pageRenderDependency = createAppRenderDependency();
+    const pageRenderDependency = createAppPageRenderDependency();
 
     function LocaleSlot() {
       return createElement("aside", null, `slot:${activeLocale}`);

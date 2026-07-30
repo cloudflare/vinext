@@ -5,6 +5,11 @@ export type AppRenderDependency = {
   release: () => void;
 };
 
+export type AppPageRenderDependency = AppRenderDependency & {
+  resultDependencies: readonly AppRenderDependency[];
+  setResultDependencies: (dependencies: readonly AppRenderDependency[]) => void;
+};
+
 const appElementRenderDependencies = new WeakMap<
   Readonly<Record<string, unknown>>,
   ReadonlyMap<string, AppRenderDependency>
@@ -41,6 +46,21 @@ export function createAppRenderDependency(): AppRenderDependency {
       }
       released = true;
       resolve();
+    },
+  };
+}
+
+export function createAppPageRenderDependency(): AppPageRenderDependency {
+  const initialization = createAppRenderDependency();
+  let resultDependencies: readonly AppRenderDependency[] = [];
+
+  return {
+    ...initialization,
+    get resultDependencies() {
+      return resultDependencies;
+    },
+    setResultDependencies(dependencies) {
+      resultDependencies = dependencies;
     },
   };
 }

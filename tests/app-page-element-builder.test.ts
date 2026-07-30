@@ -253,8 +253,8 @@ describe("buildPageElements", () => {
 
     async function LocalePage({ params }: { params: Promise<{ locale: string }> }) {
       const { locale } = await params;
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       requestLocale = locale;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       return React.createElement("main", null, `page:${requestLocale}`);
     }
 
@@ -283,6 +283,119 @@ describe("buildPageElements", () => {
     expect(html).toContain("layout:de");
     expect(html).toContain("page:de");
     expect(html).not.toContain("layout:en");
+  });
+
+  it("lets layouts stream after page initialization without waiting for page completion", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming-static-generation/metadata-streaming-static-generation.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata-streaming-static-generation/metadata-streaming-static-generation.test.ts
+    let requestLocale = "en";
+    let resolvePage!: () => void;
+    const pageCompletion = new Promise<void>((resolve) => {
+      resolvePage = resolve;
+    });
+    let markPageInitialized!: () => void;
+    const pageInitialized = new Promise<void>((resolve) => {
+      markPageInitialized = resolve;
+    });
+    let layoutLocaleBeforePageCompletion: string | null = null;
+
+    async function SuspensefulPage({ params }: { params: Promise<{ locale: string }> }) {
+      const { locale } = await params;
+      requestLocale = locale;
+      markPageInitialized();
+      await pageCompletion;
+      return React.createElement("main", null, `page:${requestLocale}`);
+    }
+
+    function LocaleLayout(props: Record<string, unknown>) {
+      layoutLocaleBeforePageCompletion = requestLocale;
+      return React.createElement(
+        "section",
+        null,
+        `layout:${requestLocale}`,
+        props.children as React.ReactNode,
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(SuspensefulPage),
+      layouts: [createSyntheticPageModule(LocaleLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["[locale]"],
+      pattern: "/:locale",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
+    );
+    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    await pageInitialized;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const observedBeforeCompletion = layoutLocaleBeforePageCompletion;
+    resolvePage();
+    const html = await htmlPromise;
+
+    expect(observedBeforeCompletion).toBe("de");
+    expect(html).toContain("layout:de");
+    expect(html).toContain("page:de");
+  });
+
+  it("initializes a page before layouts but serializes its result after layout dependencies", async () => {
+    // This preserves the parent/child render order used by parallel-route
+    // refreshes and by completed cacheLife observation in runtime prefetches.
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    const events: string[] = [];
+    let markLayoutStarted!: () => void;
+    const layoutStarted = new Promise<void>((resolve) => {
+      markLayoutStarted = resolve;
+    });
+    let resolveLayout!: () => void;
+    const layoutCompletion = new Promise<void>((resolve) => {
+      resolveLayout = resolve;
+    });
+
+    function PageContent() {
+      events.push("page:content");
+      return React.createElement("main", null, "Page content");
+    }
+
+    function Page() {
+      events.push("page:init");
+      return React.createElement(PageContent);
+    }
+
+    async function AsyncLayout(props: Record<string, unknown>) {
+      events.push("layout:start");
+      markLayoutStarted();
+      await layoutCompletion;
+      events.push("layout:complete");
+      return React.createElement("section", null, props.children as React.ReactNode);
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(Page),
+      layouts: [createSyntheticPageModule(AsyncLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["ordered"],
+      pattern: "/ordered",
+    });
+
+    const result = await buildPageElements(createBaseOptions({ route, routePath: "/ordered" }));
+    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    await layoutStarted;
+    const contentRenderedBeforeLayoutCompleted = events.includes("page:content");
+    resolveLayout();
+    const html = await htmlPromise;
+
+    expect(contentRenderedBeforeLayoutCompleted).toBe(false);
+    expect(events.indexOf("page:init")).toBeLessThan(events.indexOf("layout:complete"));
+    expect(events.indexOf("layout:complete")).toBeLessThan(events.indexOf("page:content"));
+    expect(html).toContain("Page content");
   });
 
   it("preserves page initialization when async syntax is lowered to a Promise return", async () => {

@@ -42,6 +42,7 @@ import {
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
   renderWithAppDependencyBarrier,
+  type AppPageRenderDependency,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
@@ -242,7 +243,7 @@ type BuildAppPageRouteElementOptions<
     component: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode;
-  pageRenderDependency?: AppRenderDependency | null;
+  pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -1054,6 +1055,8 @@ export function buildAppPageElements<
     templateDependenciesBeforeById.set(templateEntry.id, [...pageDependencies]);
     pageDependencies.push(templateDependency);
   }
+
+  pageRenderDependency?.setResultDependencies(pageDependencies);
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   const prefetchLoadingComponent = getDefaultExport(prefetchLoadingEntry?.loadingModule);
