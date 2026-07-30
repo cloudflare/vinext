@@ -441,7 +441,7 @@ describe("app page response helpers", () => {
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
-    expect(response.headers.get("x-vinext-timing")).toBe("10,5,-1");
+    expect(response.headers.get("x-vinext-timing")).toBe("-1");
     await expect(response.text()).resolves.toBe("flight");
   });
 
@@ -579,7 +579,7 @@ describe("app page response helpers", () => {
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
     expect(response.headers.get("x-extra")).toBe("present");
-    expect(response.headers.get("x-vinext-timing")).toBe("10,2,8");
+    expect(response.headers.get("x-vinext-timing")).toBe("8");
 
     const setCookies = response.headers.getSetCookie();
     expect(setCookies).toContain("__prerender_bypass=token; Path=/");

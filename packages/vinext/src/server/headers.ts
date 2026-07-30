@@ -34,7 +34,7 @@ export const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
 /** Static file signal — value is URL-encoded pathname. */
 export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
 
-/** Timing metrics: `handlerStart,compileMs,renderMs`. */
+/** Worker render duration in milliseconds, or `-1` when unavailable. */
 export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 
 export {

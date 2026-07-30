@@ -46,6 +46,40 @@ type RequestLogOptions = {
   renderMs?: number;
 };
 
+type AppPageDevRequestTiming = {
+  compileMs?: number;
+  renderMs?: number;
+};
+
+/**
+ * Resolve the App Router compile/render split without mixing timestamps from
+ * the Node dev server and the Worker runtime.
+ *
+ * The Worker sends only its measured render duration. The Node dev server
+ * measures the full request duration, so the remaining time is the Vite
+ * compile/module-loading portion.
+ */
+export function resolveAppPageDevRequestTiming(
+  totalMs: number,
+  rawRenderMs: unknown,
+): AppPageDevRequestTiming {
+  const renderMs = Number(String(rawRenderMs));
+  if (
+    !Number.isFinite(totalMs) ||
+    totalMs < 0 ||
+    !Number.isFinite(renderMs) ||
+    renderMs < 0 ||
+    renderMs > Math.ceil(totalMs)
+  ) {
+    return {};
+  }
+
+  return {
+    compileMs: Math.max(0, Math.round(totalMs - renderMs)),
+    renderMs,
+  };
+}
+
 /**
  * Print a single request log line to stdout.
  */
