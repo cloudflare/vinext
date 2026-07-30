@@ -161,6 +161,12 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import {
+  createAppRouteRuntimePlugin,
+  createAppRouteRuntimeServerReferenceMap,
+  registerAppRouteRuntimeDevServerReference,
+  registerAppRouteRuntimeServerReferences,
+} from "./plugins/app-route-runtime.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
@@ -1598,6 +1604,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let resolvedRscPath: string | null = null;
   let resolvedRscTransformsPath: string | null = null;
   let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
+  const edgeServerReferenceImportIds = new Set<string>();
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
@@ -1650,6 +1657,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const pluginApi = getPluginApi(config);
     if (!pluginApi || pluginApi.manager.isScanBuild) return true;
     return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
+  }
+
+  async function resolveServerActionRuntimeMap(
+    config: Pick<ResolvedConfig, "command" | "plugins">,
+  ): Promise<Record<string, string>> {
+    if (config.command !== "build" || !rscPluginModulePromise) return {};
+
+    const { getPluginApi } = await rscPluginModulePromise;
+    const pluginApi = getPluginApi(config);
+    if (!pluginApi || pluginApi.manager.isScanBuild) return {};
+    registerAppRouteRuntimeServerReferences(
+      pluginApi.manager.serverReferenceMetaMap,
+      edgeServerReferenceImportIds,
+      (id) => pluginApi.manager.toRelativeId(id),
+    );
+    return createAppRouteRuntimeServerReferenceMap(pluginApi.manager.serverReferenceMetaMap);
   }
 
   const configuredReactOptions =
@@ -1814,6 +1837,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   >();
 
   const plugins: PluginOption[] = [
+    createAppRouteRuntimePlugin({
+      async onEdgeServerReference(importId, config) {
+        edgeServerReferenceImportIds.add(importId);
+        if (config.command !== "serve" || !rscPluginModulePromise) return;
+
+        const { getPluginApi } = await rscPluginModulePromise;
+        const pluginApi = getPluginApi(config);
+        if (!pluginApi) return;
+        registerAppRouteRuntimeDevServerReference(
+          pluginApi.manager.serverReferenceMetaMap,
+          importId,
+          config.root,
+        );
+      },
+    }),
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
@@ -3753,6 +3791,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
             const metaRoutes = scanMetadataFiles(appDir);
             const hasServerActions = await resolveHasServerActions(this.environment.config);
+            const serverActionRuntimeMap = await resolveServerActionRuntimeMap(
+              this.environment.config,
+            );
             // Check for global-error.tsx at app root
             const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
             // Check for global-not-found.tsx at app root (Next.js 16+ feature)
@@ -3798,6 +3839,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 cacheComponents: nextConfig?.cacheComponents,
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
+                serverActionRuntimeMap,
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,

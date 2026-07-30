@@ -53,6 +53,10 @@ const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
   import.meta.url,
 );
+const appServerActionRuntimePath = resolveEntryPath(
+  "../server/app-server-action-runtime.js",
+  import.meta.url,
+);
 const appRscErrorsPath = resolveEntryPath("../server/app-rsc-errors.js", import.meta.url);
 const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
 const appFallbackRendererPath = resolveEntryPath(
@@ -169,6 +173,8 @@ type AppRouterConfig = {
   prefetchInlining?: PrefetchInliningConfig;
   /** Whether the RSC build discovered any server references. Defaults to true. */
   hasServerActions?: boolean;
+  /** Canonical server-reference ids mapped to their edge-qualified counterparts. */
+  serverActionRuntimeMap?: Record<string, string>;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   imageConfig?: ImageConfig;
@@ -232,6 +238,7 @@ export function generateRscEntry(
   const cacheComponents = config?.cacheComponents === true;
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
+  const serverActionRuntimeMap = config?.serverActionRuntimeMap ?? {};
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -302,9 +309,11 @@ const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
 );
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
+import { resolveAppServerActionRuntimeId as __resolveServerActionRuntimeId } from ${JSON.stringify(appServerActionRuntimePath)};
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
+const __serverActionRuntimeMap = ${JSON.stringify(serverActionRuntimeMap)};
 ${
   middlewarePath
     ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
@@ -1152,7 +1161,16 @@ export default createAppRscHandler({
         return routes[sourceRouteIndex];
       },
       isRscRequest,
-      loadServerAction,
+      loadServerAction(actionReferenceId) {
+        return loadServerAction(
+          __resolveServerActionRuntimeId(
+            actionReferenceId,
+            __actionIsEdgeRuntime,
+            __serverActionRuntimeMap,
+            import.meta.env.DEV,
+          ),
+        );
+      },
       matchRoute(pathnameToMatch) {
         return matchRoute(pathnameToMatch);
       },
