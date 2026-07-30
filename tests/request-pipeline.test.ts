@@ -940,6 +940,22 @@ describe("filterInternalHeaders", () => {
 });
 
 describe("buildRequestHeadersFromMiddlewareResponse", () => {
+  it("treats an empty override header as no request-header override", () => {
+    // Next.js only applies middleware request-header overrides when this
+    // protocol header is truthy, so the empty string emitted for `new Headers()`
+    // leaves the original request unchanged.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const baseHeaders = new Headers({
+      authorization: "Bearer token",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({ "x-middleware-override-headers": "" });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+
+    expect(result).toBeNull();
+  });
+
   it("drops every header absent from the override list, credentials included", () => {
     // Next.js treats the override list as the complete post-middleware header
     // set (resolve-routes.ts deletes non-listed request headers), so an absent

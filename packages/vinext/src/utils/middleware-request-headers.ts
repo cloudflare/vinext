@@ -20,7 +20,10 @@ function getMiddlewareHeaderValue(source: MiddlewareHeaderSource, key: string): 
 
 function getOverrideHeaderNames(source: MiddlewareHeaderSource): string[] | null {
   const rawValue = getMiddlewareHeaderValue(source, MIDDLEWARE_OVERRIDE_HEADERS);
-  if (rawValue === null) return null;
+  // Next.js guards the override block with the protocol header's truthiness.
+  // `NextResponse.next({ request: { headers: new Headers() } })` emits an
+  // empty value, so that case leaves the original request headers unchanged.
+  if (rawValue === null || rawValue === "") return null;
   return rawValue
     .split(",")
     .map((key) => key.trim())
@@ -69,10 +72,12 @@ export function encodeMiddlewareRequestHeaders(
 }
 
 /**
- * `x-middleware-override-headers` lists the complete post-middleware header set,
- * so any name absent from it was deleted by middleware. Never re-add absent
- * headers from the base request — that would resurrect credentials the app
- * explicitly stripped before an external rewrite.
+ * A non-empty `x-middleware-override-headers` value lists the complete
+ * post-middleware header set, so any name absent from it was deleted by
+ * middleware. Never re-add absent headers from the base request — that would
+ * resurrect credentials the app explicitly stripped before an external
+ * rewrite. Next.js treats the empty value emitted for `new Headers()` as no
+ * override and leaves the request unchanged.
  */
 export function buildRequestHeadersFromMiddlewareResponse(
   baseHeaders: Headers,

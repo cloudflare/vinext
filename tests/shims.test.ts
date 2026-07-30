@@ -9651,6 +9651,54 @@ describe("double-encoded path handling in middleware", () => {
     }
   });
 
+  it("external middleware rewrite proxy preserves headers for an empty override value", async () => {
+    // NextResponse emits an empty override value for `new Headers()`, and
+    // Next.js skips its request-header mutation block for that falsy value.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const { proxyExternalMiddlewareRewrite } =
+      await import("../packages/vinext/src/server/app-middleware.js");
+    const http = await import("node:http");
+    let capturedHeaders: Record<string, string | string[] | undefined> = {};
+    const server = http.createServer((req, res) => {
+      capturedHeaders = req.headers;
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("proxied");
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    try {
+      const address = server.address();
+      expect(address && typeof address === "object").toBe(true);
+      const port = address && typeof address === "object" ? address.port : 0;
+      const request = new Request("http://localhost:3000/source", {
+        headers: {
+          authorization: "Bearer secret",
+          cookie: "session=abc",
+          "x-keep": "original",
+        },
+      });
+      const middlewareResponse = NextResponse.rewrite(`http://127.0.0.1:${port}/target`, {
+        request: { headers: new Headers() },
+      });
+
+      expect(middlewareResponse.headers.get("x-middleware-override-headers")).toBe("");
+
+      const response = await proxyExternalMiddlewareRewrite(
+        request,
+        `http://127.0.0.1:${port}/target`,
+        { headers: null, requestHeaders: middlewareResponse.headers, status: null },
+      );
+
+      expect(response.status).toBe(200);
+      expect(capturedHeaders.authorization).toBe("Bearer secret");
+      expect(capturedHeaders.cookie).toBe("session=abc");
+      expect(capturedHeaders["x-keep"]).toBe("original");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("Pages Router runMiddleware preserves the encoded pathname for middleware", async () => {
     const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     // Create a mock Vite server that returns a middleware module
