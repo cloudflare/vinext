@@ -18,12 +18,8 @@ function getMiddlewareHeaderValue(source: MiddlewareHeaderSource, key: string): 
   return Array.isArray(value) ? (value[0] ?? null) : value;
 }
 
-function getOverrideHeaderNames(source: MiddlewareHeaderSource): string[] | null {
-  const rawValue = getMiddlewareHeaderValue(source, MIDDLEWARE_OVERRIDE_HEADERS);
-  // Next.js guards the override block with the protocol header's truthiness.
-  // `NextResponse.next({ request: { headers: new Headers() } })` emits an
-  // empty value, so that case leaves the original request headers unchanged.
-  if (rawValue === null || rawValue === "") return null;
+function parseOverrideHeaderNames(rawValue: string | null): string[] | null {
+  if (rawValue === null) return null;
   return rawValue
     .split(",")
     .map((key) => key.trim())
@@ -83,7 +79,16 @@ export function buildRequestHeadersFromMiddlewareResponse(
   baseHeaders: Headers,
   middlewareHeaders: MiddlewareHeaderSource,
 ): Headers | null {
-  const overrideHeaderNames = getOverrideHeaderNames(middlewareHeaders);
+  const rawOverrideHeader = getMiddlewareHeaderValue(
+    middlewareHeaders,
+    MIDDLEWARE_OVERRIDE_HEADERS,
+  );
+  // Next.js guards the override block with this header's truthiness, so the
+  // empty value emitted for `new Headers()` ignores even stray forwarded
+  // headers from malformed combinations that our encoder cannot produce.
+  if (rawOverrideHeader === "") return null;
+
+  const overrideHeaderNames = parseOverrideHeaderNames(rawOverrideHeader);
   const forwardedHeaders = getForwardedRequestHeaders(middlewareHeaders);
 
   if (overrideHeaderNames === null && forwardedHeaders.size === 0) {

@@ -949,7 +949,10 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
       authorization: "Bearer token",
       cookie: "session=abc",
     });
-    const middlewareHeaders = new Headers({ "x-middleware-override-headers": "" });
+    const middlewareHeaders = new Headers({
+      "x-middleware-override-headers": "",
+      "x-middleware-request-x-added": "must-be-ignored",
+    });
 
     const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
 
