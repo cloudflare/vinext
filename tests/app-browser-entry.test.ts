@@ -32,7 +32,10 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
-import { resolvePrefetchNavigationResponseUrl } from "../packages/vinext/src/server/app-browser-prefetch-response.js";
+import {
+  prepareConsumedPrefetchResponseForPublication,
+  resolvePrefetchNavigationResponseUrl,
+} from "../packages/vinext/src/server/app-browser-prefetch-response.js";
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
@@ -833,6 +836,30 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("normalizes consumed prefetch snapshots for committed-cache publication", () => {
+    const preparedElements = { route: "prepared" } as unknown as AppElements;
+    const publication = prepareConsumedPrefetchResponseForPublication(
+      {
+        buffer: new ArrayBuffer(0),
+        completedDynamicStaleTimeSeconds: 60,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 300,
+        expiresAt: 123,
+        paramsHeader: null,
+        preparedElements,
+        renderedPathAndSearch: null,
+        url: "https://example.com/source?_rsc=prefetch-digest",
+      },
+      "/rewrite?_rsc=visible-digest",
+    );
+
+    expect(publication.expiresAt).toBe(123);
+    expect(publication.preparedElements).toBe(preparedElements);
+    expect(publication.snapshot).not.toHaveProperty("expiresAt");
+    expect(publication.snapshot).not.toHaveProperty("preparedElements");
+    expect(publication.snapshot.url).toBe("/rewrite?_rsc=visible-digest");
+  });
+
   it("keeps the visible URL when a settled prefetch was found through a rewrite alias", () => {
     expect(
       resolvePrefetchNavigationResponseUrl({

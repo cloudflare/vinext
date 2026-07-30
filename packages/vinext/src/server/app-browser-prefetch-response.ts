@@ -1,4 +1,5 @@
 import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import type { CachedRscResponse } from "vinext/shims/navigation";
 
 function normalizeBrowserRscUrlForReuse(
   url: string | null | undefined,
@@ -52,4 +53,20 @@ export function resolvePrefetchNavigationResponseUrl(options: {
   return matchedAlternate
     ? options.visibleRscUrl
     : canonicalizeBrowserRscResponseUrl(options.responseUrl, options.origin);
+}
+
+export function prepareConsumedPrefetchResponseForPublication(
+  response: CachedRscResponse,
+  responseUrl: string,
+): {
+  expiresAt: number | undefined;
+  preparedElements: CachedRscResponse["preparedElements"];
+  snapshot: CachedRscResponse;
+} {
+  const { expiresAt, preparedElements, ...snapshot } = response;
+  return {
+    expiresAt,
+    preparedElements,
+    snapshot: { ...snapshot, url: responseUrl },
+  };
 }

@@ -169,7 +169,10 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
-import { resolvePrefetchNavigationResponseUrl } from "./app-browser-prefetch-response.js";
+import {
+  prepareConsumedPrefetchResponseForPublication,
+  resolvePrefetchNavigationResponseUrl,
+} from "./app-browser-prefetch-response.js";
 import {
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
@@ -1983,17 +1986,20 @@ function bootstrapHydration(
             ));
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (prefetchedResponse) {
-            const { preparedElements, ...responseSnapshot } = prefetchedResponse;
-            consumedPrefetchSnapshot = responseSnapshot;
-            prefetchedElements = preparedElements;
             navResponse = restoreRscResponse(prefetchedResponse, false);
-            navResponseExpiresAt = prefetchedResponse.expiresAt;
             navResponseUrl = resolvePrefetchNavigationResponseUrl({
               additionalRscUrls: additionalPrefetchRscUrls,
               origin: window.location.origin,
               responseUrl: prefetchedResponse.url,
               visibleRscUrl: rscUrl,
             });
+            const publication = prepareConsumedPrefetchResponseForPublication(
+              prefetchedResponse,
+              navResponseUrl,
+            );
+            consumedPrefetchSnapshot = publication.snapshot;
+            prefetchedElements = publication.preparedElements;
+            navResponseExpiresAt = publication.expiresAt;
           }
           if (!navResponse) {
             routeManifest = navigationKind === "navigate" ? getBrowserRouteManifest() : null;
