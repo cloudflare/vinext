@@ -90,3 +90,10 @@ export function prepareConsumedPrefetchResponseForPublication(
     snapshot: { ...snapshot, url: responseUrl },
   };
 }
+
+export function preserveCommittedPrefetchExpiry(
+  snapshot: CachedRscResponse,
+  expiresAt: number | undefined,
+): CachedRscResponse {
+  return expiresAt === undefined ? snapshot : { ...snapshot, expiresAt };
+}

@@ -23,6 +23,7 @@ import {
   __basePath,
   appRouterInstance,
   commitClientNavigationState,
+  consumePrefetchResponse,
   consumePrefetchResponseForNavigation,
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
@@ -170,6 +171,7 @@ import {
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
   peekSettledPrefetchResponseForNavigation,
+  preserveCommittedPrefetchExpiry,
   prepareConsumedPrefetchResponseForPublication,
   resolvePrefetchNavigationResponseUrl,
 } from "./app-browser-prefetch-response.js";
@@ -766,6 +768,7 @@ function storeVisitedResponseSnapshot(
   requestMountedSlotsHeader: string | null = snapshot.mountedSlotsHeader ?? null,
   elements?: AppElements,
   seedPrefetchCache: boolean = true,
+  prefetchSnapshot: CachedRscResponse = snapshot,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
@@ -783,7 +786,7 @@ function storeVisitedResponseSnapshot(
   if (seedPrefetchCache) {
     seedPrefetchResponseSnapshot(
       rscUrl,
-      snapshot,
+      prefetchSnapshot,
       interceptionContext,
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
@@ -794,7 +797,7 @@ function storeVisitedResponseSnapshot(
       visitedResponseCache.delete(cacheKey);
     }
     if (seedPrefetchCache) {
-      deletePrefetchResponseSnapshot(rscUrl, snapshot, interceptionContext);
+      deletePrefetchResponseSnapshot(rscUrl, prefetchSnapshot, interceptionContext);
     }
   };
 }
@@ -1972,15 +1975,22 @@ function bootstrapHydration(
         let prefetchedElements: AppElements | undefined;
         let fallbackReuseDecision = reuseDecision;
         if (reuseDecision.kind === "consumePrefetch") {
-          const prefetchedResponse = await consumePrefetchResponseForNavigation(
-            rscUrl,
-            requestInterceptionContext,
-            mountedSlotsHeader,
-            {
-              additionalRscUrls: additionalPrefetchRscUrls,
-              shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
-            },
-          );
+          const prefetchedResponse = settledPrefetchedResponse
+            ? consumePrefetchResponse(
+                targetPathAndSearch,
+                requestInterceptionContext,
+                mountedSlotsHeader,
+                { additionalRscUrls: additionalPrefetchPathAndSearch },
+              )
+            : await consumePrefetchResponseForNavigation(
+                rscUrl,
+                requestInterceptionContext,
+                mountedSlotsHeader,
+                {
+                  additionalRscUrls: additionalPrefetchRscUrls,
+                  shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
+                },
+              );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (prefetchedResponse) {
             navResponse = restoreRscResponse(prefetchedResponse, false);
@@ -2293,16 +2303,12 @@ function bootstrapHydration(
                     ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
                     : {}),
                 }),
-            // A navigation that consumes prefetched Flight data keeps that
-            // prefetch freshness window when committed, matching Next's
-            // segment-cache handoff instead of recomputing dynamic freshness.
-            // The consumed entry was buffered through completion before its
-            // expiry was calculated, so this is already the final freshness
-            // window. Keep its original deadline instead of restarting the
-            // clock when delayed cache publication eventually runs.
-            ...(navResponseExpiresAt !== undefined ? { expiresAt: navResponseExpiresAt } : {}),
             mountedSlotsHeader: getMountedSlotIdsHeader(renderedElements),
           };
+          // The prefetch retains the absolute deadline calculated when its
+          // response settled. The visited/BFCache snapshot must not inherit
+          // that deadline: it independently applies staleTimes.dynamic.
+          const prefetchSnapshot = preserveCommittedPrefetchExpiry(snapshot, navResponseExpiresAt);
           const interceptionContext = resolveVisitedResponseInterceptionContext(
             requestInterceptionContext,
             metadata.interceptionContext,
@@ -2316,6 +2322,9 @@ function bootstrapHydration(
               navParams,
               PREFETCH_CACHE_TTL,
               mountedSlotsHeader,
+              undefined,
+              true,
+              prefetchSnapshot,
             );
           } else {
             const state = committedState;
@@ -2339,6 +2348,7 @@ function bootstrapHydration(
               mountedSlotsHeader,
               committedElements,
               true,
+              prefetchSnapshot,
             );
           }
         } catch {

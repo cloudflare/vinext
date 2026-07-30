@@ -34,9 +34,11 @@ import {
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
   peekSettledPrefetchResponseForNavigation,
+  preserveCommittedPrefetchExpiry,
   prepareConsumedPrefetchResponseForPublication,
   resolvePrefetchNavigationResponseUrl,
 } from "../packages/vinext/src/server/app-browser-prefetch-response.js";
+import { createVisitedResponseCacheEntry } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
@@ -887,6 +889,37 @@ describe("app browser entry navigation scheduling", () => {
     expect(publication.snapshot).not.toHaveProperty("expiresAt");
     expect(publication.snapshot).not.toHaveProperty("preparedElements");
     expect(publication.snapshot.url).toBe("/rewrite?_rsc=visible-digest");
+  });
+
+  it("keeps runtime-prefetch and visited-cache deadlines independent after commit", () => {
+    const now = 1_000_000;
+    const publication = prepareConsumedPrefetchResponseForPublication(
+      {
+        buffer: new ArrayBuffer(0),
+        completedDynamicStaleTimeSeconds: 30,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 30,
+        expiresAt: now + 240_000,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        serverStaleTime: { kind: "resolved", seconds: 240 },
+        url: "/runtime-prefetch",
+      },
+      "/runtime-prefetch",
+    );
+    const prefetchSnapshot = preserveCommittedPrefetchExpiry(
+      publication.snapshot,
+      publication.expiresAt,
+    );
+    const visited = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: publication.snapshot,
+    });
+
+    expect(prefetchSnapshot.expiresAt).toBe(now + 240_000);
+    expect(publication.snapshot).not.toHaveProperty("expiresAt");
+    expect(visited.expiresAt).toBe(now + 30_000);
   });
 
   it("keeps the visible URL when a settled prefetch was found through a rewrite alias", () => {
