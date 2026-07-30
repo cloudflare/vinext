@@ -245,45 +245,64 @@ describe("buildPageElements", () => {
     markRenderRequestApiUsageMock.mockClear();
   });
 
-  it("renders the page before layouts that consume page-initialized request state", async () => {
-    // Regression from nodejs.org's next-intl integration, where the page calls
-    // setRequestLocale() before the parent layout renders NextIntlClientProvider.
-    // https://github.com/nodejs/nodejs.org/commit/5eace3f956c10da92880be7ce16e942bbcb47ff7
-    let requestLocale = "en";
+  it.each(["plain", "memo", "lazy", "forwardRef"] as const)(
+    "renders a %s page before layouts that consume page-initialized request state",
+    async (pageKind) => {
+      // Regression from nodejs.org's next-intl integration, where the page calls
+      // setRequestLocale() before the parent layout renders NextIntlClientProvider.
+      // https://github.com/nodejs/nodejs.org/commit/5eace3f956c10da92880be7ce16e942bbcb47ff7
+      let requestLocale = "en";
 
-    async function LocalePage({ params }: { params: Promise<{ locale: string }> }) {
-      const { locale } = await params;
-      requestLocale = locale;
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      return React.createElement("main", null, `page:${requestLocale}`);
-    }
+      async function LocalePage({ params }: { params: Promise<{ locale: string }> }) {
+        const { locale } = await params;
+        requestLocale = locale;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        return React.createElement("main", null, `page:${requestLocale}`);
+      }
 
-    function LocaleLayout(props: Record<string, unknown>) {
-      return React.createElement(
-        "section",
-        null,
-        `layout:${requestLocale}`,
-        props.children as React.ReactNode,
+      function LocaleLayout(props: Record<string, unknown>) {
+        return React.createElement(
+          "section",
+          null,
+          `layout:${requestLocale}`,
+          props.children as React.ReactNode,
+        );
+      }
+
+      let observedForwardRef: unknown = "not-called";
+      const PageComponent =
+        pageKind === "memo"
+          ? React.memo(LocalePage)
+          : pageKind === "lazy"
+            ? React.lazy(async () => ({ default: LocalePage }))
+            : pageKind === "forwardRef"
+              ? React.forwardRef<unknown, { params: Promise<{ locale: string }> }>((props, ref) => {
+                  observedForwardRef = ref;
+                  return LocalePage(props);
+                })
+              : LocalePage;
+
+      const route = createSyntheticRoute({
+        page: createSyntheticPageModule(PageComponent),
+        layouts: [createSyntheticPageModule(LocaleLayout)],
+        layoutTreePositions: [1],
+        routeSegments: ["[locale]"],
+        pattern: "/:locale",
+      });
+
+      const result = await buildPageElements(
+        createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
       );
-    }
+      const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
 
-    const route = createSyntheticRoute({
-      page: createSyntheticPageModule(LocalePage),
-      layouts: [createSyntheticPageModule(LocaleLayout)],
-      layoutTreePositions: [1],
-      routeSegments: ["[locale]"],
-      pattern: "/:locale",
-    });
-
-    const result = await buildPageElements(
-      createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
-    );
-    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
-
-    expect(html).toContain("layout:de");
-    expect(html).toContain("page:de");
-    expect(html).not.toContain("layout:en");
-  });
+      expect(html).toContain("layout:de");
+      expect(html).toContain("page:de");
+      expect(html).not.toContain("layout:en");
+      if (pageKind === "forwardRef") {
+        expect(observedForwardRef).toBeUndefined();
+      }
+    },
+  );
 
   it("lets layouts stream after page initialization without waiting for page completion", async () => {
     // Ported from Next.js:

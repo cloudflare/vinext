@@ -28,6 +28,52 @@ const REACT_FORWARD_REF = Symbol.for("react.forward_ref");
 const REACT_LAZY = Symbol.for("react.lazy");
 const REACT_MEMO = Symbol.for("react.memo");
 
+export function isReactOwnedAppComponent(component: unknown): boolean {
+  const candidate = component as AppDependencyComponent | null;
+
+  if (
+    candidate?.$$typeof === REACT_MEMO ||
+    candidate?.$$typeof === REACT_LAZY ||
+    candidate?.$$typeof === REACT_FORWARD_REF
+  ) {
+    return false;
+  }
+
+  return (
+    typeof candidate !== "function" ||
+    candidate.$$typeof === REACT_CLIENT_REFERENCE ||
+    candidate.prototype?.isReactComponent != null
+  );
+}
+
+export function invokeAppComponent(
+  component: ComponentType<Record<string, unknown>>,
+  props: Readonly<Record<string, unknown>>,
+): ReactNode | Promise<ReactNode> {
+  const candidate = component as AppDependencyComponent;
+
+  if (candidate.$$typeof === REACT_MEMO && candidate.type) {
+    return invokeAppComponent(candidate.type, props);
+  }
+
+  if (candidate.$$typeof === REACT_LAZY && candidate._init) {
+    return invokeAppComponent(candidate._init(candidate._payload), props);
+  }
+
+  if (candidate.$$typeof === REACT_FORWARD_REF && candidate.render) {
+    return candidate.render(props, undefined);
+  }
+
+  if (isReactOwnedAppComponent(candidate)) {
+    return createElement(candidate, props);
+  }
+
+  const ServerComponent = candidate as unknown as (
+    props: Readonly<Record<string, unknown>>,
+  ) => ReactNode | Promise<ReactNode>;
+  return ServerComponent(props);
+}
+
 const appElementRenderDependencies = new WeakMap<
   Readonly<Record<string, unknown>>,
   ReadonlyMap<string, AppRenderDependency>
@@ -124,36 +170,9 @@ export function renderAppComponentWithDependencyBarrier(
   // is suspended. Unwrap server-owned wrappers here so dependency release is
   // tied to their actual result; client references and classes remain owned by
   // React and only need their element to be produced synchronously.
-  function invokeComponent(candidate: AppDependencyComponent): ReactNode | Promise<ReactNode> {
-    if (candidate.$$typeof === REACT_MEMO && candidate.type) {
-      return invokeComponent(candidate.type);
-    }
-
-    if (candidate.$$typeof === REACT_LAZY && candidate._init && candidate._payload !== undefined) {
-      return invokeComponent(candidate._init(candidate._payload));
-    }
-
-    if (candidate.$$typeof === REACT_FORWARD_REF && candidate.render) {
-      return candidate.render(props, undefined);
-    }
-
-    if (
-      typeof candidate !== "function" ||
-      candidate.$$typeof === REACT_CLIENT_REFERENCE ||
-      candidate.prototype?.isReactComponent != null
-    ) {
-      return createElement(candidate, props);
-    }
-
-    const ServerComponent = candidate as unknown as (
-      props: Readonly<Record<string, unknown>>,
-    ) => ReactNode | Promise<ReactNode>;
-    return ServerComponent(props);
-  }
-
   function AppComponentDependencyBarrier() {
     try {
-      const result = invokeComponent(component as AppDependencyComponent);
+      const result = invokeAppComponent(component, props);
       if (isPromiseLike(result)) {
         return Promise.resolve(result).then(
           (resolvedResult) => {
