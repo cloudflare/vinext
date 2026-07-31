@@ -2049,62 +2049,16 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // Next.js parity fallback fires — packages/next/src/server/config.ts:528-531),
     // so stripping `basePath` first would make `resolveAppRouterAssetPath`'s
     // path-prefix branch miss the match and return null → 404.
-    // `staticLookupPath` is still computed because non-asset paths below
-    // (image-optimization, SSR routing) match against the basePath-stripped form.
-    //
     // Existing build assets bypass middleware. Missing asset-shaped requests
     // must still reach middleware so it can rewrite or respond; if routing
     // ultimately returns 404, convert it back to the canonical plain-text
     // static-file response below.
-    const staticLookupPath = stripBasePath(pathname, basePath);
     const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
     const missingBuildAsset = pagesAssetLookup !== null;
     if (pagesAssetLookup) {
       if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
         return;
       }
-    }
-
-    // ── Image optimization passthrough ──────────────────────────────
-    if (isImageOptimizationPath(pathname) || isImageOptimizationPath(staticLookupPath)) {
-      const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, allowedImageWidths, pagesImageConfig?.qualities);
-      if (!params) {
-        res.writeHead(400);
-        res.end("Bad Request");
-        return;
-      }
-      // Block SVG and other unsafe content types.
-      // SVG is only allowed when dangerouslyAllowSVG is enabled.
-      const ct = contentTypeForPath(params.imageUrl);
-      if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
-        res.writeHead(400);
-        res.end("The requested resource is not an allowed image type");
-        return;
-      }
-      const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy":
-          pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Disposition":
-          pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
-      };
-      if (
-        await tryServeStatic(
-          req,
-          res,
-          clientDir,
-          params.imageUrl,
-          false,
-          staticCache,
-          imageSecurityHeaders,
-        )
-      ) {
-        return;
-      }
-      res.writeHead(404);
-      res.end("Image not found");
-      return;
     }
 
     try {
@@ -2259,6 +2213,54 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // (including next.config headers staged by the pipeline) are passed through so
         // Set-Cookie / security headers from middleware are included in the response.
         serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
+          // Next.js resolves middleware and beforeFiles rewrites before
+          // dispatching the built-in image endpoint.
+          if (isImageOptimizationPath(requestPathname)) {
+            for (const [name, value] of Object.entries(stagedHeaders)) {
+              res.setHeader(name, value);
+            }
+            const parsedUrl = new URL(rawUrl, "http://localhost");
+            parsedUrl.pathname = requestPathname;
+            const params = parseImageParams(
+              parsedUrl,
+              allowedImageWidths,
+              pagesImageConfig?.qualities,
+            );
+            if (!params) {
+              res.writeHead(400);
+              res.end("Bad Request");
+              return true;
+            }
+            const ct = contentTypeForPath(params.imageUrl);
+            if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
+              res.writeHead(400);
+              res.end("The requested resource is not an allowed image type");
+              return true;
+            }
+            const imageSecurityHeaders: Record<string, string> = {
+              "Content-Security-Policy":
+                pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
+              "X-Content-Type-Options": "nosniff",
+              "Content-Disposition":
+                pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
+            };
+            if (
+              await tryServeStatic(
+                req,
+                res,
+                clientDir,
+                params.imageUrl,
+                false,
+                staticCache,
+                imageSecurityHeaders,
+              )
+            ) {
+              return true;
+            }
+            res.writeHead(404);
+            res.end("Image not found");
+            return true;
+          }
           if (
             requestPathname === "/" ||
             requestPathname === "/api" ||

@@ -5023,29 +5023,6 @@ export const loadServerActionClient = ${
               const requestOrigin = `http://${requestHost}`;
               const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
 
-              // ── Image optimization passthrough (dev mode) ─────────────
-              // In dev, redirect to the original asset URL so Vite serves it.
-              if (isImageOptimizationPath(url.split("?")[0]!)) {
-                const imageRequestUrl = new URL(url, requestOrigin);
-                const allowedWidths = [
-                  ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
-                  ...(nextConfig.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
-                ];
-                const encodedLocation = resolveDevImageRedirect(
-                  imageRequestUrl,
-                  allowedWidths,
-                  nextConfig.images?.qualities,
-                );
-                if (!encodedLocation) {
-                  res.writeHead(400);
-                  res.end("Invalid image optimization parameters");
-                  return;
-                }
-                res.writeHead(302, { Location: encodedLocation });
-                res.end();
-                return;
-              }
-
               // Preserve the pre-Vite URL for middleware/config identity, but
               // first apply the same WHATWG dot-segment canonicalization as the
               // Request constructor. Other percent escapes remain untouched.
@@ -5492,6 +5469,24 @@ export const loadServerActionClient = ${
                   return proxyExternalRequest(reqWithBody, externalUrl);
                 },
                 serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
+                  // Next.js resolves middleware and beforeFiles rewrites before
+                  // dispatching the built-in image endpoint.
+                  if (isImageOptimizationPath(requestPathname)) {
+                    const imageRequestUrl = new URL(url, requestOrigin);
+                    imageRequestUrl.pathname = requestPathname;
+                    const allowedWidths = [
+                      ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+                      ...(nextConfig.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+                    ];
+                    const encodedLocation = resolveDevImageRedirect(
+                      imageRequestUrl,
+                      allowedWidths,
+                      nextConfig.images?.qualities,
+                    );
+                    return encodedLocation
+                      ? new Response(null, { status: 302, headers: { Location: encodedLocation } })
+                      : new Response("Invalid image optimization parameters", { status: 400 });
+                  }
                   const isRetrievalMethod = req.method === "GET" || req.method === "HEAD";
                   if (
                     (phase === "direct" && isRetrievalMethod) ||

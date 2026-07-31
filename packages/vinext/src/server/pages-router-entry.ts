@@ -172,21 +172,6 @@ async function handleRequest(
       pathname = dataNorm.normalizedPathname;
     }
 
-    // Checked after basePath stripping so /<basePath>/_next/image works.
-    if (isImageOptimizationPath(pathname) && env?.ASSETS) {
-      const allowedWidths = [
-        ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
-        ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
-      ];
-      return handleConfiguredImageOptimization(
-        request,
-        (assetPath) =>
-          Promise.resolve(env.ASSETS!.fetch(new Request(new URL(assetPath, request.url)))),
-        allowedWidths,
-        imageConfig,
-      );
-    }
-
     const deps: PagesPipelineDeps = {
       basePath,
       trailingSlash,
@@ -217,6 +202,22 @@ async function handleRequest(
           : null,
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
         if (!env?.ASSETS) return false;
+        if (isImageOptimizationPath(requestPathname)) {
+          const imageUrl = new URL(request.url);
+          imageUrl.pathname = requestPathname;
+          const imageRequest = new Request(imageUrl, request);
+          const allowedWidths = [
+            ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+            ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+          ];
+          return handleConfiguredImageOptimization(
+            imageRequest,
+            (assetPath) =>
+              Promise.resolve(env.ASSETS!.fetch(new Request(new URL(assetPath, request.url)))),
+            allowedWidths,
+            imageConfig,
+          );
+        }
         return fetchWorkerFilesystemRoute(
           request,
           requestPathname,
