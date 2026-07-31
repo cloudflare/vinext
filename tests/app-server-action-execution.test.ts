@@ -1782,7 +1782,7 @@ describe("app server action execution helpers", () => {
     expect(targetRequest!.headers.get("x-rsc-action")).toBeNull();
     expect(targetRequest!.headers.get("next-router-state-tree")).toBeNull();
     expect(targetRequest!.headers.get("x-vinext-mw-ctx")).toBeNull();
-    expect(targetRequest!.headers.get("cookie")).toBe("session=1; theme=dark");
+    expect(targetRequest!.headers.get("cookie")).toBe("session=1; deleted=; theme=dark");
     expect(Reflect.get(targetRequest!, "cf")).toEqual({ country: "AU" });
   });
 
@@ -2083,7 +2083,7 @@ describe("app server action execution helpers", () => {
     );
 
     expect(targetRequest).not.toBeNull();
-    expect(targetRequest!.headers.get("cookie")).toBe("csrf=rotated");
+    expect(targetRequest!.headers.get("cookie")).toBe("session=; csrf=rotated; admin=1");
     expect(targetRequest!.headers.get("x-auth-context")).toBe("sanitized");
     expect(targetRequest!.headers.get("x-attacker-controlled")).toBeNull();
     expect(targetRequest!.headers.get("x-action-auth-context")).toBe("member");
@@ -2140,6 +2140,8 @@ describe("app server action execution helpers", () => {
           "content-encoding": "br",
           location: "/mw-location",
           "content-type": "text/html",
+          "set-cookie": "source=1; Path=/",
+          vary: "x-source",
           "x-action-redirect": "/mw-hijack",
           "x-action-mw": "1",
         }),
@@ -2151,7 +2153,9 @@ describe("app server action execution helpers", () => {
               "content-encoding": "gzip",
               "content-type": "text/x-component",
               "content-length": "0",
+              "set-cookie": "target=1; Path=/",
               "transfer-encoding": "chunked",
+              vary: "x-target",
               "x-action-redirect": "/target-hijack",
               "x-target-mw": "1",
             },
@@ -2174,7 +2178,9 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("connection")).toBeNull();
     expect(response?.headers.get("content-encoding")).toBeNull();
     expect(response?.headers.get("content-length")).toBeNull();
+    expect(response?.headers.getSetCookie()).toEqual(["source=1; Path=/"]);
     expect(response?.headers.get("transfer-encoding")).toBeNull();
+    expect(response?.headers.get("vary")).toBe("x-target");
     expect(response?.headers.get("x-action-mw")).toBe("1");
     expect(response?.headers.get("x-target-mw")).toBe("1");
   });

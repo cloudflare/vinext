@@ -56,6 +56,7 @@ import {
 } from "./request-pipeline.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
+import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
@@ -487,75 +488,36 @@ function readSetCookieNameValue(setCookie: string): { name: string; value: strin
 
   const name = setCookie.slice(0, equalsIndex).trim();
   const valueEnd = setCookie.indexOf(";", equalsIndex + 1);
-  const value = setCookie.slice(equalsIndex + 1, valueEnd === -1 ? undefined : valueEnd);
+  const encodedValue = setCookie.slice(equalsIndex + 1, valueEnd === -1 ? undefined : valueEnd);
+
+  let value: string;
+  try {
+    value = decodeURIComponent(encodedValue);
+  } catch {
+    return null;
+  }
 
   return { name, value };
-}
-
-function isExpiredSetCookie(setCookie: string): boolean {
-  return (
-    /(?:^|;\s*)max-age=0(?:;|$)/i.test(setCookie) ||
-    /(?:^|;\s*)expires=Thu,\s*0?1[\s-]+Jan[\s-]+1970/i.test(setCookie)
-  );
 }
 
 function applySetCookieMutationsToRequestCookieHeader(
   cookieHeader: string | null,
   setCookies: readonly string[],
 ): string | null {
-  const cookies = new Map<string, string>();
-  if (cookieHeader) {
-    for (const part of cookieHeader.split(";")) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-      const equalsIndex = trimmed.indexOf("=");
-      if (equalsIndex <= 0) continue;
-      cookies.set(trimmed.slice(0, equalsIndex), trimmed.slice(equalsIndex + 1));
-    }
-  }
+  const cookies = parseEdgeRequestCookieHeader(cookieHeader ?? "");
 
   for (const setCookie of setCookies) {
     const entry = readSetCookieNameValue(setCookie);
     if (!entry) continue;
-    if (isExpiredSetCookie(setCookie)) {
-      cookies.delete(entry.name);
-    } else {
-      // Cookie header values are raw (not URL-encoded), and
-      // readSetCookieNameValue extracts the value verbatim from the
-      // Set-Cookie header, so store it as-is.
-      cookies.set(entry.name, entry.value);
-    }
+    // Match Next.js' ResponseCookies -> RequestCookies projection exactly:
+    // attributes such as Path and Max-Age are discarded, and a deletion is
+    // forwarded as an empty value rather than removing the cookie name.
+    cookies.set(entry.name, entry.value);
   }
 
   return cookies.size === 0
     ? null
-    : [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
-}
-
-/** RFC 6265 §5.1.4: the default cookie path is the request path's directory. */
-function defaultCookiePath(requestPathname: string): string {
-  if (!requestPathname.startsWith("/")) return "/";
-  const lastSlash = requestPathname.lastIndexOf("/");
-  return lastSlash <= 0 ? "/" : requestPathname.slice(0, lastSlash);
-}
-
-/** A missing or invalid Path attribute means the default path applies. */
-function readSetCookiePath(setCookie: string): string | null {
-  for (const part of setCookie.split(";").slice(1)) {
-    const equalsIndex = part.indexOf("=");
-    if (equalsIndex === -1) continue;
-    if (part.slice(0, equalsIndex).trim().toLowerCase() !== "path") continue;
-    const value = part.slice(equalsIndex + 1).trim();
-    return value.startsWith("/") ? value : null;
-  }
-  return null;
-}
-
-/** RFC 6265 §5.1.4 path-match. */
-function cookiePathMatches(cookiePath: string, requestPath: string): boolean {
-  if (cookiePath === requestPath) return true;
-  if (!requestPath.startsWith(cookiePath)) return false;
-  return cookiePath.endsWith("/") || requestPath[cookiePath.length] === "/";
+    : [...cookies].map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("; ");
 }
 
 async function createActionRedirectTargetRequest(options: {
@@ -581,18 +543,9 @@ async function createActionRedirectTargetRequest(options: {
     options.sourceConfigHeaders,
     options.actionMiddlewareHeaders,
   );
-  // Like Next.js' internal action-redirect GET, this is necessarily a lossy
-  // cookie projection: the inbound Cookie header no longer carries the Path,
-  // Domain, or acceptance metadata from the browser's jar. For newly emitted
-  // mutations the Path is still available, so avoid forwarding a known path
-  // mismatch even though older inbound cookies cannot be re-scoped here.
-  const actionDefaultPath = defaultCookiePath(new URL(options.request.url).pathname);
-  const applicableCookies = options.pendingCookies.filter((cookie) =>
-    cookiePathMatches(readSetCookiePath(cookie) ?? actionDefaultPath, options.url.pathname),
-  );
   const cookieHeader = applySetCookieMutationsToRequestCookieHeader(
     headers.get("cookie"),
-    applicableCookies,
+    options.pendingCookies,
   );
   if (cookieHeader === null) {
     headers.delete("cookie");
@@ -675,9 +628,10 @@ async function dispatchActionRedirectTarget(options: {
 /** Headers the internally dispatched target must not replace on the action wrapper. */
 const ACTION_REDIRECT_PROTECTED_HEADERS = [
   // Next.js does not copy these connection/framing headers from the internal
-  // target GET onto the action wrapper. Set-Cookie is the exception here: it
-  // carries middleware mutations back to the browser and is merged additively.
-  ...ACTION_REDIRECT_FORWARDED_FORBIDDEN_HEADERS.filter((name) => name !== "set-cookie"),
+  // target GET onto the action wrapper. This also protects the wrapper's
+  // source/action Set-Cookie values while preventing target cookies from being
+  // copied, matching actionsForbiddenHeaders in Next.js.
+  ...ACTION_REDIRECT_FORWARDED_FORBIDDEN_HEADERS,
   "content-type",
   "location",
   ACTION_REDIRECT_HEADER,
@@ -686,20 +640,34 @@ const ACTION_REDIRECT_PROTECTED_HEADERS = [
   ACTION_REVALIDATED_HEADER,
 ];
 
-/**
- * Merge the target response headers onto the action redirect wrapper, then
- * restore the wrapper's own protocol headers — including their absence.
- */
-function mergeActionRedirectTargetHeaders(target: Headers, responseHeaders: Headers | null): void {
+const ACTION_REDIRECT_SOURCE_PROTECTED_HEADERS = ACTION_REDIRECT_PROTECTED_HEADERS.filter(
+  (name) => name !== "set-cookie",
+);
+
+function mergeActionRedirectSourceHeaders(target: Headers, responseHeaders: Headers | null): void {
   if (!responseHeaders) return;
 
-  const protectedValues = ACTION_REDIRECT_PROTECTED_HEADERS.map(
+  const protectedValues = ACTION_REDIRECT_SOURCE_PROTECTED_HEADERS.map(
     (name) => [name, target.get(name)] as const,
   );
   mergeMiddlewareResponseHeaders(target, responseHeaders);
   for (const [name, value] of protectedValues) {
     if (value === null) target.delete(name);
     else target.set(name, value);
+  }
+}
+
+/**
+ * Copy ordinary target response headers onto the action redirect wrapper.
+ * Next.js uses setHeader here, so target values replace source values instead
+ * of using middleware-specific merge behavior such as unioning Vary.
+ */
+function mergeActionRedirectTargetHeaders(target: Headers, responseHeaders: Headers | null): void {
+  if (!responseHeaders) return;
+
+  for (const [name, value] of responseHeaders) {
+    if (ACTION_REDIRECT_PROTECTED_HEADERS.includes(name.toLowerCase())) continue;
+    target.set(name, value);
   }
 }
 
@@ -1480,8 +1448,8 @@ export async function handleServerActionRscRequest<
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       applyEdgeRuntimeHeader(redirectHeaders, options.isEdgeRuntime);
-      mergeActionRedirectTargetHeaders(redirectHeaders, options.sourceConfigHeaders ?? null);
-      mergeActionRedirectTargetHeaders(redirectHeaders, options.middlewareHeaders);
+      mergeActionRedirectSourceHeaders(redirectHeaders, options.sourceConfigHeaders ?? null);
+      mergeActionRedirectSourceHeaders(redirectHeaders, options.middlewareHeaders);
       applyRscCompatibilityIdHeader(redirectHeaders);
       // Prefix basePath onto the redirect target. The client-side handler in
       // app-browser-entry reads ACTION_REDIRECT_HEADER and calls
