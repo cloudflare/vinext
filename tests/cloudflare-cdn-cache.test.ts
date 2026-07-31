@@ -16,6 +16,11 @@ import {
   DefaultCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  headersContextFromRequest,
+  runWithHeadersContext,
+} from "../packages/vinext/src/shims/headers.js";
+import { createStaticGenerationHeadersContext } from "../packages/vinext/src/server/app-static-generation.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
@@ -73,6 +78,74 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["Cache-Tag"]).toBe("/blog,_N_T_/blog,posts");
     expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
     expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60");
+  });
+
+  it("only edge-caches the stable HTML and base RSC navigation variants", async () => {
+    const input = { cacheControl: "s-maxage=60", tags: ["/blog", "posts"] };
+    const buildFor = async (headers: HeadersInit) =>
+      runWithHeadersContext(
+        headersContextFromRequest(new Request("https://example.com/blog", { headers })),
+        () => adapter.buildResponseHeaders(input),
+      );
+
+    expect((await buildFor({}))["CDN-Cache-Control"]).toBe("public, max-age=60");
+    expect((await buildFor({ RSC: "1" }))["CDN-Cache-Control"]).toBe("public, max-age=60");
+
+    const variantHeaders: HeadersInit[] = [
+      { RSC: "unexpected" },
+      { RSC: "1", "Next-Router-State-Tree": "state-a" },
+      { RSC: "1", "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell" },
+      { "X-Vinext-Interception-Context": "/feed" },
+    ];
+    for (const headers of variantHeaders) {
+      await expect(buildFor(headers)).resolves.toEqual({
+        "Cache-Control": "no-store",
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      });
+    }
+  });
+
+  it("bypasses non-base variants after force-static rendering hides request APIs", async () => {
+    const context = createStaticGenerationHeadersContext({
+      dynamicConfig: "force-static",
+      originalRequestHeaders: new Headers({
+        RSC: "1",
+        "Next-Router-Prefetch": "1",
+      }),
+      routeKind: "page",
+    });
+
+    expect(Array.from(context.headers)).toEqual([]);
+    const responseHeaders = await runWithHeadersContext(context, () =>
+      adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog", "posts"] }),
+    );
+    expect(responseHeaders).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
+  });
+
+  it("does not edge-cache headerless .rsc compatibility transports", async () => {
+    const context = createStaticGenerationHeadersContext({
+      dynamicConfig: "force-static",
+      originalRequestHeaders: new Headers({ Accept: "text/x-component" }),
+      originalRequestUrl: "https://example.com/blog%2Ersc",
+      routeKind: "page",
+    });
+
+    const responseHeaders = await runWithHeadersContext(context, () =>
+      adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog", "posts"] }),
+    );
+    expect(responseHeaders).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
   });
 
   it("skips tags containing the comma separator or that are too long", () => {

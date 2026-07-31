@@ -28,6 +28,7 @@ export type PrerenderManifest = {
 export type PrerenderedPathSelectionOptions = {
   includeFallbackShells?: boolean;
   includeErrorDocuments?: boolean;
+  router?: "app" | "pages";
 };
 
 export function readPrerenderManifest(manifestPath: string): PrerenderManifest | null {
@@ -139,6 +140,7 @@ export function getPrerenderedConcretePaths(
   const seen = new Set<string>();
   for (const route of routes) {
     if (route.status !== "rendered") continue;
+    if (options?.router && route.router !== options.router) continue;
     const pathname = route.path ?? route.route;
     if (!options?.includeFallbackShells && isFallbackShellArtifactPath(pathname, route)) {
       continue;

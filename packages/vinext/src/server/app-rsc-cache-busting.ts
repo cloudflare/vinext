@@ -17,6 +17,7 @@ import {
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
+import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 
 /**
  * RSC cache-busting hashes cover the headers that make an RSC payload vary.
@@ -62,7 +63,14 @@ type CreateRscRequestHeadersOptions = {
 type ResolveInvalidRscCacheBustingRequestOptions = {
   isRscRequest: boolean;
   request: Request;
+  cacheKeyMode?: RscCacheKeyMode;
 };
+
+export function getRscCacheKeyMode(): RscCacheKeyMode {
+  return process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary"
+    ? "response-vary"
+    : "header-digest";
+}
 
 function encodeBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -288,7 +296,7 @@ export function stripRscCacheBustingSearchParam(url: URL): void {
  * unchanged when the suffix is absent.
  */
 export function stripRscSuffix(pathname: string): string {
-  return pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+  return pathname.replace(/(?:\.|%2[eE])(?:r|%72)(?:s|%73)(?:c|%63)$/, "");
 }
 
 export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
@@ -345,9 +353,14 @@ function toRscRequestPath(href: string): string {
   return beforeHash;
 }
 
-export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {
+export async function createRscRequestUrl(
+  href: string,
+  headers: Headers,
+  cacheKeyMode: RscCacheKeyMode = getRscCacheKeyMode(),
+): Promise<string> {
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
-  const hash = await computeRscCacheBustingSearchParam(headers);
+  const hash =
+    cacheKeyMode === "response-vary" ? "" : await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
   return `${url.pathname}${url.search}`;
 }
@@ -380,18 +393,51 @@ export async function createRscRedirectLocation(
 export async function resolveInvalidRscCacheBustingRequest(
   options: ResolveInvalidRscCacheBustingRequestOptions,
 ): Promise<Response | null> {
-  if (
-    !options.isRscRequest ||
-    (options.request.method !== "GET" && options.request.method !== "HEAD")
-  ) {
+  if (options.request.method !== "GET" && options.request.method !== "HEAD") {
     return null;
   }
 
   const url = new URL(options.request.url);
+  if (!options.isRscRequest) {
+    if (!hasRscCacheBustingSearchParam(url)) return null;
+    stripRscCacheBustingSearchParam(url);
+    return new Response(null, {
+      status: 307,
+      headers: {
+        Location: `${url.pathname}${url.search}`,
+      },
+    });
+  }
+
+  const cacheKeyMode = options.cacheKeyMode ?? getRscCacheKeyMode();
+
+  if (cacheKeyMode === "response-vary") {
+    const canonicalUrl = new URL(url);
+    const canonicalPathname = stripRscSuffix(canonicalUrl.pathname);
+    if (
+      canonicalPathname !== canonicalUrl.pathname &&
+      options.request.headers.get(RSC_HEADER) !== "1"
+    ) {
+      return null;
+    }
+    canonicalUrl.pathname = canonicalPathname;
+    setRscCacheBustingSearchParam(canonicalUrl, "");
+    if (url.pathname === canonicalUrl.pathname && url.search === canonicalUrl.search) {
+      return null;
+    }
+
+    return new Response(null, {
+      status: 307,
+      headers: {
+        Location: `${canonicalUrl.pathname}${canonicalUrl.search}`,
+      },
+    });
+  }
+
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
 
-  if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
+  if (actualHash === null && url.pathname.endsWith(".rsc") && expectedHash === "") {
     return null;
   }
 

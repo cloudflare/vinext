@@ -679,6 +679,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         draftModeEnabled: isDraftMode,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig,
+        originalRequestHeaders:
+          requestHeadersContext?.originalRequestHeaders ?? requestHeadersContext?.headers,
+        originalRequestUrl: requestHeadersContext?.originalRequestUrl,
         routeKind: "page",
         routePattern: route.pattern,
       }),
@@ -921,6 +924,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             draftModeEnabled: isDraftMode,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: sourceDynamicConfig,
+            originalRequestHeaders:
+              requestHeadersContext?.originalRequestHeaders ?? requestHeadersContext?.headers,
+            originalRequestUrl: requestHeadersContext?.originalRequestUrl,
             routeKind: "page",
             routePattern: interceptRoute.pattern,
           }),

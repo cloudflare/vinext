@@ -40,7 +40,19 @@ import type {
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
+import { getHeadersContext } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
+  RSC_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+} from "vinext/internal/server/headers";
+import { stripRscSuffix } from "vinext/internal/server/app-rsc-cache-busting";
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
@@ -57,6 +69,40 @@ function getWorkersCache(): WorkersCacheLike | null {
 
 /** Non-cacheable responses: nobody (edge or browser) stores them. */
 const NO_STORE = "no-store";
+
+const RSC_VARIANT_HEADERS = [
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_URL_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+] as const;
+
+/**
+ * Workers Caching purges every Vary variant of one URL together and requires
+ * every stored variant to carry the same Cache-Tag values. Render-specific RSC
+ * variants can discover different data tags, so only the two stable request
+ * shapes are admitted to the edge cache: ordinary HTML (no RSC headers) and
+ * ordinary client navigation (`RSC: 1` with no additional variant headers).
+ * Other RSC variants still render normally but bypass the shared cache.
+ */
+function hasNonCanonicalWorkersCacheVariant(): boolean {
+  const context = getHeadersContext();
+  const headers = context?.originalRequestHeaders ?? context?.headers;
+  if (!headers) return false;
+
+  const rsc = headers.get(RSC_HEADER);
+  const originalPathname = context?.originalRequestUrl
+    ? new URL(context.originalRequestUrl).pathname
+    : null;
+  if (rsc === null && originalPathname && stripRscSuffix(originalPathname) !== originalPathname) {
+    return true;
+  }
+  if (rsc !== null && rsc !== "1") return true;
+  return RSC_VARIANT_HEADERS.some((header) => headers.has(header));
+}
 
 /**
  * Browser-facing policy for cacheable responses. `public` allows shared caches
@@ -154,6 +200,15 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
       return {
         "Cache-Control": input.cacheControl,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      };
+    }
+
+    if (hasNonCanonicalWorkersCacheVariant()) {
+      return {
+        "Cache-Control": NO_STORE,
         "CDN-Cache-Control": null,
         "Cloudflare-CDN-Cache-Control": null,
         "Cache-Tag": null,

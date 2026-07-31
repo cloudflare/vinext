@@ -51,9 +51,14 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         custom_domains: ["app.example.com"],
       }),
     );
-    vi.mocked(fetch).mockImplementation(async (url) => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200 });
+      return new Headers(init?.headers).get("RSC") === "1"
+        ? new Response("flight", {
+            status: 200,
+            headers: { "Content-Type": "text/x-component" },
+          })
+        : new Response("ok", { status: 200 });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -87,6 +92,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
     const url = await deployWithCdnWarmup(tmpDir, ["/", "/about"], {
+      rscCacheKeyMode: "response-vary",
+      rscPaths: ["/"],
       warmCdnConcurrency: 1,
     });
 
@@ -114,7 +121,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       ]),
       expect.any(Object),
     );
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     const firstInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(fetch).toHaveBeenNthCalledWith(
       1,
@@ -126,7 +133,19 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       new URL("https://app.example.com/about"),
       expect.any(Object),
     );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      new URL("https://app.example.com/?_rsc"),
+      expect.any(Object),
+    );
     expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
+      'my-worker="22222222-2222-4222-8222-222222222222"',
+    );
+    const rscInit = vi.mocked(fetch).mock.calls[2]![1] as RequestInit;
+    const rscHeaders = new Headers(rscInit.headers);
+    expect(rscHeaders.get("RSC")).toBe("1");
+    expect(rscHeaders.get("Accept")).toBe("text/x-component");
+    expect(rscHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker="22222222-2222-4222-8222-222222222222"',
     );
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
@@ -148,6 +167,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "triggers",
       "fetch:https://app.example.com/",
       "fetch:https://app.example.com/about",
+      "fetch:https://app.example.com/?_rsc",
       "promote",
     ]);
   });

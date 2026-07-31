@@ -16,6 +16,7 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths";
+import { resolveRscCacheKeyMode } from "vinext/internal/cache-adapters";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
@@ -43,7 +44,7 @@ import {
   type ProjectInfo,
 } from "vinext/internal/utils/project";
 import { parseWranglerConfig, runTPR } from "./tpr.js";
-import { readPrerenderWarmPaths, warmCdnCache } from "./cdn-warm.js";
+import { readPrerenderWarmPlan, warmCdnCache, type CdnWarmOptions } from "./cdn-warm.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
@@ -110,7 +111,7 @@ export type DeployOptions = {
 
 type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
 
-type DeployViteConfigMetadata = {
+export type DeployViteConfigMetadata = {
   cacheConfig: VinextCacheConfig | null;
   nextConfig: NextConfigInput | null;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
@@ -267,7 +268,9 @@ async function loadProjectViteApi(root: string): Promise<ProjectViteApi> {
   return (await import(/* @vite-ignore */ viteUrl)) as ProjectViteApi;
 }
 
-async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteConfigMetadata> {
+export async function loadDeployViteConfigMetadata(
+  root: string,
+): Promise<DeployViteConfigMetadata> {
   const vite = await loadProjectViteApi(root);
   const loaded = await vite.loadConfigFromFile(
     { command: "build", mode: "production" },
@@ -276,9 +279,7 @@ async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteCon
   );
   const plugins = loaded?.config.plugins;
   return {
-    cacheConfig: viteConfigHasCacheAdapter(root)
-      ? await findVinextCacheConfigInPlugins(plugins)
-      : null,
+    cacheConfig: await findVinextCacheConfigInPlugins(plugins),
     nextConfig: await findVinextNextConfigInPlugins(plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
     routeRootConfig: await findVinextRouteRootConfigInPlugins(plugins),
@@ -549,7 +550,8 @@ export async function deployWithCdnWarmup(
     | "warmCdnTimeout"
     | "warmCdnRetries"
     | "warmCdnStrict"
-  >,
+  > &
+    Pick<CdnWarmOptions, "rscCacheKeyMode" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
   const wranglerConfig = parseWranglerConfig(root, options.config);
@@ -586,6 +588,8 @@ export async function deployWithCdnWarmup(
           targetUrl,
           paths,
           headers,
+          rscCacheKeyMode: options.rscCacheKeyMode,
+          rscPaths: options.rscPaths,
           concurrency: options.warmCdnConcurrency,
           timeoutMs: options.warmCdnTimeout,
           retries: options.warmCdnRetries,
@@ -632,6 +636,8 @@ export async function deployWithCdnWarmup(
         concurrency: options.warmCdnConcurrency,
         timeoutMs: options.warmCdnTimeout,
         retries: options.warmCdnRetries,
+        rscCacheKeyMode: options.rscCacheKeyMode,
+        rscPaths: options.rscPaths,
         strict: options.warmCdnStrict,
       });
     } else if (options.warmCdnStrict) {
@@ -878,6 +884,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
     await emitPrerenderPathManifest({
       root: info.root,
       nextConfig,
+      preserveBuildMetadata: options.skipBuild,
+      rscCacheKeyMode: options.skipBuild
+        ? undefined
+        : resolveRscCacheKeyMode(viteConfigMetadata.cacheConfig),
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }
@@ -940,13 +950,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   let url: string;
 
   if (options.warmCdnCache) {
-    const warmPaths = readPrerenderWarmPaths(root, {
+    const warmPlan = readPrerenderWarmPlan(root, {
       includeFallbackShells: options.warmCdnIncludeFallbacks,
       strict: options.warmCdnStrict,
     });
-    if (warmPaths.length > 0) {
-      url = await deployWithCdnWarmup(root, warmPaths, {
+    if (warmPlan.paths.length > 0) {
+      url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
+        rscCacheKeyMode: warmPlan.rscCacheKeyMode,
+        rscPaths: warmPlan.rscPaths,
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,

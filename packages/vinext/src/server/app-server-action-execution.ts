@@ -322,6 +322,8 @@ function prepareActionPageRerenderContext(options: {
         draftModeEnabled: isDraftModeRequest(rerenderRequest, options.draftModeSecret),
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
+        originalRequestHeaders: options.request.headers,
+        originalRequestUrl: options.request.url,
         routeKind: "page",
         routePattern: options.routePattern,
       }),

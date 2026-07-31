@@ -23,7 +23,19 @@ import { flattenPluginOptions } from "../utils/plugin-options.js";
  * by hand. `options` must be JSON-serializable: it is inlined into the generated
  * registration module and forwarded to the adapter factory at runtime.
  */
-type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
+export type CdnCacheAdapterCapabilities = {
+  /**
+   * The shared cache stores and selects response variants using every request
+   * header named by the response's `Vary` value, comparing values verbatim.
+   *
+   * When this guarantee is present, RSC requests can keep one stable URL and
+   * let `Vary` own semantic request variants. Without it, vinext retains the
+   * header digest in `_rsc` for caches that key only by URL.
+   */
+  responseVary?: "verbatim";
+};
+
+export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
   /**
    * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
    * default export is a cache adapter factory.
@@ -31,7 +43,15 @@ type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, u
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
   options?: O;
+  /** Build-time cache semantics used by shared client/server protocol code. */
+  capabilities?: CdnCacheAdapterCapabilities;
 };
+
+export type RscCacheKeyMode = "header-digest" | "response-vary";
+
+export function resolveRscCacheKeyMode(cache?: VinextCacheConfig | null): RscCacheKeyMode {
+  return cache?.cdn?.capabilities?.responseVary === "verbatim" ? "response-vary" : "header-digest";
+}
 
 /**
  * The `cache` option of the vinext() plugin: declaratively register cache

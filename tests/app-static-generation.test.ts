@@ -7,13 +7,18 @@ import {
 
 describe("app static generation helpers", () => {
   it("builds a force-static headers context without request data", () => {
+    const originalRequestHeaders = new Headers({ RSC: "1", "Next-Router-Prefetch": "1" });
     const context = createStaticGenerationHeadersContext({
       dynamicConfig: "force-static",
+      originalRequestHeaders,
+      originalRequestUrl: "https://example.com/profile.rsc",
       routeKind: "page",
       routePattern: "/profile",
     });
 
     expect(Array.from(context.headers)).toEqual([]);
+    expect(context.originalRequestHeaders).toBe(originalRequestHeaders);
+    expect(context.originalRequestUrl).toBe("https://example.com/profile.rsc");
     expect(Array.from(context.cookies)).toEqual([]);
     expect(context.forceStatic).toBe(true);
     expect(context.accessError).toBeUndefined();

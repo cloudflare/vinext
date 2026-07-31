@@ -394,6 +394,17 @@ describe("deploy prerender config wiring", () => {
 
   it("discovers warmup paths during skip-build warm CDN deploys", async () => {
     writeApiOnlyProject();
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/built-base",
+        buildId: "build-a",
+        paths: ["/stale"],
+        appPaths: ["/stale"],
+        rscCacheKeyMode: "response-vary",
+        trailingSlash: true,
+      }),
+    );
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
@@ -403,13 +414,36 @@ describe("deploy prerender config wiring", () => {
         fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
       ),
     ).toEqual({
+      basePath: "/built-base",
       buildId: "build-a",
-      trailingSlash: false,
+      trailingSlash: true,
       paths: [],
+      appPaths: [],
+      rscCacheKeyMode: "response-vary",
     });
     expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
       expect.stringContaining("wrangler"),
       "deploy",
     ]);
+  });
+
+  it("loads non-literal cache descriptors from plugin metadata", async () => {
+    writeApiOnlyProject();
+    writeFile(
+      "vite.config.ts",
+      [
+        'import { defineConfig } from "vite";',
+        'import { cloudflare } from "@cloudflare/vite-plugin";',
+        'import vinext from "../packages/vinext/src/index";',
+        'import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";',
+        "const cache = { cdn: cdnAdapter() };",
+        "export default defineConfig({ plugins: [vinext({ cache }), cloudflare()] });",
+      ].join("\n"),
+    );
+    const { loadDeployViteConfigMetadata } = await import("../packages/cloudflare/src/deploy.js");
+
+    const metadata = await loadDeployViteConfigMetadata(tmpDir);
+
+    expect(metadata.cacheConfig?.cdn?.capabilities).toEqual({ responseVary: "verbatim" });
   });
 });

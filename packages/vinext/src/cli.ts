@@ -55,6 +55,7 @@ import {
 import { generateRouteTypes } from "./typegen.js";
 import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
 import {
+  findVinextCacheConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
   findVinextPrerenderConfigInPlugins,
   formatVinextPrerenderLabel,
@@ -62,6 +63,7 @@ import {
   type ResolvedVinextPrerenderConfig,
   type VinextRouteRootConfig,
 } from "./config/prerender.js";
+import { resolveRscCacheKeyMode, type VinextCacheConfig } from "./cache/cache-adapters-virtual.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -230,6 +232,7 @@ function hasPagesDir(): boolean {
 }
 
 type BuildViteConfigMetadata = {
+  cacheConfig: VinextCacheConfig | null;
   emptyOutDir?: boolean;
   nextConfig: NextConfigInput | null;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
@@ -242,7 +245,7 @@ async function loadBuildViteConfigMetadata(
   mode: string,
 ): Promise<BuildViteConfigMetadata> {
   if (!hasViteConfig(root)) {
-    return { nextConfig: null, prerenderConfig: null, routeRootConfig: null };
+    return { cacheConfig: null, nextConfig: null, prerenderConfig: null, routeRootConfig: null };
   }
 
   // Read the raw user config before the multi-environment build so
@@ -250,6 +253,7 @@ async function loadBuildViteConfigMetadata(
   const loaded = await vite.loadConfigFromFile({ command: "build", mode }, undefined, root);
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
   return {
+    cacheConfig: await findVinextCacheConfigInPlugins(loaded?.config.plugins),
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
     nextConfig: await findVinextNextConfigInPlugins(loaded?.config.plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
@@ -717,6 +721,7 @@ async function buildApp() {
     await emitPrerenderPathManifest({
       root,
       nextConfig: resolvedNextConfig,
+      rscCacheKeyMode: resolveRscCacheKeyMode(buildConfigMetadata.cacheConfig),
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }

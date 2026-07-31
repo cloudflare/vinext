@@ -6,6 +6,8 @@ type CreateStaticGenerationHeadersContextOptions = {
   draftModeEnabled?: boolean;
   draftModeSecret?: string;
   dynamicConfig?: string;
+  originalRequestHeaders?: Headers;
+  originalRequestUrl?: string;
   routeKind: AppStaticGenerationRouteKind;
   routePattern?: string;
 };
@@ -37,6 +39,8 @@ export function createStaticGenerationHeadersContext(
 ): HeadersContext {
   const context: HeadersContext = {
     headers: new Headers(),
+    originalRequestHeaders: options.originalRequestHeaders,
+    originalRequestUrl: options.originalRequestUrl,
     cookies: new Map(),
     draftModeEnabled: options.draftModeEnabled,
     draftModeSecret: options.draftModeSecret,

@@ -34,6 +34,10 @@ import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@
 
 export type HeadersContext = {
   headers: Headers;
+  /** Immutable inbound headers used by host cache adapters after static rendering hides request APIs. */
+  originalRequestHeaders?: Headers;
+  /** Immutable inbound URL used by host cache adapters after static rendering hides request APIs. */
+  originalRequestUrl?: string;
   cookies: Map<string, string>;
   accessError?: Error;
   draftModeEnabled?: boolean;
@@ -944,6 +948,8 @@ export function headersContextFromRequest(
   // Expose cookies as a lazy getter that memoises on first access.
   const ctx = {
     headers: headersProxy,
+    originalRequestHeaders: request.headers,
+    originalRequestUrl: request.url,
     get cookies(): Map<string, string> {
       return getCookies();
     },

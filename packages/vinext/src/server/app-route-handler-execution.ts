@@ -141,6 +141,8 @@ function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOpt
         draftModeEnabled: isDraftMode,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
+        originalRequestHeaders: options.request.headers,
+        originalRequestUrl: options.request.url,
         routeKind: "route",
         routePattern: options.routePattern,
       }),

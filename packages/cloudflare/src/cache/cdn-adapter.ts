@@ -22,5 +22,8 @@ export function cdnAdapter(options?: Record<string, never>) {
   return {
     adapter: fileURLToPath(import.meta.resolve("./cdn-adapter.runtime.js")),
     options,
+    capabilities: {
+      responseVary: "verbatim" as const,
+    },
   };
 }

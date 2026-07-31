@@ -12,10 +12,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
+import vinext from "../packages/vinext/src/index.js";
 import {
   findVinextCacheConfigInPlugins,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
+  resolveRscCacheKeyMode,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
@@ -32,6 +34,7 @@ import createKvDataCacheAdapter, {
 import createCloudflareCdnCacheAdapter, {
   CloudflareCdnCacheAdapter,
 } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import * as internalCacheAdapters from "../packages/vinext/src/cache-adapters.js";
 
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
@@ -118,6 +121,58 @@ describe("generateCacheAdaptersModule", () => {
     const weird = `/tmp/some path/with"quote/adapter.js`;
     const code = generateCacheAdaptersModule({ data: { adapter: weird } });
     expect(code).toContain(`import __vinextDataAdapterFactory from ${JSON.stringify(weird)};`);
+  });
+});
+
+describe("cache adapter capabilities", () => {
+  it("preserves the existing internal cache-adapter export surface", () => {
+    expect(internalCacheAdapters).toMatchObject({
+      VIRTUAL_CACHE_ADAPTERS,
+      VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
+      generateCacheAdaptersModule,
+      loadVinextCacheConfigFromViteConfig,
+    });
+  });
+
+  it("keeps URL header digests unless the CDN adapter guarantees verbatim Vary", () => {
+    expect(resolveRscCacheKeyMode()).toBe("header-digest");
+    expect(
+      resolveRscCacheKeyMode({
+        cdn: { adapter: "custom", capabilities: { responseVary: "verbatim" } },
+      }),
+    ).toBe("response-vary");
+  });
+
+  it("compiles the Cloudflare capability into the shared browser/server protocol", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cache-capability-"));
+    try {
+      fs.mkdirSync(path.join(root, "pages"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "pages", "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      const plugins = vinext({
+        cache: { cdn: cdnAdapter() },
+        disableAppRouter: true,
+      }) as Array<{
+        name?: string;
+        config?: (
+          config: import("vite").UserConfig,
+          env: import("vite").ConfigEnv,
+        ) => import("vite").UserConfig | Promise<import("vite").UserConfig>;
+      }>;
+      const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+      const result = await configPlugin?.config?.(
+        { root, plugins: [] },
+        { command: "build", mode: "production" },
+      );
+
+      expect(result?.define?.["process.env.__VINEXT_RSC_CACHE_KEY_MODE"]).toBe(
+        JSON.stringify("response-vary"),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -276,6 +331,7 @@ describe("cdnAdapter builder + factory", () => {
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toBeUndefined();
+    expect(descriptor.capabilities).toEqual({ responseVary: "verbatim" });
   });
 
   it("factory returns a CloudflareCdnCacheAdapter", () => {

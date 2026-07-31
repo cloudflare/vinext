@@ -22,11 +22,17 @@ import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
+import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 
 export type PrerenderPathManifest = {
+  basePath?: string;
   buildId?: string;
   trailingSlash?: boolean;
   paths: string[];
+  /** Build-discovered paths owned by the App Router and eligible for RSC warming. */
+  appPaths?: string[];
+  /** RSC URL strategy compiled into the matching browser/server bundles. */
+  rscCacheKeyMode?: RscCacheKeyMode;
 };
 
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
@@ -42,7 +48,9 @@ type EmitPrerenderPathManifestOptions = {
   pagesDir?: string | null;
   routeRootConfig?: VinextRouteRootConfig | null;
   pagesBundlePath?: string;
+  preserveBuildMetadata?: boolean;
   rscBundlePath?: string;
+  rscCacheKeyMode?: RscCacheKeyMode;
 };
 
 function readBuiltBuildId(serverDir: string): string | null {
@@ -54,6 +62,18 @@ function readBuiltBuildId(serverDir: string): string | null {
       return null;
     }
     throw error;
+  }
+}
+
+function readExistingPrerenderPathManifest(
+  manifestPath: string,
+  buildId: string | undefined,
+): PrerenderPathManifest | null {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as PrerenderPathManifest;
+    return manifest.buildId === buildId ? manifest : null;
+  } catch {
+    return null;
   }
 }
 
@@ -384,6 +404,8 @@ export async function emitPrerenderPathManifest(
 
   const paths: string[] = [];
   const seen = new Set<string>();
+  const appPaths: string[] = [];
+  const seenAppPaths = new Set<string>();
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
     const needsServer = await shouldStartPathDiscoveryServer({
@@ -415,13 +437,15 @@ export async function emitPrerenderPathManifest(
 
     try {
       if (appDir) {
-        for (const pathname of await collectAppPaths({
+        const discoveredAppPaths = await collectAppPaths({
           appDir,
           baseUrl,
           pageExtensions: config.pageExtensions,
           secretHeaders,
-        })) {
+        });
+        for (const pathname of discoveredAppPaths) {
           addPath(paths, seen, pathname);
+          addPath(appPaths, seenAppPaths, pathname);
         }
       }
 
@@ -442,10 +466,25 @@ export async function emitPrerenderPathManifest(
     }
   });
 
+  const existingManifest = readExistingPrerenderPathManifest(
+    path.join(manifestDir, PRERENDER_PATHS_MANIFEST),
+    config.buildId,
+  );
+  const preserveBuildMetadata = options.preserveBuildMetadata === true && existingManifest !== null;
+  const basePath = preserveBuildMetadata ? (existingManifest.basePath ?? "") : config.basePath;
+  const trailingSlash = preserveBuildMetadata
+    ? (existingManifest.trailingSlash ?? false)
+    : config.trailingSlash;
+  const rscCacheKeyMode = preserveBuildMetadata
+    ? (existingManifest.rscCacheKeyMode ?? "header-digest")
+    : (options.rscCacheKeyMode ?? existingManifest?.rscCacheKeyMode);
   const manifest: PrerenderPathManifest = {
+    ...(basePath ? { basePath } : {}),
     buildId: config.buildId,
-    trailingSlash: config.trailingSlash,
+    trailingSlash,
     paths,
+    appPaths,
+    ...(rscCacheKeyMode ? { rscCacheKeyMode } : {}),
   };
   fs.mkdirSync(manifestDir, { recursive: true });
   fs.writeFileSync(

@@ -50,6 +50,7 @@ import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
+  resolveRscCacheKeyMode,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
@@ -2227,6 +2228,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               nextConfig.rewrites.afterFiles.length > 0 ||
               nextConfig.rewrites.fallback.length > 0,
           ),
+        );
+        // RSC request URLs need a URL digest unless the configured page-cache
+        // adapter explicitly guarantees verbatim response-Vary selection.
+        // This is a build-time decision because the same request builder runs
+        // in both the browser and server bundles, before runtime adapters are
+        // instantiated.
+        defines["process.env.__VINEXT_RSC_CACHE_KEY_MODE"] = JSON.stringify(
+          resolveRscCacheKeyMode(options.cache),
         );
         // Expose experimental.staleTimes to client-side code so full prefetches
         // and committed dynamic navigations use Next.js' distinct freshness

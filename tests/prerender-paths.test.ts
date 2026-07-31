@@ -76,6 +76,7 @@ describe("prerender path manifest", () => {
       buildId: "build-a",
       trailingSlash: false,
       paths: ["/", "/cached/intro", "/cached/featured"],
+      appPaths: ["/", "/cached/intro", "/cached/featured"],
     });
     expect(fs.existsSync(path.join(tmpDir, "dist/server/prerendered-routes"))).toBe(false);
     expect(
@@ -264,5 +265,33 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.trailingSlash).toBe(true);
     expect(manifest?.paths).toEqual(["/"]);
+  });
+
+  it("preserves the built RSC cache-key mode when rediscovering paths", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/old"],
+        appPaths: ["/old"],
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest).toMatchObject({
+      buildId: "build-a",
+      paths: ["/"],
+      appPaths: ["/"],
+      rscCacheKeyMode: "response-vary",
+    });
   });
 });
