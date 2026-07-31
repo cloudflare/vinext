@@ -222,6 +222,25 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     expect(result.headers.get("cache-control")).toContain("no-store");
     expect(result.headers.get("x-added")).toBeNull();
   });
+
+  it("protects document redirects from the reserved canonical RSC URL", async () => {
+    const response = new Response(null, { status: 307, headers: { Location: "/old" } });
+    const request = new Request("http://example.com/old?_rsc");
+
+    const result = await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [{ source: "/old", headers: [{ key: "x-added", value: "no" }] }],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(result).not.toBe(response);
+    expect(result.status).toBe(307);
+    expect(result.headers.get("location")).toBe("/old");
+    expect(result.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+    expect(result.headers.get("cache-control")).toContain("no-store");
+    expect(result.headers.get("x-added")).toBeNull();
+  });
 });
 
 // ── basePath stripping ──────────────────────────────────────────────────

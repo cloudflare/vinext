@@ -2,7 +2,7 @@ import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
 import { RSC_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
-import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import { hasRscCacheBustingSearchParam, VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
@@ -56,7 +56,12 @@ export async function finalizeAppRscResponse(
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.
   if (response.status >= 300 && response.status < 400) {
-    if (request.headers.get(RSC_HEADER) !== "1") return response;
+    // A document request for the reserved canonical RSC URL redirects after
+    // stripping `_rsc`. Protect that response too: it occupies the same URL as
+    // a real RSC request and must never be stored under a cache configuration
+    // that otherwise caches redirects.
+    const isReservedRscUrl = hasRscCacheBustingSearchParam(new URL(request.url));
+    if (request.headers.get(RSC_HEADER) !== "1" && !isReservedRscUrl) return response;
 
     const headers = new Headers(response.headers);
     mergeVaryHeader(headers, VINEXT_RSC_VARY_HEADER);
