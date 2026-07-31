@@ -2102,6 +2102,43 @@ describe("pages page data", () => {
     expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
   });
 
+  it("preserves getServerSideProps response headers on redirects", async () => {
+    const responseHeaders: Record<string, string | number | boolean | string[]> = {};
+    const response = {
+      headersSent: false,
+      statusCode: 200,
+      getHeaders() {
+        return responseHeaders;
+      },
+      setHeader(name: string, value: string) {
+        responseHeaders[name.toLowerCase()] = value;
+      },
+    };
+    const result = await resolvePagesPageData(
+      createOptions({
+        createGsspReqRes() {
+          return {
+            req: {},
+            res: response,
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          async getServerSideProps() {
+            response.setHeader("Surrogate-Control", "no-store, delta=noop");
+            return { redirect: { destination: "/new-page", permanent: false } };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(307);
+    expect(result.response.headers.get("location")).toBe("/new-page");
+    expect(result.response.headers.get("surrogate-control")).toBe("no-store, delta=noop");
+  });
+
   it("includes x-nextjs-deployment-id on redirect data response from getStaticProps", async () => {
     const result = await resolvePagesPageData(
       createOptions({

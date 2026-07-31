@@ -143,13 +143,12 @@ export function buildNextDataPropsJsonResponse(
   init?: ResponseInit,
 ): Response {
   const body = safeJsonStringify(props);
+  const headers = new Headers(init?.headers);
+  headers.set("Content-Type", "application/json");
   return new Response(body, {
     status: init?.status ?? 200,
     statusText: init?.statusText,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers as Record<string, string> | undefined),
-    },
+    headers,
   });
 }
 

@@ -324,10 +324,19 @@ function writeGsspRedirect(
     ...props,
     pageProps: props.pageProps,
   });
+  // `getServerSideProps` may set response headers before returning a redirect.
+  // Pass them explicitly to writeHead: unlike the normal render path, redirects
+  // return before the later gSSP-header capture/forwarding step runs.
+  const gsspHeaders = Object.fromEntries(
+    Object.entries(res.getHeaders()).filter(
+      (entry): entry is [string, string | number | string[]] => entry[1] !== undefined,
+    ),
+  );
 
   if (isDangerousScheme(resolved.destination)) {
     const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-    const headers: Record<string, string> = {
+    const headers: Record<string, string | number | string[]> = {
+      ...gsspHeaders,
       "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
       "Content-Type": "text/plain; charset=utf-8",
     };
@@ -343,7 +352,10 @@ function writeGsspRedirect(
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
     // `_next/data` redirect exits for deployment-skew protection. Fixes #1829.
     const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-    const dataHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    const dataHeaders: Record<string, string | number | string[]> = {
+      ...gsspHeaders,
+      "Content-Type": "application/json",
+    };
     if (deploymentId) {
       dataHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
     }
@@ -358,6 +370,7 @@ function writeGsspRedirect(
 
   const location = resolvePagesRedirectLocation(resolved, options.basePath);
   res.writeHead(resolved.statusCode, {
+    ...gsspHeaders,
     Location: location,
     ...(resolved.statusCode === 308 ? { Refresh: `0;url=${location}` } : {}),
   });
