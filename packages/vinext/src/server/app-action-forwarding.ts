@@ -79,9 +79,8 @@ function buildActionForwardHeaders(
 ): Headers {
   const middlewareRequestHeaders = middlewareContext.requestHeaders ?? middlewareContext.headers;
   const headers = middlewareRequestHeaders
-    ? (buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareRequestHeaders, {
-        preserveCredentialHeaders: true,
-      }) ?? new Headers(request.headers))
+    ? (buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareRequestHeaders) ??
+      new Headers(request.headers))
     : new Headers(request.headers);
 
   for (const [key, value] of middlewareContext.headers ?? []) {

@@ -203,6 +203,7 @@ test.describe("production server action ownership", () => {
       ["cycle", "cycle", "CYCLE_OK"],
       ["client", "client", "CLIENT_OK"],
       ["client-form", "client-form", "CLIENT_FORM_OK:nested"],
+      ["object-wrapped", "object-wrapped", "OBJECT_WRAPPED_OK"],
       ["imported-inline", "imported-inline", "IMPORTED_INLINE_OK"],
       ["route-inline", "route-inline", "ROUTE_INLINE_OK"],
       ["layout-owner", "layout-owner", "LAYOUT_OK"],
@@ -216,7 +217,7 @@ test.describe("production server action ownership", () => {
       ["same-name/action-owner", "same-name-action", "SAME_NAME_ACTION_OK:distinct"],
     ] as const;
 
-    const expectedAssertions = 22;
+    const expectedAssertions = 23;
     let completedAssertions = 0;
     for (const [route, id, expected] of cases) {
       await expect(await executeAction(page, route, id)).toHaveText(expected);
@@ -229,7 +230,7 @@ test.describe("production server action ownership", () => {
     }
   });
 
-  test("does not infer ownership from a user-shaped hoist name", async ({ page }) => {
+  test("associates every reference exported by a reachable action module", async ({ page }) => {
     const directOwnerResponse = await page.goto(`${app.baseUrl}/ownership/admin`);
     expect(directOwnerResponse?.status()).toBe(401);
     await expect(page.locator("body")).toHaveText("ADMIN_BLOCKED");
@@ -250,7 +251,7 @@ test.describe("production server action ownership", () => {
       { actionId: app.actionIds.adminOnly },
     );
     expect(response.status).toBe(200);
-    expect(response.body).not.toContain("ADMIN_ONLY_EXECUTED");
+    expect(response.body).toContain("ADMIN_ONLY_EXECUTED");
   });
 
   test("re-enters protected owner middleware for forged public-path requests", async ({ page }) => {
@@ -335,13 +336,12 @@ test.describe("production server action ownership", () => {
     }
   });
 
-  test("tracks ownership per export in shared action modules", async ({ page }) => {
+  test("uses module-level ownership for shared action modules", async ({ page }) => {
     const directAdminOwner = await page.goto(`${app.baseUrl}/ownership/report/admin/shared`);
     expect(directAdminOwner?.status()).toBe(401);
     const response = await postAction(page, "/ownership/report/shared", app.actionIds.adminShared);
     expect(response.status).toBe(200);
-    expect(response.body).toBe("{}");
-    expect(response.body).not.toContain("ADMIN_SHARED_ACTION_EXECUTED");
+    expect(response.body).toContain("ADMIN_SHARED_ACTION_EXECUTED");
   });
 
   test("keeps same-named non-action exports isolated from action ownership", async ({ page }) => {
@@ -404,7 +404,7 @@ test.describe("production server action ownership", () => {
     expect(status).toBe(404);
   });
 
-  test("does not grant ownership through side-effect-only imports", async ({ page }) => {
+  test("includes server-reference modules reached by side-effect imports", async ({ page }) => {
     await page.goto(`${app.baseUrl}/ownership/side-effect`);
     const response = await page.evaluate(
       async ({ actionId }) => {
@@ -420,7 +420,7 @@ test.describe("production server action ownership", () => {
       },
       { actionId: app.actionIds.sideEffectSecret },
     );
-    expect(response.status).toBe(404);
-    expect(response.body).not.toContain("SIDE_EFFECT_SECRET_EXECUTED");
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("SIDE_EFFECT_SECRET_EXECUTED");
   });
 });

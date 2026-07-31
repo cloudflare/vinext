@@ -94,7 +94,9 @@ describe("server action forwarding", () => {
 
   it("applies middleware request overrides and response cookies", async () => {
     const middlewareRequestHeaders = new Headers({
-      [MIDDLEWARE_OVERRIDE_HEADERS]: "x-role",
+      [MIDDLEWARE_OVERRIDE_HEADERS]: "authorization,cookie,x-role",
+      [`${MIDDLEWARE_REQUEST_HEADER_PREFIX}authorization`]: "Bearer token",
+      [`${MIDDLEWARE_REQUEST_HEADER_PREFIX}cookie`]: "session=old; theme=dark",
       [`${MIDDLEWARE_REQUEST_HEADER_PREFIX}x-role`]: "admin",
     });
     const middlewareHeaders = new Headers({

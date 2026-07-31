@@ -1250,8 +1250,9 @@ describe("App Router entry templates", () => {
     expect(code).toContain("forwardServerActionIfNeeded: __forwardServerActionIfNeeded");
     expect(code).toContain("await __forwardServerActionIfNeeded({");
     expect(code).toContain(
-      'function __VINEXT_ACTION_OWNERS() { return "__VINEXT_ACTION_OWNERS_STUB__"; }',
+      'import __vinextActionOwners from "virtual:vinext-action-owner-manifest";',
     );
+    expect(code).toContain("function __VINEXT_ACTION_OWNERS() { return __vinextActionOwners; }");
     expect(code).not.toContain("next/dist/server/web/spec-extension/cookies");
     expect(code).not.toContain("function __mergeActionForwardCookies");
     expect(code).not.toContain("const __ACTION_FORWARD_FORBIDDEN_HEADERS");
@@ -1263,7 +1264,7 @@ describe("App Router entry templates", () => {
     });
 
     expect(code).toContain("function __VINEXT_ACTION_OWNERS() { return null; }");
-    expect(code).not.toContain("__VINEXT_ACTION_OWNERS_STUB__");
+    expect(code).not.toContain("virtual:vinext-action-owner-manifest");
   });
 
   it("generateRscEntry omits server action imports when no server references were found", () => {

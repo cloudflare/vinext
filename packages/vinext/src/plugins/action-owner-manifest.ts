@@ -1,0 +1,102 @@
+import fs from "node:fs";
+import { getPluginApi } from "@vitejs/plugin-rsc";
+import path from "pathslash";
+import type { Plugin, ResolvedConfig, Rollup } from "vite";
+import type { AppRoute } from "../routing/app-route-graph.js";
+import { safeJsonStringify } from "../server/html.js";
+import {
+  addClientActionReachability,
+  buildActionOwnerManifest,
+  collectRscActionReachability,
+  type ActionOwnerRouteReachability,
+} from "../build/action-owner-manifest.js";
+
+export const ACTION_OWNER_MANIFEST_ID = "virtual:vinext-action-owner-manifest";
+
+const RESOLVED_ACTION_OWNER_MANIFEST_ID = `\0${ACTION_OWNER_MANIFEST_ID}`;
+const ACTION_OWNER_MANIFEST_FILE = "__vinext_action_owner_manifest.js";
+
+function getModuleInfo(context: Rollup.PluginContext, id: string) {
+  const info = context.getModuleInfo(id);
+  if (!info) return null;
+  return {
+    importedIds: info.importedIds,
+    dynamicallyImportedIds: info.dynamicallyImportedIds,
+  };
+}
+
+export function createActionOwnerManifestPlugin(options: {
+  canonicalizeModuleId: (id: string) => string;
+  getRoutes: () => readonly AppRoute[];
+  onComplete?: () => void;
+}): Plugin {
+  let config: ResolvedConfig;
+  let routeReachability: ActionOwnerRouteReachability = new Map();
+  let manifest: Record<string, string[]> = {};
+
+  return {
+    name: "vinext:action-owner-manifest",
+    configResolved(resolvedConfig) {
+      config = resolvedConfig;
+    },
+    resolveId(source) {
+      if (source !== ACTION_OWNER_MANIFEST_ID) return;
+      return this.environment.mode === "build"
+        ? { id: source, external: true }
+        : RESOLVED_ACTION_OWNER_MANIFEST_ID;
+    },
+    load(id) {
+      if (id === RESOLVED_ACTION_OWNER_MANIFEST_ID) return "export default null";
+    },
+    generateBundle() {
+      const pluginApi = getPluginApi(config);
+      if (!pluginApi) {
+        throw new Error("vinext: failed to access @vitejs/plugin-rsc through getPluginApi().");
+      }
+      const manager = pluginApi.manager;
+      if (manager.isScanBuild) return;
+
+      if (this.environment.name === "rsc") {
+        routeReachability = collectRscActionReachability({
+          canonicalizeModuleId: options.canonicalizeModuleId,
+          clientReferenceMetaMap: manager.clientReferenceMetaMap,
+          getModuleInfo: (id) => getModuleInfo(this, id),
+          routes: options.getRoutes(),
+          serverReferenceMetaMap: manager.serverReferences.metaMap,
+        });
+      } else if (this.environment.name === "client") {
+        addClientActionReachability({
+          canonicalizeModuleId: options.canonicalizeModuleId,
+          clientReferenceMetaMap: manager.clientReferenceMetaMap,
+          getModuleInfo: (id) => getModuleInfo(this, id),
+          routeReachability,
+          serverReferenceMetaMap: manager.serverReferences.metaMap,
+        });
+        manifest = buildActionOwnerManifest(routeReachability);
+      }
+    },
+    renderChunk(code, chunk) {
+      if (!code.includes(ACTION_OWNER_MANIFEST_ID)) return;
+      let relativePath = path.posix.relative(
+        path.posix.dirname(chunk.fileName),
+        ACTION_OWNER_MANIFEST_FILE,
+      );
+      if (!relativePath.startsWith(".")) relativePath = `./${relativePath}`;
+      return { code: code.replaceAll(ACTION_OWNER_MANIFEST_ID, relativePath) };
+    },
+    buildApp: {
+      order: "post",
+      async handler(builder) {
+        const outDir = builder.config.environments.rsc.build.outDir;
+        await fs.promises.mkdir(outDir, { recursive: true });
+        await fs.promises.writeFile(
+          path.join(outDir, ACTION_OWNER_MANIFEST_FILE),
+          `export default ${safeJsonStringify(manifest)};\n`,
+        );
+        routeReachability = new Map();
+        manifest = {};
+        options.onComplete?.();
+      },
+    },
+  };
+}

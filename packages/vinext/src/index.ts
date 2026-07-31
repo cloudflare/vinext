@@ -69,6 +69,7 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
+import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
@@ -1478,6 +1479,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // module's load hook and consumed in renderChunk to patch the generated
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
+  let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
   const shimsDir = path.resolve(__dirname, "shims");
@@ -1612,6 +1614,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
+  if (earlyAppDirExists && resolvedRscPath) {
+    rscPluginModulePromise = import(pathToFileURL(resolvedRscPath).href);
+  }
   if (earlyAppDirExists && autoRsc) {
     if (!resolvedRscPath) {
       throw new Error(
@@ -1621,9 +1626,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           " @vitejs/plugin-rsc",
       );
     }
-    const rscImport = import(pathToFileURL(resolvedRscPath).href);
-    rscPluginModulePromise = rscImport;
-    rscPluginPromise = rscImport
+    rscPluginPromise = rscPluginModulePromise!
       .then((mod) => {
         const rsc = mod.default;
         return rsc({
@@ -1649,7 +1652,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const { getPluginApi } = await rscPluginModulePromise;
     const pluginApi = getPluginApi(config);
     if (!pluginApi || pluginApi.manager.isScanBuild) return true;
-    return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
+    return pluginApi.manager.serverReferences.metaMap.size > 0;
   }
 
   const configuredReactOptions =
@@ -3771,6 +3774,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // indices in the manifest correspond 1:1 to the route.layouts arrays
             // used during codegen. renderChunk clears this after patching.
             rscClassificationManifest = collectRouteClassificationManifest(routes);
+            rscActionOwnerRoutes =
+              this.environment.config.command === "build" && hasServerActions ? routes : null;
             return generateRscEntry(
               appDir,
               routes,
@@ -3798,6 +3803,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 cacheComponents: nextConfig?.cacheComponents,
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
+                actionOwners: this.environment.config.command === "build" ? undefined : null,
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
@@ -3922,7 +3928,8 @@ export const loadServerActionClient = ${
           if (!rscClassificationManifest) return null;
           // Cheap pre-filter: skip chunks that don't mention the stub at all
           // (e.g. the scan-phase chunk and every non-entry chunk).
-          if (!code.includes("__VINEXT_CLASS")) return null;
+          const hasClassificationStub = code.includes("__VINEXT_CLASS");
+          if (!hasClassificationStub) return null;
 
           // Patching per-chunk (rather than scanning the whole bundle in
           // generateBundle) assumes the stub body and its per-route call sites
@@ -3956,14 +3963,18 @@ export const loadServerActionClient = ${
             },
           };
 
-          const patchPlan = planRouteClassificationInjection({
-            canonicalizeLayoutPath: canonicalize,
-            chunks: [{ code, fileName: chunk.fileName }],
-            dynamicShimPaths,
-            enableDebugReasons: enableClassificationDebug,
-            manifest: rscClassificationManifest,
-            moduleInfo,
-          });
+          const patchPlan =
+            hasClassificationStub && rscClassificationManifest
+              ? planRouteClassificationInjection({
+                  canonicalizeLayoutPath: canonicalize,
+                  chunks: [{ code, fileName: chunk.fileName }],
+                  dynamicShimPaths,
+                  enableDebugReasons: enableClassificationDebug,
+                  manifest: rscClassificationManifest,
+                  moduleInfo,
+                })
+              : { kind: "skip" as const };
+          const nextCode = patchPlan.kind === "skip" ? code : patchPlan.code;
           if (patchPlan.kind === "skip") return null;
 
           // Consume the manifest exactly once per RSC entry. Clearing here
@@ -3976,7 +3987,7 @@ export const loadServerActionClient = ${
           // map would be stale. RSC entry source maps are not served or
           // consumed, so nulling the map is safe and prevents stale-map
           // confusion in tooling.
-          return { code: patchPlan.code, map: patchPlan.map };
+          return { code: nextCode, map: null };
         },
       },
     },
@@ -6994,6 +7005,19 @@ export const loadServerActionClient = ${
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
+  }
+  if (earlyAppDirExists) {
+    plugins.push(
+      createActionOwnerManifestPlugin({
+        canonicalizeModuleId: canonicalize,
+        getRoutes: () => rscActionOwnerRoutes ?? [],
+        onComplete() {
+          rscActionOwnerRoutes = null;
+        },
+      }),
+    );
+  }
+  if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
   }

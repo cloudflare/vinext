@@ -44,7 +44,7 @@ catalog:
   "@next/mdx": 16.2.7
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1
-  "@vitejs/plugin-rsc": ^0.5.27
+  "@vitejs/plugin-rsc": ^0.5.31
   "@vitest/coverage-istanbul": 4.1.10
   better-auth: ^1.5.6
   better-sqlite3: ^12.0.0
@@ -100,9 +100,6 @@ overrides:
   vitest: "catalog:"
   picomatch: ">=2.3.2"
   srvx: ">=0.11.13"
-
-patchedDependencies:
-  "@vitejs/plugin-rsc@0.5.27": patches/@vitejs__plugin-rsc@0.5.27.patch
 
 peerDependencyRules:
   allowAny:

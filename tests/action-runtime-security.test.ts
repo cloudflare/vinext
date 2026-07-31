@@ -3,9 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import rsc from "@vitejs/plugin-rsc";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { RSC_ENTRIES } from "./helpers.js";
 
 type BuiltHandler = (request: Request, context?: unknown) => Promise<Response>;
 
@@ -252,7 +254,7 @@ export default function Page() {
     const builder = await createBuilder({
       root: fixtureRoot,
       configFile: false,
-      plugins: [vinext({ appDir: fixtureRoot })],
+      plugins: [vinext({ appDir: fixtureRoot, rsc: false }), rsc({ entries: RSC_ENTRIES })],
       logLevel: "silent",
     });
     await builder.buildApp();
@@ -372,11 +374,11 @@ export default function Page() {
     expect(body).toBe("");
   });
 
-  it("does not authorize unrelated exports from a shared action module", async () => {
+  it("associates every action exported by a reachable server-reference module", async () => {
     const adminOnlyId = findActionId(builtSource, "adminOnly");
     const response = await handler(actionRequest("/shared", adminOnlyId, []));
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe("{}");
+    expect(await response.text()).toContain("ADMIN_SHARED_ACTION_EXECUTED");
   });
 
   it("fails closed for unknown action ids", async () => {
