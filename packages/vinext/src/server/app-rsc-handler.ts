@@ -637,7 +637,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const rscCacheBustingRedirect = hadBasePath
-    ? await resolveInvalidRscCacheBustingRequest({ isRscRequest, request })
+    ? await resolveInvalidRscCacheBustingRequest({
+        isRscRequest,
+        request,
+        validateDocumentRequest: false,
+      })
     : null;
   if (rscCacheBustingRedirect) return rscCacheBustingRedirect;
 
@@ -708,7 +712,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   let filesystemRouteEligible = hadBasePath || didMiddlewareRewrite;
   const validateClaimedOutsideBasePathRsc = async (): Promise<Response | null> => {
     if (hadBasePath || !filesystemRouteEligible) return null;
-    return resolveInvalidRscCacheBustingRequest({ isRscRequest, request });
+    return resolveInvalidRscCacheBustingRequest({
+      isRscRequest,
+      request,
+      validateDocumentRequest: false,
+    });
   };
 
   // Rewrites (beforeFiles, afterFiles, fallback) use `matchPathname` from
@@ -1143,6 +1151,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response("{}", { status: 200, headers });
     }
     return buildNextDataNotFoundResponse();
+  }
+
+  // `_rsc` is reserved on App page/document URLs, but remains a legitimate
+  // user query parameter for App Route Handlers. Route ownership is only known
+  // after middleware and rewrites, so defer document canonicalization until
+  // this point instead of redirecting route-handler requests before matching.
+  if (!isRscRequest && (!match || !match.route.routeHandler)) {
+    const documentCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest,
+      request,
+    });
+    if (documentCacheBustingRedirect) return documentCacheBustingRedirect;
   }
 
   if (!match) {

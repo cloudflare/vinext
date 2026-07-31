@@ -2076,6 +2076,20 @@ describe("createAppRscHandler", () => {
     expect(dispatched?.searchParams.toString()).toBe("tab=latest");
   });
 
+  it("redirects reserved _rsc params on non-RSC page requests after route matching", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({ dispatchMatchedPage });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about?tab=latest&_rsc=user-value"),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/docs/about?tab=latest");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
   it("serves full-route RSC payloads at HTML URLs marked by RSC header alone", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts

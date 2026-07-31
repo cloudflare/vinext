@@ -825,15 +825,28 @@ export async function deploy(options: DeployOptions): Promise<void> {
     throw new Error(formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }));
   }
 
-  // Fail if the app uses ISR/caching but no cache adapter is configured. vinext
-  // no longer scaffolds a KV cache handler into the Worker entry — the backend
-  // must be declared via `vinext({ cache })` so deploys don't silently fall
-  // back to the in-memory handler (which loses all cached data per isolate).
-  //
-  // For backwards compat, older apps that wired a cache backend imperatively in
-  // their Worker entry (setCacheHandler / setDataCacheHandler / setCdnCacheAdapter)
-  // are still considered configured and must not be blocked.
-  if (info.hasISR && !viteConfigHasCacheAdapter(root) && !workerEntryHasCacheHandler(root)) {
+  const buildEnv = deployEnv === "production" && !options.env ? undefined : deployEnv;
+  // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
+  // export/prerender behavior and non-literal cache config cannot be validated
+  // from source text, so deploy cannot safely short-circuit before reading it.
+  const viteConfigMetadata = await withCloudflareEnv(buildEnv, () =>
+    loadDeployViteConfigMetadata(info.root),
+  );
+
+  // Fail if the app uses ISR/caching but no cache adapter is configured. Prefer
+  // the loaded plugin metadata so descriptors referenced through variables or
+  // functions are recognized; retain the source check as a lenient fallback
+  // for older/custom plugin configurations. Imperative Worker registration is
+  // also supported for backwards compatibility.
+  const hasLoadedCacheAdapter = Boolean(
+    viteConfigMetadata.cacheConfig?.cdn?.adapter || viteConfigMetadata.cacheConfig?.data?.adapter,
+  );
+  if (
+    info.hasISR &&
+    !hasLoadedCacheAdapter &&
+    !viteConfigHasCacheAdapter(root) &&
+    !workerEntryHasCacheHandler(root)
+  ) {
     throw new Error(formatMissingCacheAdapterError({}));
   }
 
@@ -847,12 +860,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
     return;
   }
 
-  const buildEnv = deployEnv === "production" && !options.env ? undefined : deployEnv;
-  // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
-  // export/prerender behavior, so deploy cannot safely short-circuit before reading it.
-  const viteConfigMetadata = await withCloudflareEnv(buildEnv, () =>
-    loadDeployViteConfigMetadata(info.root),
-  );
   const nextConfig = await withCloudflareEnv(buildEnv, async () => {
     const inlineNextConfig = viteConfigMetadata.nextConfig;
     const rawNextConfig = inlineNextConfig

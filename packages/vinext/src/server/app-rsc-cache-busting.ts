@@ -64,6 +64,7 @@ type ResolveInvalidRscCacheBustingRequestOptions = {
   isRscRequest: boolean;
   request: Request;
   cacheKeyMode?: RscCacheKeyMode;
+  validateDocumentRequest?: boolean;
 };
 
 export function getRscCacheKeyMode(): RscCacheKeyMode {
@@ -399,6 +400,7 @@ export async function resolveInvalidRscCacheBustingRequest(
 
   const url = new URL(options.request.url);
   if (!options.isRscRequest) {
+    if (options.validateDocumentRequest === false) return null;
     if (!hasRscCacheBustingSearchParam(url)) return null;
     stripRscCacheBustingSearchParam(url);
     return new Response(null, {

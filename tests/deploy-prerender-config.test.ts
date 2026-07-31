@@ -446,4 +446,26 @@ describe("deploy prerender config wiring", () => {
 
     expect(metadata.cacheConfig?.cdn?.capabilities).toEqual({ responseVary: "verbatim" });
   });
+
+  it("accepts non-literal cache descriptors when validating ISR deploys", async () => {
+    writeApiOnlyProject();
+    writeFile(
+      "app/page.tsx",
+      "export const revalidate = 60;\nexport default function Page() { return <div>home</div>; }\n",
+    );
+    writeFile(
+      "vite.config.ts",
+      [
+        'import { defineConfig } from "vite";',
+        'import { cloudflare } from "@cloudflare/vite-plugin";',
+        'import vinext from "../packages/vinext/src/index";',
+        'import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";',
+        "const cache = { cdn: cdnAdapter() };",
+        "export default defineConfig({ plugins: [vinext({ cache }), cloudflare()] });",
+      ].join("\n"),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, skipBuild: true })).resolves.toBeUndefined();
+  });
 });

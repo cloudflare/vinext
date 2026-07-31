@@ -191,7 +191,12 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
-      return { "Cache-Control": NO_STORE };
+      return {
+        "Cache-Control": NO_STORE,
+        "CDN-Cache-Control": NO_STORE,
+        "Cloudflare-CDN-Cache-Control": NO_STORE,
+        "Cache-Tag": null,
+      };
     }
 
     // A non-cacheable policy (no-store / no-cache / private) must never be
@@ -200,8 +205,8 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
       return {
         "Cache-Control": input.cacheControl,
-        "CDN-Cache-Control": null,
-        "Cloudflare-CDN-Cache-Control": null,
+        "CDN-Cache-Control": NO_STORE,
+        "Cloudflare-CDN-Cache-Control": NO_STORE,
         "Cache-Tag": null,
       };
     }
@@ -209,8 +214,8 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (hasNonCanonicalWorkersCacheVariant()) {
       return {
         "Cache-Control": NO_STORE,
-        "CDN-Cache-Control": null,
-        "Cloudflare-CDN-Cache-Control": null,
+        "CDN-Cache-Control": NO_STORE,
+        "Cloudflare-CDN-Cache-Control": NO_STORE,
         "Cache-Tag": null,
       };
     }

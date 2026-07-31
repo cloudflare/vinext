@@ -205,7 +205,10 @@ export function readPrerenderWarmPlan(
     return { paths: [], rscPaths: [], rscCacheKeyMode: "header-digest" };
   }
 
-  const pathConfig = pathManifestPlan?.pathConfig ?? {};
+  const pathConfig = {
+    basePath: pathManifestPlan?.pathConfig.basePath,
+    trailingSlash: pathManifestPlan?.pathConfig.trailingSlash ?? manifest.trailingSlash,
+  };
   return {
     paths: getPrerenderedConcretePaths(manifest, options).map((pathname) =>
       applyWarmPathConfig(pathname, pathConfig),
@@ -305,6 +308,11 @@ async function warmOnePath(
           !response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)
         ) {
           lastError = `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+          break;
+        }
+        const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
+        if (cacheStatus === "BYPASS" || cacheStatus === "DYNAMIC") {
+          lastError = `CF-Cache-Status: ${cacheStatus}`;
           break;
         }
         return { path: target.label, ok: true };

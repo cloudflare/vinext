@@ -79,6 +79,32 @@ describe("Cloudflare CDN warmup", () => {
     expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/docs/intro"]);
   });
 
+  it("uses trailing-slash config from the full prerender manifest fallback", () => {
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        trailingSlash: true,
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/about/"],
+      rscPaths: ["/about/"],
+      rscCacheKeyMode: "header-digest",
+    });
+  });
+
   it("prefers the build-discovered prerender path manifest", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
@@ -454,6 +480,32 @@ describe("Cloudflare CDN warmup", () => {
       expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: "manual" });
     }
   });
+
+  it.each(["BYPASS", "DYNAMIC"])(
+    "does not count CF-Cache-Status %s responses as warmed",
+    async (cacheStatus) => {
+      const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const isRsc = new Headers(init?.headers).get("RSC") === "1";
+        return new Response(isRsc ? "flight" : "html", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": cacheStatus,
+            "Content-Type": isRsc ? "text/x-component" : "text/html",
+          },
+        });
+      });
+
+      const result = await warmCdnCache({
+        targetUrl: "https://app.example.com",
+        paths: ["/app"],
+        rscPaths: ["/app"],
+        rscCacheKeyMode: "response-vary",
+        fetchImpl: fetchMock as typeof fetch,
+      });
+
+      expect(result).toMatchObject({ total: 2, warmed: 0, failed: 2 });
+    },
+  );
 
   it("reports warmup failures and throws in strict mode", async () => {
     writeFile(
