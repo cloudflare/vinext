@@ -509,6 +509,17 @@ fs.writeFileSync(
 pkg.devDependencies = pkg.devDependencies || {}
 pkg.devDependencies.vinext = 'file:.vinext-local-package'
 
+// The Next.js deploy harness lets individual fixtures choose npm/yarn/pnpm via
+// packageJson.packageManager and installCommand. vinext's custom deploy adapter
+// owns installation for every throwaway fixture and must use pnpm so local
+// file: packages, workspace peer versions, and Vite+ environments resolve
+// consistently. pnpm 11 refuses to install when packageManager names another
+// tool, so remove only this temp-app metadata before the adapter install.
+if (typeof pkg.packageManager === 'string' && !pkg.packageManager.startsWith('pnpm@')) {
+  console.log(`Removed packageManager ${pkg.packageManager} for vinext pnpm deploy adapter`)
+  delete pkg.packageManager
+}
+
 // App Router fixtures need React to satisfy the same peer range as the
 // injected react-server-dom-webpack. If they install an older React pair first,
 // `vinext build` runs its RSC compatibility upgrade and pays for a second

@@ -7,6 +7,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import { createModuleDependencyCache } from "../packages/vinext/src/build/module-dependency-cache.js";
@@ -21,6 +22,7 @@ const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps 
   return <Component {...pageProps} />;
 }
 `;
+const requireFromTest = createRequire(import.meta.url);
 
 type ClientBuildManifestEntry = {
   file?: string;
@@ -8670,6 +8672,154 @@ export function middleware(request) {
       expect(await res.text()).toBe("");
     });
   }
+});
+
+describe("Pages Router production non-hoisted SWC helpers", () => {
+  it("renders a server-side page that requires @swc/helpers when helpers are not app-hoisted", async () => {
+    // Ported from Next.js: test/e2e/handle-non-hoisted-swc-helpers/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/handle-non-hoisted-swc-helpers/index.test.ts
+    //
+    // The upstream fixture uses npm and moves @swc/helpers under
+    // node_modules/next/node_modules/@swc/helpers. This pnpm-based vinext
+    // workspace leaves @swc/helpers unhoisted in the virtual store instead,
+    // preserving the same observable contract: resolving from the app root's
+    // node_modules must not be required for the page to render.
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-non-hoisted-swc-"));
+    const outDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), "{}\n");
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.js"),
+        `
+          export default function Page() {
+            return <p>hello world</p>
+          }
+
+          export function getServerSideProps() {
+            const helper = require('@swc/helpers/_/_object_spread')
+            console.log(helper)
+            return {
+              props: {
+                now: Date.now()
+              }
+            }
+          }
+        `,
+      );
+
+      expect(fs.existsSync(path.join(tmpRoot, "node_modules", "@swc", "helpers"))).toBe(false);
+
+      await buildPagesFixtureToOutDir(tmpRoot, outDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir,
+          noCompression: true,
+        }),
+      );
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const res = await fetch(`http://127.0.0.1:${addr.port}/`);
+        expect(res.status).toBe(200);
+        expect(await res.text()).toContain("hello world");
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it("prefers SWC helpers resolved from next over an app-root helper package", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-next-local-swc-"));
+    const outDir = path.join(tmpRoot, "dist");
+    const nodeModulesDir = path.join(tmpRoot, "node_modules");
+
+    async function symlinkPackage(specifier: string, targetDir: string): Promise<void> {
+      const targetPath = path.join(nodeModulesDir, ...specifier.split("/"));
+      await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+      await fsp.symlink(targetDir, targetPath, "junction");
+    }
+
+    function resolveWorkspaceSwcHelpersDir(): string {
+      const pnpmDir = path.resolve(import.meta.dirname, "../node_modules/.pnpm");
+      for (const entry of fs.readdirSync(pnpmDir)) {
+        const packageJson = path.join(
+          pnpmDir,
+          entry,
+          "node_modules",
+          "@swc",
+          "helpers",
+          "package.json",
+        );
+        if (entry.startsWith("@swc+helpers@") && fs.existsSync(packageJson)) {
+          return path.dirname(packageJson);
+        }
+      }
+      throw new Error("Could not find workspace @swc/helpers package");
+    }
+
+    try {
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.mkdir(nodeModulesDir, { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), "{}\n");
+
+      await symlinkPackage("react", path.dirname(requireFromTest.resolve("react/package.json")));
+      await symlinkPackage(
+        "react-dom",
+        path.dirname(requireFromTest.resolve("react-dom/package.json")),
+      );
+
+      const appRootHelpersDir = path.join(nodeModulesDir, "@swc", "helpers");
+      await fsp.mkdir(path.join(appRootHelpersDir, "_"), { recursive: true });
+      await fsp.writeFile(
+        path.join(appRootHelpersDir, "package.json"),
+        JSON.stringify({ name: "@swc/helpers", version: "0.0.0-app-root" }),
+      );
+      await fsp.writeFile(path.join(appRootHelpersDir, "_", "_object_spread.js"), "const = ;\n");
+
+      const nextDir = path.join(nodeModulesDir, "next");
+      await fsp.mkdir(path.join(nextDir, "node_modules", "@swc"), { recursive: true });
+      await fsp.writeFile(
+        path.join(nextDir, "package.json"),
+        JSON.stringify({ name: "next", version: "16.2.6" }),
+      );
+      await fsp.symlink(
+        resolveWorkspaceSwcHelpersDir(),
+        path.join(nextDir, "node_modules", "@swc", "helpers"),
+        "junction",
+      );
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.js"),
+        `
+          export default function Page() {
+            return <p>hello world</p>
+          }
+
+          export function getServerSideProps() {
+            require('@swc/helpers/_/_object_spread')
+            return { props: {} }
+          }
+        `,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, outDir);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // Ported from Next.js: test/e2e/async-modules/index.test.ts

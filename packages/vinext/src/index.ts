@@ -851,7 +851,7 @@ function resolveSwcHelpersAlias(root: string): string | undefined {
     // Apps can use vinext without keeping next installed at runtime.
   }
 
-  resolvers.push(rootRequire, createRequire(import.meta.url));
+  resolvers.push(rootRequire);
 
   for (const resolver of resolvers) {
     try {
@@ -862,7 +862,29 @@ function resolveSwcHelpersAlias(root: string): string | undefined {
     }
   }
 
-  return undefined;
+  // pnpm may keep @swc/helpers in the virtual store without exposing it from
+  // either the app root or next/node_modules. Next.js aliases @swc/helpers/_
+  // to its bundled helper copy; this preserves that non-hoisted contract for
+  // pnpm layouts.
+  const pnpmVirtualPackageJson = path.join(
+    root,
+    "node_modules",
+    ".pnpm",
+    "node_modules",
+    "@swc",
+    "helpers",
+    "package.json",
+  );
+  if (fs.existsSync(pnpmVirtualPackageJson)) {
+    return normalizePathSeparators(path.join(path.dirname(pnpmVirtualPackageJson), "_"));
+  }
+
+  try {
+    const packageJsonPath = createRequire(import.meta.url).resolve("@swc/helpers/package.json");
+    return normalizePathSeparators(path.join(path.dirname(packageJsonPath), "_"));
+  } catch {
+    return undefined;
+  }
 }
 
 function loadTsconfigPathAliases(
@@ -2513,7 +2535,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               : [[k, v]],
           ),
         );
-
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).
         const pluginsFlat: unknown[] = [];
