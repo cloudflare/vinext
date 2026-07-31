@@ -492,13 +492,23 @@ function readSetCookieNameValue(
   const valueEnd = setCookie.indexOf(";", equalsIndex + 1);
   const encodedValue = setCookie.slice(equalsIndex + 1, valueEnd === -1 ? undefined : valueEnd);
 
+  let onceDecodedValue = encodedValue;
+  try {
+    onceDecodedValue = decodeURIComponent(encodedValue);
+  } catch {
+    // Manually emitted/config Set-Cookie values need not be URI-encoded. Keep
+    // their raw value so the target cannot retain the stale inbound cookie.
+  }
+
   let value: string;
   try {
     // ResponseCookies parses the pair once, then parseSetCookie decodes the
     // extracted value again before RequestCookies serializes it.
-    value = decodeURIComponent(decodeURIComponent(encodedValue));
+    value = decodeURIComponent(onceDecodedValue);
   } catch {
-    return null;
+    // Next.js lets this second decode throw. Keep the valid first decode as a
+    // robustness exception so the target cannot retain a stale cookie value.
+    value = onceDecodedValue;
   }
 
   // @edge-runtime/cookies compacts an empty value out of the parsed response
