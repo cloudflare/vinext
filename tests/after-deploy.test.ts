@@ -198,6 +198,55 @@ describe("after() in deploy mode — Pages Router API handler", () => {
     expect(observedCtx).toBe(ctx);
   });
 
+  it("keeps streaming handler completion alive through the active execution context", async () => {
+    const { handlePagesApiRoute } =
+      await import("../packages/vinext/src/server/pages-api-route.js");
+    const { runWithExecutionContext } =
+      await import("../packages/vinext/src/shims/request-context.js");
+
+    const ctx = createMockCtx();
+    let releaseHandler!: () => void;
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let handlerSettled = false;
+
+    // The ambient form matches the hybrid App/Pages bridge, where the App
+    // Router owns the request scope and handlePagesApiRoute receives no ctx
+    // argument of its own.
+    const response = await runWithExecutionContext(ctx, () =>
+      handlePagesApiRoute({
+        match: {
+          params: {},
+          route: {
+            pattern: "/api/test",
+            module: {
+              async default(
+                _req: unknown,
+                res: { end: (body?: string) => void; statusCode: number },
+              ) {
+                res.statusCode = 200;
+                res.end("ok");
+                await handlerGate;
+                handlerSettled = true;
+              },
+            },
+          },
+        },
+        request: new Request("https://example.test/api/test"),
+        url: "/api/test",
+      }),
+    );
+
+    await expect(response.text()).resolves.toBe("ok");
+    expect(handlerSettled).toBe(false);
+    expect(ctx.promises).toHaveLength(1);
+
+    releaseHandler();
+    await ctx.promises[0];
+    expect(handlerSettled).toBe(true);
+  });
+
   it("handlePagesApiRoute works without ctx (Node dev parity)", async () => {
     const { handlePagesApiRoute } =
       await import("../packages/vinext/src/server/pages-api-route.js");

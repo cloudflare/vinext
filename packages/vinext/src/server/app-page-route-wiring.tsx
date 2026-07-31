@@ -41,7 +41,8 @@ import {
   createAppRenderDependency,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
-  renderWithAppDependencyBarrier,
+  renderAppComponentWithDependencyBarrier,
+  type AppPageRenderDependency,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
@@ -242,6 +243,7 @@ type BuildAppPageRouteElementOptions<
     component: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode;
+  pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -468,6 +470,27 @@ function createAppPageLoadingEntries<TModule extends AppPageModule>(
     if (treePosition === undefined) return [];
     return [{ loadingModule, treePosition }];
   });
+}
+
+export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModule>(
+  route: Pick<AppPageRouteWiringRoute<TModule>, "loading" | "loadings" | "loadingTreePositions">,
+  treePosition: number,
+): TModule | null {
+  let nearest: AppPageLoadingEntry<TModule> | null = null;
+  for (const entry of createAppPageLoadingEntries(route)) {
+    if (
+      entry.treePosition <= treePosition &&
+      getDefaultExport(entry.loadingModule) !== null &&
+      (nearest === null || entry.treePosition > nearest.treePosition)
+    ) {
+      nearest = entry;
+    }
+  }
+
+  if (nearest?.loadingModule) {
+    return nearest.loadingModule;
+  }
+  return getDefaultExport(route.loading) === null ? null : (route.loading ?? null);
 }
 
 function getPrefetchLoadingEntry<TModule extends AppPageModule>(
@@ -833,6 +856,9 @@ export function buildAppPageElements<
   };
   const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+  // Loading-shell prefetches intentionally omit the page, so they cannot wait
+  // on a dependency that only the page invocation can release.
+  const pageRenderDependency = isPrefetchLoadingShell ? null : options.pageRenderDependency;
   const prefetchLoadingEntry = isPrefetchLoadingShell
     ? getPrefetchLoadingEntry(options.route)
     : null;
@@ -1030,6 +1056,8 @@ export function buildAppPageElements<
     pageDependencies.push(templateDependency);
   }
 
+  pageRenderDependency?.setResultDependencies(pageDependencies);
+
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   const prefetchLoadingComponent = getDefaultExport(prefetchLoadingEntry?.loadingModule);
   const shouldRenderPrefetchLoadingShell =
@@ -1043,9 +1071,29 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
+  const pageLoadingModule = resolveAppPageLoadingModuleAtOrAbove(
+    options.route,
+    routeSegments.length,
+  );
+  // The page and route are sibling values in vinext's flat Flight record. The
+  // route-level Suspense below cannot catch the page value suspending while the
+  // record itself is serialized, so the page entry needs its own boundary to
+  // expose the fallback. Once <Slot> reconnects the entries this is nested
+  // inside the route boundary; that duplication is an intentional transport
+  // artifact, not two independently selected loading conventions.
+  const PageLoadingComponent = pageRenderDependency ? getDefaultExport(pageLoadingModule) : null;
+  const pageElement = PageLoadingComponent ? (
+    <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
+      {options.element}
+    </Suspense>
+  ) : (
+    options.element
+  );
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
-    : renderAfterAppDependencies(options.element, pageDependencies);
+    : pageRenderDependency
+      ? pageElement
+      : renderAfterAppDependencies(pageElement, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
@@ -1058,10 +1106,9 @@ export function buildAppPageElements<
     const TemplateComponent = templateComponent;
     const templateDependency = templateDependenciesById.get(templateEntry.id);
     let templateElement: ReactNode = templateDependency ? (
-      renderWithAppDependencyBarrier(
-        <TemplateComponent>
-          <Children />
-        </TemplateComponent>,
+      renderAppComponentWithDependencyBarrier(
+        TemplateComponent,
+        { children: <Children /> },
         templateDependency,
       )
     ) : (
@@ -1080,10 +1127,10 @@ export function buildAppPageElements<
         </Suspense>
       );
     }
-    elements[templateEntry.id] = renderAfterAppDependencies(
-      templateElement,
-      templateDependenciesBeforeById.get(templateEntry.id) ?? [],
-    );
+    elements[templateEntry.id] = renderAfterAppDependencies(templateElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(templateDependenciesBeforeById.get(templateEntry.id) ?? []),
+    ]);
   }
 
   for (let index = 0; index < layoutEntries.length; index++) {
@@ -1127,10 +1174,9 @@ export function buildAppPageElements<
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
     let layoutElement: ReactNode = layoutDependency ? (
-      renderWithAppDependencyBarrier(
-        <LayoutComponent {...layoutProps}>
-          <Children />
-        </LayoutComponent>,
+      renderAppComponentWithDependencyBarrier(
+        LayoutComponent,
+        { ...layoutProps, children: <Children /> },
         layoutDependency,
       )
     ) : (
@@ -1149,10 +1195,10 @@ export function buildAppPageElements<
         </Suspense>
       );
     }
-    elements[layoutEntry.id] = renderAfterAppDependencies(
-      layoutElement,
-      layoutDependenciesBefore[index] ?? [],
-    );
+    elements[layoutEntry.id] = renderAfterAppDependencies(layoutElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(layoutDependenciesBefore[index] ?? []),
+    ]);
   }
 
   for (const slotPlan of segmentPlan.slots) {
@@ -1410,10 +1456,10 @@ export function buildAppPageElements<
       );
     }
 
-    elements[slotId] = renderAfterAppDependencies(
-      slotElement,
-      targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : [],
-    );
+    elements[slotId] = renderAfterAppDependencies(slotElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : []),
+    ]);
   }
 
   let routeChildren: ReactNode = (
@@ -1710,7 +1756,7 @@ export function buildAppPageElements<
     </GlobalErrorBoundary>
   );
 
-  elements[routeId] = (
+  const routeElement = (
     <>
       {createAppPageRouteHead(
         options.resolvedMetadata,
@@ -1730,6 +1776,9 @@ export function buildAppPageElements<
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
   );
+  elements[routeId] = pageRenderDependency
+    ? renderAfterAppDependencies(routeElement, [pageRenderDependency])
+    : routeElement;
 
   // Merge only after rendering is complete so metadata never participates in
   // element construction, without copying the rendered element map on return.

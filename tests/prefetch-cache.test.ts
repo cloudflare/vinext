@@ -1288,10 +1288,11 @@ describe("prefetch cache eviction", () => {
     expect(consumed?.expiresAt).toBe(now + 30_000);
   });
 
-  it("takes the shorter of the staleTimes config and the resolved cacheLife stale time", async () => {
-    // A route whose `use cache` subtree declares cacheLife("seconds")
-    // (stale: 30) alongside a 300s experimental.staleTimes value. Both are
-    // min-wins lattices, so the shorter one bounds prefetch reuse.
+  it("uses completed cacheLife for prefetch expiry without changing the dynamic BFCache bound", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    // Runtime-prefetch freshness comes from cacheLife, while staleTimes.dynamic
+    // independently bounds visited/BFCache reuse.
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const rscUrl = "/cache-life-prefetch.rsc";
@@ -1299,13 +1300,24 @@ describe("prefetch cache eviction", () => {
     prefetchRscResponse(
       rscUrl,
       Promise.resolve(
-        new Response("flight", {
-          headers: {
-            "content-type": "text/x-component",
-            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "300",
-            [NEXT_ROUTER_STALE_TIME_HEADER]: "30",
+        new Response(
+          appendRscCompletionMetadata(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("flight"));
+                controller.close();
+              },
+            }),
+            () => ({ dynamicStaleTimeSeconds: 30, serverStaleTimeSeconds: 240 }),
+          ),
+          {
+            headers: {
+              "content-type": "text/x-component",
+              [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "30",
+              [VINEXT_RSC_COMPLETION_METADATA_HEADER]: "1",
+            },
           },
-        }),
+        ),
       ),
       null,
       null,
@@ -1314,7 +1326,10 @@ describe("prefetch cache eviction", () => {
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 
-    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+    const snapshot = getPrefetchCache().get(rscUrl)?.snapshot;
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 240_000);
+    expect(snapshot?.serverStaleTime).toEqual({ kind: "resolved", seconds: 240 });
+    expect(resolveCachedRscResponseTtlMs(snapshot!, 300_000)).toBe(30_000);
   });
 
   it("floors a shorter-than-minimum cacheLife stale time for prefetch entries", async () => {

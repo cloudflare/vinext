@@ -1,5 +1,8 @@
+"use client";
+
 export default function RequireContextWithRegex() {
   const translationsContext = (require as any).context("./grandparent", true, /\.js/);
+  const filteredContext = (require as any).context("./filtered", false, /\.safe\.js$/);
 
   // Same context but with a global-flagged regexp. A naive `new RegExp(src, "g")`
   // filter is stateful via `lastIndex` and would silently drop every other
@@ -22,6 +25,13 @@ export default function RequireContextWithRegex() {
     <>
       <pre id="require-context-keys">{JSON.stringify(translationsContext.keys())}</pre>
       <pre id="require-context-keys-global">{JSON.stringify(globalFlagContext.keys())}</pre>
+      <pre id="require-context-filtered-keys">{JSON.stringify(filteredContext.keys())}</pre>
+      <pre id="require-context-excluded-evaluated">
+        {String(
+          (globalThis as { __requireContextExcludedEvaluated?: boolean })
+            .__requireContextExcludedEvaluated === true,
+        )}
+      </pre>
       <pre id="require-context-file1">{file1}</pre>
       <pre id="require-context-missing-code">{missingCode}</pre>
     </>

@@ -545,6 +545,28 @@ describe("middleware", () => {
     expect(result.response.status).toBe(307);
   });
 
+  it("preserves unconsumed request-header values on middleware redirects", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/foo"),
+      baseDeps({
+        runMiddleware: makeMiddleware({
+          continue: false,
+          redirectUrl: "http://localhost/bar",
+          redirectStatus: 307,
+          responseHeaders: new Headers({
+            "x-middleware-request-x-added": "forged-by-middleware",
+          }),
+        }),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-middleware-request-x-added")).toBe(
+      "forged-by-middleware",
+    );
+  });
+
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("does not classify a normal request as data from x-nextjs-data alone", async () => {
@@ -1917,11 +1939,11 @@ describe("deferred error page re-render on 404", () => {
   });
 });
 
-// 19. preserveCredentialHeaders: isExternalUrl(resolvedUrl) → passed to applyMiddlewareRequestHeaders
-describe("preserveCredentialHeaders", () => {
-  it("preserves credential headers when resolvedUrl is external", async () => {
-    // When middleware rewrites to an external URL, the Authorization header
-    // should be forwarded. We verify by ensuring the pipeline reaches external proxy.
+// 19. Credential headers on external rewrites follow the middleware override list
+describe("external rewrite credential headers", () => {
+  it("forwards credentials when middleware sends no override list", async () => {
+    // No `x-middleware-override-headers` means middleware left the request
+    // headers alone, so Authorization reaches the external upstream.
     const mockFetch = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("proxied", { status: 200 }));
@@ -1938,8 +1960,35 @@ describe("preserveCredentialHeaders", () => {
       }),
     );
     expect(result.type).toBe("response");
-    // Verify fetch was called (external proxy triggered)
-    expect(mockFetch).toHaveBeenCalled();
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer token");
+    mockFetch.mockRestore();
+  });
+
+  it("does not forward credentials the middleware deleted from the override list", async () => {
+    const mockFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("proxied", { status: 200 }));
+
+    const req = makeRequest("/internal", { Authorization: "Bearer token", Cookie: "session=abc" });
+    const result = await runPagesRequest(
+      req,
+      baseDeps({
+        runMiddleware: makeMiddleware({
+          continue: true,
+          rewriteUrl: "https://external.com/api",
+          responseHeaders: [
+            ["x-middleware-override-headers", "x-added"],
+            ["x-middleware-request-x-added", "1"],
+          ],
+        }),
+      }),
+    );
+    expect(result.type).toBe("response");
+    const headers = new Headers((mockFetch.mock.calls[0][1] as RequestInit).headers);
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("cookie")).toBeNull();
+    expect(headers.get("x-added")).toBe("1");
     mockFetch.mockRestore();
   });
 });

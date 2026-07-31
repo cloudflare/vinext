@@ -14,6 +14,7 @@ import {
   buildAppPageElements,
   createAppPageSourcePage,
   createAppPageTreePath,
+  resolveAppPageLoadingModuleAtOrAbove,
   type AppPageErrorModule,
   type AppPageModule,
   type AppPageRouteWiringRoute,
@@ -41,6 +42,15 @@ import {
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import {
+  createAppPageRenderDependency,
+  invokeAppComponent,
+  isAppRenderSuspension,
+  isReactOwnedAppComponent,
+  renderAfterAppDependencies,
+  type AppPageRenderDependency,
+} from "./app-render-dependency.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -53,20 +63,6 @@ function resolveInterceptLayoutParams(
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
 type AppPageComponent = NonNullable<AppPageModule["default"]>;
-const REACT_CLIENT_REFERENCE = Symbol.for("react.client.reference");
-
-function isReactOwnedPageComponent(component: AppPageComponent): boolean {
-  if (typeof component !== "function") {
-    return true;
-  }
-  const candidate = component as AppPageComponent & {
-    $$typeof?: symbol;
-    prototype?: { isReactComponent?: unknown };
-  };
-  return (
-    candidate.$$typeof === REACT_CLIENT_REFERENCE || candidate.prototype?.isReactComponent != null
-  );
-}
 
 /**
  * Route shape passed from the generated entry. Extends the wiring route with
@@ -495,11 +491,28 @@ export async function buildPageElements<
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
+  const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
+  const hasPageLoadingBoundary =
+    resolveAppPageLoadingModuleAtOrAbove(route, pageTreePosition) !== null ||
+    (isSiblingIntercept &&
+      resolveAppPageLoadingModuleAtOrAbove(
+        {
+          loading: null,
+          loadings: opts?.interceptLoadings,
+          loadingTreePositions: opts?.interceptLoadingTreePositions,
+        },
+        pageTreePosition,
+      ) !== null);
+  const pageRenderDependency =
+    EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
+      ? createAppPageRenderDependency()
+      : null;
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
+    renderDependency?: AppPageRenderDependency | null,
   ) => {
-    if (isReactOwnedPageComponent(PageComponent)) {
+    if (isReactOwnedAppComponent(PageComponent)) {
       const invocationProps = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
@@ -511,9 +524,6 @@ export async function buildPageElements<
       return createElement(PageComponent, invocationProps);
     }
 
-    const ServerPageComponent = PageComponent as unknown as (
-      props: Readonly<Record<string, unknown>>,
-    ) => ReturnType<typeof createElement> | Promise<unknown> | string | number | null;
     const PageInvoker = () => {
       const invocationProps = { ...props };
       if (searchParams) {
@@ -521,7 +531,50 @@ export async function buildPageElements<
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }
-      return ServerPageComponent(invocationProps);
+
+      try {
+        const result = invokeAppComponent(PageComponent, invocationProps);
+        if (isPromiseLike(result)) {
+          if (renderDependency) {
+            // A declared-async page reaches its first continuation before this
+            // microtask. That is enough for the Next.js pattern where the page
+            // awaits params and establishes request-scoped state for a parent
+            // layout. Do not wait for the complete page result: doing so turns
+            // an ancestor Suspense boundary into a blocking render.
+            void Promise.resolve().then(() => renderDependency.release());
+          }
+          return Promise.resolve(result).then((resolvedResult) =>
+            renderDependency
+              ? renderAfterAppDependencies(
+                  resolvedResult as React.ReactNode,
+                  renderDependency.resultDependencies,
+                )
+              : (resolvedResult as React.ReactNode),
+          );
+        }
+        renderDependency?.release();
+        return renderDependency
+          ? renderAfterAppDependencies(
+              result as React.ReactNode,
+              renderDependency.resultDependencies,
+            )
+          : result;
+      } catch (error) {
+        if (isAppRenderSuspension(error)) {
+          // React requires its internal use() suspension value to be rethrown
+          // immediately. With loading UI, release from a microtask so the
+          // page-entry Suspense boundary can serialize its fallback. Without
+          // loading UI, the page retry releases the dependency after it can
+          // render, preserving the same page-before-layout ordering as an
+          // ordinary async return.
+          if (renderDependency && hasPageLoadingBoundary) {
+            void Promise.resolve().then(() => renderDependency.release());
+          }
+          throw error;
+        }
+        renderDependency?.release();
+        throw error;
+      }
     };
     return createElement(PageInvoker as unknown as AppPageComponent);
   };
@@ -538,7 +591,7 @@ export async function buildPageElements<
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
   let siblingInterceptElement: ReturnType<typeof createElement> | null =
     isSiblingIntercept && EffectivePageComponent
-      ? createPageElement(EffectivePageComponent, pageProps)
+      ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
       : null;
   if (isSiblingIntercept && siblingInterceptElement !== null) {
     const layoutIndexesByTreePosition = new Map<number, number[]>();
@@ -596,7 +649,7 @@ export async function buildPageElements<
     element: isSiblingIntercept
       ? siblingInterceptElement
       : EffectivePageComponent
-        ? createPageElement(EffectivePageComponent, pageProps)
+        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
         : null,
     createPageElement,
     // Fall back to vinext's built-in default global error module so that
@@ -610,6 +663,7 @@ export async function buildPageElements<
     mountedSlotIds,
     makeThenableParams,
     matchedParams: params,
+    pageRenderDependency,
     metadataPlacement,
     resolvedMetadata,
     resolvedMetadataPathname: routePath,

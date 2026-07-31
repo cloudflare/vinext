@@ -22,6 +22,7 @@ import {
   createAppPageLayoutEntries,
   probeAppPageLayoutWithTracking,
   resolveAppPageChildSegments,
+  resolveAppPageLoadingModuleAtOrAbove,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
@@ -40,6 +41,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
+import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
 
 /**
  * Build the resolved semantic branch the route matcher hands to slot overrides.
@@ -246,6 +248,9 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
 
 async function renderRouteDocument(elements: AppElements, routeId: string): Promise<string> {
   const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  // Match production Flight serialization, which starts the flat page and
+  // route entries concurrently before the decoded route tree is rendered.
+  const pageEntry = Object.entries(elements).find(([key]) => key.startsWith("page:"))?.[1];
   return renderHtml(
     createElement(
       "html",
@@ -257,7 +262,12 @@ async function renderRouteDocument(elements: AppElements, routeId: string): Prom
         createElement(
           ElementsContext.Provider,
           { value: elements },
-          createElement(Slot, { id: routeId }),
+          createElement(
+            Fragment,
+            null,
+            pageEntry as ReactNode,
+            createElement(Slot, { id: routeId }),
+          ),
         ),
       ),
     ),
@@ -438,6 +448,33 @@ function LayoutWithoutChildren() {
 }
 
 describe("app page route wiring helpers", () => {
+  it("selects the nearest positioned loading module with a default export", () => {
+    const legacyLoading = { default: () => null };
+    const rootLoading = { default: () => null };
+    const leafWithoutDefault = { generateMetadata: () => null };
+
+    expect(
+      resolveAppPageLoadingModuleAtOrAbove(
+        {
+          loading: legacyLoading,
+          loadings: [rootLoading, leafWithoutDefault],
+          loadingTreePositions: [0, 2],
+        },
+        2,
+      ),
+    ).toBe(rootLoading);
+    expect(
+      resolveAppPageLoadingModuleAtOrAbove(
+        {
+          loading: legacyLoading,
+          loadings: [rootLoading],
+          loadingTreePositions: [],
+        },
+        2,
+      ),
+    ).toBe(legacyLoading);
+  });
+
   it("probes returned layout children with param and revalidate tracking", async () => {
     const calls: string[] = [];
     const layoutParamAccess = createAppLayoutParamAccessTracker();
@@ -3525,6 +3562,69 @@ describe("app page route wiring helpers", () => {
 
     expect(body).toContain("page:de");
     expect(body).not.toContain("page:en");
+  });
+
+  it("waits for page initialization before serializing parallel slot entries", async () => {
+    let activeLocale = "en";
+    const pageRenderDependency = createAppPageRenderDependency();
+
+    function LocaleSlot() {
+      return createElement("aside", null, `slot:${activeLocale}`);
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement("main", null, "Page content"),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      pageRenderDependency,
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: -1,
+            loading: null,
+            name: "sidebar",
+            page: { default: LocaleSlot },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    let slotRenderSettled = false;
+    const slotHtmlPromise = renderHtml(readChildren(elements[slotId])).then((html) => {
+      slotRenderSettled = true;
+      return html;
+    });
+
+    await Promise.resolve();
+    expect(slotRenderSettled).toBe(false);
+
+    activeLocale = "de";
+    pageRenderDependency.release();
+    const html = await withTimeout(slotHtmlPromise, 1_000);
+
+    expect(html).toContain("slot:de");
+    expect(html).not.toContain("slot:en");
   });
 
   it("preserves parent-before-child execution under an ancestor loading boundary", async () => {

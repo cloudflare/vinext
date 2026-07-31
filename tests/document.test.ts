@@ -37,6 +37,32 @@ describe("NextScript", () => {
     expect(html).toContain('data-vinext-script-nonce="test-nonce"');
     expect(html).toContain('data-vinext-script-cross-origin="anonymous"');
   });
+
+  // Ported from Next.js: test/unit/htmlescape.test.ts and
+  // packages/next/src/pages/_document.tsx (NextScript.getInlineScriptSource).
+  // https://github.com/vercel/next.js/blob/canary/test/unit/htmlescape.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
+  it("HTML-escapes getInlineScriptSource output and preserves its JSON value", () => {
+    // Custom _document implementations embed this string in an inline
+    // <script>; an unescaped "</script>" in page data would end the tag.
+    const pageData = {
+      props: {
+        evil: "</script><script>alert(1)</script>",
+        html: "<>&",
+        separators: "\u2028\u2029",
+      },
+    };
+    const source = NextScript.getInlineScriptSource({
+      __NEXT_DATA__: pageData,
+    } as unknown as Parameters<typeof NextScript.getInlineScriptSource>[0]);
+
+    expect(source).not.toContain("</script>");
+    expect(source).not.toMatch(/[<>&\u2028\u2029]/u);
+    expect(source).toContain("\\u003c/script\\u003e");
+    expect(source).toContain("\\u0026");
+    expect(source).toContain("\\u2028\\u2029");
+    expect(JSON.parse(source)).toEqual(pageData);
+  });
 });
 
 describe("Head", () => {

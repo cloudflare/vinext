@@ -1322,16 +1322,25 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("emits the dynamic stale time header on RSC responses during dynamic renders", async () => {
+  it("emits dynamic BFCache and completed runtime-prefetch stale times together", async () => {
     const common = createCommonOptions();
     const response = await renderAppPageLifecycle({
       ...common.options,
       consumeDynamicUsage: vi.fn(() => true),
       dynamicStaleTimeSeconds: 60,
       isRscRequest: true,
+      peekRequestCacheLife() {
+        return { stale: 240 };
+      },
     });
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
-    await expect(response.text()).resolves.toBe("flight-data");
+    expect(response.headers.get(VINEXT_RSC_COMPLETION_METADATA_HEADER)).toBe("1");
+    const completed = extractRscCompletionMetadata(await response.arrayBuffer());
+    expect(new TextDecoder().decode(completed.buffer)).toBe("flight-data");
+    expect(completed.metadata).toEqual({
+      dynamicStaleTimeSeconds: 60,
+      serverStaleTimeSeconds: 240,
+    });
   });
 
   it("omits the dynamic stale time header during prerender (isPrerender=true)", async () => {

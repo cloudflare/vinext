@@ -30,6 +30,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -42,6 +43,9 @@ const { markDynamicUsageMock, markRenderRequestApiUsageMock } = vi.hoisted(() =>
 
 vi.mock("../packages/vinext/src/shims/headers.js", () => ({
   getHeadersAccessPhase: () => "render",
+  // These builder tests render outside a draft request, so the shared "use
+  // cache" path in cache-runtime.ts must see draft mode off.
+  isDraftModeEnabled: () => false,
   markDynamicUsage: markDynamicUsageMock,
   markRenderRequestApiUsage: markRenderRequestApiUsageMock,
   throwIfInsideCacheScope: vi.fn(),
@@ -155,13 +159,40 @@ async function renderNode(node: React.ReactNode): Promise<string> {
 
 async function renderRouteEntry(elements: AppElements, routeId: string): Promise<string> {
   const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  // Production Flight serialization starts every entry in the flat payload.
+  // Include the page entry beside the route so page/layout ordering tests use
+  // the same concurrent render shape instead of creating a route-only cycle.
+  const pageEntry = Object.entries(elements).find(([key]) => key.startsWith("page:"))?.[1];
   return renderNode(
     React.createElement(
       ElementsContext.Provider,
       { value: elements },
-      React.createElement(Slot, { id: routeId }),
+      React.createElement(
+        React.Fragment,
+        null,
+        pageEntry as React.ReactNode,
+        React.createElement(Slot, { id: routeId }),
+      ),
     ),
   );
+}
+
+async function renderElementEntry(elements: AppElements, elementId: string): Promise<string> {
+  const record = elements as Record<string, React.ReactNode>;
+  const element = record[elementId];
+  if (!React.isValidElement(element)) {
+    throw new Error(`Expected React element for ${elementId}`);
+  }
+
+  if (elementId.startsWith("page:")) {
+    return renderNode(element);
+  }
+
+  // Production Flight serialization starts every flat entry concurrently.
+  // Rendering the primary page beside a dependent slot lets its invocation
+  // release the page-initialization barrier just as production does.
+  const pageEntry = Object.entries(record).find(([key]) => key.startsWith("page:"))?.[1];
+  return renderNode(React.createElement(React.Fragment, null, pageEntry, element));
 }
 
 async function buildAndRenderElement(
@@ -185,7 +216,7 @@ async function buildAndRenderElement(
 
   markDynamicUsageMock.mockClear();
   markRenderRequestApiUsageMock.mockClear();
-  return renderNode(element);
+  return renderElementEntry(result, elementId);
 }
 
 function expectNoSearchParamsObservation(): void {
@@ -215,6 +246,285 @@ describe("buildPageElements", () => {
   beforeEach(() => {
     markDynamicUsageMock.mockClear();
     markRenderRequestApiUsageMock.mockClear();
+  });
+
+  it.each(["plain", "memo", "lazy", "forwardRef"] as const)(
+    "renders a %s page before layouts that consume page-initialized request state",
+    async (pageKind) => {
+      // Regression from nodejs.org's next-intl integration, where the page calls
+      // setRequestLocale() before the parent layout renders NextIntlClientProvider.
+      // https://github.com/nodejs/nodejs.org/commit/5eace3f956c10da92880be7ce16e942bbcb47ff7
+      let requestLocale = "en";
+
+      async function LocalePage({ params }: { params: Promise<{ locale: string }> }) {
+        const { locale } = await params;
+        requestLocale = locale;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        return React.createElement("main", null, `page:${requestLocale}`);
+      }
+
+      function LocaleLayout(props: Record<string, unknown>) {
+        return React.createElement(
+          "section",
+          null,
+          `layout:${requestLocale}`,
+          props.children as React.ReactNode,
+        );
+      }
+
+      let observedForwardRef: unknown = "not-called";
+      const PageComponent =
+        pageKind === "memo"
+          ? React.memo(LocalePage)
+          : pageKind === "lazy"
+            ? React.lazy(async () => ({ default: LocalePage }))
+            : pageKind === "forwardRef"
+              ? React.forwardRef<unknown, { params: Promise<{ locale: string }> }>((props, ref) => {
+                  observedForwardRef = ref;
+                  return LocalePage(props);
+                })
+              : LocalePage;
+
+      const route = createSyntheticRoute({
+        page: createSyntheticPageModule(PageComponent),
+        layouts: [createSyntheticPageModule(LocaleLayout)],
+        layoutTreePositions: [1],
+        routeSegments: ["[locale]"],
+        pattern: "/:locale",
+      });
+
+      const result = await buildPageElements(
+        createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
+      );
+      const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+      expect(html).toContain("layout:de");
+      expect(html).toContain("page:de");
+      expect(html).not.toContain("layout:en");
+      if (pageKind === "forwardRef") {
+        expect(observedForwardRef).toBeUndefined();
+      }
+    },
+  );
+
+  it("lets layouts stream after page initialization without waiting for page completion", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming-static-generation/metadata-streaming-static-generation.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata-streaming-static-generation/metadata-streaming-static-generation.test.ts
+    let requestLocale = "en";
+    let resolvePage!: () => void;
+    const pageCompletion = new Promise<void>((resolve) => {
+      resolvePage = resolve;
+    });
+    let markPageInitialized!: () => void;
+    const pageInitialized = new Promise<void>((resolve) => {
+      markPageInitialized = resolve;
+    });
+    let layoutLocaleBeforePageCompletion: string | null = null;
+
+    async function SuspensefulPage({ params }: { params: Promise<{ locale: string }> }) {
+      const { locale } = await params;
+      requestLocale = locale;
+      markPageInitialized();
+      await pageCompletion;
+      return React.createElement("main", null, `page:${requestLocale}`);
+    }
+
+    function LocaleLayout(props: Record<string, unknown>) {
+      layoutLocaleBeforePageCompletion = requestLocale;
+      return React.createElement(
+        "section",
+        null,
+        `layout:${requestLocale}`,
+        props.children as React.ReactNode,
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(SuspensefulPage),
+      layouts: [createSyntheticPageModule(LocaleLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["[locale]"],
+      pattern: "/:locale",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
+    );
+    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    await pageInitialized;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const observedBeforeCompletion = layoutLocaleBeforePageCompletion;
+    resolvePage();
+    const html = await htmlPromise;
+
+    expect(observedBeforeCompletion).toBe("de");
+    expect(html).toContain("layout:de");
+    expect(html).toContain("page:de");
+  });
+
+  it("initializes a page before layouts but serializes its result after layout dependencies", async () => {
+    // This preserves the parent/child render order used by parallel-route
+    // refreshes and by completed cacheLife observation in runtime prefetches.
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    const events: string[] = [];
+    let markLayoutStarted!: () => void;
+    const layoutStarted = new Promise<void>((resolve) => {
+      markLayoutStarted = resolve;
+    });
+    let resolveLayout!: () => void;
+    const layoutCompletion = new Promise<void>((resolve) => {
+      resolveLayout = resolve;
+    });
+
+    function PageContent() {
+      events.push("page:content");
+      return React.createElement("main", null, "Page content");
+    }
+
+    function Page() {
+      events.push("page:init");
+      return React.createElement(PageContent);
+    }
+
+    async function AsyncLayout(props: Record<string, unknown>) {
+      events.push("layout:start");
+      markLayoutStarted();
+      await layoutCompletion;
+      events.push("layout:complete");
+      return React.createElement("section", null, props.children as React.ReactNode);
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(Page),
+      layouts: [createSyntheticPageModule(AsyncLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["ordered"],
+      pattern: "/ordered",
+    });
+
+    const result = await buildPageElements(createBaseOptions({ route, routePath: "/ordered" }));
+    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    await layoutStarted;
+    const contentRenderedBeforeLayoutCompleted = events.includes("page:content");
+    resolveLayout();
+    const html = await htmlPromise;
+
+    expect(contentRenderedBeforeLayoutCompleted).toBe(false);
+    expect(events.indexOf("page:init")).toBeLessThan(events.indexOf("layout:complete"));
+    expect(events.indexOf("layout:complete")).toBeLessThan(events.indexOf("page:content"));
+    expect(html).toContain("Page content");
+  });
+
+  it("preserves page initialization when async syntax is lowered to a Promise return", async () => {
+    let requestLocale = "en";
+
+    function LoweredLocalePage({ params }: { params: Promise<{ locale: string }> }) {
+      return params.then(({ locale }) => {
+        requestLocale = locale;
+        return React.createElement("main", null, `page:${requestLocale}`);
+      });
+    }
+
+    function LocaleLayout(props: Record<string, unknown>) {
+      return React.createElement(
+        "section",
+        null,
+        `layout:${requestLocale}`,
+        props.children as React.ReactNode,
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(LoweredLocalePage),
+      layouts: [createSyntheticPageModule(LocaleLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["[locale]"],
+      pattern: "/:locale",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, params: { locale: "de" }, routePath: "/de" }),
+    );
+    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    expect(html).toContain("layout:de");
+    expect(html).toContain("page:de");
+    expect(html).not.toContain("layout:en");
+  });
+
+  it("waits for a sync use() page before a synchronous layout without loading UI", async () => {
+    let resolveLocale!: (locale: string) => void;
+    const localePromise = new Promise<string>((resolve) => {
+      resolveLocale = resolve;
+    });
+    let requestLocale = "en";
+
+    function LocalePage() {
+      requestLocale = React.use(localePromise);
+      return React.createElement("main", null, `page:${requestLocale}`);
+    }
+
+    function LocaleLayout(props: Record<string, unknown>) {
+      return React.createElement(
+        "section",
+        null,
+        `layout:${requestLocale}`,
+        props.children as React.ReactNode,
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(LocalePage),
+      layouts: [createSyntheticPageModule(LocaleLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["sync-use"],
+      pattern: "/sync-use",
+    });
+
+    const result = await buildPageElements(createBaseOptions({ route, routePath: "/sync-use" }));
+    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+    await Promise.resolve();
+    resolveLocale("de");
+    const html = await htmlPromise;
+
+    expect(html).toContain("layout:de");
+    expect(html).toContain("page:de");
+    expect(html).not.toContain("layout:en");
+  });
+
+  it("does not wait for an omitted page during loading-shell prefetches", async () => {
+    const Page = vi.fn(() => React.createElement("main", null, "Page content"));
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(Page),
+      layouts: [
+        createSyntheticPageModule((props: { children?: React.ReactNode }) =>
+          React.createElement("section", null, props.children),
+        ),
+      ],
+      layoutTreePositions: [0],
+      loading: createSyntheticPageModule(() => React.createElement("p", null, "Loading shell")),
+      routeSegments: ["slow"],
+      pattern: "/slow",
+    });
+    const options = createBaseOptions({ route, routePath: "/slow" });
+
+    const result = await buildPageElements({
+      ...options,
+      pageRequest: {
+        ...options.pageRequest,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      },
+    });
+    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+    expect(html).toContain("Loading shell");
+    expect(html).not.toContain("Page content");
+    expect(Page).not.toHaveBeenCalled();
   });
 
   it("returns an error element record when a page module has no default export", async () => {
@@ -635,9 +945,7 @@ describe("buildPageElements", () => {
 
     const result = await buildPageElements(createBaseOptions({ route, routePath: "/exotic-slot" }));
 
-    await expect(
-      renderNode((result as Record<string, React.ReactNode>)["slot:modal:/"]),
-    ).resolves.toContain("memo slot");
+    await expect(renderElementEntry(result, "slot:modal:/")).resolves.toContain("memo slot");
   });
 
   it("records serialized queryless searchParams without marking client pages dynamic", async () => {
@@ -1342,7 +1650,7 @@ describe("buildPageElements", () => {
 
       markDynamicUsageMock.mockClear();
       markRenderRequestApiUsageMock.mockClear();
-      return renderNode(element);
+      return renderElementEntry(result, "slot:modal:/");
     };
 
     await expectCachedRenderIgnoresQuery({
@@ -1474,7 +1782,7 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await renderNode(slotElement);
+    await renderElementEntry(result, "slot:modal:/");
     await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
@@ -1520,7 +1828,7 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await renderNode(slotElement);
+    await renderElementEntry(result, "slot:modal:/");
     await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
@@ -1576,7 +1884,7 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     const slotElement = record["slot:bc:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await renderNode(slotElement);
+    await renderElementEntry(result, "slot:bc:/");
     const slotParams = await capturedParams;
     // Without the fix, urlParts would be ["base","distinct","alice"], the
     // pattern match would fail, and slotParams would silently fall back to

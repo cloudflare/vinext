@@ -285,7 +285,7 @@ async function _renderToStringAsync(element) {
   return new Response(stream).text();
 }
 
-async function _renderIsrPassToStringAsync(element) {
+async function _renderIsrPassToStringAsync(element, onHeadReady) {
   // The cache-fill render is a second render pass for the same request.
   // Reset render-scoped state so it cannot leak from the streamed response
   // render or affect async work that is still draining from that stream.
@@ -294,7 +294,17 @@ async function _renderIsrPassToStringAsync(element) {
   return await runWithServerInsertedHTMLState(() =>
     runWithHeadState(() =>
       _runWithCacheState(() =>
-        runWithPrivateCache(() => runWithFetchCache(async () => _renderToStringAsync(element))),
+        runWithPrivateCache(() =>
+          runWithFetchCache(async () => {
+            const html = await _renderToStringAsync(element);
+            // next/head tags are collected as a side effect of the render
+            // above and live in this ALS scope only, so a caller that wants
+            // the regenerated head has to read it here — after the render,
+            // before the scope unwinds.
+            await onHeadReady?.();
+            return html;
+          }),
+        ),
       ),
     ),
   );

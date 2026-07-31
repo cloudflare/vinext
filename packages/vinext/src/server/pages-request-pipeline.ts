@@ -472,7 +472,6 @@ export async function runPagesRequest(
   const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(
     middlewareHeaders,
     request,
-    { preserveCredentialHeaders: isExternalUrl(resolvedUrl) },
   );
   request = postMwReq;
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
@@ -611,12 +610,21 @@ export async function runPagesRequest(
         apiRequest = cloneRequestWithUrl(request, apiRequestUrl.toString());
       }
       const response = await deps.handleApi(apiRequest, apiLookupUrl, deps.ctx ?? null);
+      const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
+      // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
+      // mergeHeaders may create a new Response object (losing non-standard
+      // properties), so copy the marker from the original API response.
+      if (merged !== response) {
+        (merged as { __vinextStreamedApiResponse?: boolean }).__vinextStreamedApiResponse = (
+          response as { __vinextStreamedApiResponse?: boolean }
+        ).__vinextStreamedApiResponse;
+      }
       return {
         type: "response",
         // API routes return arbitrary data; default a missing content-type to
         // application/octet-stream (not text/html) to avoid content sniffing.
         defaultContentType: "application/octet-stream",
-        response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
+        response: merged,
       };
     }
     return {

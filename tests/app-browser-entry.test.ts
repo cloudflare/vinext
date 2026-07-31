@@ -32,7 +32,13 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
-import { resolvePrefetchNavigationResponseUrl } from "../packages/vinext/src/server/app-browser-prefetch-response.js";
+import {
+  peekSettledPrefetchResponseForNavigation,
+  preserveCommittedPrefetchExpiry,
+  prepareConsumedPrefetchResponseForPublication,
+  resolvePrefetchNavigationResponseUrl,
+} from "../packages/vinext/src/server/app-browser-prefetch-response.js";
+import { createVisitedResponseCacheEntry } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
@@ -833,6 +839,89 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("peeks at a settled prefetch without transferring ownership before reuse planning", () => {
+    const snapshot = {
+      buffer: new ArrayBuffer(0),
+      contentType: "text/x-component",
+      expiresAt: 123,
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: "/source?_rsc=prefetch-digest",
+    };
+    const peek = vi.fn(() => snapshot);
+
+    expect(
+      peekSettledPrefetchResponseForNavigation({
+        additionalRscUrls: ["/source"],
+        bypassNavigationCache: false,
+        interceptionContext: "/parent",
+        mountedSlotsHeader: "slot:children:/target",
+        navigationKind: "navigate",
+        peek,
+        targetPathAndSearch: "/target",
+      }),
+    ).toBe(snapshot);
+    expect(peek).toHaveBeenCalledWith("/target", "/parent", "slot:children:/target", {
+      additionalRscUrls: ["/source"],
+    });
+  });
+
+  it("normalizes consumed prefetch snapshots for committed-cache publication", () => {
+    const preparedElements = { route: "prepared" } as unknown as AppElements;
+    const publication = prepareConsumedPrefetchResponseForPublication(
+      {
+        buffer: new ArrayBuffer(0),
+        completedDynamicStaleTimeSeconds: 60,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 300,
+        expiresAt: 123,
+        paramsHeader: null,
+        preparedElements,
+        renderedPathAndSearch: null,
+        url: "https://example.com/source?_rsc=prefetch-digest",
+      },
+      "/rewrite?_rsc=visible-digest",
+    );
+
+    expect(publication.expiresAt).toBe(123);
+    expect(publication.preparedElements).toBe(preparedElements);
+    expect(publication.snapshot).not.toHaveProperty("expiresAt");
+    expect(publication.snapshot).not.toHaveProperty("preparedElements");
+    expect(publication.snapshot.url).toBe("/rewrite?_rsc=visible-digest");
+  });
+
+  it("keeps runtime-prefetch and visited-cache deadlines independent after commit", () => {
+    const now = 1_000_000;
+    const publication = prepareConsumedPrefetchResponseForPublication(
+      {
+        buffer: new ArrayBuffer(0),
+        completedDynamicStaleTimeSeconds: 30,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 30,
+        expiresAt: now + 240_000,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        serverStaleTime: { kind: "resolved", seconds: 240 },
+        url: "/runtime-prefetch",
+      },
+      "/runtime-prefetch",
+    );
+    const prefetchSnapshot = preserveCommittedPrefetchExpiry(
+      publication.snapshot,
+      publication.expiresAt,
+    );
+    const visited = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: publication.snapshot,
+    });
+
+    expect(prefetchSnapshot.expiresAt).toBe(now + 240_000);
+    expect(publication.snapshot).not.toHaveProperty("expiresAt");
+    expect(visited.expiresAt).toBe(now + 30_000);
+  });
+
   it("keeps the visible URL when a settled prefetch was found through a rewrite alias", () => {
     expect(
       resolvePrefetchNavigationResponseUrl({

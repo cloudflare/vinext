@@ -6,7 +6,6 @@ import type { Readable, Writable } from "node:stream";
 // Runtime imports use source paths so the create package bundles the shared init implementation.
 import { init } from "../../vinext/src/init";
 import { resolveInitOptions } from "../../vinext/src/init-platform";
-import { nextEnvFileContent } from "../../vinext/src/typegen";
 
 type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
 type InitPlatform = "cloudflare" | "node";
@@ -208,8 +207,8 @@ export default function Home() {
     ".gitignore": `node_modules
 .env*
 .next
+next-env.d.ts
 `,
-    "next-env.d.ts": nextEnvFileContent(false, true),
     "next.config.ts": `import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {};
@@ -250,6 +249,7 @@ ${isCloudflare ? "- `pnpm run deploy` deploys the Cloudflare Worker.\n" : ""}
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
+    "types": ["vinext/types", "node"],
     "paths": {
       "@/*": ["./*"]
     }
@@ -444,36 +444,6 @@ function tryGitInit(root: string): boolean {
   return result.status === 0;
 }
 
-async function runTypegen(
-  root: string,
-  packageManager: PackageManagerName,
-  exec?: CreateVinextAppOptions["_exec"],
-): Promise<void> {
-  const [command, args] = (() => {
-    switch (packageManager) {
-      case "npm":
-        return ["npm", ["exec", "--", "vinext", "typegen"]] as const;
-      case "bun":
-        return ["bun", ["run", "vinext", "typegen"]] as const;
-      case "pnpm":
-      case "yarn":
-        return [packageManager, ["exec", "vinext", "typegen"]] as const;
-      default:
-        return [packageManager, ["exec", "vinext", "typegen"]] as const;
-    }
-  })();
-
-  if (exec) {
-    await exec([command, ...args].join(" "), { cwd: root, stdio: "inherit" });
-    return;
-  }
-
-  const result = spawnSync(command, args, { cwd: root, stdio: "inherit" });
-  if (result.status !== 0) {
-    throw new Error(`vinext typegen exited with code ${result.status ?? "unknown"}`);
-  }
-}
-
 export async function createVinextApp(options: CreateVinextAppOptions): Promise<void> {
   const root = path.resolve(options.appPath);
   const appName = path.basename(root);
@@ -498,14 +468,6 @@ export async function createVinextApp(options: CreateVinextAppOptions): Promise<
     ...options.initOptions,
     scriptNames: "standard",
   });
-
-  if (options.install ?? true) {
-    try {
-      await runTypegen(root, options.packageManager, options._exec);
-    } catch (error) {
-      console.error("Error running typegen:", error);
-    }
-  }
 
   if (options.git === false) {
     console.log("Skipping git initialization.\n");

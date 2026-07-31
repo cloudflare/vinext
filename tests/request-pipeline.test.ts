@@ -765,8 +765,9 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.get("content-type")).toBe("text/html");
   });
 
-  it("strips x-middleware-request-* headers", () => {
+  it("strips x-middleware-request-* headers consumed by the override list", () => {
     const headers = new Headers({
+      "x-middleware-override-headers": "x-custom",
       "x-middleware-request-x-custom": "value",
       "x-middleware-rewrite": "/new-path",
       "content-type": "text/html",
@@ -775,6 +776,18 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.has("x-middleware-request-x-custom")).toBe(false);
     expect(headers.has("x-middleware-rewrite")).toBe(false);
     expect(headers.get("content-type")).toBe("text/html");
+  });
+
+  it("preserves truthy unconsumed x-middleware-request-* response headers", () => {
+    const headers = new Headers({
+      "x-middleware-request-x-custom": "literal",
+      "x-middleware-request-x-empty": "",
+    });
+
+    processMiddlewareHeaders(headers);
+
+    expect(headers.get("x-middleware-request-x-custom")).toBe("literal");
+    expect(headers.has("x-middleware-request-x-empty")).toBe(false);
   });
 
   it("preserves x-middleware-cache response opt-outs", () => {
@@ -940,7 +953,34 @@ describe("filterInternalHeaders", () => {
 });
 
 describe("buildRequestHeadersFromMiddlewareResponse", () => {
-  it("preserves credential headers when applying partial middleware override headers", () => {
+  it("does not translate stray forwarded values when the override header is empty", () => {
+    // Next.js only applies middleware request-header overrides when this
+    // protocol header is truthy, so the empty string emitted for `new Headers()`
+    // leaves the original logical request headers unchanged. The unconsumed
+    // protocol value is then copied under its literal header name.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const baseHeaders = new Headers({
+      authorization: "Bearer token",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({
+      "x-middleware-override-headers": "",
+      "x-middleware-request-x-added": "literal",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+
+    expect(result).not.toBeNull();
+    expect(result!.get("authorization")).toBe("Bearer token");
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.get("x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-added")).toBe("literal");
+  });
+
+  it("drops every header absent from the override list, credentials included", () => {
+    // Next.js treats the override list as the complete post-middleware header
+    // set (resolve-routes.ts deletes non-listed request headers), so an absent
+    // name means deleted — it must never be restored from the base request.
     const baseHeaders = new Headers({
       authorization: "Bearer token",
       cookie: "session=abc",
@@ -951,34 +991,59 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
       "x-middleware-request-x-added": "1",
     });
 
-    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders, {
-      preserveCredentialHeaders: true,
-    });
-
-    expect(result).not.toBeNull();
-    expect(result!.get("authorization")).toBe("Bearer token");
-    expect(result!.get("cookie")).toBe("session=abc");
-    expect(result!.get("x-added")).toBe("1");
-    expect(result!.get("x-keep")).toBeNull();
-  });
-
-  it("deletes credential headers when middleware explicitly omits their forwarded values", () => {
-    const baseHeaders = new Headers({
-      authorization: "Bearer token",
-      cookie: "session=abc",
-      "x-keep": "original",
-    });
-    const middlewareHeaders = new Headers({
-      "x-middleware-override-headers": "authorization,cookie,x-keep",
-      "x-middleware-request-x-keep": "updated",
-    });
-
     const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
 
     expect(result).not.toBeNull();
     expect(result!.get("authorization")).toBeNull();
     expect(result!.get("cookie")).toBeNull();
-    expect(result!.get("x-keep")).toBe("updated");
+    expect(result!.get("x-keep")).toBeNull();
+    expect(result!.get("x-added")).toBe("1");
+  });
+
+  it("preserves forwarded header values literally when middleware sends no override list", () => {
+    // Next.js skips override translation without the list, then copies the
+    // unconsumed middleware header literally during its generic header merge.
+    const baseHeaders = new Headers({
+      authorization: "Bearer token",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({ "x-middleware-request-x-added": "1" });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+
+    expect(result).not.toBeNull();
+    expect(result!.get("authorization")).toBe("Bearer token");
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.get("x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-added")).toBe("1");
+  });
+
+  it("preserves unlisted forwarded values literally alongside valid overrides", () => {
+    const middlewareHeaders = new Headers({
+      "x-middleware-override-headers": "x-added",
+      "x-middleware-request-x-added": "translated",
+      "x-middleware-request-x-stray": "literal",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(new Headers(), middlewareHeaders);
+
+    expect(result).not.toBeNull();
+    expect(result!.get("x-added")).toBe("translated");
+    expect(result!.get("x-middleware-request-x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-stray")).toBe("literal");
+  });
+
+  it("drops empty unlisted forwarded values", () => {
+    const middlewareHeaders = new Headers({
+      "x-middleware-request-x-empty": "",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(
+      new Headers({ "x-original": "kept" }),
+      middlewareHeaders,
+    );
+
+    expect(result).toBeNull();
   });
 });
 

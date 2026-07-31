@@ -2,10 +2,7 @@ import { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import {
-  _consumeRequestScopedCacheLife,
-  _peekRequestScopedCacheLife,
-} from "vinext/shims/cache-request-state";
+import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
@@ -1086,6 +1083,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
+  const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
@@ -1111,10 +1109,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return buildAppPageTags(options.cleanPathname, getCollectedFetchTags(), route.routeSegments);
     },
     getRequestCacheLife() {
-      return _consumeRequestScopedCacheLife();
+      return requestCacheLife.consume();
     },
     peekRequestCacheLife() {
-      return _peekRequestScopedCacheLife();
+      return requestCacheLife.peek();
     },
     handlerStart: options.handlerStart,
     hasLoadingBoundary: hasActiveLoadingBoundary,

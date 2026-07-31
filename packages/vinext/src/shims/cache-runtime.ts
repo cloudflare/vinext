@@ -49,7 +49,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { markDynamicUsage } from "./headers.js";
+import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 
@@ -536,9 +536,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         return result;
       }
 
-      // In dev mode, always execute fresh — skip shared cache lookup/storage.
-      // This ensures HMR changes are reflected immediately.
-      if (isDev) {
+      // Draft mode joins dev in skipping shared cache lookup/storage: the key
+      // covers function id, build seed and arguments but not draft state, so a
+      // preview request would otherwise seed unpublished content into an entry
+      // later served to public requests. Mirrors Next.js's `isDraftMode` guard.
+      if (isDev || isDraftModeEnabled()) {
         return executeWithContext(fn, args, cacheVariant);
       }
 

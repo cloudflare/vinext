@@ -301,9 +301,10 @@ export function createTrackedAppRouteRequest(
       const prefixedPathname = addBasePathToPathname(inputUrl.pathname, options.basePath);
       if (prefixedPathname !== inputUrl.pathname) {
         inputUrl.pathname = prefixedPathname;
-        // Branch the body so the caller-owned request stays readable.
-        const bodySource = rawInput.body && !rawInput.bodyUsed ? rawInput.clone() : rawInput;
-        input = new Request(inputUrl, bodySource);
+        // Transfer the body instead of cloning: `rawInput` is replaced here and
+        // its body is never read again, so a tee would just leave an unread
+        // branch buffering the whole request in memory.
+        input = new Request(inputUrl, rawInput);
       }
     }
     const requestHeaders = options.middlewareHeaders

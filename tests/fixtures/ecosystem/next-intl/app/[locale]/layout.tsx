@@ -1,5 +1,5 @@
 import { hasLocale, NextIntlClientProvider } from "next-intl";
-import { getMessages, setRequestLocale } from "next-intl/server";
+import { getMessages } from "next-intl/server";
 import { notFound } from "next/navigation";
 
 const locales = ["en", "de"] as const;
@@ -16,10 +16,6 @@ export default async function LocaleLayout({
     notFound();
   }
 
-  // Middleware only negotiates the root redirect in this fixture. Locale
-  // routes use next-intl's public request-scoped API instead of a private
-  // X-NEXT-INTL-LOCALE header.
-  setRequestLocale(locale);
   const messages = await getMessages();
 
   return (

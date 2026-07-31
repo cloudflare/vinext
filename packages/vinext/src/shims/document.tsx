@@ -12,6 +12,7 @@ import type {
   DocumentProps,
 } from "@vinext/types/next/upstream/dist/shared/lib/utils";
 import type { HtmlProps } from "@vinext/types/next/upstream/dist/shared/lib/html-context.shared-runtime";
+import { safeJsonStringify } from "../server/html.js";
 
 const documentAssetMarkerAttributes = {
   headNonce: "data-vinext-head-nonce",
@@ -126,7 +127,9 @@ export class NextScript extends React.Component<OriginProps> {
   }
 
   static getInlineScriptSource(context: Readonly<HtmlProps>): string {
-    return JSON.stringify(context.__NEXT_DATA__);
+    // Matches Next.js: the returned string is embedded in an inline <script>,
+    // so it must be HTML-escaped like the framework's own __NEXT_DATA__ tag.
+    return safeJsonStringify(context.__NEXT_DATA__);
   }
 
   render(): React.ReactElement {

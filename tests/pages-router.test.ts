@@ -6212,6 +6212,11 @@ export default function CounterPage() {
       expect(isrFirstHtml).toContain('data-testid="head-before">0<');
       expect(isrFirstHtml).toContain('data-testid="private-cache-before">0<');
       expect(isrFirstHtml).toContain('data-testid="inserted-html-before">0<');
+      const firstTimestamp = isrFirstHtml.match(/data-testid="timestamp">(\d+)</)?.[1];
+      expect(firstTimestamp).toBeDefined();
+      expect(isrFirstHtml).toContain(
+        `<title data-next-head="">ISR Second Render State ${firstTimestamp}</title>`,
+      );
 
       const isrSecondRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(isrSecondRes.status).toBe(200);
@@ -6220,6 +6225,37 @@ export default function CounterPage() {
       expect(isrSecondHtml).toContain('data-testid="head-before">0<');
       expect(isrSecondHtml).toContain('data-testid="private-cache-before">0<');
       expect(isrSecondHtml).toContain('data-testid="inserted-html-before">0<');
+
+      // Next.js regenerates stale Pages entries with a full render, so
+      // metadata derived from getStaticProps must advance with the body rather
+      // than remaining in the cached shell. Exercise vinext's natural stale
+      // background path here: on-demand revalidation uses a different
+      // foreground-render path and would not cover renderPagesIsrHtml().
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const staleRes = await fetch(`${prodUrl}/isr-second-render-state`);
+      expect(staleRes.status).toBe(200);
+      expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
+      expect(await staleRes.text()).toContain(`data-testid="timestamp">${firstTimestamp}<`);
+
+      let regeneratedTimestamp: string | undefined;
+      let isrRegeneratedHtml = "";
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const regeneratedRes = await fetch(`${prodUrl}/isr-second-render-state`);
+        isrRegeneratedHtml = await regeneratedRes.text();
+        regeneratedTimestamp = isrRegeneratedHtml.match(/data-testid="timestamp">(\d+)</)?.[1];
+        if (
+          regeneratedRes.headers.get("x-vinext-cache") === "HIT" &&
+          regeneratedTimestamp !== firstTimestamp
+        ) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(regeneratedTimestamp).toBeDefined();
+      expect(regeneratedTimestamp).not.toBe(firstTimestamp);
+      expect(isrRegeneratedHtml).toContain(
+        `<title data-next-head="">ISR Second Render State ${regeneratedTimestamp}</title>`,
+      );
 
       // Test: SSR page with getServerSideProps
       const ssrRes = await fetch(`${prodUrl}/ssr`);
