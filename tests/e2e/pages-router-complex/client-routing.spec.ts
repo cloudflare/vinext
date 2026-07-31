@@ -26,6 +26,12 @@ test.describe("shallow routing and router events", () => {
       "featured",
     );
     await waitForHydration(page);
+    const renderedAtMs = await page
+      .locator('[data-testid="gallery-wall"]')
+      .getAttribute("data-rendered-at-ms");
+    if (!renderedAtMs) {
+      throw new Error("gallery wall did not expose its gSSP render timestamp");
+    }
 
     // Plant a marker: a shallow transition must NOT be a full document load.
     await page.evaluate(() => {
@@ -38,6 +44,10 @@ test.describe("shallow routing and router events", () => {
     await expect(page.locator('[data-testid="gallery-wall"]')).toHaveAttribute(
       "data-sort",
       "alpha",
+    );
+    await expect(page.locator('[data-testid="gallery-wall"]')).toHaveAttribute(
+      "data-rendered-at-ms",
+      renderedAtMs,
     );
 
     const marker = await page.evaluate(() => (window as BeaconWindow).__nav_marker__);
