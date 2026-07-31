@@ -116,11 +116,6 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       const rewriteTarget = new URL("/middleware-external-target", target);
       rewriteTarget.search = request.nextUrl.search;
       const override = request.headers.get("x-middleware-test-request-override");
-      if (override === "stray-forwarded-value") {
-        const response = NextResponse.rewrite(rewriteTarget);
-        response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
-        return response;
-      }
       if (override === "1" || override === "strip-credentials") {
         const headers = new Headers(request.headers);
         headers.set("x-added", "from-middleware");
@@ -258,6 +253,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     headers.delete("cookie");
     headers.set("x-from-middleware", "hello-from-middleware");
     return NextResponse.next({ request: { headers } });
+  }
+
+  if (pathname === "/api/header-override-stray") {
+    const response = NextResponse.next();
+    response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+    return response;
   }
 
   // Regression for a bug where a middleware that reads `next/headers` →
@@ -412,6 +413,7 @@ export const config = {
     "/headers/override-from-middleware",
     "/header-override-delete",
     "/api/header-override-delete",
+    "/api/header-override-stray",
     "/api/pages-og",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",

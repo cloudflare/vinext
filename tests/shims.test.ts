@@ -11872,6 +11872,25 @@ describe("middleware request header overrides", () => {
     expect(middlewareHeaders).toEqual({});
   });
 
+  it("config-matchers preserves unlisted request values under their literal protocol names", async () => {
+    const { applyMiddlewareRequestHeaders } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const middlewareHeaders: Record<string, string> = {
+      "x-middleware-request-x-added": "forged-by-middleware",
+      "x-middleware-next": "1",
+    };
+    const request = new Request("http://localhost/test", {
+      headers: { "x-added": "original" },
+    });
+
+    const { request: nextRequest } = applyMiddlewareRequestHeaders(middlewareHeaders, request);
+
+    expect(nextRequest.headers.get("x-added")).toBe("original");
+    expect(nextRequest.headers.get("x-middleware-request-x-added")).toBe("forged-by-middleware");
+    expect(middlewareHeaders).toEqual({});
+  });
+
   it("config-matchers applyMiddlewareRequestHeaders preserves middleware cache opt-out response header", async () => {
     const { applyMiddlewareRequestHeaders } =
       await import("../packages/vinext/src/config/config-matchers.js");

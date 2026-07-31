@@ -940,10 +940,11 @@ describe("filterInternalHeaders", () => {
 });
 
 describe("buildRequestHeadersFromMiddlewareResponse", () => {
-  it("treats an empty override header as no request-header override", () => {
+  it("does not translate stray forwarded values when the override header is empty", () => {
     // Next.js only applies middleware request-header overrides when this
     // protocol header is truthy, so the empty string emitted for `new Headers()`
-    // leaves the original request unchanged.
+    // leaves the original logical request headers unchanged. The unconsumed
+    // protocol value is then copied under its literal header name.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
     const baseHeaders = new Headers({
       authorization: "Bearer token",
@@ -951,12 +952,16 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
     });
     const middlewareHeaders = new Headers({
       "x-middleware-override-headers": "",
-      "x-middleware-request-x-added": "must-be-ignored",
+      "x-middleware-request-x-added": "literal",
     });
 
     const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
 
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result!.get("authorization")).toBe("Bearer token");
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.get("x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-added")).toBe("literal");
   });
 
   it("drops every header absent from the override list, credentials included", () => {
@@ -982,10 +987,9 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
     expect(result!.get("x-added")).toBe("1");
   });
 
-  it("ignores forwarded header values when middleware sends no override list", () => {
-    // NextResponse.next() without `request` emits no override list; that is the
-    // "unchanged" signal. Next.js skips the complete mutation block, including
-    // any stray forwarded values that appear without their required list.
+  it("preserves forwarded header values literally when middleware sends no override list", () => {
+    // Next.js skips override translation without the list, then copies the
+    // unconsumed middleware header literally during its generic header merge.
     const baseHeaders = new Headers({
       authorization: "Bearer token",
       cookie: "session=abc",
@@ -994,7 +998,26 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
 
     const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
 
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result!.get("authorization")).toBe("Bearer token");
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.get("x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-added")).toBe("1");
+  });
+
+  it("preserves unlisted forwarded values literally alongside valid overrides", () => {
+    const middlewareHeaders = new Headers({
+      "x-middleware-override-headers": "x-added",
+      "x-middleware-request-x-added": "translated",
+      "x-middleware-request-x-stray": "literal",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(new Headers(), middlewareHeaders);
+
+    expect(result).not.toBeNull();
+    expect(result!.get("x-added")).toBe("translated");
+    expect(result!.get("x-middleware-request-x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-stray")).toBe("literal");
   });
 });
 

@@ -185,29 +185,6 @@ describe("App Router external rewrite proxy credential forwarding", () => {
     expect(capturedHeaders!["x-added"]).toBe("from-middleware");
   });
 
-  it("does not translate a manually forged internal request-header value", async () => {
-    // Next.js only translates x-middleware-request-* values inside the truthy
-    // x-middleware-override-headers guard. Setting only the internal value
-    // header is not the supported NextResponse request-header API.
-    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
-    mockResponseMode = "plain";
-    capturedHeaders = null;
-
-    const response = await fetch(`${baseUrl}/middleware-external-rewrite`, {
-      headers: {
-        Authorization: "Bearer tok_secret",
-        "x-added": "original",
-        "x-middleware-test-rewrite-target": `http://localhost:${mockPort}`,
-        "x-middleware-test-request-override": "stray-forwarded-value",
-      },
-    });
-
-    expect(response.status).toBe(200);
-    expect(capturedHeaders).not.toBeNull();
-    expect(capturedHeaders!["authorization"]).toBe("Bearer tok_secret");
-    expect(capturedHeaders!["x-added"]).toBe("original");
-  });
-
   it("strips content-encoding and content-length for Node fetch auto-decompression", async () => {
     mockResponseMode = "gzipHeaderAndBody";
     const response = await fetch(`${baseUrl}/proxy-external-test/some-path`);
