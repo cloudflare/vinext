@@ -116,6 +116,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       const rewriteTarget = new URL("/middleware-external-target", target);
       rewriteTarget.search = request.nextUrl.search;
       const override = request.headers.get("x-middleware-test-request-override");
+      if (override === "stray-forwarded-value") {
+        const response = NextResponse.rewrite(rewriteTarget);
+        response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+        return response;
+      }
       if (override === "1" || override === "strip-credentials") {
         const headers = new Headers(request.headers);
         headers.set("x-added", "from-middleware");

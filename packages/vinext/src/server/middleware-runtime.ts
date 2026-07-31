@@ -410,12 +410,9 @@ export async function executeMiddleware(
         };
       }
 
-      const responseHeaders = new Headers();
-      for (const [key, value] of response.headers) {
-        if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key.toLowerCase() !== "location") {
-          responseHeaders.append(key, value);
-        }
-      }
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.delete("location");
+      processMiddlewareHeaders(responseHeaders);
       // Rebuild the response with the relativized Location so consumers that
       // forward `result.response` (rather than `result.redirectUrl`) also send
       // the correct header.

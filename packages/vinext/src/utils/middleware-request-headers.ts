@@ -46,6 +46,29 @@ function getForwardedRequestHeaders(source: MiddlewareHeaderSource): Map<string,
   return forwardedHeaders;
 }
 
+/**
+ * Return truthy forwarded values that Next.js does not consume through the
+ * override list. Its subsequent generic middleware-header merge exposes these
+ * under their literal protocol-header names on both the request and response.
+ */
+export function getUnconsumedMiddlewareRequestHeaders(
+  source: MiddlewareHeaderSource,
+): Map<string, string> {
+  const rawOverrideHeader = getMiddlewareHeaderValue(source, MIDDLEWARE_OVERRIDE_HEADERS);
+  const overriddenHeaders = rawOverrideHeader
+    ? new Set(parseOverrideHeaderNames(rawOverrideHeader))
+    : null;
+  const unconsumedHeaders = new Map<string, string>();
+
+  for (const [key, value] of getForwardedRequestHeaders(source)) {
+    if (value && !overriddenHeaders?.has(key)) {
+      unconsumedHeaders.set(`${MIDDLEWARE_REQUEST_HEADER_PREFIX}${key}`, value);
+    }
+  }
+
+  return unconsumedHeaders;
+}
+
 export function encodeMiddlewareRequestHeaders(
   targetHeaders: Headers,
   requestHeaders: Headers,
@@ -72,6 +95,7 @@ export function buildRequestHeadersFromMiddlewareResponse(
   middlewareHeaders: MiddlewareHeaderSource,
 ): Headers | null {
   const forwardedHeaders = getForwardedRequestHeaders(middlewareHeaders);
+  const unconsumedHeaders = getUnconsumedMiddlewareRequestHeaders(middlewareHeaders);
   const rawOverrideHeader = getMiddlewareHeaderValue(
     middlewareHeaders,
     MIDDLEWARE_OVERRIDE_HEADERS,
@@ -81,17 +105,16 @@ export function buildRequestHeadersFromMiddlewareResponse(
   // truthiness. Unconsumed x-middleware-request-* headers still pass through
   // its subsequent generic middleware-header merge under their literal names.
   if (!rawOverrideHeader) {
-    if (forwardedHeaders.size === 0) return null;
+    if (unconsumedHeaders.size === 0) return null;
 
     const nextHeaders = new Headers(baseHeaders);
-    for (const [key, value] of forwardedHeaders) {
-      nextHeaders.set(`${MIDDLEWARE_REQUEST_HEADER_PREFIX}${key}`, value);
+    for (const [key, value] of unconsumedHeaders) {
+      nextHeaders.set(key, value);
     }
     return nextHeaders;
   }
 
   const overrideHeaderNames = parseOverrideHeaderNames(rawOverrideHeader);
-  const overriddenHeaders = new Set(overrideHeaderNames);
   const nextHeaders = new Headers();
 
   for (const key of overrideHeaderNames) {
@@ -104,10 +127,8 @@ export function buildRequestHeadersFromMiddlewareResponse(
   // Values named by the override list were consumed above. Any stray values
   // remain ordinary middleware response headers in Next.js and are copied to
   // the request literally by resolve-routes.ts's generic merge.
-  for (const [key, value] of forwardedHeaders) {
-    if (!overriddenHeaders.has(key)) {
-      nextHeaders.set(`${MIDDLEWARE_REQUEST_HEADER_PREFIX}${key}`, value);
-    }
+  for (const [key, value] of unconsumedHeaders) {
+    nextHeaders.set(key, value);
   }
 
   return nextHeaders;

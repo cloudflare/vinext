@@ -70,6 +70,32 @@ describe("middleware redirect protocol", () => {
     expect(result.response?.headers.get("Location")).toBe("/another");
   });
 
+  it("preserves unconsumed request-header values on redirects", async () => {
+    const module = {
+      default: (req: Request) =>
+        new Response(null, {
+          status: 307,
+          headers: {
+            location: new URL("/another", req.url).toString(),
+            "x-middleware-request-x-added": "forged-by-middleware",
+          },
+        }),
+    };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/start"),
+    });
+
+    expect(result.responseHeaders?.get("x-middleware-request-x-added")).toBe(
+      "forged-by-middleware",
+    );
+    expect(result.response?.headers.get("x-middleware-request-x-added")).toBe(
+      "forged-by-middleware",
+    );
+  });
+
   it("preserves the search string when relativizing the Location header", async () => {
     const module = {
       default: (req: Request) => {

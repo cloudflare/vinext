@@ -148,6 +148,7 @@ describe("App Router middleware with NextRequest", () => {
     });
 
     expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-request-x-added")).toBe("forged-by-middleware");
     expect(await res.json()).toEqual({
       authorization: "Bearer secret",
       logical: "original",

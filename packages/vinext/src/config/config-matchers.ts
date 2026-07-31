@@ -15,6 +15,7 @@ import type {
 import {
   MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
+  MIDDLEWARE_REQUEST_HEADER_PREFIX,
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -22,7 +23,10 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
+import {
+  buildRequestHeadersFromMiddlewareResponse,
+  getUnconsumedMiddlewareRequestHeaders,
+} from "../utils/middleware-request-headers.js";
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -450,9 +454,14 @@ export function applyMiddlewareRequestHeaders(
   request: Request,
 ): { request: Request; postMwReqCtx: RequestContext } {
   const nextHeaders = buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders);
+  const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(middlewareHeaders);
 
   for (const key of Object.keys(middlewareHeaders)) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
+    if (
+      key.startsWith(MIDDLEWARE_HEADER_PREFIX) &&
+      key !== MIDDLEWARE_CACHE_HEADER &&
+      !unconsumedRequestHeaders.has(key)
+    ) {
       delete middlewareHeaders[key];
     }
   }
@@ -1276,9 +1285,15 @@ export async function proxyExternalRequest(
   // proxy and backend (defense-in-depth against request smuggling,
   // ref: CVE GHSA-ggv3-7p47-pfv8).
   stripHopByHopRequestHeaders(headers);
+  // Next.js forwards truthy x-middleware-request-* values that were not
+  // consumed by an override list under their literal names. Other middleware
+  // protocol controls must not escape to the external origin.
   const keysToDelete: string[] = [];
   for (const key of headers.keys()) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (
+      key.startsWith(MIDDLEWARE_HEADER_PREFIX) &&
+      !key.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX)
+    ) {
       keysToDelete.push(key);
     }
   }

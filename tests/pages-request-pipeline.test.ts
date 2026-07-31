@@ -545,6 +545,28 @@ describe("middleware", () => {
     expect(result.response.status).toBe(307);
   });
 
+  it("preserves unconsumed request-header values on middleware redirects", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/foo"),
+      baseDeps({
+        runMiddleware: makeMiddleware({
+          continue: false,
+          redirectUrl: "http://localhost/bar",
+          redirectStatus: 307,
+          responseHeaders: new Headers({
+            "x-middleware-request-x-added": "forged-by-middleware",
+          }),
+        }),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-middleware-request-x-added")).toBe(
+      "forged-by-middleware",
+    );
+  });
+
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("does not classify a normal request as data from x-nextjs-data alone", async () => {

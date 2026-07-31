@@ -6,6 +6,7 @@ import {
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
+import { getUnconsumedMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
 import {
   forbiddenResponse,
   methodNotAllowedResponse,
@@ -475,15 +476,22 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  *
  * Middleware uses `x-middleware-*` headers as internal signals (e.g.
  * `x-middleware-next`, `x-middleware-rewrite`, `x-middleware-request-*`).
- * These must be removed before sending the response to the client.
+ * Consumed protocol headers must be removed before sending the response to the
+ * client. Next.js exposes truthy unconsumed `x-middleware-request-*` values as
+ * literal request and response headers, so those are intentionally preserved.
  *
  * @param headers - The Headers object to modify in place
  */
 export function processMiddlewareHeaders(headers: Headers): void {
   const keysToDelete: string[] = [];
+  const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(headers);
 
   for (const key of headers.keys()) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
+    if (
+      key.startsWith(MIDDLEWARE_HEADER_PREFIX) &&
+      key !== MIDDLEWARE_CACHE_HEADER &&
+      !unconsumedRequestHeaders.has(key)
+    ) {
       keysToDelete.push(key);
     }
   }

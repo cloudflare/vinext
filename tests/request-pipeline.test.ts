@@ -765,8 +765,9 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.get("content-type")).toBe("text/html");
   });
 
-  it("strips x-middleware-request-* headers", () => {
+  it("strips x-middleware-request-* headers consumed by the override list", () => {
     const headers = new Headers({
+      "x-middleware-override-headers": "x-custom",
       "x-middleware-request-x-custom": "value",
       "x-middleware-rewrite": "/new-path",
       "content-type": "text/html",
@@ -775,6 +776,18 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.has("x-middleware-request-x-custom")).toBe(false);
     expect(headers.has("x-middleware-rewrite")).toBe(false);
     expect(headers.get("content-type")).toBe("text/html");
+  });
+
+  it("preserves truthy unconsumed x-middleware-request-* response headers", () => {
+    const headers = new Headers({
+      "x-middleware-request-x-custom": "literal",
+      "x-middleware-request-x-empty": "",
+    });
+
+    processMiddlewareHeaders(headers);
+
+    expect(headers.get("x-middleware-request-x-custom")).toBe("literal");
+    expect(headers.has("x-middleware-request-x-empty")).toBe(false);
   });
 
   it("preserves x-middleware-cache response opt-outs", () => {
@@ -1018,6 +1031,19 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
     expect(result!.get("x-added")).toBe("translated");
     expect(result!.get("x-middleware-request-x-added")).toBeNull();
     expect(result!.get("x-middleware-request-x-stray")).toBe("literal");
+  });
+
+  it("drops empty unlisted forwarded values", () => {
+    const middlewareHeaders = new Headers({
+      "x-middleware-request-x-empty": "",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(
+      new Headers({ "x-original": "kept" }),
+      middlewareHeaders,
+    );
+
+    expect(result).toBeNull();
   });
 });
 

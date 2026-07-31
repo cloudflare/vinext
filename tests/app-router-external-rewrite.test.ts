@@ -185,6 +185,24 @@ describe("App Router external rewrite proxy credential forwarding", () => {
     expect(capturedHeaders!["x-added"]).toBe("from-middleware");
   });
 
+  it("forwards an unconsumed middleware request header literally", async () => {
+    mockResponseMode = "plain";
+    capturedHeaders = null;
+
+    const response = await fetch(`${baseUrl}/middleware-external-rewrite`, {
+      headers: {
+        "x-added": "original",
+        "x-middleware-test-rewrite-target": `http://localhost:${mockPort}`,
+        "x-middleware-test-request-override": "stray-forwarded-value",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(capturedHeaders).not.toBeNull();
+    expect(capturedHeaders!["x-added"]).toBe("original");
+    expect(capturedHeaders!["x-middleware-request-x-added"]).toBe("forged-by-middleware");
+  });
+
   it("strips content-encoding and content-length for Node fetch auto-decompression", async () => {
     mockResponseMode = "gzipHeaderAndBody";
     const response = await fetch(`${baseUrl}/proxy-external-test/some-path`);

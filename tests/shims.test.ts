@@ -11888,6 +11888,28 @@ describe("middleware request header overrides", () => {
 
     expect(nextRequest.headers.get("x-added")).toBe("original");
     expect(nextRequest.headers.get("x-middleware-request-x-added")).toBe("forged-by-middleware");
+    expect(middlewareHeaders).toEqual({
+      "x-middleware-request-x-added": "forged-by-middleware",
+    });
+  });
+
+  it("config-matchers drops empty unlisted request values", async () => {
+    const { applyMiddlewareRequestHeaders } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const middlewareHeaders: Record<string, string> = {
+      "x-middleware-request-x-empty": "",
+      "x-middleware-next": "1",
+    };
+    const request = new Request("http://localhost/test", {
+      headers: { "x-original": "kept" },
+    });
+
+    const { request: nextRequest } = applyMiddlewareRequestHeaders(middlewareHeaders, request);
+
+    expect(nextRequest).toBe(request);
+    expect(nextRequest.headers.get("x-original")).toBe("kept");
+    expect(nextRequest.headers.has("x-middleware-request-x-empty")).toBe(false);
     expect(middlewareHeaders).toEqual({});
   });
 
