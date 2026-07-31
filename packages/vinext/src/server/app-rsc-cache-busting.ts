@@ -306,7 +306,11 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     Accept: VINEXT_RSC_CONTENT_TYPE,
     [RSC_HEADER]: "1",
   });
-  applyDeploymentIdHeader(headers, options.deploymentId);
+  if ("deploymentId" in options) {
+    if (options.deploymentId) applyDeploymentIdHeader(headers, options.deploymentId);
+  } else {
+    applyDeploymentIdHeader(headers);
+  }
 
   if (options.prefetchRouterState) {
     if (options.includePrefetchHeader !== false) {

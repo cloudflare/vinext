@@ -147,6 +147,33 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(sourceVariantResponse.headers.get("CDN-Cache-Control")).toBeNull();
     expect(sourceVariantResponse.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(sourceVariantResponse.headers.get("Cache-Tag")).toBeNull();
+
+    const mountedRequest = new Request("https://example.com/blog?_rsc", {
+      headers: { RSC: "1", "X-Vinext-Mounted-Slots": "slot:modal:/" },
+    });
+    const mountedMissResponse = await runWithHeadersContext(
+      headersContextFromRequest(mountedRequest),
+      () =>
+        buildAppPageRscResponse(
+          new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          {
+            cdnTags: ["/blog", "posts"],
+            middlewareContext: { headers: null, status: null },
+            mountedSlotsHeader: "slot:modal:/",
+            policy: {
+              cacheControl: "s-maxage=60, stale-while-revalidate",
+              cacheState: "MISS",
+            },
+          },
+        ),
+    );
+    expect(mountedMissResponse.headers.get("Cache-Control")).toBe("no-store");
+    expect(mountedMissResponse.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(mountedMissResponse.headers.get("Cache-Tag")).toBeNull();
   });
 
   it("bypasses non-base variants after force-static rendering hides request APIs", async () => {

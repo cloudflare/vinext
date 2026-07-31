@@ -354,7 +354,10 @@ export function buildAppPageRscResponse(
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
-  if (options.policy.cacheControl && options.policy.cacheState !== "MISS") {
+  if (
+    options.policy.cacheControl &&
+    (options.policy.cacheState !== "MISS" || options.mountedSlotsHeader != null)
+  ) {
     const policyIsNonCacheable = /\b(?:no-store|no-cache|private)\b/i.test(
       options.policy.cacheControl,
     );

@@ -388,6 +388,25 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
+  it("rejects noncanonical root base paths from build manifests", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/",
+        buildId: "build-a",
+        paths: ["/nested"],
+        appPaths: [],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: [],
+      rscPaths: [],
+      rscCacheKeyMode: "header-digest",
+    });
+  });
+
   it("requests every warmable path through the target URL", async () => {
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -430,7 +449,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(secondInput).toBeInstanceOf(URL);
     expect((firstInput as URL).href).toBe("https://app.example.com/");
     expect((secondInput as URL).href).toBe("https://app.example.com/about");
-    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: "follow" });
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: "manual" });
     expect((fetchMock.mock.calls[2]![0] as URL).href).toBe("https://app.example.com/?_rsc");
     expect(fetchMock.mock.calls[2]![1]).toMatchObject({ redirect: "manual" });
   });
@@ -515,6 +534,57 @@ describe("Cloudflare CDN warmup", () => {
       expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
       expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: "manual" });
     }
+  });
+
+  it("does not follow HTML redirects outside the warm target", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, {
+          status: 307,
+          headers: { Location: "https://attacker.invalid/capture" },
+        }),
+    );
+
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: ["/redirect"],
+      fetchImpl: fetchMock as typeof fetch,
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: "manual" });
+  });
+
+  it("does not inherit a deploy-process deployment ID when the artifact has none", async () => {
+    const previousInternal = process.env.__VINEXT_DEPLOYMENT_ID;
+    const previousPublic = process.env.NEXT_DEPLOYMENT_ID;
+    delete process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.NEXT_DEPLOYMENT_ID = "current-source-id";
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", {
+          status: 200,
+          headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/x-component" },
+        }),
+    );
+
+    try {
+      await warmCdnCache({
+        targetUrl: "https://app.example.com",
+        paths: [],
+        rscPaths: ["/app"],
+        rscCacheKeyMode: "response-vary",
+        fetchImpl: fetchMock as typeof fetch,
+      });
+    } finally {
+      if (previousInternal === undefined) delete process.env.__VINEXT_DEPLOYMENT_ID;
+      else process.env.__VINEXT_DEPLOYMENT_ID = previousInternal;
+      if (previousPublic === undefined) delete process.env.NEXT_DEPLOYMENT_ID;
+      else process.env.NEXT_DEPLOYMENT_ID = previousPublic;
+    }
+
+    expect(new Headers(fetchMock.mock.calls[0]![1]?.headers).get("x-deployment-id")).toBeNull();
   });
 
   it.each(["BYPASS", "DYNAMIC", "NONE/UNKNOWN", "unexpected"])(

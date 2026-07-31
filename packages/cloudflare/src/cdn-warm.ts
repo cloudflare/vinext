@@ -130,7 +130,10 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
     if (
       manifest.basePath !== undefined &&
       (typeof manifest.basePath !== "string" ||
-        (manifest.basePath !== "" && !isSafeWarmPathname(manifest.basePath)))
+        (manifest.basePath !== "" &&
+          (manifest.basePath === "/" ||
+            manifest.basePath.endsWith("/") ||
+            !isSafeWarmPathname(manifest.basePath))))
     ) {
       return null;
     }
@@ -352,14 +355,11 @@ async function warmOnePath(
         url,
         options.timeoutMs,
         target.headers ?? options.headers,
-        target.kind === "rsc" ? "manual" : "follow",
+        "manual",
       );
       await response.arrayBuffer();
 
-      if (
-        target.kind === "rsc" &&
-        (response.redirected || response.status < 200 || response.status >= 300)
-      ) {
+      if (response.redirected || response.status < 200 || response.status >= 300) {
         lastError = response.redirected ? "redirected response" : `HTTP ${response.status}`;
         if (!isRetryableStatus(response.status)) break;
         continue;
