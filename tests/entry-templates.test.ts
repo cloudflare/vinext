@@ -1907,6 +1907,10 @@ describe("Pages Router entry template", () => {
         path.join(pagesDir, "index.tsx"),
         "export default function Page() { return null; }",
       );
+      fs.writeFileSync(
+        path.join(pagesDir, "_app.tsx"),
+        "export default function App({ Component, pageProps }) { return <Component {...pageProps} />; }",
+      );
 
       const code = await generateClientEntry(
         pagesDir,
@@ -1918,12 +1922,14 @@ describe("Pages Router entry template", () => {
       const overlayImportIndex = code.indexOf(
         'import * as devErrorOverlay from "vinext/dev-error-overlay"',
       );
-      const pageLoadIndex = code.indexOf("const pageModule = initialModules?.[");
+      const pageLoadIndex = code.indexOf("const pageModule = initialModules?.page");
       const hydrateRootIndex = code.indexOf("hydrateRoot(container, element, hydrateRootOptions)");
 
       expect(overlayImportIndex).toBeGreaterThanOrEqual(0);
       expect(pageLoadIndex).toBeGreaterThanOrEqual(0);
       expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(code).toContain("const appModule = initialModules?.app");
+      expect(code).not.toContain("initialModules?.[");
       expect(code).toContain("overlay.installDevErrorOverlay()");
       expect(code).toContain("const overlay = devErrorOverlay;");
       expect(code).toContain("overlay.installViteHmrErrorHandler(import.meta.hot)");

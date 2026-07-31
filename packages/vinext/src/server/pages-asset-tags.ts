@@ -92,6 +92,15 @@ type CollectAssetTagsOptions = {
    * all manifest assets are injected.
    */
   moduleIds: (string | null | undefined)[];
+  /**
+   * Named Pages modules consumed synchronously by the development client
+   * bootstrap. Kept separate from `moduleIds` so asset ordering cannot change
+   * which namespace is treated as `_app` or the matched page.
+   */
+  devInitialModules?: {
+    app: string | null | undefined;
+    page: string | null | undefined;
+  };
   /** Script nonce for CSP. */
   scriptNonce?: string;
   /**
@@ -168,7 +177,8 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   const runtimeAssets = getPagesClientAssets();
   const clientEntry = runtimeAssets.clientEntry;
   const devModuleUrls = runtimeAssets.devModuleUrls;
-  const isDevBootstrap = !!clientEntry && !!devModuleUrls && options.moduleIds.length > 0;
+  const initialModules = options.devInitialModules;
+  const isDevBootstrap = !!clientEntry && !!devModuleUrls && !!initialModules;
   if (isDevBootstrap) {
     if (runtimeAssets.devErrorOverlay) {
       const overlayImports = [
@@ -194,17 +204,17 @@ devErrorOverlay.reportInitialDevServerErrors();</script>`);
     if (runtimeAssets.reactPreamble) {
       imports.push(`import ${safeJsonStringify(runtimeAssets.reactPreamble)};`);
     }
-    const moduleRefs: string[] = [];
-    for (let i = 0; i < options.moduleIds.length; i++) {
-      const moduleId = options.moduleIds[i];
+    const moduleRefs = {
+      app: "null",
+      page: "null",
+    };
+    for (const role of ["app", "page"] as const) {
+      const moduleId = initialModules[role];
       const moduleUrl = moduleId ? devModuleUrls[moduleId] : undefined;
-      if (!moduleUrl) {
-        moduleRefs.push("null");
-        continue;
-      }
-      const ref = `initialModule${i}`;
+      if (!moduleUrl) continue;
+      const ref = `initial${role === "app" ? "App" : "Page"}Module`;
       imports.push(`import * as ${ref} from ${safeJsonStringify(moduleUrl)};`);
-      moduleRefs.push(ref);
+      moduleRefs[role] = ref;
     }
     imports.push(`const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
@@ -213,7 +223,9 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
 }`);
-    imports.push(`window.__VINEXT_INITIAL_PAGES_MODULES__ = [${moduleRefs.join(",")}];`);
+    imports.push(
+      `window.__VINEXT_INITIAL_PAGES_MODULES__ = { app: ${moduleRefs.app}, page: ${moduleRefs.page} };`,
+    );
     tags.push(`<script type="module"${nonceAttr}>${imports.join("\n")}</script>`);
   }
 

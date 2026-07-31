@@ -301,7 +301,12 @@ describe("collectAssetTags", () => {
     });
     const result = collectAssetTags({
       manifest: null,
-      moduleIds: ["/project/pages/_app.tsx", "/project/pages/index.tsx"],
+      // The bootstrap roles are named independently of asset-tag ordering.
+      moduleIds: ["/project/pages/index.tsx", "/project/pages/_app.tsx"],
+      devInitialModules: {
+        app: "/project/pages/_app.tsx",
+        page: "/project/pages/index.tsx",
+      },
       scriptNonce: "dev-nonce",
       disableOptimizedLoading: false,
     });
@@ -313,21 +318,21 @@ describe("collectAssetTags", () => {
       'import * as devErrorOverlay from "/packages/vinext/src/client/dev-error-overlay.tsx";',
     );
     expect(result).toContain("devErrorOverlay.installDevErrorOverlay();");
-    expect(result).toContain('import * as initialModule0 from "/pages/_app.tsx";');
-    expect(result).toContain('import * as initialModule1 from "/pages/index.tsx";');
+    expect(result).toContain('import * as initialAppModule from "/pages/_app.tsx";');
+    expect(result).toContain('import * as initialPageModule from "/pages/index.tsx";');
     expect(result).toContain(
-      "window.__VINEXT_INITIAL_PAGES_MODULES__ = [initialModule0,initialModule1]",
+      "window.__VINEXT_INITIAL_PAGES_MODULES__ = { app: initialAppModule, page: initialPageModule }",
     );
     expect(result).toContain('src="/@id/__x00__virtual:vinext-client-entry" crossorigin></script>');
     expect(result.indexOf("devErrorOverlay.installDevErrorOverlay();")).toBeLessThan(
-      result.indexOf('import * as initialModule0 from "/pages/_app.tsx"'),
+      result.indexOf('import * as initialAppModule from "/pages/_app.tsx"'),
     );
     expect(result.indexOf('import "/instrumentation-client.ts";')).toBeLessThan(
       result.indexOf(
         'import * as devErrorOverlay from "/packages/vinext/src/client/dev-error-overlay.tsx"',
       ),
     );
-    expect(result.indexOf('import * as initialModule0 from "/pages/_app.tsx"')).toBeLessThan(
+    expect(result.indexOf('import * as initialAppModule from "/pages/_app.tsx"')).toBeLessThan(
       result.indexOf('src="/@id/__x00__virtual:vinext-client-entry"'),
     );
     expect(result).not.toContain('src="/pages/');
@@ -346,6 +351,10 @@ describe("collectAssetTags", () => {
     const result = collectAssetTags({
       manifest: null,
       moduleIds: ["/project/pages/index.tsx"],
+      devInitialModules: {
+        app: null,
+        page: "/project/pages/index.tsx",
+      },
       disableOptimizedLoading: false,
       basePath: "/docs",
       assetPrefix: "https://cdn.example.com/assets",
@@ -353,7 +362,10 @@ describe("collectAssetTags", () => {
 
     expect(result).toContain('import "/docs/instrumentation-client.ts";');
     expect(result).toContain('import "/docs/@id/__x00__@vitejs/plugin-react/preamble";');
-    expect(result).toContain('import * as initialModule0 from "/docs/pages/index.tsx";');
+    expect(result).toContain('import * as initialPageModule from "/docs/pages/index.tsx";');
+    expect(result).toContain(
+      "window.__VINEXT_INITIAL_PAGES_MODULES__ = { app: null, page: initialPageModule }",
+    );
     expect(result).toContain(
       'src="/docs/@id/__x00__virtual:vinext-client-entry" crossorigin></script>',
     );
