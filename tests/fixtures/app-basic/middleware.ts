@@ -123,6 +123,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       }
       if (override === "1" || override === "strip-credentials") {
         const headers = new Headers(request.headers);
+        headers.set("x-added", "from-middleware");
         headers.set("x-hello-from-middleware1", "hello");
         headers.set("x-hello-from-middleware2", "world");
         // Credentials deleted here must not reach the external target (#1121 regression).

@@ -166,9 +166,29 @@ describe("App Router external rewrite proxy credential forwarding", () => {
     expect(capturedHeaders!["x-hello-from-middleware1"]).toBe("hello");
   });
 
-  it("does not apply a forwarded middleware header without an override list", async () => {
+  it("applies request headers passed through NextResponse.rewrite", async () => {
+    // Users provide the desired request Headers. NextResponse serializes both
+    // parts of the internal override protocol, including the override list.
+    mockResponseMode = "plain";
+    capturedHeaders = null;
+
+    const response = await fetch(`${baseUrl}/middleware-external-rewrite`, {
+      headers: {
+        "x-added": "original",
+        "x-middleware-test-rewrite-target": `http://localhost:${mockPort}`,
+        "x-middleware-test-request-override": "1",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(capturedHeaders).not.toBeNull();
+    expect(capturedHeaders!["x-added"]).toBe("from-middleware");
+  });
+
+  it("does not translate a manually forged internal request-header value", async () => {
     // Next.js only translates x-middleware-request-* values inside the truthy
-    // x-middleware-override-headers guard. A stray value is not a request override.
+    // x-middleware-override-headers guard. Setting only the internal value
+    // header is not the supported NextResponse request-header API.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
     mockResponseMode = "plain";
     capturedHeaders = null;
