@@ -402,6 +402,8 @@ type ResolvePagesPageDataResponseResult = {
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
+  /** Headers set by getServerSideProps before it returned notFound. */
+  responseHeaders?: Record<string, string | number | boolean | string[]>;
   /** Current getStaticProps cache lifetime, when this is an SSG result. */
   revalidateSeconds?: number | false;
   expireSeconds?: number;
@@ -433,15 +435,51 @@ function buildPagesNotFoundResult(
   revalidateSeconds?: number | false,
   cacheState?: "MISS" | "HIT" | "STALE",
   expireSeconds?: number,
+  responseHeaders?: Record<string, string | number | boolean | string[]>,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
       kind: "response",
-      response: buildPagesDataNotFoundResponse(options.deploymentId),
+      response: mergePagesNotFoundSourceHeaders(
+        buildPagesDataNotFoundResponse(options.deploymentId),
+        responseHeaders,
+      ),
     };
   }
 
-  return { kind: "notFound", revalidateSeconds, expireSeconds, cacheState };
+  return {
+    kind: "notFound",
+    revalidateSeconds,
+    expireSeconds,
+    cacheState,
+    responseHeaders,
+  };
+}
+
+export function mergePagesNotFoundSourceHeaders(
+  response: Response,
+  sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
+): Response {
+  if (!sourceHeaders) return response;
+
+  const headers = new Headers(response.headers);
+
+  for (const [name, value] of Object.entries(sourceHeaders)) {
+    const lowerName = name.toLowerCase();
+    if (lowerName === "set-cookie") {
+      headers.delete("set-cookie");
+      const cookies = Array.isArray(value) ? value : [value];
+      for (const cookie of cookies) headers.append("set-cookie", String(cookie));
+    } else {
+      headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+    }
+  }
+
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 }
 
 function applyPagesTerminalMissHeaders(
@@ -1323,7 +1361,14 @@ export async function resolvePagesPageData(
     }
 
     if (result?.notFound) {
-      return buildPagesNotFoundResult(options);
+      const responseHeaders = res.getHeaders();
+      return buildPagesNotFoundResult(
+        options,
+        undefined,
+        undefined,
+        undefined,
+        Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
+      );
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`

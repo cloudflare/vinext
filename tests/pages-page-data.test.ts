@@ -695,6 +695,48 @@ describe("pages page data", () => {
     expect(result).toEqual({ kind: "notFound" });
   });
 
+  it("preserves getServerSideProps headers on a notFound data response", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        createGsspReqRes() {
+          return {
+            req: {},
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {
+                  "Content-Type": "application/vnd.atlas.not-found+json",
+                  "Set-Cookie": ["source=one; Path=/", "source=two; Path=/"],
+                  "Surrogate-Control": "max-age=600s, delta=noop",
+                };
+              },
+            },
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected data response");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe(
+      "application/vnd.atlas.not-found+json",
+    );
+    expect(result.response.headers.getSetCookie()).toEqual([
+      "source=one; Path=/",
+      "source=two; Path=/",
+    ]);
+    expect(result.response.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
+  });
+
   it("returns JSON 404 envelope for data requests when getStaticPaths excludes a path", async () => {
     const result = await resolvePagesPageData(
       createOptions({
