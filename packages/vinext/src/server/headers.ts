@@ -15,6 +15,7 @@ import {
   MIDDLEWARE_SKIP_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,9 @@ export const VINEXT_CACHE_HEADER = "X-Vinext-Cache";
 /** Next.js public ISR / page cache state indicator. */
 export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
 
+/** Next.js cache-tag metadata carried by prerendered App Router responses. */
+export const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
+
 /** Static file signal — value is URL-encoded pathname. */
 export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
 
@@ -38,6 +42,7 @@ export {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 
 /** Internal endpoint used to evaluate App Router generateStaticParams exports. */
@@ -60,6 +65,9 @@ export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
+
+/** Marks an RSC body carrying completion metadata after the Flight payload. */
+export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Metadata";
 
 /** URL-encoded rendered path and search after middleware/config rewrites. */
 export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
@@ -90,6 +98,9 @@ export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manife
  */
 export const VINEXT_RSC_REDIRECT_HEADER = "X-Vinext-Rsc-Redirect";
 
+/** History update mode encoded by a streamed RSC redirect. */
+export const VINEXT_RSC_REDIRECT_TYPE_HEADER = "X-Vinext-Rsc-Redirect-Type";
+
 // ---------------------------------------------------------------------------
 // RSC protocol headers
 // ---------------------------------------------------------------------------
@@ -109,6 +120,20 @@ export const NEXT_ACTION_HEADER = "next-action";
 
 /** Next.js action-not-found indicator (value "1"). */
 export const NEXTJS_ACTION_NOT_FOUND_HEADER = "x-nextjs-action-not-found";
+
+/**
+ * Seconds the client router may reuse this response, resolved from the
+ * render's `cacheLife`. Mirrors Next.js's `NEXT_ROUTER_STALE_TIME_HEADER`;
+ * kept out of `Cache-Control`, which owns the shared-cache dimensions.
+ */
+export const NEXT_ROUTER_STALE_TIME_HEADER = "x-nextjs-stale-time";
+
+/**
+ * Marks a streamed cacheable RSC response whose `cacheLife` claim had not
+ * resolved at header time (value "1"). The client bounds such a response at
+ * min(30s floor, dynamic bound) instead of its fallback TTL.
+ */
+export const VINEXT_STALE_TIME_PENDING_HEADER = "X-Vinext-Stale-Time-Pending";
 
 /**
  * Deployment ID header used by the Pages Router for deployment-skew
@@ -216,4 +241,5 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 ];

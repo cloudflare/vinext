@@ -17,7 +17,11 @@ import {
 import { resolveBodyParserConfig } from "./pages-body-parser-config.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { cloneRequestWithUrl } from "./request-pipeline.js";
-import { isEdgeApiRuntime } from "./edge-api-runtime.js";
+import {
+  finalizeEdgeApiResponse,
+  isEdgeApiRuntime,
+  type EdgeApiExecutionRuntime,
+} from "./edge-api-runtime.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
 
@@ -92,15 +96,18 @@ type HandlePagesApiRouteOptions = {
    * response. Omit on Node.js dev where no Workers lifecycle exists.
    */
   ctx?: ExecutionContextLike;
+  edgeRuntime?: EdgeApiExecutionRuntime;
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
   url: string;
   nextConfig?: {
     basePath?: string;
+    allowedRevalidateHeaderKeys?: readonly string[];
     i18n?: NextI18nConfig | null;
     trailingSlash?: boolean;
   };
+  trustedRevalidateOrigin?: string;
 };
 
 function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesRequestQuery {
@@ -161,7 +168,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       );
       const response = await route.module.default(nextRequest);
       if (response instanceof Response) {
-        return response;
+        return finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
       }
 
       throw new Error("Edge API route did not return a Response");
@@ -189,9 +196,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       : undefined;
 
     const { req, res, responsePromise } = createPagesReqRes({
+      allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
       query,
       request: options.request,
+      trustedRevalidateOrigin: options.trustedRevalidateOrigin,
       url: options.url,
     });
 

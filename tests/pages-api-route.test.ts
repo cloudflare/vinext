@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   handlePagesApiRoute,
@@ -26,6 +29,30 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("does not expose process environment variables on the request", async () => {
+    const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+    process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch((req, res) => {
+          res.json({ hasEnv: Object.hasOwn(req, "env") });
+        }),
+        request: new Request("https://example.com/api/env"),
+        url: "/api/env",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ hasEnv: false });
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+      } else {
+        process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+      }
+    }
+  });
+
   it("merges dynamic params with duplicate query-string values", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch(
@@ -191,9 +218,12 @@ describe("pages api route", () => {
   });
 
   it("res.redirect() uses 307 by default and 2-arg form uses the given status", async () => {
+    let defaultReturnedResponse: unknown;
+    let defaultHandlerResponse: unknown;
     const defaultRedirectResponse = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
-        res.redirect("/new-path");
+        defaultHandlerResponse = res;
+        defaultReturnedResponse = res.redirect("/new-path");
       }),
       request: new Request("https://example.com/api/redir"),
       url: "/api/redir",
@@ -201,10 +231,16 @@ describe("pages api route", () => {
 
     expect(defaultRedirectResponse.status).toBe(307);
     expect(defaultRedirectResponse.headers.get("location")).toBe("/new-path");
+    expect(defaultRedirectResponse.headers.get("content-type")).toBeNull();
+    await expect(defaultRedirectResponse.text()).resolves.toBe("/new-path");
+    expect(defaultReturnedResponse).toBe(defaultHandlerResponse);
 
+    let customReturnedResponse: unknown;
+    let customHandlerResponse: unknown;
     const customRedirectResponse = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
-        res.redirect(301, "/permanent");
+        customHandlerResponse = res;
+        customReturnedResponse = res.redirect(301, "/permanent");
       }),
       request: new Request("https://example.com/api/redir"),
       url: "/api/redir",
@@ -212,6 +248,91 @@ describe("pages api route", () => {
 
     expect(customRedirectResponse.status).toBe(301);
     expect(customRedirectResponse.headers.get("location")).toBe("/permanent");
+    expect(customRedirectResponse.headers.get("content-type")).toBeNull();
+    await expect(customRedirectResponse.text()).resolves.toBe("/permanent");
+    expect(customReturnedResponse).toBe(customHandlerResponse);
+  });
+
+  it.each([
+    [null, undefined],
+    [307, undefined],
+    [true, "/destination"],
+  ])("res.redirect() rejects invalid arguments %#", async (statusOrUrl, url) => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.redirect(statusOrUrl as string | number, url);
+      }),
+      request: new Request("https://example.com/api/redir"),
+      url: "/api/redir",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("Internal Server Error");
+  });
+
+  it("res.revalidate() uses the trusted origin instead of the request host", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: URL | undefined;
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      capturedUrl =
+        typeof input === "string"
+          ? new URL(input)
+          : input instanceof URL
+            ? input
+            : new URL(input.url);
+      expect(input instanceof Request ? input.method : init?.method).toBe("HEAD");
+      return new Response(null, { status: 200 });
+    };
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch(async (_req, res) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        }),
+        request: new Request("http://127.0.0.1:9999/api/revalidate"),
+        trustedRevalidateOrigin: "http://app.local:3000",
+        url: "/api/revalidate",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ revalidated: true });
+      expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("res.revalidate() ignores Host header spoofing in Fetch request adapters", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: URL | undefined;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      capturedUrl =
+        typeof input === "string"
+          ? new URL(input)
+          : input instanceof URL
+            ? input
+            : new URL(input.url);
+      return new Response(null, { status: 200 });
+    };
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch(async (_req, res) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        }),
+        request: new Request("http://app.local:3000/api/revalidate", {
+          headers: { host: "127.0.0.1:9999" },
+        }),
+        url: "/api/revalidate",
+      });
+
+      expect(response.status).toBe(200);
+      expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("res.writeHead() lowercases header keys and joins array values", async () => {
@@ -227,6 +348,23 @@ describe("pages api route", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-custom")).toBe("value");
     expect(response.headers.get("x-multi")).toBe("a, b");
+  });
+
+  it("res.writeHead() replaces previously set Set-Cookie headers (Node.js parity)", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.setHeader("Set-Cookie", "existing=1");
+        res.writeHead(200, {
+          "Set-Cookie": ["replacement=2", "replacement-extra=3"],
+        });
+        res.end();
+      }),
+      request: new Request("https://example.com/api/cookie"),
+      url: "/api/cookie",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual(["replacement=2", "replacement-extra=3"]);
   });
 
   it("res.setHeader and res.getHeader round-trip correctly", async () => {
@@ -261,6 +399,32 @@ describe("pages api route", () => {
     expect(cookies).toEqual(["session=xyz"]);
   });
 
+  it("preserves Set-Cookie values when a caller mutates and resets the getHeader array", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        // Matches next-auth v4's setCookie helper:
+        // https://github.com/nextauthjs/next-auth/blob/next-auth%404.24.13/packages/next-auth/src/next/utils.ts#L5-L15
+        const appendCookie = (cookie: string) => {
+          let cookies = res.getHeader("Set-Cookie") ?? [];
+          if (!Array.isArray(cookies)) {
+            cookies = [String(cookies)];
+          }
+          cookies.push(cookie);
+          res.setHeader("Set-Cookie", cookies);
+        };
+
+        appendCookie("a=1; Path=/");
+        appendCookie("b=2; Path=/");
+        res.end();
+      }),
+      request: new Request("https://example.com/api/cookie"),
+      url: "/api/cookie",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+  });
+
   it("calls edge API route handlers with a Fetch Request and returns their Response", async () => {
     // Ported from Next.js: test/e2e/edge-async-local-storage/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-async-local-storage/index.test.ts
@@ -281,6 +445,70 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ id: "req-42" });
+  });
+
+  it("removes stale encoding headers after Node fetch decodes an edge API response", async () => {
+    // Ported from Next.js: packages/next/src/server/web/sandbox/sandbox.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/sandbox/sandbox.ts
+    const body = "Example Domain";
+    const compressedBody = gzipSync(body);
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-encoding": "gzip",
+        "content-length": String(compressedBody.byteLength),
+        "content-type": "text/plain",
+      });
+      res.end(compressedBody);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const address = upstream.address() as AddressInfo;
+      const response = await handlePagesApiRoute({
+        edgeRuntime: "node",
+        match: createMatch(
+          () => fetch(`http://127.0.0.1:${address.port}`),
+          {},
+          { runtime: "edge" },
+        ),
+        request: new Request("https://example.com/api/proxy"),
+        url: "/api/proxy",
+      });
+
+      expect(response.headers.get("content-encoding")).toBeNull();
+      expect(response.headers.get("content-length")).toBeNull();
+      await expect(response.text()).resolves.toBe(body);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("preserves encoded edge API responses in the Worker runtime", async () => {
+    const body = gzipSync("Example Domain");
+    const response = await handlePagesApiRoute({
+      edgeRuntime: "worker",
+      match: createMatch(
+        () =>
+          new Response(body, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(body.byteLength),
+              "content-type": "text/plain",
+            },
+          }),
+        {},
+        { runtime: "edge" },
+      ),
+      request: new Request("https://example.com/api/proxy"),
+      url: "/api/proxy",
+    });
+
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(response.headers.get("content-length")).toBe(String(body.byteLength));
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(body);
   });
 
   it("passes a NextRequest with nextUrl.searchParams to edge API handlers", async () => {

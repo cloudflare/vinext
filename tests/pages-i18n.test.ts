@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, it } from "vite-plus/test";
+import type { NextI18nConfig } from "../packages/vinext/src/config/next-config.js";
 
 describe("Pages i18n domain helpers", () => {
   let addLocalePrefix: typeof import("../packages/vinext/src/utils/domain-locale.js").addLocalePrefix;
+  let detectLocaleFromAcceptLanguage: typeof import("../packages/vinext/src/server/pages-i18n.js").detectLocaleFromAcceptLanguage;
   let detectDomainLocale: typeof import("../packages/vinext/src/server/pages-i18n.js").detectDomainLocale;
   let getLocaleRedirect: typeof import("../packages/vinext/src/server/pages-i18n.js").getLocaleRedirect;
   let resolvePagesI18nRequest: typeof import("../packages/vinext/src/server/pages-i18n.js").resolvePagesI18nRequest;
@@ -9,6 +11,7 @@ describe("Pages i18n domain helpers", () => {
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/server/pages-i18n.js");
     ({ addLocalePrefix } = await import("../packages/vinext/src/utils/domain-locale.js"));
+    detectLocaleFromAcceptLanguage = mod.detectLocaleFromAcceptLanguage;
     detectDomainLocale = mod.detectDomainLocale;
     getLocaleRedirect = mod.getLocaleRedirect;
     resolvePagesI18nRequest = mod.resolvePagesI18nRequest;
@@ -23,10 +26,38 @@ describe("Pages i18n domain helpers", () => {
       { domain: "example.fr", defaultLocale: "fr", http: true },
       { domain: "example.nl", defaultLocale: "nl-NL", locales: ["nl-BE"] },
     ],
-  };
+  } satisfies NextI18nConfig;
 
   it("matches configured domains ignoring port and case", () => {
     expect(detectDomainLocale(i18n.domains, "EXAMPLE.FR:3000")).toEqual(i18n.domains[1]);
+  });
+
+  it("does not select an Accept-Language entry with zero quality", () => {
+    // Ported from Next.js's Accept-Language parser, which skips q=0 entries:
+    // packages/next/src/server/accept-header.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/accept-header.ts
+    expect(detectLocaleFromAcceptLanguage("fr;q=0", i18n)).toBeNull();
+  });
+
+  it("uses configured locale order to break equal-quality ties", () => {
+    expect(detectLocaleFromAcceptLanguage("fr,en", i18n)).toBe("en");
+  });
+
+  it("matches language ranges to configured regional locales", () => {
+    expect(detectLocaleFromAcceptLanguage("nl", i18n)).toBe("nl-NL");
+  });
+
+  it("uses a wildcard to select the first unlisted configured locale", () => {
+    const wildcardI18n = { ...i18n, locales: ["fr", "en"] };
+    expect(detectLocaleFromAcceptLanguage("fr;q=0,*;q=0.5", wildcardI18n)).toBe("en");
+  });
+
+  it("accepts an uppercase quality parameter", () => {
+    expect(detectLocaleFromAcceptLanguage("fr;Q=0.8,en;Q=0.5", i18n)).toBe("fr");
+  });
+
+  it("ignores an invalid Accept-Language header", () => {
+    expect(detectLocaleFromAcceptLanguage("fr;q=0.8;level=1", i18n)).toBeNull();
   });
 
   it("matches a domain by locale aliases when switching locales", () => {
@@ -97,6 +128,17 @@ describe("Pages i18n domain helpers", () => {
         urlParsed: { hostname: "example.com", pathname: "/" },
       }),
     ).toBe("http://example.fr/");
+  });
+
+  it("does not redirect to a locale explicitly rejected by Accept-Language", () => {
+    expect(
+      getLocaleRedirect({
+        headers: { "accept-language": "fr;q=0" },
+        nextConfig: { i18n, basePath: "", trailingSlash: false },
+        pathLocale: undefined,
+        urlParsed: { hostname: "example.com", pathname: "/" },
+      }),
+    ).toBeUndefined();
   });
 
   it("does not redirect non-root requests for locale detection", () => {

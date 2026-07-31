@@ -1,5 +1,19 @@
 # create-vinext-app
 
+## 1.0.0-beta.1
+
+### Features
+
+- **Types:** ship Next-compatible types without Next.js (#2612)
+
+### Bug Fixes
+
+- **Create:** make create-vinext-app work with npm and npx (#2618)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.0
 
 ### Features

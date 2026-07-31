@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import { buildPrerenderKVPairs } from "../packages/cloudflare/src/prerender-kv-populate.js";
+import { createKvKeySpace } from "../packages/cloudflare/src/cache/kv-key.js";
 import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
 
 let serverDir: string;
@@ -45,8 +46,10 @@ describe("buildPrerenderKVPairs", () => {
             status: "rendered",
             revalidate: 60,
             expire: 300,
+            stale: 30,
             router: "app",
             headers: { link: "</font.woff2>; rel=preload; as=font" },
+            tags: ["test-update-tag"],
           },
         ],
       },
@@ -79,11 +82,12 @@ describe("buildPrerenderKVPairs", () => {
       lastModified: 1_000,
       revalidateAt: 61_000,
       expireAt: 301_000,
-      cacheControl: { revalidate: 60, expire: 300 },
+      cacheControl: { revalidate: 60, expire: 300, stale: 30 },
     });
     expect(pairs[0].metadata).toEqual({ tags: htmlEntry.tags });
     expect(htmlEntry.tags).toContain("/about");
     expect(htmlEntry.tags).toContain("_N_T_/about/page");
+    expect(htmlEntry.tags).toContain("test-update-tag");
 
     const rscEntry = JSON.parse(pairs[1].value);
     expect(rscEntry.value).toMatchObject({
@@ -172,6 +176,25 @@ describe("buildPrerenderKVPairs", () => {
     ]);
     expect(pairs[0].key).toMatch(/^cache:app:abc123:__hash:[0-9a-f]+:html$/);
     expect(pairs[1].key).toMatch(/^cache:app:abc123:__hash:[0-9a-f]+:rsc$/);
+  });
+
+  it("uses the runtime key space for oversized deploy-time KV keys", () => {
+    writePrerenderFixture(
+      {
+        buildId: "build-key-space",
+        routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+      },
+      { "about.html": "<html>About</html>" },
+    );
+    const logicalKey = appIsrCacheKey("/about", "html", "build-key-space");
+
+    for (const appPrefix of ["p".repeat(480), "🚀".repeat(130)]) {
+      const { pairs } = buildPrerenderKVPairs(serverDir, { appPrefix });
+      const runtimeKeySpace = createKvKeySpace(appPrefix);
+
+      expect(pairs[0].key).toBe(runtimeKeySpace.entryKey(logicalKey));
+      expect(new TextEncoder().encode(pairs[0].key).length).toBeLessThanOrEqual(512);
+    }
   });
 
   it("returns no pairs when the prerender manifest or artifacts are absent", () => {

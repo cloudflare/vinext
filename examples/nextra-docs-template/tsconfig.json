@@ -12,7 +12,8 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "types": ["vinext/types", "node"]
   },
   "include": ["**/*.ts", "**/*.tsx", "**/*.mdx"],
   "exclude": ["node_modules"]

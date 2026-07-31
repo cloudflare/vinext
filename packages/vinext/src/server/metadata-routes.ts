@@ -16,7 +16,7 @@
  * Static versions (xml/txt/json/png/etc.) are served as-is.
  */
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 
 // -------------------------------------------------------------------
@@ -438,7 +438,7 @@ function computeMetadataRouteSuffix(
 }
 
 function getMetadataRouteFilename(appDirPath: string, lastSegment: string): string {
-  const ext = path.posix.extname(lastSegment);
+  const ext = path.extname(lastSegment);
   const name = lastSegment.slice(0, -ext.length || undefined);
   const { suffix } = computeMetadataRouteSuffix(appDirPath, name);
   const routeSuffix = suffix ? `-${suffix}` : "";
@@ -566,8 +566,8 @@ function metadataRouteSuffix(parentSegments: string[], metaType: string): string
 
 function withMetadataSuffix(urlPath: string, suffix: string): string {
   if (!suffix) return urlPath;
-  const parsed = path.posix.parse(urlPath);
-  return path.posix.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
+  const parsed = path.parse(urlPath);
+  return path.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
 }
 
 function getMetadataServedUrl(

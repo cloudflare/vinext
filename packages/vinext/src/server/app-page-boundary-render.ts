@@ -11,10 +11,34 @@ import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
-import { resolveAppPageSpecialError, type AppPageFontPreload } from "./app-page-execution.js";
+import { stripBasePath } from "../utils/base-path.js";
+import {
+  buildAppPageSpecialErrorResponse,
+  bufferAppPageBinaryStream,
+  resolveAppPageSpecialError,
+  type AppPageFontPreload,
+  type AppPageSpecialError,
+} from "./app-page-execution.js";
+import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
+import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { resolveAppPageHead, type ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
+import {
+  resolveActiveParallelRouteHeadInputs,
+  resolveAppPageHead,
+  type ActiveParallelRouteHeadInput,
+  type ApplyAppPageFileBasedMetadata,
+} from "./app-page-head.js";
+import {
+  resolveHttpAccessFallbackMetadata,
+  resolveHttpAccessFallbackViewport,
+} from "./app-page-http-access-fallback-metadata.js";
+import {
+  resolveSlotParamOverrides,
+  type AppPageInterceptOptions,
+} from "./app-page-element-builder.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
@@ -24,11 +48,16 @@ import {
 } from "./app-page-boundary.js";
 import {
   createAppPageFontData,
+  createAppPageRscErrorTracker,
   renderAppPageHtmlResponse,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { createAppPageLayoutEntries, createAppPageSourcePage } from "./app-page-route-wiring.js";
+import {
+  createAppPageLayoutEntries,
+  createAppPageSourcePage,
+  type AppPageRouteWiringRoute,
+} from "./app-page-route-wiring.js";
 import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,13 +96,20 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
   errorPaths?: readonly TModule[] | null;
   errors?: readonly (TModule | null | undefined)[] | null;
   forbidden?: TModule | null;
+  forbiddenTreePosition?: number | null;
+  forbiddens?: readonly (TModule | null | undefined)[] | null;
   layoutTreePositions?: readonly number[] | null;
   layouts?: readonly (TModule | null | undefined)[];
   notFound?: TModule | null;
+  notFounds?: readonly (TModule | null | undefined)[] | null;
+  notFoundTreePosition?: number | null;
   params?: AppPageParams;
   pattern?: string;
   routeSegments?: readonly string[];
+  slots?: AppPageRouteWiringRoute<TModule>["slots"];
   unauthorized?: TModule | null;
+  unauthorizedTreePosition?: number | null;
+  unauthorizeds?: readonly (TModule | null | undefined)[] | null;
 };
 
 type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> = {
@@ -81,6 +117,7 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
+  getAndClearPendingCookies?: () => string[];
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
@@ -92,6 +129,17 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   makeThenableParams: (params: AppPageParams) => unknown;
   middlewareContext: AppPageMiddlewareContext;
   metadataRoutes: MetadataFileRoute[];
+  /**
+   * Whether metadata-origin redirects should ride as a 200 streaming response
+   * (HTML meta-refresh / RSC flight) rather than a blocking 307. Mirrors the
+   * matched-page dispatch decision `shouldServeStreamingMetadata(userAgent,
+   * htmlLimitedBots)`: html-limited bots get the blocking 307, so a
+   * `generateMetadata()` redirect thrown from a fallback boundary matches the
+   * matched-page path instead of always defaulting to streaming. Undefined
+   * means "not computed" and is treated as streaming, preserving prior behavior
+   * for callers that never hit metadata redirects.
+   */
+  serveStreamingMetadata?: boolean;
   /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
   basePath?: string;
   /** Configured next.config `trailingSlash`, threaded into canonical URL rendering. */
@@ -100,6 +148,7 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
     element: ReactNode | AppElements,
     options: { onError: AppPageBoundaryOnError },
   ) => ReadableStream<Uint8Array>;
+  request: Request;
   requestUrl: string;
   resolveChildSegments: (
     routeSegments: readonly string[],
@@ -114,11 +163,14 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
 type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> = {
   boundaryComponent?: AppPageComponent | null;
   boundaryModule?: TModule | null;
+  intercept?: AppPageInterceptOptions<TModule> | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   matchedParams: AppPageParams;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
+  /** Normalized, basePath-free application pathname used for route matching. */
+  routePathname?: string;
   route?: AppPageBoundaryRoute<TModule> | null;
   /**
    * When true, the resolved boundary is rendered without wrapping it in the
@@ -143,6 +195,37 @@ function getDefaultExport<TModule extends AppPageModule>(
   module: TModule | null | undefined,
 ): AppPageComponent | null {
   return module?.default ?? null;
+}
+
+function resolveHttpAccessBoundaryTreePosition<TModule extends AppPageModule>(
+  route: AppPageBoundaryRoute<TModule> | null | undefined,
+  boundaryModule: TModule | null | undefined,
+  statusCode: number,
+): number | null {
+  if (!route || !boundaryModule) return null;
+  const routeBoundary =
+    statusCode === 403 ? route.forbidden : statusCode === 401 ? route.unauthorized : route.notFound;
+  const layoutBoundaries =
+    statusCode === 403
+      ? route.forbiddens
+      : statusCode === 401
+        ? route.unauthorizeds
+        : route.notFounds;
+  if (boundaryModule === routeBoundary && statusCode === 404) {
+    return route.notFoundTreePosition ?? null;
+  }
+  if (boundaryModule === routeBoundary && statusCode === 403) {
+    return route.forbiddenTreePosition ?? null;
+  }
+  if (boundaryModule === routeBoundary && statusCode === 401) {
+    return route.unauthorizedTreePosition ?? null;
+  }
+  for (let index = (layoutBoundaries?.length ?? 0) - 1; index >= 0; index--) {
+    if (layoutBoundaries?.[index] === boundaryModule) {
+      return route.layoutTreePositions?.[index] ?? null;
+    }
+  }
+  return null;
 }
 
 function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
@@ -272,9 +355,47 @@ function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
   };
 }
 
+// Terminal special-error responder for HTTP-access fallback rendering — a
+// redirect/not-found/forbidden/unauthorized thrown *while* rendering a
+// not-found/forbidden/unauthorized boundary, whether that boundary comes from a
+// route miss or a matched route's own signal. It deliberately omits
+// `renderFallbackPage`, which scopes the guarantee here to redirects:
+//   - redirect() → 307 (document) or a 200 flight payload (RSC), fully handled.
+//   - notFound()/forbidden()/unauthorized() → the shared builder falls through
+//     to a plain status-text response. That is intentional: we are already
+//     inside boundary rendering, so re-entering fallback rendering would recurse
+//     on the same boundary. The matched layout/page paths pass a
+//     `renderFallbackPage` because they can climb to a *parent* boundary; the
+//     root boundary has none.
+function renderBoundarySpecialErrorResponse<TModule extends AppPageModule>(
+  options: AppPageBoundaryRenderCommonOptions<TModule>,
+  specialError: AppPageSpecialError,
+): Promise<Response> {
+  return buildAppPageSpecialErrorResponse({
+    basePath: options.basePath,
+    buildRscRedirectFlightStream: (rscOptions) =>
+      buildRscRedirectFlightStream({
+        renderToReadableStream: options.renderToReadableStream,
+        digest: rscOptions.digest,
+      }),
+    clearRequestContext: options.clearRequestContext,
+    getAndClearPendingCookies: options.getAndClearPendingCookies,
+    isEdgeRuntime: options.isEdgeRuntime,
+    isRscRequest: options.isRscRequest,
+    middlewareContext: options.middlewareContext,
+    // Thread the streaming-metadata decision so a generateMetadata() redirect
+    // from this fallback boundary honors html-limited bots (blocking 307),
+    // matching the matched-page dispatch path. Undefined stays streaming.
+    serveStreamingMetadata: options.serveStreamingMetadata,
+    request: options.request,
+    specialError,
+  });
+}
+
 async function renderAppPageBoundaryElementResponse<TModule extends AppPageModule>(
   options: AppPageBoundaryRenderCommonOptions<TModule> & {
     element: ReactNode;
+    handleSpecialErrors?: boolean;
     initialDevServerError?: unknown;
     layoutModules: readonly (TModule | null | undefined)[];
     navigationParams?: AppPageParams;
@@ -293,42 +414,108 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     sourcePageSegments: options.sourcePageSegments,
   });
 
-  return renderAppPageBoundaryResponse({
-    async createHtmlResponse(rscStream, responseStatus) {
-      const fontData = createAppPageFontData({
-        getLinks: options.getFontLinks,
-        getPreloads: options.getFontPreloads,
-        getStyles: options.getFontStyles,
-      });
-      const ssrHandler = await options.loadSsrHandler();
-      return renderAppPageHtmlResponse({
-        clearRequestContext: options.clearRequestContext,
-        fontData,
-        fontLinkHeader: options.buildFontLinkHeader(fontData.preloads),
-        isEdgeRuntime: options.isEdgeRuntime,
-        middlewareHeaders: options.middlewareContext.headers,
-        navigationContext: options.getNavigationContext() ?? {
-          pathname,
-          searchParams: requestUrl.searchParams,
-          params: options.navigationParams ?? options.route?.params ?? {},
-        },
-        rscStream,
-        scriptNonce: options.scriptNonce,
-        ssrHandler,
-        status: responseStatus,
-        initialDevServerError: options.initialDevServerError,
-      });
-    },
-    createRscOnErrorHandler() {
-      return options.createRscOnErrorHandler(pathname, options.routePattern ?? pathname);
-    },
-    element: payload,
-    isEdgeRuntime: options.isEdgeRuntime,
-    isRscRequest: options.isRscRequest,
-    middlewareHeaders: options.middlewareContext.headers,
-    renderToReadableStream: options.renderToReadableStream,
-    status: options.status,
-  });
+  const baseRscOnErrorHandler = options.createRscOnErrorHandler(
+    pathname,
+    options.routePattern ?? pathname,
+  );
+  const rscErrorTracker = createAppPageRscErrorTracker(baseRscOnErrorHandler);
+  const resolveCapturedSpecialError = (error?: unknown) =>
+    resolveAppPageSpecialError(error) ??
+    resolveAppPageSpecialError(rscErrorTracker.getCapturedSpecialError());
+  const renderSpecialErrorResponse = (specialError: AppPageSpecialError) =>
+    renderBoundarySpecialErrorResponse(options, specialError);
+  const handleSpecialErrors = options.handleSpecialErrors === true;
+
+  let response: Response;
+  try {
+    response = await renderAppPageBoundaryResponse({
+      async createHtmlResponse(rscStream, responseStatus) {
+        const fontData = createAppPageFontData({
+          getLinks: options.getFontLinks,
+          getPreloads: options.getFontPreloads,
+          getStyles: options.getFontStyles,
+        });
+        const ssrHandler = await options.loadSsrHandler();
+        return renderAppPageHtmlResponse({
+          clearRequestContext: options.clearRequestContext,
+          fontData,
+          fontLinkHeader: options.buildFontLinkHeader(fontData.preloads),
+          isEdgeRuntime: options.isEdgeRuntime,
+          middlewareHeaders: options.middlewareContext.headers,
+          navigationContext: options.getNavigationContext() ?? {
+            pathname,
+            searchParams: requestUrl.searchParams,
+            params: options.navigationParams ?? options.route?.params ?? {},
+          },
+          rscStream,
+          scriptNonce: options.scriptNonce,
+          ssrHandler,
+          status: responseStatus,
+          initialDevServerError: options.initialDevServerError,
+        });
+      },
+      createRscOnErrorHandler() {
+        return rscErrorTracker.onRenderError;
+      },
+      element: payload,
+      isEdgeRuntime: options.isEdgeRuntime,
+      isRscRequest: options.isRscRequest,
+      middlewareHeaders: options.middlewareContext.headers,
+      renderToReadableStream: options.renderToReadableStream,
+      status: options.status,
+    });
+  } catch (error) {
+    const specialError = handleSpecialErrors ? resolveCapturedSpecialError(error) : null;
+    if (specialError !== null) {
+      return renderSpecialErrorResponse(specialError);
+    }
+    throw error;
+  }
+
+  if (!handleSpecialErrors) {
+    return response;
+  }
+
+  // RSC responses are returned without being consumed here, so a
+  // redirect()/notFound() thrown by an *async* server component — e.g. a root
+  // layout that `await headers()` before redirect() — has not yet surfaced
+  // through React's onError when the capture check below runs. Drain a tee'd
+  // copy to force the render to settle so the special error is captured before
+  // we commit the raw boundary response, then hand the buffered copy back as
+  // the body. The document path already consumes the stream in
+  // createHtmlResponse, so this only applies to RSC.
+  //
+  // This applies to every HTTP-access fallback render, not just route misses:
+  // a matched route's notFound()/forbidden()/unauthorized() renders its
+  // boundary through this same path, and a layout there can async-redirect too.
+  // These are terminal error documents (a not-found/forbidden UI), so buffering
+  // one before responding is an acceptable cost for correct redirect handling —
+  // and correctness must not depend on whether the boundary happens to be a
+  // route miss. Mirrors app-page-render.ts's pre-flush special-error capture.
+  if (options.isRscRequest && response.body) {
+    const bufferedStream = await bufferAppPageBinaryStream(response.body);
+    response = new Response(bufferedStream, {
+      status: response.status,
+      headers: response.headers,
+    });
+  }
+
+  const specialError = resolveCapturedSpecialError();
+  if (!specialError) {
+    return response;
+  }
+
+  if (response.body) {
+    try {
+      await response.body.cancel();
+    } catch {
+      // Best-effort cleanup. The response is being replaced by a terminal
+      // redirect/http-access response, so a cancellation race cannot affect
+      // the observable request result.
+    }
+  }
+
+  return renderSpecialErrorResponse(specialError);
 }
 
 export async function renderAppPageHttpAccessFallback<TModule extends AppPageModule>(
@@ -356,21 +543,135 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const pathname = new URL(options.requestUrl).pathname;
+  const routePathname =
+    options.routePathname ?? stripRscSuffix(stripBasePath(pathname, options.basePath ?? ""));
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
-  const { metadata, viewport } = await resolveAppPageHead({
-    applyFileBasedMetadata: options.applyFileBasedMetadata,
-    basePath: options.basePath ?? "",
-    layoutModules,
-    layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
-      options.route,
-      layoutModules,
-    ),
-    metadataRoutes: options.metadataRoutes,
-    pageModule: boundaryModule,
-    params: options.matchedParams,
-    routePath: options.route?.pattern ?? pathname,
-    routeSegments,
-  });
+  const fallbackRouteSegments = routeSegments ?? [];
+  let head: Pick<Awaited<ReturnType<typeof resolveAppPageHead>>, "metadata" | "viewport">;
+  try {
+    const useHttpAccessHeadPlan = [401, 403, 404].includes(options.statusCode);
+    if (useHttpAccessHeadPlan) {
+      const boundaryTreePosition = resolveHttpAccessBoundaryTreePosition(
+        options.route,
+        boundaryModule,
+        options.statusCode,
+      );
+      const boundaryParams =
+        boundaryTreePosition == null
+          ? {}
+          : resolveAppPageSegmentParams(
+              fallbackRouteSegments,
+              boundaryTreePosition,
+              options.matchedParams,
+            );
+      const intercept = options.intercept;
+      const isSiblingIntercept =
+        intercept?.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
+        intercept.interceptPage != null;
+      const effectiveParams = isSiblingIntercept
+        ? (intercept.interceptParams ?? options.matchedParams)
+        : options.matchedParams;
+      const slotParams = resolveSlotParamOverrides(
+        { slots: options.route?.slots ?? null },
+        routePathname,
+      );
+      const parallelBranches = resolveActiveParallelRouteHeadInputs({
+        interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
+        interceptLayouts: intercept?.interceptLayouts ?? null,
+        interceptLayoutSegments: intercept?.interceptLayoutSegments ?? null,
+        interceptNotFoundBranchSegments: intercept?.interceptNotFoundBranchSegments ?? null,
+        interceptNotFound: intercept?.interceptNotFound ?? null,
+        interceptNotFoundTreePosition: intercept?.interceptNotFoundTreePosition ?? null,
+        interceptPage: intercept?.interceptPage ?? null,
+        interceptParams: intercept?.interceptParams ?? null,
+        interceptSlotKey: intercept?.interceptSlotKey ?? null,
+        interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
+        layoutTreePositions: options.route?.layoutTreePositions,
+        params: options.matchedParams,
+        routeSegments: fallbackRouteSegments,
+        slotParams,
+        slots: options.route?.slots ?? null,
+      });
+      const primaryParallelBranch: ActiveParallelRouteHeadInput<TModule> | null = isSiblingIntercept
+        ? {
+            head: {
+              layoutModules: intercept?.interceptLayouts ?? [],
+              layoutParams: (intercept?.interceptLayoutSegments ?? []).map((segments) =>
+                resolveAppPageBranchParams(
+                  intercept?.interceptBranchSegments ?? segments,
+                  segments.length,
+                  effectiveParams,
+                  segments,
+                ),
+              ),
+              pageModule: intercept?.interceptPage ?? null,
+              params: effectiveParams,
+              routeSegments: intercept?.interceptSourcePageSegments ?? fallbackRouteSegments,
+            },
+            ...(intercept?.interceptNotFound
+              ? {
+                  notFoundModule: intercept.interceptNotFound,
+                  notFoundParams: resolveAppPageBranchParams(
+                    intercept.interceptNotFoundBranchSegments ??
+                      intercept.interceptBranchSegments ??
+                      fallbackRouteSegments,
+                    intercept.interceptNotFoundTreePosition ?? 0,
+                    effectiveParams,
+                  ),
+                }
+              : {}),
+            ownerTreePosition: fallbackRouteSegments.length,
+          }
+        : null;
+      const fallbackHeadOptions = {
+        boundaryModule,
+        boundaryParams,
+        branchNotFoundConventions: options.statusCode === 404,
+        layoutModules,
+        layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
+          options.route,
+          layoutModules,
+        ),
+        parallelBranches,
+        params: options.matchedParams,
+        primaryParallelBranch,
+        routeSegments,
+      };
+      const [metadata, viewport] = await Promise.all([
+        resolveHttpAccessFallbackMetadata({
+          applyFileBasedMetadata: options.applyFileBasedMetadata,
+          basePath: options.basePath ?? "",
+          ...fallbackHeadOptions,
+          metadataRoutes: options.metadataRoutes,
+          routePath: options.route?.pattern ?? pathname,
+        }),
+        resolveHttpAccessFallbackViewport(fallbackHeadOptions),
+      ]);
+      head = { metadata, viewport };
+    } else {
+      head = await resolveAppPageHead({
+        applyFileBasedMetadata: options.applyFileBasedMetadata,
+        basePath: options.basePath ?? "",
+        layoutModules,
+        layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
+          options.route,
+          layoutModules,
+        ),
+        metadataRoutes: options.metadataRoutes,
+        pageModule: boundaryModule,
+        params: options.matchedParams,
+        routePath: options.route?.pattern ?? pathname,
+        routeSegments,
+      });
+    }
+  } catch (error) {
+    const specialError = resolveAppPageSpecialError(error);
+    if (specialError) {
+      return renderBoundarySpecialErrorResponse(options, specialError);
+    }
+    throw error;
+  }
+  const { metadata, viewport } = head;
 
   const headElements: ReactNode[] = [
     createElement("meta", { charSet: "utf-8", key: "charset" }),
@@ -409,6 +710,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     // the RSC payload's layout entries either — otherwise the SSR pipeline
     // would expect a root-layout tree path that doesn't exist in the markup.
     element,
+    handleSpecialErrors: true,
     layoutModules: skipLayoutWrapping ? [] : layoutModules,
     navigationParams: options.matchedParams,
     route: skipLayoutWrapping ? null : options.route,

@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
+  bufferAppPageBinaryStream,
   probeAppPageComponent,
   probeAppPageLayouts,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
+import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
@@ -42,6 +44,7 @@ describe("app page execution helpers", () => {
       kind: "redirect",
       location: "/redirected",
       statusCode: 308,
+      type: "replace",
     });
 
     expect(
@@ -68,11 +71,12 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(redirectResponse.status).toBe(307);
-    expect(redirectResponse.headers.get("location")).toBe("https://example.com/redirected");
+    expect(redirectResponse.headers.get("location")).toBe("/redirected");
     expect(redirectResponse.headers.get("x-middleware-security")).toBe("present");
     expect(redirectResponse.headers.get("vary")).toBe("x-auth-state");
     expect(redirectResponse.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
@@ -127,10 +131,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/about",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(internalRedirect.headers.get("location")).toBe("https://example.com/blog/about");
+    expect(internalRedirect.headers.get("location")).toBe("/blog/about");
 
     // External redirects (different origin) must NOT be prefixed — they're
     // outside the app's basePath scope.
@@ -143,13 +148,59 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "https://other.example/foo",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(externalRedirect.headers.get("location")).toBe("https://other.example/foo");
 
-    // Targets that already include the basePath prefix must be left alone
-    // (caller already did the work or middleware-driven redirect).
+    const sameOriginAbsoluteRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "https://example.com/outside",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(sameOriginAbsoluteRedirect.headers.get("location")).toBe("https://example.com/outside");
+
+    const relativeRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "next",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(relativeRedirect.headers.get("location")).toBe("next");
+
+    const protocolRelativeRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "//other.example/foo",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(protocolRelativeRedirect.headers.get("location")).toBe("/blog//other.example/foo");
+
+    // Next.js's addPathPrefix unconditionally prepends basePath to every raw
+    // slash-prefixed target, even if the caller already included it.
     const alreadyPrefixed = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
       clearRequestContext,
@@ -159,10 +210,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/blog/about",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(alreadyPrefixed.headers.get("location")).toBe("https://example.com/blog/about");
+    expect(alreadyPrefixed.headers.get("location")).toBe("/blog/blog/about");
 
     const alreadyPrefixedRootWithQuery = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
@@ -173,12 +225,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/blog?from=checkout",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(alreadyPrefixedRootWithQuery.headers.get("location")).toBe(
-      "https://example.com/blog?from=checkout",
-    );
+    expect(alreadyPrefixedRootWithQuery.headers.get("location")).toBe("/blog/blog?from=checkout");
 
     const alreadyPrefixedRootWithHash = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
@@ -189,12 +240,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/blog#top",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(alreadyPrefixedRootWithHash.headers.get("location")).toBe(
-      "https://example.com/blog#top",
-    );
+    expect(alreadyPrefixedRootWithHash.headers.get("location")).toBe("/blog/blog#top");
 
     // No basePath configured → behavior unchanged (resolves against the
     // request URL as before).
@@ -206,13 +256,13 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/about",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(unconfigured.headers.get("location")).toBe("https://example.com/about");
+    expect(unconfigured.headers.get("location")).toBe("/about");
 
-    // Redirect to root ("/") under basePath should land on the basePath itself,
-    // not "/blog/" with a trailing slash artifact.
+    // Raw prefixing preserves the original root slash.
     const rootRedirect = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
       clearRequestContext,
@@ -222,10 +272,29 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(rootRedirect.headers.get("location")).toBe("https://example.com/blog");
+    expect(rootRedirect.headers.get("location")).toBe("/blog/");
+  });
+
+  it("buffers a binary stream once and replays its original chunks", async () => {
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) controller.enqueue(new TextEncoder().encode("first"));
+        else if (pullCount === 2) controller.enqueue(new TextEncoder().encode("second"));
+        else controller.close();
+      },
+    });
+
+    const replay = await bufferAppPageBinaryStream(source);
+
+    expect(pullCount).toBe(3);
+    await expect(readStreamAsText(replay)).resolves.toBe("firstsecond");
+    expect(pullCount).toBe(3);
   });
 
   it("appends pending cookies (cookies().set during render) to redirect responses", async () => {
@@ -251,11 +320,12 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/dashboard",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(redirectWithCookies.status).toBe(307);
-    expect(redirectWithCookies.headers.get("location")).toBe("https://example.com/dashboard");
+    expect(redirectWithCookies.headers.get("location")).toBe("/dashboard");
     const setCookies = redirectWithCookies.headers.getSetCookie();
     expect(setCookies).toContain("session=fresh; Path=/; HttpOnly");
     expect(setCookies).toContain("csrf=abc; Path=/");
@@ -273,6 +343,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/dashboard",
         statusCode: 307,
+        type: "replace",
       },
     });
 
@@ -348,17 +419,110 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toMatch(/^text\/x-component/);
     expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("x-vinext-rsc-redirect")).toBe("/redirected");
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("replace");
     expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
     expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
       digest: "NEXT_REDIRECT;replace;/redirected;307;",
     });
     await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
+  });
+
+  it("preserves explicit push semantics in RSC redirect flights", async () => {
+    const buildRscRedirectFlightStream = vi.fn(
+      ({ digest }: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(digest));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "push",
+      },
+    });
+
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("push");
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;push;/redirected;307;",
+    });
+  });
+
+  it("keeps framework redirect side-channel headers authoritative over middleware", async () => {
+    const middlewareHeaders = new Headers({
+      "X-Vinext-Rsc-Redirect": "/middleware-target",
+      "X-Vinext-Rsc-Redirect-Type": "push",
+    });
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      middlewareContext: { headers: middlewareHeaders },
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/actual-target",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(response.headers.get("x-vinext-rsc-redirect")).toBe("/actual-target");
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("replace");
+  });
+
+  it("preserves semicolons through encoded redirect parsing and raw Flight re-emission", async () => {
+    const specialError = resolveAppPageSpecialError({
+      digest: "NEXT_REDIRECT;;%2Fdocs%3Bpart;307",
+    });
+    expect(specialError).toEqual({
+      kind: "redirect",
+      location: "/docs;part",
+      statusCode: 307,
+      type: "replace",
+    });
+
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(options.digest));
+            controller.close();
+          },
+        }),
+    );
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: specialError!,
+    });
+    const emittedDigest = await response.text();
+
+    expect(emittedDigest).toBe("NEXT_REDIRECT;replace;/docs;part;307;");
+    expect(parseNextRedirectDigest(emittedDigest)).toEqual({
+      status: 307,
+      type: "replace",
+      url: "/docs;part",
+    });
   });
 
   it("keeps metadata-originated RSC redirects on the Flight digest path", async () => {
@@ -388,6 +552,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
         fromMetadata: true,
       },
     });
@@ -430,6 +595,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
         fromMetadata: true,
       },
     });
@@ -466,12 +632,13 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
         fromMetadata: true,
       },
     });
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe("https://example.com/redirected");
+    expect(response.headers.get("location")).toBe("/redirected");
     expect(buildRscRedirectFlightStream).not.toHaveBeenCalled();
   });
 
@@ -495,6 +662,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/permanent-target",
         statusCode: 308,
+        type: "replace",
       },
     });
 
@@ -513,6 +681,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
       },
     });
 
@@ -535,6 +704,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected?tab=1",
         statusCode: 307,
+        type: "replace",
       },
     });
 

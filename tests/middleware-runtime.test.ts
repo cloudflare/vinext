@@ -70,6 +70,32 @@ describe("middleware redirect protocol", () => {
     expect(result.response?.headers.get("Location")).toBe("/another");
   });
 
+  it("preserves unconsumed request-header values on redirects", async () => {
+    const module = {
+      default: (req: Request) =>
+        new Response(null, {
+          status: 307,
+          headers: {
+            location: new URL("/another", req.url).toString(),
+            "x-middleware-request-x-added": "forged-by-middleware",
+          },
+        }),
+    };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/start"),
+    });
+
+    expect(result.responseHeaders?.get("x-middleware-request-x-added")).toBe(
+      "forged-by-middleware",
+    );
+    expect(result.response?.headers.get("x-middleware-request-x-added")).toBe(
+      "forged-by-middleware",
+    );
+  });
+
   it("preserves the search string when relativizing the Location header", async () => {
     const module = {
       default: (req: Request) => {
@@ -326,5 +352,22 @@ describe("middleware nextUrl basePath", () => {
     expect(result.continue).toBe(true);
     expect(captured.request?.nextUrl.basePath).toBe("/root");
     expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
+  });
+
+  it("matches encoded aliases while exposing the raw pathname to middleware", async () => {
+    // Next.js tries middleware matchers against both the request pathname and
+    // its decoded form, while NextRequest keeps the original encoded value.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const { captured, module } = captureModule();
+    const moduleWithMatcher = { ...module, config: { matcher: "/about" } };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: moduleWithMatcher,
+      request: new Request("http://localhost:3000/%61bout"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.pathname).toBe("/%61bout");
   });
 });

@@ -17,6 +17,7 @@ import { buildPagesFixture, buildAppFixture, buildCloudflareAppFixture } from ".
 import {
   extractRscPayloadFromPrerenderedHtml,
   resolveParentParams,
+  writePrerenderIndex,
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
@@ -704,6 +705,39 @@ describe("prerenderPages — default mode (pages-basic)", () => {
   });
 });
 
+describe("writePrerenderIndex", () => {
+  it("carries the resolved cacheLife stale into the written index", () => {
+    // Regression: seedMemoryCacheFromPrerender reads `route.stale` from
+    // vinext-prerender.json — dropping it here silently reverts seeded cache
+    // hits to the configured staleTimes fallback.
+    const dir = tmpDir("vinext-prerender-index-");
+    writePrerenderIndex(
+      [
+        {
+          route: "/cached",
+          status: "rendered",
+          outputFiles: ["cached.html"],
+          revalidate: 60,
+          expire: 300,
+          stale: 30,
+          router: "app",
+        },
+      ],
+      dir,
+      { buildId: "b1" },
+    );
+
+    const index = JSON.parse(fs.readFileSync(path.join(dir, "vinext-prerender.json"), "utf-8"));
+    expect(index.routes[0]).toMatchObject({
+      route: "/cached",
+      revalidate: 60,
+      expire: 300,
+      stale: 30,
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe("prerenderPages — export mode (pages-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];
@@ -863,6 +897,39 @@ describe("prerenderApp — default mode (app-basic)", () => {
       (route: { route: string }) => route.route === "/prerender-cache-life",
     );
     expect(manifestRoute).toMatchObject({ revalidate: 1, expire: 3 });
+  });
+
+  it("embeds the completed cacheLife stale time in prerendered initial HTML", () => {
+    // The prerender path consumes request-scoped cache metadata after the RSC
+    // stream settles. The later HTML done script must reuse that completed
+    // value so hydration seeds the visited-response cache with the same stale
+    // claim that warm HTML/RSC cache-hit headers replay.
+    const r = findRoute(results, "/use-cache-test");
+    expect(r).toMatchObject({
+      route: "/use-cache-test",
+      status: "rendered",
+      revalidate: 1,
+      stale: 30,
+    });
+
+    const html = fs.readFileSync(path.join(outDir, "use-cache-test.html"), "utf-8");
+    expect(html).toContain('"initialCacheKind":"static"');
+    expect(html).toContain('"staleTimeSeconds":30');
+  });
+
+  it("records collected App Router cache tags for cache seeding", () => {
+    const r = findRoute(results, "/unstable-cache-test");
+    expect(r).toMatchObject({
+      status: "rendered",
+      tags: expect.arrayContaining(["unstable-data"]),
+    });
+
+    const indexPath = path.join(outDir, "vinext-prerender.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const manifestRoute = index.routes.find(
+      (route: { route: string }) => route.route === "/unstable-cache-test",
+    );
+    expect(manifestRoute.tags).toEqual(expect.arrayContaining(["unstable-data"]));
   });
 
   it("infers App Router ISR prerender metadata from cacheLife without route revalidate", () => {
@@ -1506,12 +1573,17 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
 
 describe("runPrerender — output: 'export' wiring", () => {
   let pagesBundlePath: string;
+  let exportNextConfig: Awaited<
+    ReturnType<typeof import("../packages/vinext/src/config/next-config.js").resolveNextConfig>
+  >;
 
   beforeAll(async () => {
     // Build pages-basic to a fresh tmpdir — no fixture copying needed.
-    // Pass the bundle path and a nextConfigOverride to runPrerender so it
+    // Pass the bundle path and resolved config to runPrerender so it
     // exercises output: 'export' without touching the real next.config.mjs.
     pagesBundlePath = await buildPagesFixture(PAGES_FIXTURE);
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    exportNextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
   }, 120_000);
 
   it("throws when next.config output: 'export' and SSR routes exist", async () => {
@@ -1519,10 +1591,34 @@ describe("runPrerender — output: 'export' wiring", () => {
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
-        nextConfigOverride: { output: "export" },
+        nextConfig: exportNextConfig,
         pagesBundlePath,
       }),
     ).rejects.toThrow(/Static export failed/);
+  });
+
+  it("does not reload disk config when the caller supplies resolved config", async () => {
+    const configPath = path.join(PAGES_FIXTURE, "next.config.mjs");
+    const originalConfig = fs.readFileSync(configPath, "utf-8");
+
+    try {
+      fs.writeFileSync(configPath, 'throw new Error("disk config loaded unexpectedly");\n');
+      const [{ runPrerender }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/run-prerender.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const nextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
+
+      await expect(
+        runPrerender({
+          root: PAGES_FIXTURE,
+          nextConfig,
+          pagesBundlePath,
+        }),
+      ).rejects.toThrow(/Static export failed/);
+    } finally {
+      fs.writeFileSync(configPath, originalConfig);
+    }
   });
 
   it("does not rewrite the Worker entry when prerender validation fails", async () => {
@@ -1536,7 +1632,7 @@ describe("runPrerender — output: 'export' wiring", () => {
       await expect(
         runPrerender({
           root: PAGES_FIXTURE,
-          nextConfigOverride: { output: "export" },
+          nextConfig: exportNextConfig,
           pagesBundlePath,
         }),
       ).rejects.toThrow(/Static export failed/);
@@ -1552,7 +1648,7 @@ describe("runPrerender — output: 'export' wiring", () => {
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
-        nextConfigOverride: { output: "export" },
+        nextConfig: exportNextConfig,
         pagesBundlePath,
       }),
     ).rejects.toThrow(/\/ssr/);

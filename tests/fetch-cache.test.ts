@@ -48,6 +48,7 @@ const {
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
+  runWithFetchDedupe,
   getOriginalFetch,
   _resetPendingRefetches,
   consumeDynamicFetchObservations,
@@ -783,7 +784,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     // Invalidate via tag
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Should re-fetch after tag invalidation
@@ -806,7 +807,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Invalidate only "posts"
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Posts should re-fetch
@@ -823,6 +824,69 @@ describe("fetch cache shim", () => {
     const userData = await userRes.json();
     expect(userData.count).toBe(2); // Still the cached version
     expect(fetchMock).toHaveBeenCalledTimes(3); // Only posts re-fetched
+  });
+
+  it("bypasses a stored tagged fetch while its request-local invalidation is pending", async () => {
+    const previousHandler = getCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+
+    let getCalls = 0;
+    setCacheHandler({
+      async get() {
+        getCalls++;
+        if (getCalls === 1) return null;
+        return {
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ count: 1 }),
+              url: "https://api.example.com/pending-tag",
+            },
+            tags: ["posts"],
+            revalidate: 60,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+      },
+    });
+
+    try {
+      await runWithRequestContext(createRequestContext(), () =>
+        runWithFetchDedupe(async () => {
+          const initialResponse = await fetch("https://api.example.com/pending-tag", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await initialResponse.json()).count).toBe(1);
+
+          expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
+          await invalidationStarted;
+
+          // The current call deliberately omits `next.tags`: the stored entry's
+          // tags must reject it and bypass the pre-invalidation request dedupe.
+          const response = await fetch("https://api.example.com/pending-tag", {
+            next: { revalidate: 60 },
+          });
+          expect((await response.json()).count).toBe(2);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        }),
+      );
+    } finally {
+      releaseInvalidation();
+      setCacheHandler(previousHandler);
+    }
   });
 
   // ── TTL expiry (stale-while-revalidate) ─────────────────────────────
@@ -1506,7 +1570,7 @@ describe("fetch cache shim", () => {
     const data1 = await res1.json();
     expect(data1.count).toBe(1);
 
-    await revalidatePath("/posts/hello");
+    await Promise.resolve(revalidatePath("/posts/hello"));
     startNewFetchCacheScope();
     setCurrentFetchSoftTags(["_N_T_/posts/hello"]);
 

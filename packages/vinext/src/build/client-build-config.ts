@@ -1,4 +1,5 @@
 import type { UserConfig } from "vite";
+import { toSlash } from "pathslash";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
@@ -13,6 +14,7 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "dynamic-preload-chunks",
   "form",
   "image",
+  "internal/hybrid-client-route-owner",
   "layout-segment-context",
   "legacy-image",
   "link",
@@ -70,7 +72,7 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const normalizedId = id.replaceAll("\\", "/");
+  const normalizedId = toSlash(id);
   const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
   const rest = normalizedId.slice(nmIdx + "node_modules/".length);
@@ -116,7 +118,31 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
     if (id.includes("node_modules")) {
       const pkg = getPackageName(id);
       if (!pkg) return undefined;
-      if (pkg === "react" || pkg === "react-dom" || pkg === "scheduler") {
+      if (pkg === "react-dom") {
+        // The server renderer (Fizz: renderToString / renderToReadableStream /
+        // renderToStaticMarkup, plus the prerender "static" APIs) is only needed
+        // by client code that explicitly imports those APIs.
+        // Keying the always-loaded "framework" chunk on the bare package name
+        // ("react-dom") would otherwise drag react-dom/server.browser — and its
+        // sizeable cjs implementation — into every page, even though most client
+        // routes do not render to a string (an embedded Sanity Studio is one
+        // example that does). Split those entrypoints into their own chunk
+        // so the server renderer loads lazily, only on routes that use it,
+        // instead of weighing down first paint on every page.
+        // Windows ids carry backslashes, so slash-normalize before matching
+        // the "react-dom/" separator (same convention as getPackageName).
+        const slashedId = toSlash(id);
+        const sub = slashedId.slice(slashedId.lastIndexOf("react-dom/") + "react-dom/".length);
+        if (
+          sub.startsWith("server.") ||
+          sub.startsWith("static.") ||
+          sub.startsWith("cjs/react-dom-server")
+        ) {
+          return "react-dom-server";
+        }
+        return "framework";
+      }
+      if (pkg === "react" || pkg === "scheduler") {
         return "framework";
       }
       // Let the bundler handle all other vendor code via its default
@@ -126,9 +152,12 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
       return undefined;
     }
 
-    if (id.startsWith(shimsDir)) {
+    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
+    // id can carry native backslashes on Windows, so slash it before matching.
+    const slashedId = toSlash(id);
+    if (slashedId.startsWith(shimsDir)) {
       if (preserveRouteBoundaries) {
-        const relativeId = id.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
         const extensionIndex = relativeId.lastIndexOf(".");
         const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
         if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;

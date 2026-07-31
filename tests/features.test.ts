@@ -25,7 +25,7 @@ import {
 } from "./helpers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -576,6 +576,16 @@ describe("ISR (Pages Router)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
 
+  function readGeneration(html: string): number {
+    return Number(html.match(/data-testid="generation">(\d+)</)?.[1]);
+  }
+
+  function expectDevCacheHeaders(response: Response): void {
+    expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+  }
+
   beforeAll(async () => {
     ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR));
   });
@@ -584,112 +594,72 @@ describe("ISR (Pages Router)", () => {
     await server?.close();
   });
 
-  it("renders ISR page on first request (cache MISS)", async () => {
+  it("renders a GSP page with the Next.js development cache boundary", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("ISR Page");
     expect(html).toContain("Hello from ISR");
-    // First request should be a cache miss
-    expect(res.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+    expect(readGeneration(html)).toBeGreaterThan(0);
+    expectDevCacheHeaders(res);
   });
 
-  it("serves cached ISR page on second request (cache HIT)", async () => {
-    // First request populates the cache
+  it("reruns getStaticProps on immediate repeated requests", async () => {
     const res1 = await fetch(`${baseUrl}/isr-test`);
     expect(res1.status).toBe(200);
     const html1 = await res1.text();
-    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp1Match).toBeTruthy();
-    const timestamp1 = timestamp1Match![1];
+    const generation1 = readGeneration(html1);
+    expect(generation1).toBeGreaterThan(0);
 
-    // Second request should be a cache hit with same timestamp
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
     const html2 = await res2.text();
-    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
-    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp2Match).toBeTruthy();
-    expect(timestamp2Match![1]).toBe(timestamp1);
+    expect(readGeneration(html2)).toBeGreaterThan(generation1);
+    expectDevCacheHeaders(res1);
+    expectDevCacheHeaders(res2);
   });
 
-  it("serves stale content after TTL expires then regenerates", async () => {
-    // First request populates cache
+  it("continues rerunning after the configured revalidate interval", async () => {
     const res1 = await fetch(`${baseUrl}/isr-test`);
     const html1 = await res1.text();
-    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
-    const timestamp1 = timestamp1Match![1];
+    const generation1 = readGeneration(html1);
+    expect(generation1).toBeGreaterThan(0);
 
-    // Wait for TTL to expire (revalidate: 1 second)
+    // The delay crosses the configured one-second interval, but dev still has
+    // no response-cache boundary: this is another independent GSP render.
     await new Promise((r) => setTimeout(r, 1200));
 
-    // Request after TTL should get STALE content
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
-    expect(res2.headers.get("x-vinext-cache")).toBe("STALE");
-    // Stale content should have the same timestamp as original
     const html2 = await res2.text();
-    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp2Match![1]).toBe(timestamp1);
-
-    // Wait a moment for background regeneration to complete
-    await new Promise((r) => setTimeout(r, 200));
-
-    // Next request should be a HIT — background regen re-ran getStaticProps
-    // and cached the fresh result.
-    const res3 = await fetch(`${baseUrl}/isr-test`);
-    expect(res3.status).toBe(200);
-    expect(res3.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(readGeneration(html2)).toBeGreaterThan(generation1);
+    expectDevCacheHeaders(res1);
+    expectDevCacheHeaders(res2);
   });
 
-  it("background regeneration re-renders HTML with fresh props", async () => {
-    // Ensure cache is populated (may already be from prior tests)
-    await fetch(`${baseUrl}/isr-test`);
+  it("keeps each fresh GSP HTML render and hydration data in sync", async () => {
+    const res = await fetch(`${baseUrl}/isr-test`);
+    expectDevCacheHeaders(res);
+    const html = await res.text();
+    const htmlGeneration = readGeneration(html);
+    const htmlTimestamp = Number(html.match(/data-testid="timestamp">(\d+)</)?.[1]);
+    expect(htmlGeneration).toBeGreaterThan(0);
+    expect(htmlTimestamp).toBeGreaterThan(0);
 
-    // Wait for TTL to expire (revalidate: 1 second)
-    await new Promise((r) => setTimeout(r, 1200));
-
-    // Trigger background regeneration via STALE request and capture old HTML
-    const staleRes = await fetch(`${baseUrl}/isr-test`);
-    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
-    const staleHtml = await staleRes.text();
-    const staleTimestamp = staleHtml.match(/data-testid="timestamp">(\d+)</);
-    expect(staleTimestamp).toBeTruthy();
-    const oldTimestamp = Number(staleTimestamp![1]);
-
-    // Wait for background regeneration to complete
-    await new Promise((r) => setTimeout(r, 500));
-
-    // The regenerated HIT should have DIFFERENT HTML — the page must have been
-    // re-rendered with fresh getStaticProps data, not just the old HTML cached
-    // again with new pageData.
-    const hitRes = await fetch(`${baseUrl}/isr-test`);
-    expect(hitRes.headers.get("x-vinext-cache")).toBe("HIT");
-    const hitHtml = await hitRes.text();
-    const hitTimestamp = hitHtml.match(/data-testid="timestamp">(\d+)</);
-    expect(hitTimestamp).toBeTruthy();
-    const newTimestamp = Number(hitTimestamp![1]);
-
-    // The HTML timestamp must have changed — proves the page was re-rendered,
-    // not just getStaticProps re-run with old HTML cached again.
-    expect(newTimestamp).toBeGreaterThan(oldTimestamp);
-
-    // __NEXT_DATA__ must also contain the fresh timestamp, proving both the
+    // __NEXT_DATA__ must contain the same props as the HTML, proving both the
     // server-rendered HTML and the hydration data are in sync.
-    const nextDataMatch = hitHtml.match(
+    const nextDataMatch = html.match(
       /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
     );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]);
-    expect(nextData.props.pageProps.timestamp).toBe(newTimestamp);
+    expect(nextData.props.pageProps.generation).toBe(htmlGeneration);
+    expect(nextData.props.pageProps.timestamp).toBe(htmlTimestamp);
   });
 
-  it("sets Cache-Control header for ISR pages", async () => {
+  it("uses the exact development Cache-Control header even when revalidate is configured", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
-    const cacheControl = res.headers.get("cache-control");
-    expect(cacheControl).toContain("s-maxage=1");
-    expect(cacheControl).toContain("stale-while-revalidate");
+    expectDevCacheHeaders(res);
   });
 
   it("does not set ISR headers for non-ISR pages", async () => {
@@ -913,6 +883,106 @@ describe("i18n config parsing", () => {
     expect(config.i18n!.localeDetection).toBe(true);
   });
 
+  it("places the default locale first without mutating the input", async () => {
+    // Ported from Next.js: test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const locales = ["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"];
+    const config = await resolveNextConfig({
+      i18n: {
+        locales,
+        defaultLocale: "en-US",
+      },
+    });
+
+    expect(config.i18n!.locales).toEqual(["en-US", "nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en"]);
+    expect(locales).toEqual(["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"]);
+  });
+
+  it("rejects a default locale that is not included in locales", async () => {
+    // Ported from Next.js: packages/next/src/server/config.ts
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/packages/next/src/server/config.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+  });
+
+  it("validates i18n before invoking config callbacks", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const redirects = vi.fn(() => []);
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+        redirects,
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+    expect(redirects).not.toHaveBeenCalled();
+  });
+
+  it("reports invalid locales before checking default locale membership", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: [42],
+          defaultLocale: "en",
+        },
+      } as never),
+    ).rejects.toThrow(
+      'Specified i18n.locales contains invalid values (42), locales must be valid locale tags provided as strings e.g. "en-US".',
+    );
+  });
+
+  it("rejects overlapping domain locales exposed by a malformed includes value", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.com", defaultLocale: "en", locales: ["fr"] },
+            { domain: "example.fr", defaultLocale: "fr", locales: "fr" },
+          ],
+        },
+      } as never),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
+  it("rejects duplicate domain default locales", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.fr", defaultLocale: "fr" },
+            { domain: "french.example.com", defaultLocale: "fr" },
+          ],
+        },
+      }),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
     const config = await resolveNextConfig({});
@@ -1033,12 +1103,12 @@ describe("detectLocaleFromHeaders", () => {
     expect(detectLocaleFromHeaders(fakeReq("de;q=0.9,fr;q=0.8"), i18nConfig)).toBe("de");
   });
 
-  it("detects locale via prefix match (en-US -> en)", () => {
-    expect(detectLocaleFromHeaders(fakeReq("en-US"), i18nConfig)).toBe("en");
+  it("does not truncate an unconfigured regional locale", () => {
+    expect(detectLocaleFromHeaders(fakeReq("en-US"), i18nConfig)).toBeNull();
   });
 
-  it("detects locale via prefix match (fr-FR -> fr)", () => {
-    expect(detectLocaleFromHeaders(fakeReq("fr-FR,en;q=0.5"), i18nConfig)).toBe("fr");
+  it("falls through an unconfigured regional locale to the next preference", () => {
+    expect(detectLocaleFromHeaders(fakeReq("fr-FR,en;q=0.5"), i18nConfig)).toBe("en");
   });
 
   it("returns null for unrecognized language", () => {
@@ -1097,16 +1167,19 @@ describe("i18n routing (Pages Router)", () => {
     // About page — uses getServerSideProps to expose locale
     await fsp.writeFile(
       path.join(i18nTmpDir, "pages", "about.tsx"),
-      `export function getServerSideProps({ locale, locales, defaultLocale }) {
+      `import { useRouter } from "next/router";
+export function getServerSideProps({ locale, locales, defaultLocale }) {
   return { props: { locale: locale || null, locales: locales || [], defaultLocale: defaultLocale || null } };
 }
 export default function About({ locale, locales, defaultLocale }) {
+  const router = useRouter();
   return (
     <div>
       <h1>About</h1>
       <p id="locale">{locale}</p>
       <p id="locales">{locales.join(",")}</p>
       <p id="defaultLocale">{defaultLocale}</p>
+      <p id="asPath">{router.asPath}</p>
     </div>
   );
 }`,
@@ -1199,6 +1272,16 @@ export default function About({ locale, locales, defaultLocale }) {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toMatch(/<p id="locale">.*fr.*<\/p>/);
+  });
+
+  it("strips the locale prefix from router.asPath in dev SSR", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    const res = await fetch(`${i18nBaseUrl}/fr/about?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/<p id="asPath">.*\/about\?hello=world.*<\/p>/);
   });
 
   it("passes correct locale to getServerSideProps for /de/about", async () => {
@@ -1407,6 +1490,53 @@ describe("i18n domain routing (Pages Router)", () => {
     expect(res.body).toContain(
       '"domainLocales":[{"domain":"example.com","defaultLocale":"en"},{"domain":"example.fr","defaultLocale":"fr","http":true}]',
     );
+  });
+
+  it("revalidates with the request domain locale without persisting a dev response", async () => {
+    const before = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    const beforeGeneration = Number(before.body.match(/<p id="generation">(\d+)<\/p>/)?.[1]);
+    expect(beforeGeneration).toBeGreaterThan(0);
+    expect(before.body).toContain('<p id="reason">stale</p>');
+
+    const revalidate = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidate?path=%2Fisr-about&includeState=1",
+      "example.fr",
+    );
+    expect(revalidate.status).toBe(200);
+    const revalidateResult = JSON.parse(revalidate.body);
+    expect(revalidateResult).toEqual({
+      revalidated: true,
+      state: {
+        defaultLocale: "fr",
+        generation: expect.any(Number),
+        locale: "fr",
+        reason: "on-demand",
+      },
+    });
+    expect(revalidateResult.state.generation).toBeGreaterThan(beforeGeneration);
+
+    const after = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    expect(after.body).toContain('<p id="locale">fr</p>');
+    expect(after.body).toContain('<p id="defaultLocale">fr</p>');
+    expect(after.body).toContain('<p id="reason">stale</p>');
+    expect(Number(after.body.match(/<p id="generation">(\d+)<\/p>/)?.[1])).toBeGreaterThan(
+      revalidateResult.state.generation,
+    );
+  });
+
+  it("does not trust or expose a forged logical revalidation hostname", async () => {
+    const response = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidation-headers",
+      "example.com",
+      {
+        "x-prerender-revalidate": "not-the-secret",
+        "x-vinext-revalidate-host": "example.fr",
+      },
+    );
+
+    expect(JSON.parse(response.body)).toEqual({ host: "example.com", logicalHost: null });
   });
 
   it("uses the dynamic route pattern for locale-prefixed data responses in dev", async () => {
@@ -1813,6 +1943,10 @@ describe("build-time defines (Pages Router)", () => {
     expect(server.config.define?.["process.env.__NEXT_APP_NAV_FAIL_HANDLING"]).toBe(
       JSON.stringify(false),
     );
+  });
+
+  it("Next.js test mode defaults to false", () => {
+    expect(server.config.define?.["process.env.__NEXT_TEST_MODE"]).toBe(JSON.stringify(false));
   });
 });
 
@@ -2805,6 +2939,27 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('media="(prefers-color-scheme: dark)"');
   });
 
+  it("does not serialize event handlers from icon descriptors", () => {
+    const html = renderMetadataToHtml(
+      {
+        icons: {
+          icon: {
+            url: "/icon.png",
+            onLoad: "alert('unsafe')",
+          } as never,
+        },
+      },
+      "/products",
+      { streamedIconKey: "metadata-icons" },
+    );
+
+    expect(html).toBe(
+      '<link data-vinext-streamed-icon="metadata-icons:0" rel="icon" href="/icon.png">',
+    );
+    expect(html).not.toContain("onLoad");
+    expect(html).not.toContain("onload");
+  });
+
   it("renders single descriptor icon objects", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
@@ -3313,6 +3468,92 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
   it("body placement: returns null when metadata is null", () => {
     expect(createAppPageRouteBodyMetadata(null, "/a", "body", true)).toBeNull();
   });
+
+  it("body placement: re-inserts streamed icons into the document head", () => {
+    const node = createAppPageRouteBodyMetadata(
+      {
+        icons: {
+          icon: "/favicon.ico",
+          apple: "/apple-touch-icon.png",
+          shortcut: "/shortcut.png",
+          other: [
+            { rel: "apple-touch-icon-precomposed", url: "/precomposed.png" },
+            { rel: "mask-icon", url: "/mask.svg" },
+          ],
+        },
+      },
+      "/icons",
+      "body",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="icon" href="\/favicon\.ico">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="apple-touch-icon" href="\/apple-touch-icon\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="shortcut icon" href="\/shortcut\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="apple-touch-icon-precomposed" href="\/precomposed\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="mask-icon" href="\/mask\.svg">/,
+    );
+    expect(html).toContain(
+      `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`,
+    );
+    expect(html).toContain(`const a='data-vinext-streamed-icon'`);
+    expect(html).toContain(`.sort((l,r)=>o(l)-o(r)).forEach(el=>document.head.appendChild(el))`);
+    expect(html).toMatch(/<script>document\.querySelectorAll[\s\S]*<\/script><\/div>$/);
+  });
+
+  it("body placement: serializes icon-bearing metadata once", () => {
+    let titleReads = 0;
+    const title = 'data-vinext-streamed-icon="vinext-pending-streamed-icon-key:0';
+    const node = createAppPageRouteBodyMetadata(
+      {
+        get title() {
+          titleReads += 1;
+          return title;
+        },
+        icons: { icon: "/favicon.ico" },
+      },
+      '/icons" data-injected="true',
+      "body",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    // MetadataHead reads a string title twice per serialization: once for the
+    // type check and once for the value. A second serialization would read it
+    // four times.
+    expect(titleReads).toBe(2);
+    expect(html).toContain(`<title>${title}</title>`);
+    expect(html).not.toContain(' data-injected="true"');
+    expect(html).toContain("/icons&quot; data-injected=&quot;true:");
+  });
+
+  it("body placement: includes icon cleanup reconciliation without streamed icons", () => {
+    const node = createAppPageRouteBodyMetadata({ title: "Streamed title" }, "/metadata", "body");
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toContain("document.querySelectorAll('body link");
+  });
+
+  it("body placement: applies the request nonce to the parser-time icon script", () => {
+    const node = createAppPageRouteBodyMetadata(
+      { icons: { icon: "/favicon.ico" } },
+      "/icons",
+      "body",
+      false,
+      "test-nonce",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toMatch(/<script nonce="test-nonce">[\s\S]*<\/script><\/div>$/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3335,7 +3576,7 @@ describe("ViewportHead rendering", () => {
   it("renders default viewport with width=device-width and initial-scale=1", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: { width: "device-width", initialScale: 1 },
+        viewport: mergeViewport([{ width: "device-width", initialScale: 1 }]),
       }),
     );
     expect(html).toContain('name="viewport"');
@@ -3344,41 +3585,65 @@ describe("ViewportHead rendering", () => {
   });
 
   it("renders custom viewport with all options", () => {
+    // Ported from Next.js: packages/next/src/lib/metadata/resolve-metadata.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.test.ts
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: {
-          width: "device-width",
-          initialScale: 1,
-          maximumScale: 1,
-          userScalable: false,
-        },
+        viewport: mergeViewport([
+          {
+            width: "device-width",
+            height: "device-height",
+            initialScale: 1,
+            minimumScale: 0.5,
+            maximumScale: 1,
+            userScalable: false,
+            viewportFit: "cover",
+            interactiveWidget: "overlays-content",
+          },
+        ]),
       }),
     );
-    expect(html).toContain("width=device-width");
-    expect(html).toContain("initial-scale=1");
-    expect(html).toContain("maximum-scale=1");
-    expect(html).toContain("user-scalable=no");
+    expect(html).toContain(
+      'content="width=device-width, height=device-height, initial-scale=1, minimum-scale=0.5, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content"',
+    );
   });
 
   it("renders theme-color meta tag", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: { themeColor: "#000000" },
+        viewport: mergeViewport([{ themeColor: "#000000" }]),
       }),
     );
     expect(html).toContain('name="theme-color"');
     expect(html).toContain('content="#000000"');
   });
 
+  it("renders a single theme-color descriptor with its media query", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, {
+        viewport: mergeViewport([
+          {
+            themeColor: { media: "(prefers-color-scheme: dark)", color: "#000000" },
+          },
+        ]),
+      }),
+    );
+    expect(html).toContain('name="theme-color"');
+    expect(html).toContain('content="#000000"');
+    expect(html).toContain('media="(prefers-color-scheme: dark)"');
+  });
+
   it("renders multiple theme-color entries with media queries", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: {
-          themeColor: [
-            { media: "(prefers-color-scheme: light)", color: "#fff" },
-            { media: "(prefers-color-scheme: dark)", color: "#000" },
-          ],
-        },
+        viewport: mergeViewport([
+          {
+            themeColor: [
+              { media: "(prefers-color-scheme: light)", color: "#fff" },
+              { media: "(prefers-color-scheme: dark)", color: "#000" },
+            ],
+          },
+        ]),
       }),
     );
     expect(html).toContain('content="#fff"');
@@ -3390,7 +3655,7 @@ describe("ViewportHead rendering", () => {
   it("renders color-scheme meta tag", () => {
     const html = renderToStaticMarkup(
       React.createElement(ViewportHead, {
-        viewport: { colorScheme: "dark" },
+        viewport: mergeViewport([{ colorScheme: "dark" }]),
       }),
     );
     expect(html).toContain('name="color-scheme"');
@@ -3402,7 +3667,7 @@ describe("ViewportHead rendering", () => {
     const result = mergeViewport([{ themeColor: "#000" }]);
     expect(result.width).toBe("device-width");
     expect(result.initialScale).toBe(1);
-    expect(result.themeColor).toBe("#000");
+    expect(result.themeColor).toEqual([{ color: "#000" }]);
   });
 
   it("mergeViewport allows overriding defaults", () => {
@@ -3421,7 +3686,14 @@ describe("ViewportHead rendering", () => {
     const result = mergeViewport([{ width: 800 }, { width: 1024, themeColor: "#fff" }]);
     expect(result.width).toBe(1024);
     expect(result.initialScale).toBe(1);
-    expect(result.themeColor).toBe("#fff");
+    expect(result.themeColor).toEqual([{ color: "#fff" }]);
+  });
+
+  it("preserves an undefined media field on a theme-color descriptor", () => {
+    // Next.js's resolveThemeColor copies the descriptor fields explicitly:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    const result = mergeViewport([{ themeColor: { color: "#000" } }]);
+    expect(result.themeColor).toEqual([{ color: "#000", media: undefined }]);
   });
 
   it("renders viewport meta even when only themeColor is provided (defaults injected)", () => {
@@ -3723,7 +3995,7 @@ describe("fetch cache (extended fetch with next options)", () => {
       expect(fetchCallCount).toBe(1);
 
       // Invalidate the tag
-      await revalidateTag("posts");
+      await Promise.resolve(revalidateTag("posts"));
 
       cleanup();
       cleanup = withFetchCache();
@@ -3893,7 +4165,7 @@ describe("instrumentation.ts support", () => {
     // Create a temp directory with an instrumentation.ts file. Production
     // always passes a forward-slash root (the config hook normalizes it), so
     // mirror that — findInstrumentationFile returns forward-slash paths.
-    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.writeFileSync(
       path.join(tmpDir, "instrumentation.ts"),
       'export function register() { console.log("registered"); }',
@@ -3913,7 +4185,7 @@ describe("instrumentation.ts support", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(
       path.join(tmpDir, "src", "instrumentation.ts"),

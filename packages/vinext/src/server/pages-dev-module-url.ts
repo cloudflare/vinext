@@ -1,4 +1,4 @@
-import path from "node:path";
+import path from "pathslash";
 
 function normalizeBase(base: string): string {
   if (!base || base === "/") return "/";
@@ -23,7 +23,9 @@ export function createPagesDevModuleUrl(
   moduleFilePath: string,
   viteBase: string,
 ): string {
+  // Drive-letter roots need win32 semantics even on POSIX hosts (tests feed
+  // Windows shapes there); pathslash's win32 already emits "/" on any host.
   const pathImpl = /^[A-Za-z]:[\\/]/.test(viteRoot) ? path.win32 : path;
-  const relativePath = pathImpl.relative(viteRoot, moduleFilePath).replace(/\\/g, "/");
+  const relativePath = pathImpl.relative(viteRoot, moduleFilePath);
   return normalizeBase(viteBase) + encodePagesDevModulePath(relativePath);
 }

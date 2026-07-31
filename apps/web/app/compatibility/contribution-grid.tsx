@@ -3,14 +3,10 @@
 /**
  * GitHub-style contribution grid for compatibility test files.
  *
- * Each dot is one test file. Color encodes status:
- *   green  → all tests in the file passed
- *   orange → some tests passed, some failed (partial)
- *   red    → at least one test failed and none passed (or only failures)
- *   gray   → no verdict (all tests in the file were skipped by Next.js — via
- *            it.skip() / it.todo() / conditional runtime skips). Vinext does
- *            not add its own skips; we either run a file or filter it out
- *            of the manifest entirely.
+ * Each dot is one test file. Raw pass/partial/fail/skip colors are overridden
+ * by compatibility-scope colors for deferred, unsupported, and
+ * Vite-equivalent suites. The raw result remains visible in the tooltip and
+ * continues to contribute to the overall pass rate.
  *
  * Hovering a dot shows the file path and counts.
  *
@@ -21,8 +17,15 @@
  * scaling, so tooltip positioning math stays straightforward.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@cloudflare/kumo/components/button";
+import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { Input } from "@cloudflare/kumo/components/input";
+import { Select } from "@cloudflare/kumo/components/select";
+import { Table } from "@cloudflare/kumo/components/table";
+import { Table as TableIcon, X } from "@phosphor-icons/react";
 import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
 import { cellMatchesFilter, type RouterFilter } from "./router-buckets";
+import type { SuiteSupportStatus } from "./suite-support";
 
 // (Tabs / filter UI now lives in compatibility-views.tsx; the grid receives
 // the active filter as a prop. Filter semantics — what each value means and
@@ -36,25 +39,60 @@ export type GridCell = {
   suite: string;
   status: FileStatus;
   router: RouterKind;
+  supportStatus: SuiteSupportStatus;
+  feature: string | null;
+  reason: string | null;
   total: number;
   passed: number;
   failed: number;
   skipped: number;
 };
 
-const COLORS: Record<FileStatus, string> = {
+type DisplayStatus = FileStatus | Exclude<SuiteSupportStatus, "supported">;
+
+const COLORS: Record<DisplayStatus, string> = {
   pass: "#2da44e", // green
   partial: "#e08600", // orange
   fail: "#cf222e", // red
-  skip: "#8c959f", // gray
+  skip: "#afb8c1", // light gray
+  deferred: "#0969da", // blue
+  "needs-vite-equivalent": "#8250df", // purple
+  unsupported: "#6e7781", // dark gray
 };
 
-const LABELS: Record<FileStatus, string> = {
+const LABELS: Record<DisplayStatus, string> = {
   pass: "Pass",
   partial: "Partial",
   fail: "Fail",
   skip: "Skipped by Next.js",
+  deferred: "Deferred",
+  "needs-vite-equivalent": "Needs Vite-equivalent coverage",
+  unsupported: "Unsupported by vinext",
 };
+
+const SUPPORT_LABELS: Record<SuiteSupportStatus, string> = {
+  supported: "Supported",
+  deferred: "Deferred",
+  "needs-vite-equivalent": "Needs Vite-equivalent coverage",
+  unsupported: "Unsupported by vinext",
+};
+
+const SUPPORT_COLORS: Record<SuiteSupportStatus, string> = {
+  supported: "#2da44e",
+  deferred: COLORS.deferred,
+  "needs-vite-equivalent": COLORS["needs-vite-equivalent"],
+  unsupported: COLORS.unsupported,
+};
+
+const LEGEND_ORDER: DisplayStatus[] = [
+  "pass",
+  "partial",
+  "fail",
+  "deferred",
+  "needs-vite-equivalent",
+  "unsupported",
+  "skip",
+];
 
 const ROUTER_LABELS: Record<RouterKind, string> = {
   app: "App Router",
@@ -79,7 +117,179 @@ function summarize(cell: GridCell): string {
   const group = deriveSuiteGroup(cell.suite);
   const prefix = group ? `[${group}] ${cell.suite}` : cell.suite;
   const routerTag = ROUTER_LABELS[cell.router];
-  return `${prefix} — ${LABELS[cell.status]} · ${routerTag} (${parts.join(", ")})`;
+  const displayStatus = getDisplayStatus(cell);
+  const rawStatus = displayStatus === cell.status ? "" : ` · raw result: ${LABELS[cell.status]}`;
+  return `${prefix} — ${LABELS[displayStatus]}${rawStatus} · ${routerTag} (${parts.join(", ")})`;
+}
+
+function getDisplayStatus(cell: GridCell): DisplayStatus {
+  return cell.supportStatus === "supported" ? cell.status : cell.supportStatus;
+}
+
+type SupportFilter = "all" | SuiteSupportStatus;
+type ResultFilter = "all" | FileStatus;
+
+export function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
+  const [query, setQuery] = useState("");
+  const [supportFilter, setSupportFilter] = useState<SupportFilter>("all");
+  const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
+  const filteredCells = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return cells.filter((cell) => {
+      if (supportFilter !== "all" && cell.supportStatus !== supportFilter) return false;
+      if (resultFilter !== "all" && cell.status !== resultFilter) return false;
+      if (!normalizedQuery) return true;
+      return [cell.suite, cell.feature, cell.reason, ROUTER_LABELS[cell.router]]
+        .filter((value): value is string => value !== null)
+        .some((value) => value.toLowerCase().includes(normalizedQuery));
+    });
+  }, [cells, query, resultFilter, supportFilter]);
+  const hasFilters = query !== "" || supportFilter !== "all" || resultFilter !== "all";
+
+  return (
+    <Dialog.Root>
+      <Dialog.Trigger
+        render={(props) => (
+          <Button
+            {...props}
+            size="sm"
+            variant="outline"
+            icon={TableIcon}
+            disabled={cells.length === 0}
+          >
+            View table
+          </Button>
+        )}
+      />
+      <Dialog
+        size="xl"
+        className="flex max-h-[90vh] w-[min(96vw,80rem)] max-w-none flex-col overflow-hidden p-0"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-kumo-hairline px-5 py-4">
+          <div>
+            <Dialog.Title className="text-xl font-semibold tracking-tight text-kumo-default">
+              Compatibility test files
+            </Dialog.Title>
+            <Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+              Showing {filteredCells.length} of {cells.length} files for the current router filter.
+              Classifications do not alter the raw test results.
+            </Dialog.Description>
+          </div>
+          <Dialog.Close
+            render={(props) => (
+              <Button
+                {...props}
+                shape="square"
+                size="sm"
+                variant="ghost"
+                icon={X}
+                aria-label="Close compatibility table"
+              />
+            )}
+          />
+        </div>
+        <div className="grid gap-3 border-b border-kumo-hairline bg-kumo-base px-5 py-3 sm:grid-cols-[minmax(16rem,1fr)_14rem_12rem_auto] sm:items-center">
+          <Input
+            size="sm"
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder="Search test files and features"
+            aria-label="Search compatibility test files"
+            className="w-full"
+          />
+          <Select
+            size="sm"
+            value={supportFilter}
+            onValueChange={(value) => setSupportFilter(value as SupportFilter)}
+            aria-label="Filter by classification"
+          >
+            <Select.Option value="all">All classifications</Select.Option>
+            <Select.Option value="supported">Supported</Select.Option>
+            <Select.Option value="deferred">Deferred</Select.Option>
+            <Select.Option value="needs-vite-equivalent">Needs Vite equivalent</Select.Option>
+            <Select.Option value="unsupported">Unsupported</Select.Option>
+          </Select>
+          <Select
+            size="sm"
+            value={resultFilter}
+            onValueChange={(value) => setResultFilter(value as ResultFilter)}
+            aria-label="Filter by raw result"
+          >
+            <Select.Option value="all">All raw results</Select.Option>
+            <Select.Option value="pass">Pass</Select.Option>
+            <Select.Option value="partial">Partial</Select.Option>
+            <Select.Option value="fail">Fail</Select.Option>
+            <Select.Option value="skip">Skipped by Next.js</Select.Option>
+          </Select>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!hasFilters}
+            onClick={() => {
+              setQuery("");
+              setSupportFilter("all");
+              setResultFilter("all");
+            }}
+          >
+            Clear
+          </Button>
+        </div>
+        <div className="min-h-0 overflow-auto">
+          <Table aria-label="Compatibility test files">
+            <Table.Header sticky>
+              <Table.Row>
+                <Table.Head>Test file</Table.Head>
+                <Table.Head>Classification</Table.Head>
+                <Table.Head>Feature</Table.Head>
+                <Table.Head>Raw result</Table.Head>
+                <Table.Head className="text-right">Passed</Table.Head>
+                <Table.Head className="text-right">Failed</Table.Head>
+                <Table.Head className="text-right">Skipped</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {filteredCells.map((cell) => (
+                <Table.Row key={cell.suite}>
+                  <Table.Cell className="min-w-80 font-mono text-xs break-all">
+                    {cell.suite}
+                  </Table.Cell>
+                  <Table.Cell className="min-w-48">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                        style={{ backgroundColor: SUPPORT_COLORS[cell.supportStatus] }}
+                        aria-hidden="true"
+                      />
+                      <span className="text-sm font-medium">
+                        {SUPPORT_LABELS[cell.supportStatus]}
+                      </span>
+                    </div>
+                    {cell.reason ? (
+                      <div className="mt-1 max-w-72 text-xs text-kumo-subtle">{cell.reason}</div>
+                    ) : null}
+                  </Table.Cell>
+                  <Table.Cell className="min-w-56 text-sm">{cell.feature ?? "—"}</Table.Cell>
+                  <Table.Cell className="whitespace-nowrap text-sm">
+                    {LABELS[cell.status]}
+                  </Table.Cell>
+                  <Table.Cell className="text-right font-mono text-sm">{cell.passed}</Table.Cell>
+                  <Table.Cell className="text-right font-mono text-sm">{cell.failed}</Table.Cell>
+                  <Table.Cell className="text-right font-mono text-sm">{cell.skipped}</Table.Cell>
+                </Table.Row>
+              ))}
+              {filteredCells.length === 0 ? (
+                <Table.Row>
+                  <Table.Cell colSpan={7} className="py-10 text-center text-sm text-kumo-subtle">
+                    No test files match these filters.
+                  </Table.Cell>
+                </Table.Row>
+              ) : null}
+            </Table.Body>
+          </Table>
+        </div>
+      </Dialog>
+    </Dialog.Root>
+  );
 }
 
 /**
@@ -200,6 +410,7 @@ export function ContributionGrid({
           style={{ display: "block", maxWidth: "100%" }}
         >
           {visibleCells.map((cell, i) => {
+            const displayStatus = getDisplayStatus(cell);
             const col = i % effectiveCols;
             const row = Math.floor(i / effectiveCols);
             const x = col * STRIDE;
@@ -213,7 +424,7 @@ export function ContributionGrid({
                 height={CELL_SIZE}
                 rx={2}
                 ry={2}
-                fill={COLORS[cell.status]}
+                fill={COLORS[displayStatus]}
                 onMouseEnter={(e) => {
                   const container = containerRef.current;
                   if (!container) return;
@@ -250,12 +461,18 @@ export function ContributionGrid({
                 </div>
                 <div className="font-mono break-all">{hover.cell.suite}</div>
                 <div className="mt-1 text-kumo-subtle">{summarize(hover.cell).split(" — ")[1]}</div>
+                {hover.cell.feature ? (
+                  <div className="mt-1 font-medium text-kumo-default">{hover.cell.feature}</div>
+                ) : null}
+                {hover.cell.reason ? (
+                  <div className="mt-1 text-kumo-subtle">{hover.cell.reason}</div>
+                ) : null}
               </div>
             );
           })()
         : null}
       <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-kumo-subtle">
-        {(Object.keys(COLORS) as FileStatus[]).map((s) => (
+        {LEGEND_ORDER.map((s) => (
           <div key={s} className="flex items-center gap-2">
             <span
               className="inline-block h-3 w-3 rounded-sm"

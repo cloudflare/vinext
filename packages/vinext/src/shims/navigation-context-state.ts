@@ -24,7 +24,7 @@ export type NavigationContext = {
 type NavigationContextsGlobal = typeof globalThis & {
   [LAYOUT_SEGMENT_CONTEXT_KEY]?: React.Context<SegmentMap> | null;
   [SERVER_INSERTED_HTML_CONTEXT_KEY]?: React.Context<
-    ((callback: () => unknown) => void) | null
+    ((callback: () => React.ReactNode) => void) | null
   > | null;
   [BFCACHE_ID_MAP_CONTEXT_KEY]?: React.Context<Readonly<Record<string, string>> | null> | null;
   [BFCACHE_SEGMENT_ID_CONTEXT_KEY]?: React.Context<string | null> | null;
@@ -36,12 +36,12 @@ function createContextIfAvailable<T>(defaultValue: T): React.Context<T> | null {
 }
 
 function getServerInsertedHTMLContext(): React.Context<
-  ((callback: () => unknown) => void) | null
+  ((callback: () => React.ReactNode) => void) | null
 > | null {
   const globalState = globalThis as NavigationContextsGlobal;
   if (!globalState[SERVER_INSERTED_HTML_CONTEXT_KEY]) {
     globalState[SERVER_INSERTED_HTML_CONTEXT_KEY] = createContextIfAvailable<
-      ((callback: () => unknown) => void) | null
+      ((callback: () => React.ReactNode) => void) | null
     >(null);
   }
   return globalState[SERVER_INSERTED_HTML_CONTEXT_KEY] ?? null;

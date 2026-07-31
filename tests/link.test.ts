@@ -21,6 +21,7 @@ import Link, {
   resolveLinkPrefetchMode,
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
+import { RouterContext } from "../packages/vinext/src/shims/internal/router-context.js";
 import {
   navigatePagesRouterLink,
   navigatePagesRouterLinkWithFallback,
@@ -337,21 +338,29 @@ describe("Link App Router prefetch mode", () => {
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
+        fallbackTtl: "static",
+        minimumTtlMs: undefined,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
+        fallbackTtl: "static",
+        minimumTtlMs: 0,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
         cacheForNavigation: false,
+        fallbackTtl: "static",
+        minimumTtlMs: undefined,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
         cacheForNavigation: true,
+        fallbackTtl: "static",
+        minimumTtlMs: 0,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
@@ -360,16 +369,22 @@ describe("Link App Router prefetch mode", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
+        fallbackTtl: "static",
+        minimumTtlMs: 0,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
         cacheForNavigation: false,
+        fallbackTtl: "static",
+        minimumTtlMs: 0,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
+        fallbackTtl: "static",
+        minimumTtlMs: undefined,
         prefetchShellFirst: false,
         shouldPrefetch: false,
       });
@@ -401,6 +416,79 @@ describe("Link resolveHref", () => {
     );
     // URLSearchParams preserves insertion order
     expect(html).toMatch(/href="\/items\?page=2&(?:amp;)?sort=name"/);
+  });
+
+  // Ported from Next.js: test/e2e/dynamic-routing/pages/index.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/pages/index.js
+  it("interpolates dynamic segments from object href query values", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        RouterContext.Provider,
+        { value: {} as never },
+        React.createElement(
+          Link,
+          {
+            href: {
+              pathname: "/[a]/[b]/c",
+              query: { a: "a", b: "b", q: "q" },
+            },
+          },
+          "hello",
+        ),
+      ),
+    );
+
+    expect(html).toContain('href="/a/b/c?q=q"');
+  });
+
+  it("does not interpolate dynamic object hrefs outside the Pages Router context", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: { pathname: "/posts/[id]", query: { id: "42" } } }, "post"),
+    );
+
+    expect(html).toContain('href="/posts/[id]?id=42"');
+  });
+
+  it("does not interpolate dynamic-looking external hrefs in the Pages Router", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        RouterContext.Provider,
+        { value: {} as never },
+        React.createElement(Link, { href: "https://example.com/[id]?id=42" }, "external"),
+      ),
+    );
+
+    expect(html).toContain('href="https://example.com/[id]?id=42"');
+  });
+
+  it("interpolates same-origin absolute dynamic hrefs in the Pages Router", () => {
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      addEventListener() {},
+      location: {
+        hash: "",
+        href: "https://local.test/current",
+        hostname: "local.test",
+        origin: "https://local.test",
+        pathname: "/current",
+        search: "",
+      },
+    };
+
+    try {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(
+          RouterContext.Provider,
+          { value: {} as never },
+          React.createElement(Link, { href: "https://local.test/posts/[id]?id=42" }, "post"),
+        ),
+      );
+
+      expect(html).toContain('href="/posts/42"');
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
   });
 
   it("object href preserves array query values as repeated params", () => {
@@ -523,6 +611,20 @@ describe("Link resolveHref", () => {
         fallbackHref: "http://localhost/rewrite-navigation/0?existing=1",
       }),
     ).toBe("/rewrite-navigation/0?");
+  });
+
+  it("resolves hash-only Pages Links against locale-free router.asPath", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    expect(
+      resolvePagesRouterQueryOnlyHref("#newhash", {
+        asPath: "/about?tab=details",
+        basePath: "",
+        fallbackHref: "http://localhost/fr/about?tab=details#hash",
+        locales: ["en", "fr"],
+      }),
+    ).toBe("/about?tab=details#newhash");
   });
 });
 
@@ -686,6 +788,20 @@ describe("Link locale handling", () => {
       React.createElement(Link, { href: "/about", locale: "fr" } as any, "x"),
     );
     expect(html).toContain('href="/fr/about"');
+  });
+
+  it("preserves URL-object hashes while applying a locale", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: { pathname: "/about", hash: "#hash" }, locale: "fr" } as any,
+        "x",
+      ),
+    );
+    expect(html).toContain('href="/fr/about#hash"');
   });
 
   it("locale string does not double-prefix", () => {

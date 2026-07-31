@@ -44,12 +44,11 @@
  */
 
 import type { Plugin } from "vite";
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
-import { normalizePathSeparators } from "../utils/path.js";
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
@@ -222,11 +221,12 @@ function findEmittedWasmAsset(
   baseName: string,
 ): string | null {
   const stem = baseName.replace(/\.wasm$/, "");
-  // Matches `resvg.wasm` or `resvg-<hash>.wasm` as the basename.
-  const re = new RegExp(`^${stem}(?:-[\\w-]+)?\\.wasm$`);
+  // Matches `resvg.wasm`, Vite's default `resvg-<hash>.wasm`, or the
+  // Next-shaped `media/resvg.<hash8>.wasm` basename used by RSC builds.
+  const re = new RegExp(`^${stem}(?:[-.][\\w-]+)?\\.wasm$`);
   for (const output of Object.values(bundle)) {
     if (output.type !== "asset") continue;
-    if (re.test(path.posix.basename(output.fileName))) return output.fileName;
+    if (re.test(path.basename(output.fileName))) return output.fileName;
   }
   return null;
 }
@@ -328,8 +328,8 @@ export function createOgAssetsPlugin(): Plugin {
 
           for (const chunk of chunks) {
             const re = fallbackUrlRegex(base);
-            const chunkDir = path.posix.dirname(chunk.fileName);
-            const rel = normalizePathSeparators(path.relative(chunkDir, emitted));
+            const chunkDir = path.dirname(chunk.fileName);
+            const rel = path.relative(chunkDir, emitted);
             const ref = rel.startsWith(".") ? rel : `./${rel}`;
 
             // Use MagicString so the chunk's sourcemap stays in sync with the

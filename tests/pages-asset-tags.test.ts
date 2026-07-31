@@ -165,6 +165,20 @@ describe("collectAssetTags", () => {
     expect(result).toContain('src="/page.js"');
   });
 
+  it("applies configured crossOrigin to scripts and modulepreloads", () => {
+    const manifest = makeManifest({ "page.tsx": ["page.js"] });
+    const result = collectAssetTags({
+      manifest,
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      crossOrigin: "anonymous",
+    });
+    expect(result).toContain(
+      '<link rel="modulepreload" href="/page.js" crossorigin="anonymous" />',
+    );
+    expect(result).toContain('src="/page.js" crossorigin="anonymous"></script>');
+  });
+
   it("adds defer attribute when disableOptimizedLoading is false", () => {
     const manifest = makeManifest({ "page.tsx": ["page.js"] });
     const result = collectAssetTags({

@@ -36,3 +36,18 @@ test("server action revalidation preserves client state under loading.tsx", asyn
 
   void consoleErrors;
 });
+
+test("server action rerenders preserve encoded request route identity", async ({ page }) => {
+  await page.goto(`${BASE}/action-revalidate`);
+  await expect(page.getByTestId("action-revalidate-submit")).toBeVisible();
+  await page.evaluate(() => history.pushState(null, "", "/%2561dmin"));
+
+  const actionResponsePromise = page.waitForResponse(
+    (response) => response.request().method() === "POST",
+  );
+  await page.getByTestId("action-revalidate-submit").click();
+  const actionResponse = await actionResponsePromise;
+
+  expect(new URL(actionResponse.url()).pathname).toBe("/%2561dmin");
+  expect(await actionResponse.text()).not.toContain("Protected admin content");
+});

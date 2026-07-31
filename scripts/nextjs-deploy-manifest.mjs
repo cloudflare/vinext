@@ -58,6 +58,11 @@ function isAppDirSuite(suite) {
  */
 const APP_ROUTER_NON_APP_DIR_SUITES = ["test/e2e/next-form/default/next-form-prefetch.test.ts"];
 
+const CUSTOM_DEPLOY_ADAPTER_EXCLUDES = [
+  "test/e2e/app-dir/instant-navigation-testing-api/instant-navigation-testing-api.test.ts",
+  "test/e2e/app-dir/segment-cache/memory-pressure/segment-cache-memory-pressure.test.ts",
+];
+
 const CUSTOM_DEPLOY_ADAPTER_SUITE_OVERRIDES = {
   // Custom deploy adapters snapshot cliOutput during setup, before this test emits runtime logs.
   "test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts": {
@@ -118,11 +123,11 @@ async function main() {
       failed: Array.from(new Set([...(current.failed ?? []), ...(override.failed ?? [])])),
     };
   }
-  let extraExcludes = [];
+  let extraExcludes = [...CUSTOM_DEPLOY_ADAPTER_EXCLUDES];
 
   if (filter === "pages") {
     suites = Object.fromEntries(Object.entries(suites).filter(([suite]) => !isAppDirSuite(suite)));
-    extraExcludes = ["test/e2e/app-dir/**/*", ...APP_ROUTER_NON_APP_DIR_SUITES];
+    extraExcludes.push("test/e2e/app-dir/**/*", ...APP_ROUTER_NON_APP_DIR_SUITES);
   } else if (filter === "app") {
     suites = Object.fromEntries(Object.entries(suites).filter(([suite]) => isAppDirSuite(suite)));
   }

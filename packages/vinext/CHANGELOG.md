@@ -1,5 +1,173 @@
 # vinext
 
+## 1.0.0-beta.4
+
+### Bug Fixes
+
+#### App Router
+
+- install default not-found boundary (#2670)
+- scope dynamic params by segment (#2228)
+- honor client cache stale times (#2449)
+- resolve interception-only RSC targets (#2256)
+- preserve hash query navigation semantics (#2669)
+- reconcile streamed metadata icons (#2320)
+- align prefetch server protocol (#2318)
+
+#### Pages
+
+- preserve live Set-Cookie header arrays (#2689)
+- normalize decoded edge responses (#2668)
+- propagate Document script security props (#2044)
+
+#### Misc
+
+- **Pages Router:** load custom \_app/\_document via resolved file paths in dev (#2692)
+- **CSS:** load Sass partials from paths containing tildes (#2691)
+- honor build --mode dotenv files (#2523)
+- **Build:** normalize jsx-in-js module ids on Windows (#2687)
+- **RSC:** handle Windows paths in client reference dedup (#2686)
+- **Cache:** preserve prerendered page cache tags (#709)
+
+### Performance
+
+- **App Router:** serialize streamed metadata once (#2675)
+
+### Contributors
+
+- @james-elicx
+- @MaxtuneLee
+- @WilliamK112
+
+## 1.0.0-beta.3
+
+### Features
+
+- **Metadata:** support viewport fields and parent resolution (#2644)
+
+### Bug Fixes
+
+#### Metadata
+
+- add meta's 2024 crawler UAs to the html-limited bot list (#2666)
+- pass parent to cached resolvers with default or rest p… (#2660)
+- pass parent to regular metadata resolvers (#2646)
+
+#### Shims
+
+- preserve basePath config in NextURL clones (#2647)
+- preserve response cookie metadata (#2635)
+- reject invalid NextResponse JSON bodies (#2634)
+
+#### Misc
+
+- **App:** log RSC render errors on the dev-server terminal (#2667)
+- **Router:** replace stale optimistic layouts across dynamic params (#2609)
+- **Link:** interpolate Pages Router dynamic hrefs (#2657)
+- **Init:** complete an existing Cloudflare config instead of only adding to it (#2653)
+- **i18n:** align Accept-Language locale selection (#2648)
+- **Fonts:** keep immutable font assets query-free (#2605)
+- **Font Google:** share SSR collection state via globalThis (#2607)
+- **Pages:** isolate on-demand revalidation requests (#2495)
+- **Server:** defer after callbacks until response close (#2649)
+- **App Router:** stream nested loading boundaries (#2641)
+- honor custom TypeScript config path (#2633)
+- **Headers:** retain mutable cookie metadata (#2636)
+- **Build:** support package validation on Windows (#2638)
+
+### Performance
+
+- **Build:** cache repeated compatibility transforms (#2578)
+- **Build:** split react-dom/server into its own client chunk (#2604)
+
+### Contributors
+
+- @akim136
+- @blitss
+- @Boyeep
+- @james-elicx
+- @MrIago
+- @NathanDrake2406
+- @piffie
+- @ponharu
+
+## 1.0.0-beta.2
+
+### Features
+
+- **Types:** ship Next-compatible types without Next.js (#2612)
+
+### Bug Fixes
+
+#### Pages
+
+- match encoded string static paths (#2629)
+- isolate static render router state (#2583)
+- validate redirect destinations consistently (#2586)
+- preserve data route path identity (#2580)
+- populate route in app initial props router (#2623)
+
+#### Misc
+
+- **Check:** exclude test-runner files from app compatibility scans (#2596)
+- **App Router:** stream generated metadata after the document shell (#2619)
+- **Cache:** isolate draft route responses (#2591)
+- **Middleware:** align unsafe matcher validation (#2599)
+- **Dev:** refresh routes after server restarts (#2588)
+- **Cache:** guard 'use cache' key against Cloudflare KV's 512-byte limit (#2606)
+- **Config:** keep page extensions out of module resolution (#2594)
+- **Navigation:** avoid rewriting URL for history metadata (#2615)
+- **OG:** resolve dot-hash wasm fallbacks (#2608)
+- **Router:** avoid repeated App path decoding (#2556)
+- **App Router:** preserve Flight stream framing (#2579)
+- **Shims:** align public API with vendored Next types (#2617)
+
+### Contributors
+
+- @blitss
+- @exKAZUu
+- @james-elicx
+- @lyzno1
+- @NathanDrake2406
+
+## 1.0.0-beta.1
+
+### Bug Fixes
+
+#### App Router
+
+- preserve streamed metadata placement parity (#2572)
+- delay dynamic SSR stream pulls (#2575)
+- handle redirects in route-miss fallbacks (#2553)
+- preserve semicolons in redirect digests (#2487)
+
+#### Pages
+
+- preserve missing page props on errors (#2568)
+- align preview mode behavior (#2561)
+- mark auto exports in next data (#2569)
+- normalize i18n router URLs (#2565)
+- preserve fast refresh state (#2544)
+
+#### Misc
+
+- **Build:** gate native typeof window folding (#2574)
+- pass server externals to Nitro traceDeps (#2521)
+- **Build:** honor inline next config for static export (#2543)
+- **Routing:** discover dot-directory routes (#2531)
+
+### Performance
+
+- **Build:** use native typeof window folding (#2564)
+- **Pages:** reuse dev stylesheet dependency analysis (#2550)
+
+### Contributors
+
+- @james-elicx
+- @LubomirGeorgiev
+- @NathanDrake2406
+- @WilliamK112
+
 ## 1.0.0-beta.0
 
 ### Features

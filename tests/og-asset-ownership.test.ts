@@ -3,6 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { OgAssetOwnership } from "../packages/vinext/src/plugins/og-asset-ownership.js";
+import { toSlash } from "pathslash";
+
+/** Expected canonical (forward-slash) path for boundary assertions. */
+function canonical(p: string): string {
+  return toSlash(p);
+}
 
 let tmpDir: string;
 
@@ -28,7 +34,10 @@ describe("OgAssetOwnership", () => {
 
     const boundary = await ownership.resolveModuleBoundary(modulePath);
 
-    expect(boundary).toEqual({ assetRoot: realProjectRoot, moduleDir: realModuleDir });
+    expect(boundary).toEqual({
+      assetRoot: canonical(realProjectRoot),
+      moduleDir: canonical(realModuleDir),
+    });
   });
 
   it("records an aliased external package as its own boundary", async () => {
@@ -47,7 +56,7 @@ describe("OgAssetOwnership", () => {
 
     const boundary = await ownership.resolveModuleBoundary(modulePath);
 
-    expect(boundary?.assetRoot).toBe(realPackageRoot);
+    expect(boundary?.assetRoot).toBe(canonical(realPackageRoot));
   });
 
   it("recognizes an external package from its resolved directory alias path", async () => {
@@ -67,7 +76,7 @@ describe("OgAssetOwnership", () => {
 
     const boundary = await ownership.resolveModuleBoundary(modulePath);
 
-    expect(boundary?.assetRoot).toBe(realPackageRoot);
+    expect(boundary?.assetRoot).toBe(canonical(realPackageRoot));
   });
 
   it("does not broaden a resolved alias to an external non-package directory", async () => {
@@ -103,8 +112,8 @@ describe("OgAssetOwnership", () => {
     const realPackageRoot = await fs.realpath(packageRoot);
 
     await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toEqual({
-      assetRoot: realPackageRoot,
-      moduleDir: await fs.realpath(path.dirname(modulePath)),
+      assetRoot: canonical(realPackageRoot),
+      moduleDir: canonical(await fs.realpath(path.dirname(modulePath))),
     });
   });
 
@@ -179,7 +188,7 @@ describe("OgAssetOwnership", () => {
     const ownership = new OgAssetOwnership();
 
     await expect(ownership.resolveContainedAsset(realPackageRoot, assetPath)).resolves.toBe(
-      realAssetPath,
+      canonical(realAssetPath),
     );
     await expect(ownership.resolveContainedAsset(realPackageRoot, outsidePath)).resolves.toBeNull();
   });

@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import path from "node:path";
+import path from "pathslash";
 import { pathToFileURL } from "node:url";
 import { parseAst, type Plugin } from "vite";
 

@@ -1,4 +1,4 @@
-import path from "node:path";
+import path from "pathslash";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 import {

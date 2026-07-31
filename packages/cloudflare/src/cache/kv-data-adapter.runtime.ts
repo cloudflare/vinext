@@ -35,6 +35,9 @@ import {
 } from "vinext/shims/request-context";
 import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
+import { createKvKeySpace, type KvKeySpace } from "./kv-key.js";
+
+export { ENTRY_PREFIX } from "./kv-key.js";
 
 /** Default KV namespace binding name read from the Worker `env`. */
 const DEFAULT_BINDING = "VINEXT_KV_CACHE";
@@ -90,12 +93,6 @@ type KVCacheEntry = {
   /** Effective cache-control policy used for response headers. */
   cacheControl?: CacheControlMetadata;
 };
-
-/** Key prefix for tag invalidation timestamps. */
-const TAG_PREFIX = "__tag:";
-
-/** Key prefix for cache entries. */
-export const ENTRY_PREFIX = "cache:";
 
 /** Prefix used by revalidatePath for path-based tags. */
 const PATH_TAG_PREFIX = "_N_T_";
@@ -182,7 +179,7 @@ function isPathChildOf(path: string, prefix: string): boolean {
  */
 export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
-  private prefix: string;
+  private keySpace: KvKeySpace;
   private ctx: ExecutionContextLike | undefined;
   private ttlSeconds: number;
 
@@ -202,14 +199,22 @@ export class KVCacheHandler implements CacheHandler {
     },
   ) {
     this.kv = kvNamespace;
-    this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
+    this.keySpace = createKvKeySpace(options?.appPrefix);
     this.ctx = options?.ctx;
     this.ttlSeconds = options?.ttlSeconds ?? 30 * 24 * 3600;
     this._tagCacheTtl = options?.tagCacheTtlMs ?? 5_000;
   }
 
+  private _entryKey(key: string): string {
+    return this.keySpace.entryKey(key);
+  }
+
+  private _tagKey(tag: string): string {
+    return this.keySpace.tagKey(tag);
+  }
+
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
-    const kvKey = this.prefix + ENTRY_PREFIX + key;
+    const kvKey = this._entryKey(key);
     const raw = await this.kv.get(kvKey);
     if (!raw) return null;
 
@@ -313,7 +318,7 @@ export class KVCacheHandler implements CacheHandler {
     // so subsequent get() calls benefit from the already-fetched results.
     if (uncachedTags.length > 0) {
       const tagResults = await Promise.all(
-        uncachedTags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
+        uncachedTags.map((tag) => this.kv.get(this._tagKey(tag))),
       );
 
       for (let i = 0; i < uncachedTags.length; i++) {
@@ -361,6 +366,7 @@ export class KVCacheHandler implements CacheHandler {
     let effectiveExpire: number | undefined;
     effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
     effectiveExpire = readCacheControlNumberField(ctx, "expire");
+    const effectiveStale = readCacheControlNumberField(ctx, "stale");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
     }
@@ -375,11 +381,15 @@ export class KVCacheHandler implements CacheHandler {
       typeof effectiveExpire === "number" && effectiveExpire > 0
         ? now + effectiveExpire * 1000
         : null;
-    const cacheControl =
+    const cacheControl: CacheControlMetadata | undefined =
       typeof effectiveRevalidate === "number"
-        ? effectiveExpire === undefined
-          ? { revalidate: effectiveRevalidate }
-          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+        ? {
+            revalidate: effectiveRevalidate,
+            ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
+            // Client-router reuse bound — must survive KV so warm hits replay
+            // the producing render's claim (see CacheControlMetadata.stale).
+            ...(effectiveStale === undefined ? {} : { stale: effectiveStale }),
+          }
         : undefined;
 
     // Prepare entry — convert ArrayBuffers to base64 for JSON storage
@@ -417,7 +427,7 @@ export class KVCacheHandler implements CacheHandler {
     const metadataJson = JSON.stringify({ tags });
     const metadata = metadataJson.length <= 1024 ? { tags } : undefined;
 
-    return this._put(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
+    return this._put(this._entryKey(key), JSON.stringify(entry), {
       expirationTtl,
       metadata,
     });
@@ -431,7 +441,7 @@ export class KVCacheHandler implements CacheHandler {
     // Use a long TTL (30 days) so recent invalidations are always found
     await Promise.all(
       validTags.map((tag) =>
-        this.kv.put(this.prefix + TAG_PREFIX + tag, String(now), {
+        this.kv.put(this._tagKey(tag), String(now), {
           expirationTtl: 30 * 24 * 3600,
         }),
       ),
@@ -462,7 +472,7 @@ export class KVCacheHandler implements CacheHandler {
   async revalidateByPathPrefix(pathPrefix: string): Promise<void> {
     const tagsToInvalidate = new Set<string>();
     let cursor: string | undefined;
-    const listPrefix = this.prefix + ENTRY_PREFIX;
+    const listPrefix = this.keySpace.entryPrefix;
 
     do {
       const page = await this.kv.list({ prefix: listPrefix, cursor });
@@ -568,6 +578,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     if (!isUnknownRecord(obj.cacheControl)) return null;
     if (typeof obj.cacheControl.revalidate !== "number") return null;
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
+      return null;
+    }
+    if (obj.cacheControl.stale !== undefined && typeof obj.cacheControl.stale !== "number") {
       return null;
     }
   }

@@ -122,7 +122,7 @@ class ServerActionRedirectError extends Error {
     const redirectUrl = new URL(target.href, window.location.href);
     const redirectHref = redirectUrl.pathname + redirectUrl.search + redirectUrl.hash;
     const redirectType = target.type === "push" ? "push" : "replace";
-    this.digest = `NEXT_REDIRECT;${redirectType};${encodeURIComponent(redirectHref)};${target.status};`;
+    this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};${target.status};`;
   }
 }
 

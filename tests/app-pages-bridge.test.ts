@@ -1,9 +1,15 @@
+import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesFallback,
   type PagesEntry,
 } from "../packages/vinext/src/server/app-pages-bridge.js";
 import type { AppMiddlewareContext } from "../packages/vinext/src/server/app-middleware.js";
+import { handlePagesApiRoute } from "../packages/vinext/src/server/pages-api-route.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+} from "../packages/vinext/src/shims/request-context.js";
 
 describe("renderPagesFallback", () => {
   const defaultDeps = {
@@ -30,6 +36,76 @@ describe("renderPagesFallback", () => {
     },
     getDraftModeCookieHeader: (): string | null | undefined => null,
   };
+
+  async function renderHybridEdgeApiResponse(hostRuntime: "node" | "worker") {
+    const text = "Example Domain";
+    const encodedBody = gzipSync(text);
+    const handlerResponse =
+      hostRuntime === "node"
+        ? new Response(text, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(encodedBody.byteLength),
+              "content-type": "text/plain",
+              "transfer-encoding": "chunked",
+            },
+          })
+        : new Response(encodedBody, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(encodedBody.byteLength),
+              "content-type": "text/plain",
+              "transfer-encoding": "chunked",
+            },
+          });
+    const observedRuntimes: Array<"node" | "worker"> = [];
+    const handleApiRoute: NonNullable<PagesEntry["handleApiRoute"]> = (
+      request,
+      url,
+      _ctx,
+      trustedRevalidateOrigin,
+      edgeRuntime,
+    ) => {
+      observedRuntimes.push(edgeRuntime);
+      return handlePagesApiRoute({
+        edgeRuntime,
+        match: {
+          params: {},
+          route: {
+            pattern: "/api/proxy",
+            module: {
+              config: { runtime: "edge" },
+              default: () => handlerResponse,
+            },
+          },
+        },
+        request,
+        trustedRevalidateOrigin,
+        url,
+      });
+    };
+    const executionContext: ExecutionContextLike = {
+      hostRuntime,
+      waitUntil(_promise) {},
+    };
+    const request = new Request("http://localhost/api/proxy");
+    const response = await runWithExecutionContext(executionContext, () =>
+      renderPagesFallback(
+        {
+          isRscRequest: false,
+          middlewareContext: { headers: null, requestHeaders: null, status: null },
+          request,
+          url: new URL(request.url),
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({ handleApiRoute }),
+        },
+      ),
+    );
+
+    return { encodedBody, observedRuntimes, response };
+  }
 
   it("returns null for RSC requests and does not call the Pages loader", async () => {
     const loadPagesEntry = vi.fn(() => ({}) as PagesEntry);
@@ -378,6 +454,26 @@ describe("renderPagesFallback", () => {
     expect(await res!.text()).toBe("api-response");
   });
 
+  it("strips decoded response headers for hybrid Node API fallbacks", async () => {
+    const { observedRuntimes, response } = await renderHybridEdgeApiResponse("node");
+
+    expect(observedRuntimes).toEqual(["node"]);
+    expect(response?.headers.get("content-encoding")).toBeNull();
+    expect(response?.headers.get("content-length")).toBeNull();
+    expect(response?.headers.get("transfer-encoding")).toBeNull();
+    await expect(response?.text()).resolves.toBe("Example Domain");
+  });
+
+  it("preserves encoded response headers for hybrid Worker API fallbacks", async () => {
+    const { encodedBody, observedRuntimes, response } = await renderHybridEdgeApiResponse("worker");
+
+    expect(observedRuntimes).toEqual(["worker"]);
+    expect(response?.headers.get("content-encoding")).toBe("gzip");
+    expect(response?.headers.get("content-length")).toBe(String(encodedBody.byteLength));
+    expect(response?.headers.get("transfer-encoding")).toBe("chunked");
+    expect(Buffer.from(await response!.arrayBuffer())).toEqual(encodedBody);
+  });
+
   it("routes normal paths through renderPage and passes decoded pathname + search", async () => {
     const renderPage = vi.fn((_req: Request, _url: string) => new Response("page-response"));
     const deps = {
@@ -538,7 +634,13 @@ describe("renderPagesFallback", () => {
     );
 
     expect(matchApiRoute).toHaveBeenCalledWith("/api/café?value=hello%20world", request);
-    expect(handleApiRoute).toHaveBeenCalledWith(request, "/api/café?value=hello%20world");
+    expect(handleApiRoute).toHaveBeenCalledWith(
+      request,
+      "/api/café?value=hello%20world",
+      undefined,
+      "http://localhost",
+      "node",
+    );
   });
 
   it("appends the middleware draft cookie to an API fallback response (#1520)", async () => {

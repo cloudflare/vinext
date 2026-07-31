@@ -5,8 +5,10 @@ import {
   parseNextDataPathname,
   buildNextDataJsonResponse,
   buildNextDataNotFoundResponse,
+  encodeUrlParserIgnoredCharacters,
   normalizePagesDataRequest,
   normalizeNextDataPagePathname,
+  urlParserCreatesPagesDataPath,
 } from "../packages/vinext/src/server/pages-data-route.js";
 
 // Helper mirroring vinext/html safeJsonStringify behavior for tests.
@@ -26,6 +28,24 @@ describe("pages-data-route", () => {
       expect(isNextDataPathname("/_next/data/abc/about")).toBe(false); // no .json
       expect(isNextDataPathname("/data/abc/about.json")).toBe(false);
     });
+  });
+
+  describe("urlParserCreatesPagesDataPath", () => {
+    it("detects ignored controls that manufacture a data path", () => {
+      expect(urlParserCreatesPagesDataPath("/\t_next/data/abc/about.json")).toBe(true);
+      expect(urlParserCreatesPagesDataPath("/_ne\nxt/data/abc/about.json")).toBe(true);
+      expect(urlParserCreatesPagesDataPath("/_next/\rdata/abc/about.json")).toBe(true);
+    });
+
+    it("preserves ordinary controls and canonical data paths", () => {
+      expect(urlParserCreatesPagesDataPath("/posts/foo\t")).toBe(false);
+      expect(urlParserCreatesPagesDataPath("/_next/data/abc/about.json")).toBe(false);
+      expect(urlParserCreatesPagesDataPath("/about")).toBe(false);
+    });
+  });
+
+  it("keeps URL-parser-ignored characters encoded for later parameter decoding", () => {
+    expect(encodeUrlParserIgnoredCharacters("/posts/a\tb\nc\rd")).toBe("/posts/a%09b%0Ac%0Dd");
   });
 
   describe("parseNextDataPathname", () => {

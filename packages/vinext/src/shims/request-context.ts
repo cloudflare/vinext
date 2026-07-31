@@ -39,12 +39,20 @@ import {
 export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
+  /** Host runtime executing the current request. */
+  hostRuntime?: "node" | "worker";
   /**
    * Optional host-provided cache handle that some runtimes expose on the
    * execution context. Typed as `unknown` to keep this module runtime-agnostic;
    * CDN cache adapters that know the concrete shape narrow it themselves.
    */
   cache?: unknown;
+  /** Server-owned origin for credential-bearing Pages revalidation loopbacks. */
+  trustedRevalidateOrigin?: string;
+  /** Worker-owned in-process dispatcher for authenticated Pages revalidation. */
+  dispatchPagesRevalidate?: (request: Request) => Promise<Response>;
+  /** Marks a request currently executing through the internal revalidation dispatcher. */
+  isInternalPagesRevalidation?: boolean;
 };
 
 // ---------------------------------------------------------------------------

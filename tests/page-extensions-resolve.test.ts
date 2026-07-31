@@ -11,20 +11,16 @@ import {
 // Ported in spirit from Next.js: test/e2e/app-dir/resolve-extensions/
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resolve-extensions/
 //
-// When users configure custom extensions via `pageExtensions` or
-// `turbopack.resolveExtensions` (e.g. `.platform.tsx`, `.mdx`, or `.png`), Vite must
-// know to attempt those extensions when resolving extensionless imports.
+// When users configure custom module extensions via `turbopack.resolveExtensions`
+// (e.g. `.web.tsx` or `.png`), Vite must know to attempt those extensions when
+// resolving extensionless imports.
 // Otherwise extensionless imports of files with those custom extensions
 // fail to resolve and the build crashes.
 //
 // Regression test for cloudflare/vinext#1502.
 describe("buildViteResolveExtensions", () => {
-  it("applies Next.js default pageExtensions priority when pageExtensions is undefined", () => {
-    // Even without a user-set pageExtensions, vinext normalises to the
-    // Next.js defaults `["tsx", "ts", "jsx", "js"]` and uses that order.
-    // `.cjs`/`.cts` trail the list so `vinext init`-renamed CJS configs
-    // (`tailwind.config.cjs`) resolve extensionlessly.
-    const extensions = buildViteResolveExtensions(undefined);
+  it("appends CJS config extensions to vinext defaults", () => {
+    const extensions = buildViteResolveExtensions();
     expect(extensions).toEqual([
       ".tsx",
       ".ts",
@@ -38,53 +34,13 @@ describe("buildViteResolveExtensions", () => {
     ]);
   });
 
-  it("returns the same list when pageExtensions matches the Next.js defaults", () => {
-    const extensions = buildViteResolveExtensions(["tsx", "ts", "jsx", "js"]);
-    expect(extensions).toEqual([
+  it("preserves configured Vite extensions and removes duplicates", () => {
+    expect(buildViteResolveExtensions([".web.tsx", ".tsx", ".cjs"])).toEqual([
+      ".web.tsx",
       ".tsx",
-      ".ts",
-      ".jsx",
-      ".js",
-      ".mjs",
-      ".mts",
-      ".json",
       ".cjs",
       ".cts",
     ]);
-  });
-
-  it("prepends configured pageExtensions so user priority wins", () => {
-    // Next.js resolve-extensions fixture places `.web.tsx` before `.tsx`.
-    // The user's order must be preserved so `Component` resolves to
-    // `Component.web.tsx` before `Component.tsx`.
-    const extensions = buildViteResolveExtensions(["web.tsx", "tsx", "ts", "jsx", "js"]);
-    expect(extensions[0]).toBe(".web.tsx");
-    expect(extensions.indexOf(".web.tsx")).toBeLessThan(extensions.indexOf(".tsx"));
-  });
-
-  it("includes custom multi-segment extensions like .platform.tsx", () => {
-    // This is what made cloudflare/vinext#1502 surface: a user-configured
-    // multi-segment extension that Vite's defaults can't resolve.
-    const extensions = buildViteResolveExtensions(["platform.tsx", "tsx", "ts", "jsx", "js"]);
-    expect(extensions).toContain(".platform.tsx");
-    expect(extensions[0]).toBe(".platform.tsx");
-  });
-
-  it("includes .mdx when configured", () => {
-    const extensions = buildViteResolveExtensions(["tsx", "ts", "jsx", "js", "mdx"]);
-    expect(extensions).toContain(".mdx");
-  });
-
-  it("dedupes overlapping entries", () => {
-    const extensions = buildViteResolveExtensions(["tsx", "js"]);
-    expect(extensions.filter((e) => e === ".tsx").length).toBe(1);
-    expect(extensions.filter((e) => e === ".js").length).toBe(1);
-  });
-
-  it("strips leading dots and whitespace before normalising", () => {
-    const extensions = buildViteResolveExtensions([".platform.tsx", " tsx ", ""]);
-    expect(extensions[0]).toBe(".platform.tsx");
-    expect(extensions).toContain(".tsx");
   });
 });
 
@@ -98,13 +54,8 @@ describe("normalizeViteResolveExtensions", () => {
   });
 });
 
-describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () => {
-  it("forwards configured pageExtensions to config.resolve.extensions", async () => {
-    // Ported in spirit from Next.js: test/e2e/app-dir/resolve-extensions/
-    // The deploy suite failure surfaced when pageExtensions/resolveExtensions
-    // were configured beyond Vite's defaults — Vite couldn't resolve
-    // extensionless imports of files like `Component.platform.tsx`.
-    // Regression test for cloudflare/vinext#1502.
+describe("vinext plugin configures Vite resolve.extensions", () => {
+  it("keeps pageExtensions scoped to route discovery", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
     // oxlint-disable-next-line typescript/no-explicit-any
@@ -126,7 +77,7 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
     );
     await fs.writeFile(
       path.join(tmpDir, "next.config.mjs"),
-      `export default { pageExtensions: ["platform.tsx", "tsx", "ts", "jsx", "js", "mdx"] };`,
+      `export default { pageExtensions: ["tsx", "ts", "jsx", "js", "md"] };`,
     );
 
     try {
@@ -137,16 +88,12 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       };
       // oxlint-disable-next-line typescript/no-explicit-any
       await (mainPlugin as any).config(mockConfig, { command: "build" });
-      const environmentConfig: any = { resolve: { extensions: [".earlier"] } };
+      const environmentConfig: any = { resolve: {} };
       (mainPlugin as any).configEnvironment("client", environmentConfig);
       const extensions: string[] = environmentConfig.resolve.extensions;
-      expect(extensions).toContain(".platform.tsx");
-      expect(extensions).toContain(".mdx");
+      expect(extensions).not.toContain(".md");
       expect(extensions).toContain(".tsx");
-      // User priority must win — `.platform.tsx` resolves before `.tsx`
-      // so a bare `./Component` import lands on `Component.platform.tsx`
-      // (mirrors Next.js / Turbopack resolveExtensions semantics).
-      expect(extensions.indexOf(".platform.tsx")).toBeLessThan(extensions.indexOf(".tsx"));
+      expect(extensions).toContain(".cjs");
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

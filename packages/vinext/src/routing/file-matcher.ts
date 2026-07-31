@@ -1,10 +1,18 @@
 import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { escapeRegExp } from "../utils/regex.js";
-import { normalizePathSeparators } from "../utils/path.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
+const DEFAULT_VINEXT_RESOLVE_EXTENSIONS = [
+  ".tsx",
+  ".ts",
+  ".jsx",
+  ".js",
+  ".mjs",
+  ".mts",
+  ".json",
+] as const;
 
 export function normalizePageExtensions(pageExtensions?: readonly string[] | null): string[] {
   if (!Array.isArray(pageExtensions) || pageExtensions.length === 0) {
@@ -23,6 +31,11 @@ function buildExtensionGlob(stem: string, extensions: readonly string[]): string
     return `${stem}.${extensions[0]}`;
   }
   return `${stem}.{${extensions.join(",")}}`;
+}
+
+function includeDotDirectoryMatches(pattern: string): string {
+  if (!pattern.startsWith("**/")) return pattern;
+  return `{**,**/.*/**}/${pattern.slice(3)}`;
 }
 
 export type ValidFileMatcher = {
@@ -92,9 +105,6 @@ export function findFileWithExtensions(basePath: string, matcher: ValidFileMatch
 /**
  * Find a file by basename and configured page extension in a directory.
  * Returns the first matching absolute path, or null if not found.
- *
- * `dir` must be forward-slash. The returned path is built with `path.posix.join`,
- * so it is forward-slash too.
  */
 export function findFileWithExts(
   dir: string,
@@ -102,47 +112,33 @@ export function findFileWithExts(
   matcher: ValidFileMatcher,
 ): string | null {
   for (const ext of matcher.dottedExtensions) {
-    const filePath = path.posix.join(dir, name + ext);
+    const filePath = path.join(dir, name + ext);
     if (existsSync(filePath)) return filePath;
   }
   return null;
 }
 
 /**
- * Vite's default `resolve.extensions` covers `.tsx/.ts/.jsx/.js/.json` (and
- * `.mjs/.mts`). When the user configures `pageExtensions` with values Vite
- * does not know about — e.g. `["platform.tsx", "tsx", "mdx"]` from the
- * Next.js `resolve-extensions` fixture — extensionless imports of those
- * files fail to resolve, and the build crashes with "Custom deploy script
- * failed: undefined (1)".
+ * Add the config extensions produced by `vinext init` to vinext's resolver.
  *
- * Build the merged extension list that Vite should use:
+ * `pageExtensions` is intentionally not part of module resolution. Next.js
+ * uses it to discover route files; custom module extensions are configured
+ * separately through `turbopack.resolveExtensions` or webpack
+ * `resolve.extensions`.
  *
- *  1. User-configured pageExtensions go first (each prefixed with `.`) so
- *     the user's priority wins. e.g. `.platform.tsx` resolves before `.tsx`.
- *  2. Vite's defaults follow, with duplicates removed.
- *  3. `.cjs`/`.cts` go last (lowest priority). Neither Vite's defaults nor the
- *     user's pageExtensions include them, but `vinext init` renames CJS config
- *     files (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when it adds
- *     `"type": "module"`, and app code imports those extensionlessly
- *     (`import cfg from "../tailwind.config"`). Without these, the bundle fails
- *     with "[UNRESOLVED_IMPORT] Could not resolve '../tailwind.config'".
+ * The default order preserves vinext's existing module-resolution behavior
+ * and matches Next.js Turbopack for overlapping JavaScript and TypeScript
+ * extensions.
  *
- * The user's pageExtensions retain their relative order, which is what
- * Next.js / Turbopack do via the `resolveExtensions` config option.
- *
- * See: cloudflare/vinext#1502 for page-extension ordering, and
- * cloudflare/vinext#2435 for extensionless `.cjs` config imports.
+ * `.cjs`/`.cts` go last because `vinext init` renames CJS config files when it
+ * adds `"type": "module"`, and app code may import those files extensionlessly.
  */
 export function buildViteResolveExtensions(
-  pageExtensions?: readonly string[] | null,
-  viteDefaults: readonly string[] = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"],
+  viteExtensions: readonly string[] = DEFAULT_VINEXT_RESOLVE_EXTENSIONS,
 ): string[] {
-  const normalized = normalizePageExtensions(pageExtensions);
-  const dotted = normalized.map((ext) => `.${ext}`);
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const ext of [...dotted, ...viteDefaults, ".cjs", ".cts"]) {
+  for (const ext of [...viteExtensions, ".cjs", ".cts"]) {
     if (seen.has(ext)) continue;
     seen.add(ext);
     result.push(ext);
@@ -176,9 +172,8 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
  * Use function-form exclude for Node < 22.14 compatibility.
  *
  * Yields forward-slash relative paths: node's glob emits native (backslash)
- * separators on Windows, so each match is normalized — this is the entry point
- * that lets downstream consumers treat the scanned paths as canonical
- * forward-slash ids.
+ * separators on Windows, so each match goes through `toSlash` — this is the
+ * boundary where external fs output enters the canonical forward-slash space.
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -186,11 +181,11 @@ export async function* scanWithExtensions(
   extensions: readonly string[],
   exclude?: (name: string) => boolean,
 ): AsyncGenerator<string> {
-  const pattern = buildExtensionGlob(stem, extensions);
+  const pattern = includeDotDirectoryMatches(buildExtensionGlob(stem, extensions));
   for await (const file of glob(pattern, {
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    yield normalizePathSeparators(file);
+    yield toSlash(file);
   }
 }

@@ -7,6 +7,6 @@
 import { revalidateTag } from "next/cache";
 
 export async function GET() {
-  await revalidateTag("use-cache-rh-tag");
+  revalidateTag("use-cache-rh-tag");
   return new Response("ok", { status: 200 });
 }

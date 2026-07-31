@@ -132,6 +132,37 @@ function dynamic() {
 }
 
 describe("App Router dynamic requests", () => {
+  it("natively filters source that cannot contain dynamic requests", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const codeFilter = transform.filter?.code;
+    if (!(codeFilter instanceof RegExp)) {
+      throw new Error("dynamic request code filter not found");
+    }
+
+    expect(codeFilter.test('import value from "package";')).toBe(false);
+    expect(codeFilter.test("export const value = getValue();")).toBe(false);
+    expect(codeFilter.test("require(request)")).toBe(true);
+    expect(codeFilter.test(String.raw`requ\u0069re(request)`)).toBe(true);
+    expect(codeFilter.test(String.raw`\u{72}equire(request)`)).toBe(true);
+    expect(codeFilter.test(String.raw`\u{00072}equire(request)`)).toBe(true);
+    expect(codeFilter.test(String.raw`const label = "caf\u00e9";`)).toBe(false);
+    expect(codeFilter.test("require /* comment */ (request)")).toBe(true);
+    expect(codeFilter.test("import(request)")).toBe(true);
+    expect(codeFilter.test("import /* comment */ (request)")).toBe(true);
+    expect(codeFilter.test("import\n// comment\n(request)")).toBe(true);
+  });
+
+  it("transforms escaped require identifiers", () => {
+    const transformed = _transformVeryDynamicRequests(
+      String.raw`const request = getRequest(); requ\u0069re(request);`,
+      "/app/page.tsx",
+    );
+    expect(transformed?.code).toContain("MODULE_NOT_FOUND");
+  });
+
   it("matches Next.js environment scoping", () => {
     const transform = createIgnoreDynamicRequestsPlugin(() => [
       "transpiled",
@@ -140,14 +171,16 @@ describe("App Router dynamic requests", () => {
     if (!transform || typeof transform === "function") {
       throw new Error("dynamic request transform hook not found");
     }
-    const runTransform = (consumer: "client" | "server", id: string) =>
-      transform.handler.call(
-        { environment: { config: { consumer } } } as never,
-        "import(request)",
-        id,
-      );
+    const runTransform = (consumer: "client" | "server", id: string, code = "import(request)") =>
+      transform.handler.call({ environment: { config: { consumer } } } as never, code, id);
 
-    expect(runTransform("server", "/app/page.tsx")).toBeTruthy();
+    const cachedServerResult = runTransform("server", "/app/page.tsx");
+    expect(cachedServerResult).toBeTruthy();
+    expect(runTransform("server", "/app/page.tsx")).toBe(cachedServerResult);
+    expect(runTransform("server", "/app/page.tsx", "import(otherRequest)")).not.toBe(
+      cachedServerResult,
+    );
+    expect(runTransform("server", "/app/other.tsx")).not.toBe(cachedServerResult);
     expect(runTransform("client", "/app/page.tsx")).toBeNull();
     expect(
       runTransform("client", "/app/node_modules/dynamic-request-dependency/index.js"),
@@ -757,6 +790,40 @@ function withDeclaration(value = require(request)) {
       "/app/node_modules/dynamic-request-dependency/index.js",
     )?.code;
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+  });
+
+  it("resolves static require requests encoded with String.fromCharCode", () => {
+    // Regression for the downstream patch in nodejs/nodejs.org@30ca20133337398e6707bb2cb21df450d6d9da04.
+    const transformed = _transformVeryDynamicRequests(
+      "const loaded = require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));",
+      "/app/load.js",
+    )?.code;
+
+    expect(transformed).toContain('require("./value")');
+    expect(transformed).not.toContain("MODULE_NOT_FOUND");
+  });
+
+  it("does not evaluate shadowed or non-literal String.fromCharCode calls", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `function load(String) {
+  return require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));
+}
+require(String.fromCharCode(...codeUnits));`,
+      "/app/load.js",
+    )?.code;
+
+    expect(transformed).not.toContain('require("./value")');
+    expect(transformed?.match(/MODULE_NOT_FOUND/g)).toHaveLength(2);
+  });
+
+  it("matches literal require handling for empty and root character-code requests", () => {
+    const transformed = _transformVeryDynamicRequests(
+      "require(String.fromCharCode()); require(String.fromCharCode(47));",
+      "/app/load.js",
+    )?.code;
+
+    expect(transformed).toContain('require("")');
+    expect(transformed?.match(/MODULE_NOT_FOUND/g)).toHaveLength(1);
   });
 
   it("serves guarded fully dynamic requests in pages and route handlers during development", async () => {

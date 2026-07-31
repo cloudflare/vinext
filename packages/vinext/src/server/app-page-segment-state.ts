@@ -7,7 +7,7 @@ function isDynamicSegment(segment: string): boolean {
   return segment.startsWith("[") && segment.endsWith("]") && !segment.includes(".");
 }
 
-function isRouteGroupSegment(segment: string): boolean {
+export function isAppPageRouteGroupSegment(segment: string): boolean {
   return segment.startsWith("(") && segment.endsWith(")");
 }
 
@@ -123,11 +123,35 @@ export function resolveAppPageSegmentStateKey(
   params: AppPageParams,
 ): string {
   for (const segment of routeSegments.slice(treePosition)) {
-    if (!isRouteGroupSegment(segment)) {
+    if (!isAppPageRouteGroupSegment(segment)) {
       return resolveSingleSegmentStateKey(segment, params);
     }
   }
   return "";
+}
+
+/**
+ * A branch segment already resolved by route matching: the interception marker
+ * is split off and the param map that binds the segment is chosen. Downstream
+ * layers serialise these; they never reparse filesystem interception syntax.
+ */
+export type AppPageSemanticSegment = Readonly<{
+  /** Interception marker this segment carries, or null when it is a plain segment. */
+  marker: string | null;
+  /** Whether the route's matched params or the slot's own params bind the segment. */
+  paramSource: "route" | "slot";
+  /** Segment name with any interception marker removed. */
+  segment: string;
+}>;
+
+export function resolveAppPageSemanticSegmentStateKey(
+  semanticSegment: AppPageSemanticSegment,
+  params: AppPageParams,
+): string {
+  const { marker, segment } = semanticSegment;
+  if (isAppPageRouteGroupSegment(segment)) return segment;
+  const stateKey = resolveSingleSegmentStateKey(segment, params);
+  return marker ? JSON.stringify([marker, stateKey]) : stateKey;
 }
 
 export function resolveAppPageRouteStateKey(
@@ -137,12 +161,27 @@ export function resolveAppPageRouteStateKey(
   const statePath: string[] = [];
 
   for (const segment of routeSegments) {
-    if (!isRouteGroupSegment(segment)) {
+    if (!isAppPageRouteGroupSegment(segment)) {
       statePath.push(resolveSingleSegmentStateKey(segment, params));
     }
   }
 
   return statePath.length > 0 ? JSON.stringify(statePath) : "";
+}
+
+export function resolveAppPagePatternStateKey(
+  patternParts: readonly string[],
+  params: AppPageParams,
+): string {
+  return resolveAppPageRouteStateKey(
+    patternParts.map((part) => {
+      if (!part.startsWith(":")) return part;
+      if (part.endsWith("*")) return `[[...${part.slice(1, -1)}]]`;
+      if (part.endsWith("+")) return `[...${part.slice(1, -1)}]`;
+      return `[${part.slice(1)}]`;
+    }),
+    params,
+  );
 }
 
 export function resolveAppPageLeafSegmentStateKey(
@@ -156,4 +195,22 @@ export function resolveAppPageLeafSegmentStateKey(
     }
   }
   return "";
+}
+
+export function resolveAppPageTemplateStateKey(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): string {
+  // Route groups are levels of their own, so a template above one keys off the
+  // group rather than the first visible segment below it — sibling routes
+  // inside the group share the template and keep its state. Next does the same:
+  // the template key is `createRouterCacheKey(activeSegment)` for the immediate
+  // child segment (`.nextjs-ref` client/components/layout-router.tsx), and
+  // group segments are present in the FlightRouterState.
+  const end = treePosition < routeSegments.length ? treePosition + 1 : routeSegments.length;
+  const statePath = routeSegments
+    .slice(0, end)
+    .map((segment) => resolveSingleSegmentStateKey(segment, params));
+  return statePath.length > 0 ? JSON.stringify(statePath) : "";
 }

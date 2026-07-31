@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 
 const closeMock = vi.hoisted(() => vi.fn((callback: () => void) => callback()));
 const startProdServerMock = vi.hoisted(() =>
@@ -89,7 +90,7 @@ describe("prerender path manifest", () => {
     expect(startProdServerMock).toHaveBeenCalledOnce();
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        rscEntryPath: path.join(tmpDir, "dist/server/index.js"),
+        rscEntryPath: toSlash(path.join(tmpDir, "dist/server/index.js")),
       }),
     );
     expect(closeMock).toHaveBeenCalledOnce();
@@ -150,7 +151,7 @@ describe("prerender path manifest", () => {
 
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        outDir: path.join(tmpDir, "dist"),
+        outDir: toSlash(path.join(tmpDir, "dist")),
         rscEntryPath: rscBundlePath,
       }),
     );
@@ -180,8 +181,8 @@ describe("prerender path manifest", () => {
 
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        outDir: path.join(tmpDir, "dist"),
-        rscEntryPath: path.join(tmpDir, "dist/custom-rsc/index.js"),
+        outDir: toSlash(path.join(tmpDir, "dist")),
+        rscEntryPath: toSlash(path.join(tmpDir, "dist/custom-rsc/index.js")),
       }),
     );
     expect(fs.existsSync(path.join(tmpDir, "dist/custom-rsc/vinext-prerender-paths.json"))).toBe(
@@ -244,5 +245,24 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest?.paths).toEqual(["/pages-only"]);
+  });
+
+  it("does not reload disk config when supplied resolved config", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("next.config.mjs", 'throw new Error("disk config loaded unexpectedly");\n');
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig({ trailingSlash: true }, tmpDir);
+
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, nextConfig });
+
+    expect(manifest?.trailingSlash).toBe(true);
+    expect(manifest?.paths).toEqual(["/"]);
   });
 });

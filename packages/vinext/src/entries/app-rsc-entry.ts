@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -21,7 +21,6 @@ import type {
 import type { ImageConfig } from "../server/image-optimization.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
-import { safeJsonStringify } from "../server/html.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
 import { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "../server/image-optimization.js";
@@ -45,17 +44,13 @@ const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
 );
-const appServerActionExecutionPath = resolveEntryPath(
-  "../server/app-server-action-execution.js",
-  import.meta.url,
-);
-const appActionForwardingPath = resolveEntryPath(
-  "../server/app-action-forwarding.js",
-  import.meta.url,
-);
 const appMiddlewarePath = resolveEntryPath("../server/app-middleware.js", import.meta.url);
 const metadataRouteResponsePath = resolveEntryPath(
   "../server/metadata-route-response.js",
+  import.meta.url,
+);
+const appServerActionExecutionPath = resolveEntryPath(
+  "../server/app-server-action-execution.js",
   import.meta.url,
 );
 const appRscErrorsPath = resolveEntryPath("../server/app-rsc-errors.js", import.meta.url);
@@ -123,7 +118,6 @@ const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", imp
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
 type AppRouterConfig = {
-  actionOwners?: Record<string, string[]> | null;
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -238,7 +232,6 @@ export function generateRscEntry(
   const cacheComponents = config?.cacheComponents === true;
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
-  const actionOwners = config?.actionOwners;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -310,18 +303,17 @@ const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
-import { getRequestExecutionContext as __getRequestExecutionContext } from "vinext/shims/request-context";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${
   middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};
+    ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
     : ""
 }
 ${
   instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};
+    ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
     : ""
 }
@@ -341,8 +333,7 @@ ${
 const __loadAppRouteHandlerDispatch = () => import(${JSON.stringify(appRouteHandlerDispatchPath)});
 ${
   hasServerActions
-    ? `const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});
-const __loadAppActionForwarding = () => import(${JSON.stringify(appActionForwardingPath)});`
+    ? `const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});`
     : ""
 }
 ${
@@ -410,6 +401,7 @@ import {
   isrGet as __isrGet,
   isrSet as __isrSet,
   isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage,
+  isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest,
   triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
 } from ${JSON.stringify(isrCachePath)};
 // Import server-only state module to register ALS-backed accessors.
@@ -432,6 +424,7 @@ import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(ap
 // so per-route dispatch can opt into suppression via .run(true, ...).
 import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressionPath)};
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
+
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
 import { ensureAppRouteModulesLoaded as __ensureRouteLoaded } from ${JSON.stringify(appRouteModuleLoaderPath)};
@@ -555,6 +548,11 @@ export const __basePath = ${JSON.stringify(bp)};
 // thread the configured trailingSlash flag through canonical URL rendering.
 const __trailingSlash = ${JSON.stringify(ts)};
 
+// Hoisted above __createAppFallbackRenderer (which runs at module init) so the
+// fallback renderer can decide streaming-vs-blocking metadata redirects per
+// request user-agent. The later per-request references still read this const.
+const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
+
 const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
@@ -582,6 +580,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
   basePath: __basePath,
   trailingSlash: __trailingSlash,
+  htmlLimitedBots: __htmlLimitedBots,
   rootBoundaries: {
     rootForbiddenModule,
     rootLayouts,
@@ -604,6 +603,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   makeThenableParams,
   sanitizer: __sanitizeErrorForClient,
   rscRenderer: renderToReadableStream,
+  getAndClearPendingCookies,
   getNavigationContext: _getNavigationContext,
   resolveChildSegments: __resolveAppPageChildSegments,
   clearRequestContext() {
@@ -618,6 +618,10 @@ function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
 }
 
+function matchRequestRoute(url) {
+  return __routeMatcher.matchRequestRoute(url);
+}
+
 /**
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
@@ -626,7 +630,7 @@ function findIntercept(pathname, sourcePathname = null) {
   return __routeMatcher.findIntercept(pathname, sourcePathname);
 }
 
-async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath) {
+async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
   return __buildPageElements({
@@ -645,10 +649,13 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
     basePath: __basePath,
     trailingSlash: __trailingSlash,
     htmlLimitedBots: __htmlLimitedBots,
+    scriptNonce,
   });
 }
 
 const __i18nConfig = ${JSON.stringify(i18nConfig)};
+export { __i18nConfig };
+export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
@@ -656,7 +663,6 @@ const __runtimeImageConfig = ${JSON.stringify(config?.imageConfig)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
-const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
 const __clientTraceMetadata = ${JSON.stringify(clientTraceMetadata)};
 const __reactMaxHeadersLength = ${JSON.stringify(reactMaxHeadersLength)};
 // Re-exported for the App Router prod-server to consume at startup —
@@ -714,8 +720,7 @@ ${rootParamNameEntries.join("\n")}
 };
 
 __setPagesClientAssets(__pagesClientAssets);
-function __VINEXT_ACTION_OWNERS() { return ${actionOwners === undefined ? '"__VINEXT_ACTION_OWNERS_STUB__"' : safeJsonStringify(actionOwners)}; }
-const __appRscHandler = createAppRscHandler({
+export default createAppRscHandler({
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
@@ -746,6 +751,7 @@ const __appRscHandler = createAppRscHandler({
     actionFailed,
     handlerStart,
     interceptionContext,
+    interceptionPathname,
     isProgressiveActionRender,
     isRscRequest,
     middlewareContext,
@@ -811,7 +817,9 @@ const __appRscHandler = createAppRscHandler({
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
-        }, layoutParamAccess, displayPathname);
+          serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
+          isProduction: process.env.NODE_ENV === "production",
+        }, layoutParamAccess, displayPathname, scriptNonce);
       },
       clientReuseManifest,
       cleanPathname,
@@ -830,7 +838,10 @@ const __appRscHandler = createAppRscHandler({
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       findIntercept(pathname) {
-        return findIntercept(pathname, interceptionContext);
+        return findIntercept(
+          pathname === cleanPathname ? interceptionPathname : pathname,
+          interceptionContext,
+        );
       },
       generateStaticParams: __generateStaticParams,
       getFontLinks: _getSSRFontLinks,
@@ -882,7 +893,7 @@ const __appRscHandler = createAppRscHandler({
         });
       },
       async probePage(probeSearchParams = searchParams) {
-        const __probeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __probeIntercept = findIntercept(interceptionPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
         // component for dynamic bailout — matching the render path, which also
@@ -904,7 +915,7 @@ const __appRscHandler = createAppRscHandler({
         }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {
-        const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
@@ -913,9 +924,10 @@ const __appRscHandler = createAppRscHandler({
         }, errorOrigin);
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
-        const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
         return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+          routePathname: cleanPathname,
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
@@ -1000,6 +1012,7 @@ const __appRscHandler = createAppRscHandler({
     contentType,
     middlewareContext,
     request,
+    routeMatch,
   }) {
     const {
       handleProgressiveServerActionRequest: __handleProgressiveServerActionRequest,
@@ -1020,11 +1033,10 @@ const __appRscHandler = createAppRscHandler({
       contentType,
       actionId,
     );
-    const __progressiveActionMatch = __isProgressiveAction ? matchRoute(cleanPathname) : null;
     const __hasPageRoute = Boolean(
-      __progressiveActionMatch &&
-        __progressiveActionMatch.route.__loadPage &&
-        !__progressiveActionMatch.route.__loadRouteHandler,
+      __isProgressiveAction &&
+        routeMatch?.route.__loadPage &&
+        !routeMatch.route.__loadRouteHandler,
     );
     return __handleProgressiveServerActionRequest({
       actionId,
@@ -1057,42 +1069,17 @@ const __appRscHandler = createAppRscHandler({
     middlewareContext,
     mountedSlotsHeader,
     request,
+    scriptNonce,
+    routeMatch,
+    routePathname,
     searchParams,
   }) {
-    const { forwardServerActionIfNeeded: __forwardServerActionIfNeeded } =
-      await __loadAppActionForwarding();
-    const __currentActionMatch = matchRoute(cleanPathname);
-    const __forwardResponse = await __forwardServerActionIfNeeded({
-      actionId,
-      actionOwners: __VINEXT_ACTION_OWNERS(),
-      allowedOrigins: __allowedOrigins,
-      basePath: __basePath,
-      clearRequestContext: __clearRequestContext,
-      currentRoutePattern: __currentActionMatch?.route.pattern ?? null,
-      dispatch(__forwardRequest) {
-        const __executionContext = __getRequestExecutionContext();
-        return __appRscHandler(
-          __forwardRequest,
-          __executionContext
-            ? {
-                actionForwarded: true,
-                cache: __executionContext.cache,
-                passThroughOnException: __executionContext.passThroughOnException?.bind(__executionContext),
-                waitUntil: __executionContext.waitUntil.bind(__executionContext),
-              }
-            : { actionForwarded: true },
-        );
-      },
-      middlewareContext,
-      request,
-    });
-    if (__forwardResponse) return __forwardResponse;
     const {
       handleServerActionRscRequest: __handleServerActionRscRequest,
       readActionBodyWithLimit: __readBodyWithLimit,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
-    const __actionMatch = __currentActionMatch;
+    const __actionMatch = routeMatch;
     if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))
@@ -1125,13 +1112,15 @@ const __appRscHandler = createAppRscHandler({
           renderMode: actionRenderMode,
           observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: observePageSearchParamsAccess === true,
-        });
+        }, undefined, actionCleanPathname, scriptNonce);
       },
       cleanPathname,
       clearRequestContext() {
         __clearRequestContext();
       },
       contentType,
+      currentRouteMatch: __actionMatch,
+      currentRoutePathname: routePathname,
       createNotFoundElement(actionRouteId) {
         return {
           ...__AppElementsWire.createMetadataEntries({
@@ -1150,9 +1139,6 @@ const __appRscHandler = createAppRscHandler({
       },
       createTemporaryReferenceSet,
       decodeReply,
-      dispatchRedirectRequest(redirectRequest) {
-        return __appRscHandler(redirectRequest, undefined);
-      },
       draftModeSecret: __draftModeSecret,
       findIntercept(pathnameToMatch) {
         return findIntercept(pathnameToMatch, interceptionContext);
@@ -1195,14 +1181,20 @@ const __appRscHandler = createAppRscHandler({
       setNavigationContext,
       toInterceptOpts(intercept) {
         return {
+          interceptGraphId: intercept.interceptionGraphId,
           interceptionContext,
           interceptLayouts: intercept.interceptLayouts,
           interceptLayoutSegments: intercept.interceptLayoutSegments,
           interceptBranchSegments: intercept.interceptBranchSegments,
+          interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
+          interceptNotFound: intercept.notFound,
+          interceptNotFoundTreePosition: intercept.notFoundTreePosition,
           interceptSlotId: intercept.slotId,
           interceptSlotKey: intercept.slotKey,
           interceptSourceMatchedUrl: interceptionContext,
           interceptSourcePageSegments: intercept.sourcePageSegments,
+          interceptTargetPatternParts: intercept.targetPatternParts,
+          interceptTargetRouteGraphId: intercept.targetRouteGraphId,
           interceptPage: intercept.page,
           interceptParams: intercept.matchedParams,
         };
@@ -1228,6 +1220,20 @@ const __appRscHandler = createAppRscHandler({
       : ""
   }
   matchRoute,
+  matchRequestRoute,
+  matchInterceptRoute(pathname, sourcePathname) {
+    const intercept = findIntercept(pathname, sourcePathname);
+    if (!intercept) return null;
+    const route = routes[intercept.sourceRouteIndex];
+    if (!route) return null;
+    const params = Object.create(null);
+    for (const name of route.params) {
+      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
+        params[name] = intercept.sourceMatchedParams[name];
+      }
+    }
+    return { route, params };
+  },
   ${
     middlewarePath
       ? `runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, request }) {
@@ -1236,7 +1242,7 @@ const __appRscHandler = createAppRscHandler({
       cleanPathname,
       context,
       hadBasePath,
-      filePath: ${JSON.stringify(middlewarePath ? normalizePathSeparators(middlewarePath) : "")},
+      filePath: ${JSON.stringify(middlewarePath ? toSlash(middlewarePath) : "")},
       i18nConfig: __i18nConfig,
       isDataRequest,
       isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
@@ -1276,8 +1282,6 @@ const __appRscHandler = createAppRscHandler({
   trailingSlash: __trailingSlash,
   validateDevRequestOrigin: __validateDevRequestOrigin,
 });
-
-export default __appRscHandler;
 
 if (import.meta.hot) {
   import.meta.hot.accept();

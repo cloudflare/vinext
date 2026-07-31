@@ -140,11 +140,18 @@ export function trieMatch<R>(
   root: TrieNode<R>,
   urlParts: string[],
 ): { route: R; params: Record<string, string | string[]> } | null {
-  const result = match(root, urlParts, 0, []);
+  const result = trieMatchRaw(root, urlParts);
   if (result) {
     decodeMatchedParams(result.params);
   }
   return result;
+}
+
+export function trieMatchRaw<R>(
+  root: TrieNode<R>,
+  urlParts: string[],
+): { route: R; params: Record<string, string | string[]> } | null {
+  return match(root, urlParts, 0, []);
 }
 
 function match<R>(

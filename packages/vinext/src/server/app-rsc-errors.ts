@@ -2,6 +2,7 @@ import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 type DigestError = Error & { digest?: string };
+const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
 
 type RscRequestInfo = {
   path: string;
@@ -34,6 +35,12 @@ export function hasDigest(error: unknown): error is { digest: unknown } {
 
 const BAILOUT_TO_CSR_DIGEST = "BAILOUT_TO_CLIENT_SIDE_RENDERING";
 const DYNAMIC_SERVER_USAGE_DIGEST = "DYNAMIC_SERVER_USAGE";
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = Reflect.get(error, "name");
+  return name === "AbortError" || name === "ResponseAborted";
+}
 
 /**
  * vinext's mirror of Next.js's `getDigestForWellKnownError`: returns the digest
@@ -93,7 +100,15 @@ export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NOD
       "The specific message is omitted in production builds to avoid leaking sensitive details. " +
       "A digest property is included on this error instance which may provide additional details about the nature of the error.",
   );
-  sanitized.digest = errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+  sanitized.digest = hasDigest(error)
+    ? String(error.digest)
+    : errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+  Object.defineProperty(sanitized, ORIGINAL_SERVER_ERROR, {
+    configurable: false,
+    enumerable: false,
+    value: error,
+    writable: false,
+  });
   return sanitized;
 }
 
@@ -102,6 +117,12 @@ export function createRscOnErrorHandler(
 ): (error: unknown) => string | undefined {
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
+
+    // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
+    // Expected response/HMR cancellations are not render failures.
+    if (isAbortError(error)) {
+      return undefined;
+    }
 
     // Well-known control-flow signals (redirect / notFound / bailout-to-CSR /
     // dynamic-server) carry a recognized digest and are not real failures:
@@ -139,11 +160,32 @@ export function createRscOnErrorHandler(
     }
 
     if (options.requestInfo && options.errorContext && error) {
+      const reportableError =
+        typeof error === "object" && ORIGINAL_SERVER_ERROR in error
+          ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
+          : error;
       options.reportRequestError(
-        error instanceof Error ? error : new Error(getThrownValueMessage(error)),
+        reportableError instanceof Error
+          ? reportableError
+          : new Error(getThrownValueMessage(reportableError)),
         options.requestInfo,
         options.errorContext,
       );
+    }
+
+    // Surface the error on the dev-server terminal. In Next.js the instrumentation
+    // wrapper (`onInstrumentationRequestError`) logs render errors in development
+    // regardless of user instrumentation; vinext's `reportRequestError` above is a
+    // no-op when no `onRequestError` hook is registered, so without this a server
+    // render error would be swallowed silently in the dev server. The `!hasDigest`
+    // guard intentionally suppresses every digest-bearing error, including repeat
+    // RSC callbacks after this handler stamps the error with a digest below.
+    if (nodeEnv !== "production" && error && !hasDigest(error)) {
+      const loggableError =
+        typeof error === "object" && ORIGINAL_SERVER_ERROR in error
+          ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
+          : error;
+      console.error("[vinext] Server render error:", loggableError);
     }
 
     // A non-signal error that already carries a digest keeps it as-is (matching

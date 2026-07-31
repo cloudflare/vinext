@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 
 /** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
 export const mdxScanCache = new Map<string, boolean>();

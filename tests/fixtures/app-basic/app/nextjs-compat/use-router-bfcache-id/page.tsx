@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { LinkAccordion } from "./components/link-accordion";
 
 const base = "/nextjs-compat/use-router-bfcache-id";
@@ -15,6 +16,11 @@ export default function Page() {
         </li>
         <li>
           <LinkAccordion href={`${base}/y/1`}>/y/1</LinkAccordion>
+        </li>
+        <li>
+          <Link data-testid="no-prefetch-y" href={`${base}/y/1`} prefetch={false}>
+            non-prefetched /y/1
+          </Link>
         </li>
       </ul>
     </main>

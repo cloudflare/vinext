@@ -1,7 +1,11 @@
 import fs from "node:fs";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import type { Server as HttpServer } from "node:http";
-import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
+import {
+  loadNextConfig,
+  resolveNextConfig,
+  type ResolvedNextConfig,
+} from "../config/next-config.js";
 import { appRouter } from "../routing/app-router.js";
 import { apiRouter, pagesRouter } from "../routing/pages-router.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
@@ -15,7 +19,6 @@ import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from ".
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { findDir } from "../utils/project.js";
-import { normalizePathSeparators } from "../utils/path.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
@@ -33,7 +36,8 @@ const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
 
 type EmitPrerenderPathManifestOptions = {
   root: string;
-  nextConfigOverride?: Partial<import("../config/next-config.js").ResolvedNextConfig>;
+  /** Fully resolved Next.js config. Loaded from disk when omitted. */
+  nextConfig?: ResolvedNextConfig;
   appDir?: string | null;
   pagesDir?: string | null;
   routeRootConfig?: VinextRouteRootConfig | null;
@@ -113,22 +117,20 @@ function resolveConfiguredRouteDirs(
     baseDir = path.isAbsolute(routeRootConfig.appDir)
       ? routeRootConfig.appDir
       : path.resolve(root, routeRootConfig.appDir);
-    baseDir = normalizePathSeparators(baseDir);
+    // The absolute branch above is the user-supplied appDir verbatim, which
+    // may carry native separators on Windows.
+    baseDir = toSlash(baseDir);
   } else {
-    const hasRootApp = fs.existsSync(path.posix.join(root, "app"));
-    const hasRootPages = fs.existsSync(path.posix.join(root, "pages"));
-    const hasSrcApp = fs.existsSync(path.posix.join(root, "src", "app"));
-    const hasSrcPages = fs.existsSync(path.posix.join(root, "src", "pages"));
+    const hasRootApp = fs.existsSync(path.join(root, "app"));
+    const hasRootPages = fs.existsSync(path.join(root, "pages"));
+    const hasSrcApp = fs.existsSync(path.join(root, "src", "app"));
+    const hasSrcPages = fs.existsSync(path.join(root, "src", "pages"));
     baseDir =
-      hasRootApp || hasRootPages
-        ? root
-        : hasSrcApp || hasSrcPages
-          ? path.posix.join(root, "src")
-          : root;
+      hasRootApp || hasRootPages ? root : hasSrcApp || hasSrcPages ? path.join(root, "src") : root;
   }
 
-  const appDir = path.posix.join(baseDir, "app");
-  const pagesDir = path.posix.join(baseDir, "pages");
+  const appDir = path.join(baseDir, "app");
+  const pagesDir = path.join(baseDir, "pages");
   return {
     appDir: !routeRootConfig.disableAppRouter && fs.existsSync(appDir) ? appDir : null,
     pagesDir: fs.existsSync(pagesDir) ? pagesDir : null,
@@ -372,13 +374,9 @@ export async function emitPrerenderPathManifest(
     ? path.dirname(rscBundlePath)
     : path.dirname(pagesBundlePath);
   const manifestDir = path.join(root, "dist", "server");
-  const loadedConfig = await resolveNextConfig(
-    await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
-    root,
-  );
-  const config = options.nextConfigOverride
-    ? { ...loadedConfig, ...options.nextConfigOverride }
-    : { ...loadedConfig };
+  const config = options.nextConfig
+    ? { ...options.nextConfig }
+    : { ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)) };
   const builtBuildId = readBuiltBuildId(manifestDir) ?? readBuiltBuildId(bundleServerDir);
   if (builtBuildId) {
     config.buildId = builtBuildId;

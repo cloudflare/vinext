@@ -24,8 +24,8 @@
 
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
+import path, { toSlash } from "pathslash";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { preprocessCSS, type PreprocessCSSResult, type ResolvedConfig } from "vite";
 import { markCssUrlAssetReferences, rebaseCssUrlAssetReferences } from "../build/css-url-assets.js";
 
@@ -155,7 +155,7 @@ function sassStylesheetCandidates(importPath: string): string[] {
 }
 
 function deriveSassNamespace(importUrl: string): string {
-  const normalized = importUrl.replaceAll("\\", "/").replace(/\/$/, "");
+  const normalized = toSlash(importUrl).replace(/\/$/, "");
   const parts = normalized.split("/");
   let basename = parts.pop() ?? "stylesheet";
   basename = basename.replace(/^_/, "").replace(/\..*$/, "");
@@ -216,8 +216,7 @@ export function createSassCssUrlAssetImporter(): {
           if (!fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) continue;
           const prepared = prepareStylesheet(candidate, entryDirectory);
           if (prepared === null) return match;
-          const canonicalUrl = pathToFileURL(candidate);
-          markedStylesheets.set(canonicalUrl.href, prepared);
+          markedStylesheets.set(candidate, prepared);
           const namespace =
             rule === "use" && !/\bas\s+(?:\*|[-\w]+)/.test(suffix)
               ? ` as ${deriveSassNamespace(importUrl)}`
@@ -235,7 +234,7 @@ export function createSassCssUrlAssetImporter(): {
     },
 
     load(canonicalUrl) {
-      return markedStylesheets.get(canonicalUrl.href) ?? null;
+      return markedStylesheets.get(toSlash(fileURLToPath(canonicalUrl))) ?? null;
     },
 
     rewriteImports,

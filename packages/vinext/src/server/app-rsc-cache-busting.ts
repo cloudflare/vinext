@@ -49,7 +49,14 @@ type CreateRscRequestHeadersOptions = {
   clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
+  fetchPriority?: "auto" | "high" | "low";
+  nextUrl?: string | null;
+  prefetchRouterState?: {
+    pathAndSearch: string;
+    routeId: string;
+  } | null;
 };
 
 type ResolveInvalidRscCacheBustingRequestOptions = {
@@ -290,6 +297,24 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     [RSC_HEADER]: "1",
   });
   applyDeploymentIdHeader(headers);
+
+  if (options.prefetchRouterState) {
+    if (options.includePrefetchHeader !== false) {
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    }
+    headers.set(
+      NEXT_ROUTER_STATE_TREE_HEADER,
+      encodeURIComponent(JSON.stringify(options.prefetchRouterState)),
+    );
+  }
+
+  if (options.nextUrl) {
+    headers.set(NEXT_URL_HEADER, options.nextUrl);
+  }
+
+  if (process.env.__NEXT_TEST_MODE && options.fetchPriority) {
+    headers.set("Next-Test-Fetch-Priority", options.fetchPriority);
+  }
 
   if (options.interceptionContext !== undefined && options.interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, options.interceptionContext);

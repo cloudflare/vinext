@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "noEmit": true,
+    "incremental": true,
+    "paths": {
+      "@atlas/*": [
+        "./lib/*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "boot-state.ts",
+    "instrumentation.page.ts",
+    "middleware.page.ts",
+    "lib",
+    "helpers",
+    "surfaces",
+    "pages"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

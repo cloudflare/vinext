@@ -30,17 +30,19 @@ import {
   sanitizeDestination,
 } from "../config/config-matchers.js";
 import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
-import {
-  applyConfigHeadersToHeaderRecord,
-  cloneRequestWithUrl,
-  normalizeTrailingSlash,
-} from "./request-pipeline.js";
+import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
+import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
+import {
+  methodNotAllowedResponse,
+  sanitizeMethodNotAllowedHeaders,
+} from "./http-error-responses.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -60,10 +62,16 @@ export async function fetchWorkerFilesystemRoute(
   requestPathname: string,
   phase: FilesystemRoutePhase,
   fetchAsset: (request: Request) => Promise<Response>,
+  publicFiles?: ReadonlySet<string>,
+  isDirectBuildAsset = false,
 ): Promise<Response | false> {
+  const isRetrievalMethod = request.method === "GET" || request.method === "HEAD";
   if (
-    phase === "direct" ||
-    (request.method !== "GET" && request.method !== "HEAD") ||
+    (phase === "direct" && isRetrievalMethod) ||
+    (phase === "direct" &&
+      publicFiles !== undefined &&
+      !isDirectBuildAsset &&
+      !publicFiles.has(requestPathname)) ||
     requestPathname === "/api" ||
     requestPathname.startsWith("/api/")
   ) {
@@ -72,8 +80,23 @@ export async function fetchWorkerFilesystemRoute(
   const assetUrl = new URL(request.url);
   assetUrl.pathname = requestPathname;
   assetUrl.search = "";
-  const response = await fetchAsset(new Request(assetUrl, request));
-  return response.status === 404 ? false : response;
+  // Never forward a mutating method or body to the asset binding. A HEAD probe
+  // establishes existence without reading the asset body; only a real asset is
+  // then converted to the framework's deterministic 405 response.
+  const assetRequest = isRetrievalMethod
+    ? new Request(assetUrl, request)
+    : new Request(assetUrl, { method: "HEAD", headers: request.headers });
+  const response = await fetchAsset(assetRequest);
+  if (response.status === 404) return false;
+  if (!isRetrievalMethod) {
+    if (response.body && !response.body.locked) {
+      void response.body.cancel().catch(() => {
+        // Ignore cancellation failures for the discarded existence probe.
+      });
+    }
+    return methodNotAllowedResponse("GET, HEAD");
+  }
+  return response;
 }
 
 export type MiddlewareResult = {
@@ -113,6 +136,18 @@ export type PagesPipelineDeps = {
   // pass it so the redirect query isn't re-encoded by URL parsing (e.g. a literal "#"
   // would otherwise be truncated as a fragment). Falls back to url.search when omitted.
   rawSearch?: string;
+  // Raw, basePath-stripped request pathname used only for config source
+  // matching and capture substitution. Filesystem routing keeps using the
+  // normalized pathname from request.url.
+  configMatchPathname?: string;
+
+  /**
+   * Validate an on-demand revalidation credential using the runtime's
+   * authoritative build secret. Production adapters must inject the verifier
+   * exported by the generated server entry so this early middleware decision
+   * uses the same baked secret as the eventual page renderer.
+   */
+  authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
@@ -256,6 +291,11 @@ export async function runPagesRequest(
   const url = new URL(request.url);
   let pathname = url.pathname;
   const search = url.search;
+  const revalidateHeader = request.headers.get(PRERENDER_REVALIDATE_HEADER);
+  const isOnDemandRevalidate = deps.authorizeOnDemandRevalidate
+    ? deps.authorizeOnDemandRevalidate(revalidateHeader)
+    : isOnDemandRevalidateRequest(revalidateHeader);
+  const requestConfigPathname = deps.configMatchPathname ?? pathname;
 
   // Step 1: Reconstruct basePathState
   const basePathState: BasePathMatchState = { basePath, hadBasePath };
@@ -275,13 +315,20 @@ export async function runPagesRequest(
   // Step 3: Build pre-middleware request context
   const reqCtx: RequestContext = requestContextFromRequest(request);
   const requestHostname = i18nConfig ? url.hostname : "";
-  const matchPathname = i18nConfig
-    ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: requestHostname })
-    : pathname;
+  const requestConfigMatchPathname = i18nConfig
+    ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
+        hostname: requestHostname,
+      })
+    : requestConfigPathname;
 
   // Step 4: Config redirects (before middleware)
   if (configRedirects.length) {
-    const redirect = matchRedirect(matchPathname, configRedirects, reqCtx, basePathState);
+    const redirect = matchRedirect(
+      requestConfigMatchPathname,
+      configRedirects,
+      reqCtx,
+      basePathState,
+    );
     if (redirect) {
       // Only prepend basePath when the request was actually under basePath.
       // Opt-out rules running on out-of-basepath requests must not receive a basePath prefix.
@@ -309,6 +356,7 @@ export async function runPagesRequest(
   // Step 5: Middleware
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
+  let resolvedPathnameIsRequestPathname = true;
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
   const serveFilesystemRoute = async (
@@ -318,15 +366,28 @@ export async function runPagesRequest(
     if (!deps.serveFilesystemRoute) return null;
     const served = await deps.serveFilesystemRoute(requestPathname, middlewareHeaders, phase);
     if (served instanceof Response) {
+      const isStaticMethodNotAllowed =
+        served.status === 405 && served.headers.get("allow") === "GET, HEAD";
+      const response = mergeHeaders(
+        served,
+        middlewareHeaders,
+        isStaticMethodNotAllowed ? undefined : middlewareStatus,
+      );
+      if (isStaticMethodNotAllowed) {
+        sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");
+      }
       return {
         type: "response",
-        response: mergeHeaders(served, middlewareHeaders, middlewareStatus),
+        response,
       };
     }
     return served ? { type: "handled" } : null;
   };
 
-  if (typeof deps.runMiddleware === "function") {
+  // Next.js skips middleware for authenticated on-demand revalidation. Besides
+  // parity, this keeps the internal credential out of user middleware and any
+  // external destination it may choose.
+  if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
 
     // Bubble waitUntil promises
@@ -400,6 +461,7 @@ export async function runPagesRequest(
 
     if (result.rewriteUrl) {
       resolvedUrl = result.rewriteUrl;
+      resolvedPathnameIsRequestPathname = false;
     }
 
     // Reconciled superset: result.status takes priority over result.rewriteStatus
@@ -410,7 +472,6 @@ export async function runPagesRequest(
   const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(
     middlewareHeaders,
     request,
-    { preserveCredentialHeaders: isExternalUrl(resolvedUrl) },
   );
   request = postMwReq;
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
@@ -422,6 +483,10 @@ export async function runPagesRequest(
 
   const matchResolvedPathname = (p: string): string =>
     i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
+  const configSourcePathname = (): string =>
+    resolvedPathnameIsRequestPathname
+      ? requestConfigMatchPathname
+      : matchResolvedPathname(resolvedPathname);
   const matchedPathnameForRoute = (routePattern: string | undefined): string => {
     const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
     if (!i18nConfig) return matchedPathname;
@@ -463,7 +528,7 @@ export async function runPagesRequest(
   if (configHeaders.length) {
     applyConfigHeadersToHeaderRecord(middlewareHeaders, {
       configHeaders,
-      pathname: matchPathname,
+      pathname: requestConfigMatchPathname,
       requestContext: reqCtx,
       basePathState,
     });
@@ -485,21 +550,13 @@ export async function runPagesRequest(
     };
   }
 
-  // Step 8b: Public-directory static files (post-middleware).
-  // Served after middleware so middleware can intercept/redirect public files, and
-  // before rewrites so a real public file wins over a fallback rewrite — matching the
-  // pre-refactor prod-server ordering. Adapter callbacks own their path guards;
-  // a true result means Node already wrote the response.
-  const directFilesystemResult = await serveFilesystemRoute(pathname, "direct");
-  if (directFilesystemResult) return directFilesystemResult;
-
   // Step 9: beforeFiles rewrites
   // Next.js server-utils.ts applies every beforeFiles rule in sequence and
   // continues afterFiles/fallback rules until a destination resolves.
   let configRewriteFired = false;
   for (const rewrite of configRewrites.beforeFiles ?? []) {
     const rewritten = matchRewrite(
-      matchResolvedPathname(resolvedPathname),
+      configSourcePathname(),
       [rewrite],
       rewriteRequestContext(),
       basePathState,
@@ -511,17 +568,22 @@ export async function runPagesRequest(
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+      resolvedPathnameIsRequestPathname = false;
       configRewriteFired = true;
     }
   }
 
-  // beforeFiles destinations re-enter filesystem matching before API/page
-  // routing. afterFiles and fallback rewrites repeat the same checkpoint in
-  // their phase-specific loops below.
-  if (configRewriteFired) {
-    const beforeFilesResult = await serveFilesystemRoute(resolvedPathname, "beforeFiles");
-    if (beforeFilesResult) return beforeFilesResult;
-  }
+  // Next.js resolves middleware and every beforeFiles rewrite before checking
+  // the filesystem. This matters when a rewrite moves an existing public-file
+  // pathname to a page or API route: the rewritten destination wins rather
+  // than the original file producing a static response (or method-level 405).
+  // afterFiles and fallback rewrites repeat the same checkpoint in their
+  // phase-specific loops below.
+  const initialFilesystemResult = await serveFilesystemRoute(
+    resolvedPathname,
+    resolvedPathnameIsRequestPathname ? "direct" : "beforeFiles",
+  );
+  if (initialFilesystemResult) return initialFilesystemResult;
 
   const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
@@ -580,7 +642,7 @@ export async function runPagesRequest(
   if (!pageMatch || pageMatch.route.isDynamic) {
     for (const rewrite of configRewrites.afterFiles ?? []) {
       const rewritten = matchRewrite(
-        matchResolvedPathname(resolvedPathname),
+        configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
         basePathState,
@@ -592,6 +654,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        resolvedPathnameIsRequestPathname = false;
         configRewriteFired = true;
         resolvedPathnameChanged = true;
         const afterFilesFilesystemResult = await serveFilesystemRoute(
@@ -631,7 +694,7 @@ export async function runPagesRequest(
     ) {
       for (const rewrite of configRewrites.fallback) {
         const fallbackRewrite = matchRewrite(
-          matchResolvedPathname(resolvedPathname),
+          configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
           basePathState,
@@ -645,6 +708,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        resolvedPathnameIsRequestPathname = false;
         configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
@@ -689,7 +753,7 @@ export async function runPagesRequest(
     if (response.status === 404 && shouldDeferErrorPageOnMiss && configRewrites.fallback?.length) {
       for (const rewrite of configRewrites.fallback) {
         const fallbackRewrite = matchRewrite(
-          matchResolvedPathname(resolvedPathname),
+          configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
           basePathState,
@@ -704,6 +768,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        resolvedPathnameIsRequestPathname = false;
         configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
@@ -777,7 +842,7 @@ export async function runPagesRequest(
   if (!devPageMatch && configRewrites.fallback?.length) {
     for (const rewrite of configRewrites.fallback) {
       const fallbackRewrite = matchRewrite(
-        matchResolvedPathname(resolvedPathname),
+        configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
         basePathState,
@@ -789,6 +854,7 @@ export async function runPagesRequest(
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+      resolvedPathnameIsRequestPathname = false;
       configRewriteFired = true;
       const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
       if (fallbackFilesystemResult) return fallbackFilesystemResult;

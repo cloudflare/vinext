@@ -28,6 +28,7 @@ type AppRouteHandlerCacheReadOptions = {
   handlerFn: unknown;
   isAutoHead: boolean;
   isKnownDynamic: boolean;
+  isDraftMode?: boolean;
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
@@ -38,6 +39,7 @@ type AppRouteHandlerResponseCacheOptions = {
   dynamicUsedInHandler: boolean;
   handlerSetCacheControl: boolean;
   isAutoHead: boolean;
+  isDraftMode?: boolean;
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
@@ -119,6 +121,7 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
     options.revalidateSeconds > 0 &&
     options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
+    !options.isDraftMode &&
     !options.isKnownDynamic &&
     (options.method === "GET" || options.isAutoHead) &&
     typeof options.handlerFn === "function"
@@ -133,6 +136,7 @@ export function shouldApplyAppRouteHandlerRevalidateHeader(
   // needs to suppress heuristic caching.
   return (
     options.revalidateSeconds !== null &&
+    !options.isDraftMode &&
     !options.dynamicUsedInHandler &&
     (options.method === "GET" || options.isAutoHead) &&
     !options.handlerSetCacheControl
@@ -150,6 +154,7 @@ export function shouldWriteAppRouteHandlerCache(
     options.revalidateSeconds > 0 &&
     options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
+    !options.isDraftMode &&
     shouldApplyAppRouteHandlerRevalidateHeader(options)
   );
 }
