@@ -8,6 +8,11 @@ import {
   resolveAppPageGenerateStaticParamsSources,
   validateAppPageDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
+import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 describe("app page request helpers", () => {
   it("returns 404 when dynamicParams=false receives unknown params", async () => {
@@ -806,6 +811,58 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(__loadInterceptLayout).toHaveBeenCalledTimes(1);
     expect(sharedLoadState.page).toBe(interceptPage);
     expect(intercept.interceptLayouts).toEqual([interceptLayout]);
+  });
+
+  it("evaluates intercept page and not-found modules outside the request context", async () => {
+    // Intercept modules are cached on the intercept for the isolate's lifetime
+    // just like route modules, so the first navigation that matches an
+    // intercept must not be able to leak into their module scope.
+    const reads: Record<string, string> = {};
+    const readCookieAtModuleScope = (label: string) => async () => {
+      reads[label] = await cookies().then(
+        (jar) => `read:${jar.get("session")?.value ?? "none"}`,
+        () => "rejected-no-request-context",
+      );
+      return { default: label };
+    };
+    const intercept = {
+      interceptLayouts: [null],
+      __loadInterceptLayouts: [readCookieAtModuleScope("layout")],
+      matchedParams: { id: "123" },
+      page: null,
+      __pageLoader: readCookieAtModuleScope("page"),
+      notFound: null,
+      __loadNotFound: readCookieAtModuleScope("notFound"),
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 0,
+    };
+    const request = new Request("https://example.com/photos/123", {
+      headers: { cookie: "session=victim-secret" },
+    });
+    const requestContext = createRequestContext({
+      headersContext: headersContextFromRequest(request),
+    });
+
+    const liveCookie = await runWithRequestContext(requestContext, async () => {
+      const live = (await cookies()).get("session")?.value;
+      await resolveAppPageInterceptMatch({
+        cleanPathname: "/photos/123",
+        currentRoute,
+        findIntercept: () => intercept,
+        getRouteParamNames: (route: { params: string[] }) => route.params,
+        getSourceRoute: () => sourceRoute,
+        isRscRequest: true,
+        toInterceptOpts,
+      });
+      return live;
+    });
+
+    expect(liveCookie).toBe("victim-secret");
+    expect(reads).toEqual({
+      page: "rejected-no-request-context",
+      notFound: "rejected-no-request-context",
+      layout: "rejected-no-request-context",
+    });
   });
 
   it("slices source params down to the source route's declared params", async () => {

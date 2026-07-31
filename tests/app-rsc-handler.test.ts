@@ -9,6 +9,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
@@ -590,6 +591,69 @@ describe("createAppRscHandler", () => {
         route: sourceRoute,
       }),
     );
+  });
+
+  it("does not promote a Route Handler slot owner for interception-only RSC targets", async () => {
+    // A `route.ts` record can retain parallel slots discovered beside it. A
+    // client-controlled interception context may gate the modal rewrite, but
+    // Next.js never dispatches the owning handler as its source route.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+    const matcher = createAppRscRouteMatcher([
+      {
+        pattern: "/feed",
+        patternParts: ["feed"],
+        __loadRouteHandler: async () => ({}),
+        slots: {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/feed/hidden",
+                interceptLayouts: ["layout"],
+                page: "modal-page",
+                params: [],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const handlerOwner = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      page: null,
+      pattern: "/feed",
+      routeHandler: { GET: () => new Response("secret handler") },
+      routeSegments: ["feed"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const dispatchMatchedRouteHandler = vi.fn(async () => new Response("secret handler"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      dispatchMatchedRouteHandler,
+      matchInterceptRoute(pathname, sourcePathname) {
+        const intercept = matcher.findIntercept(pathname, sourcePathname);
+        return intercept ? { route: handlerOwner, params: {} } : null;
+      },
+      matchRoute: (pathname) => (pathname === "/feed" ? { route: handlerOwner, params: {} } : null),
+    });
+
+    // Direct requests still reach the Route Handler.
+    const directResponse = await handler(new Request("https://example.test/docs/feed"), null);
+    expect(await directResponse.text()).toBe("secret handler");
+    expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+    dispatchMatchedRouteHandler.mockClear();
+
+    // The same handler must not be promoted for a forged interception-only
+    // target whose middleware/routing path was `/feed/hidden`.
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/feed/hidden", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
   it("uses the request pathname consistently for encoded interception targets", async () => {

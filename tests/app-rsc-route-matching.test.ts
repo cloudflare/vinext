@@ -651,6 +651,164 @@ describe("App RSC route matching", () => {
       });
     });
 
+    it("never promotes a Route Handler as the concrete interception source", () => {
+      // The source pathname arrives as an unauthenticated client header
+      // (X-Vinext-Interception-Context / Next-URL), and the resolved source
+      // route is what later renders or dispatches. A `route.ts` has no page,
+      // layouts, or slots, so it can never own an interception source tree;
+      // resolving one would let a crafted context execute a Route Handler that
+      // merely lives under the intercepting route. Next.js rewrites the
+      // intercepted target to a fixed destination (the intercepting route), so
+      // falling back to the slot owner is also the parity-correct choice.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+      const matcher = createAppRscRouteMatcher([
+        route("/feed", ["feed"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/hidden",
+                interceptLayouts: ["layout"],
+                page: "modal-hidden",
+                params: [],
+              },
+            ],
+          },
+        }),
+        { ...route("/feed/admin", ["feed", "admin"]), routeHandler: {} },
+        route("/feed/:tab", ["feed", ":tab"]),
+      ]);
+
+      // A Route Handler descendant falls back to the slot owner (index 0).
+      expect(matcher.findIntercept("/hidden", "/feed/admin")).toMatchObject({
+        sourceRouteIndex: 0,
+      });
+      // A lazy Route Handler is classified the same before its first load.
+      const lazyMatcher = createAppRscRouteMatcher([
+        route("/feed", ["feed"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/hidden",
+                interceptLayouts: ["layout"],
+                page: "modal-hidden",
+                params: [],
+              },
+            ],
+          },
+        }),
+        { ...route("/feed/admin", ["feed", "admin"]), __loadRouteHandler: async () => ({}) },
+      ]);
+      expect(lazyMatcher.findIntercept("/hidden", "/feed/admin")).toMatchObject({
+        sourceRouteIndex: 0,
+      });
+      // Page descendants still resolve concretely, preserving their params.
+      expect(matcher.findIntercept("/hidden", "/feed/recent")).toMatchObject({
+        sourceRouteIndex: 2,
+        sourceMatchedParams: { tab: "recent" },
+      });
+    });
+
+    it.each([
+      {
+        ownerPattern: "/feed",
+        ownerParts: ["feed"],
+        sourcePathname: "/feed",
+        targetPattern: "/feed/hidden",
+        targetPathname: "/feed/hidden",
+      },
+      {
+        ownerPattern: "/:locale/feed",
+        ownerParts: [":locale", "feed"],
+        sourcePathname: "/en/feed",
+        targetPattern: "/:locale/feed/hidden",
+        targetPathname: "/en/feed/hidden",
+      },
+      {
+        ownerPattern: "/docs/:slug+",
+        ownerParts: ["docs", ":slug+"],
+        sourcePathname: "/docs/a/b",
+        targetPattern: "/hidden",
+        targetPathname: "/hidden",
+      },
+      {
+        ownerPattern: "/:locale*",
+        ownerParts: [":locale*"],
+        sourcePathname: "/en/us",
+        targetPattern: "/hidden",
+        targetPathname: "/hidden",
+      },
+    ])(
+      "never promotes a Route Handler slot owner for $ownerPattern",
+      ({ ownerParts, ownerPattern, sourcePathname, targetPathname, targetPattern }) => {
+        // The route graph retains parallel slots discovered beside `route.ts`.
+        // Next.js accepts this filesystem shape and rewrites the intercepted
+        // target to the modal page; it never executes the owning handler.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+        const matcher = createAppRscRouteMatcher([
+          {
+            ...route(ownerPattern, ownerParts, {
+              modal: {
+                intercepts: [
+                  {
+                    sourceMatchPattern: ownerPattern,
+                    targetPattern,
+                    interceptLayouts: ["layout"],
+                    page: "modal-page",
+                    params: [],
+                  },
+                ],
+              },
+            }),
+            __loadRouteHandler: async () => ({}),
+          },
+        ]);
+
+        expect(matcher.findIntercept(targetPathname, sourcePathname)).toBeNull();
+      },
+    );
+
+    it("keeps the slot owner's dynamic params when falling back from a descendant", () => {
+      // The slot owner is what renders once a descendant source is rejected, and
+      // `matchInterceptRoute` reads the promoted route's params solely from
+      // `sourceMatchedParams`. An exact pattern match against the owner cannot
+      // succeed here — the approved source carries extra segments by definition —
+      // so the owner's params come from the prefix the source gate already
+      // approved. Otherwise `/:locale/feed` would render with no `locale`.
+      const matcher = createAppRscRouteMatcher([
+        route("/:locale/feed", [":locale", "feed"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/:locale/feed",
+                targetPattern: "/:locale/hidden",
+                interceptLayouts: ["layout"],
+                page: "modal-hidden",
+                params: ["locale"],
+              },
+            ],
+          },
+        }),
+        { ...route("/:locale/feed/admin", [":locale", "feed", "admin"]), routeHandler: {} },
+      ]);
+
+      expect(matcher.findIntercept("/en/hidden", "/en/feed/admin")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceMatchedParams: { locale: "en" },
+      });
+      // A descendant with no concrete route at all takes the same fallback.
+      expect(matcher.findIntercept("/en/hidden", "/en/feed/unknown/deep")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceMatchedParams: { locale: "en" },
+      });
+      // An exact source still matches the owner directly.
+      expect(matcher.findIntercept("/en/hidden", "/en/feed")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceMatchedParams: { locale: "en" },
+      });
+    });
+
     it("treats a sourceMatchPattern of `/` as matching any source", () => {
       // Slot at root (`/@modal/(.)groups/[id]/new`) yields intercepting route `/`,
       // which Next.js implements as `^/.*$` — i.e. any source.
