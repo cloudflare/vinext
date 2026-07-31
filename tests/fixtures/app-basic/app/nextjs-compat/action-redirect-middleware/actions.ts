@@ -22,3 +22,27 @@ export async function redirectToBlockedPath(): Promise<void> {
 export async function redirectToEncodedBlockedPath(): Promise<void> {
   redirect("/adm%69n");
 }
+
+export async function redirectToMiddlewareRewrite(): Promise<void> {
+  redirect("/middleware-rewrite");
+}
+
+export async function redirectToConfigRewrite(): Promise<void> {
+  redirect("/config-rewrite");
+}
+
+export async function redirectToMiddlewareRedirect(): Promise<void> {
+  redirect("/middleware-redirect");
+}
+
+export async function redirectToConfigRedirect(): Promise<void> {
+  redirect("/redirect-test-config");
+}
+
+export async function redirectToAbout(): Promise<void> {
+  redirect("/about");
+}
+
+export async function redirectToPagesRoute(): Promise<void> {
+  redirect("/old-school");
+}

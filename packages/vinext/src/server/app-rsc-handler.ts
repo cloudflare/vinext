@@ -52,7 +52,7 @@ import {
   stripRscSuffix,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
-import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
+import { applyAppRscConfigHeaders, finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
@@ -71,7 +71,6 @@ import {
 } from "./image-optimization.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
-import type { ActionRedirectMiddlewareResult } from "./app-server-action-execution.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
@@ -257,10 +256,8 @@ type HandleServerActionRequestOptions<TRoute> = {
   scriptNonce?: string;
   routeMatch: AppRscRouteMatch<TRoute> | null;
   routePathname: string;
-  runRedirectTargetMiddleware?: (options: {
-    cleanPathname: string;
-    request: Request;
-  }) => Promise<ActionRedirectMiddlewareResult>;
+  dispatchRedirectTargetRequest: (request: Request) => Promise<Response>;
+  sourceConfigHeaders: Headers | null;
   searchParams: URLSearchParams;
 };
 
@@ -520,6 +517,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   isDataRequest: boolean,
   isMiddlewareDataRequest: boolean,
   pagesDataRequest: Request | null,
+  dispatchInternalRequest: (request: Request) => Promise<Response>,
+  allowInternalRscDocumentFallback: boolean,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -695,38 +694,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     resolvedUrl = cleanPathname + url.search;
   }
-
-  // A server action that redirects renders the target page inline instead of
-  // making the client re-request it, so the target's middleware has to be run
-  // here or it is skipped entirely. Only a clean pass-through can be rendered
-  // inline: a block, redirect, rewrite, or status override has to be resolved by
-  // a real navigation through the full request pipeline.
-  const runRedirectTargetMiddleware = runMiddleware
-    ? async (targetOptions: {
-        cleanPathname: string;
-        request: Request;
-      }): Promise<ActionRedirectMiddlewareResult> => {
-        const targetContext: AppRscMiddlewareContext = {
-          headers: null,
-          requestHeaders: null,
-          status: null,
-        };
-        const targetResult = await runMiddleware({
-          cleanPathname: targetOptions.cleanPathname,
-          context: targetContext,
-          hadBasePath,
-          isDataRequest: false,
-          request: targetOptions.request,
-        });
-        if (targetResult.kind === "response" || targetResult.rewritten) {
-          return { kind: "diverted" };
-        }
-        if (targetContext.status !== null && targetContext.status !== 200) {
-          return { kind: "diverted" };
-        }
-        return { kind: "continue", responseHeaders: targetContext.headers };
-      }
-    : undefined;
 
   const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareContext.headers);
   const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);
@@ -995,6 +962,24 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     middlewareContext.status = 500;
   }
 
+  let sourceConfigHeaders: Headers | null = null;
+  if (filesystemRouteEligible && isPostRequest && actionId && options.handleServerActionRequest) {
+    sourceConfigHeaders = new Headers();
+    const sourceConfigUrl = new URL(request.url);
+    sourceConfigUrl.pathname = hadBasePath
+      ? addBasePathToPathname(requestCleanPathname, options.basePath)
+      : requestCleanPathname;
+    await applyAppRscConfigHeaders(
+      sourceConfigHeaders,
+      cloneRequestWithUrl(request, sourceConfigUrl.toString()),
+      {
+        basePath: options.basePath,
+        configHeaders: options.configHeaders,
+        i18nConfig: options.i18nConfig,
+        requestContext: preMiddlewareRequestContext,
+      },
+    );
+  }
   const serverActionResponse =
     filesystemRouteEligible && isPostRequest && actionId && options.handleServerActionRequest
       ? await options.handleServerActionRequest({
@@ -1009,7 +994,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           scriptNonce,
           routeMatch: preActionMatch,
           routePathname: preActionRoutePathname,
-          runRedirectTargetMiddleware,
+          dispatchRedirectTargetRequest: dispatchInternalRequest,
+          sourceConfigHeaders,
           searchParams: getResolvedSearchParams(),
         })
       : null;
@@ -1027,7 +1013,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       !isInterceptionMatch && (match === null || match.route.isDynamic)
         ? ((await options.renderPagesFallback?.({
             appRouteMatch: match ?? null,
-            allowRscDocumentFallback: didMiddlewareRewritePathname,
+            allowRscDocumentFallback:
+              didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
             isDataRequest,
             isRscRequest,
             matchKind,
@@ -1378,7 +1365,7 @@ function applyProgressiveActionSideEffects(
 export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): (request: Request, ctx: unknown) => Promise<Response> {
-  return async function appRscHandler(rawRequest, ctx) {
+  return async function appRscHandler(rawRequest, ctx, allowInternalRscDocumentFallback = false) {
     // Register config-driven cache adapters before anything touches the cache.
     // On the Cloudflare worker the entry already registered them with `env` (this
     // guarded call is a no-op); on Node/dev this is where they get wired, with no
@@ -1488,6 +1475,8 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               isPagesDataRequest,
               isPagesDataRequest,
               pagesDataRequest,
+              (internalRequest) => appRscHandler(internalRequest, ctx, true),
+              allowInternalRscDocumentFallback,
             );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {

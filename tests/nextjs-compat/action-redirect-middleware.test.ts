@@ -85,7 +85,8 @@ describe("Next.js compat: server action redirect targets run middleware", () => 
     const { res, text } = await postAction(baseUrl, ENCODED_ACTION_ID);
 
     expect(res.headers.get("x-action-redirect")).toBe("/adm%69n");
+    expect(res.headers.get("content-type")).toContain("text/x-component");
     expect(text).not.toContain("Protected admin content");
-    expect(text).toBe("");
+    expect(text).toContain("404 - Page Not Found");
   });
 });

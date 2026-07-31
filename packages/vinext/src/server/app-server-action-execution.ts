@@ -4,7 +4,6 @@ import {
   type ActionRevalidationKind,
 } from "vinext/shims/cache-request-state";
 import {
-  headersContextFromRequest,
   isDraftModeRequest,
   setHeadersContext,
   type HeadersAccessPhase,
@@ -16,12 +15,7 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
-import {
-  createRootParamsUsageController,
-  pickRootParams,
-  runWithRootParamsScope,
-  runWithRootParamsUsage,
-} from "vinext/shims/root-params";
+import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -31,16 +25,18 @@ import {
   ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
   ACTION_REVALIDATED_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
 } from "./headers.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  createRscRequestUrl,
   stripRscCacheBustingSearchParam,
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
-import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
@@ -67,6 +63,7 @@ import {
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
+import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -214,15 +211,6 @@ type DecodeServerActionReplyOptions<TTemporaryReferences> = {
   temporaryReferences: TTemporaryReferences;
 };
 
-/**
- * Outcome of running middleware for an action-redirect target. `diverted` means
- * middleware blocked, redirected, or rewrote the target, so it cannot be
- * rendered inline and has to be resolved by a real navigation.
- */
-export type ActionRedirectMiddlewareResult =
-  | { kind: "continue"; responseHeaders: Headers | null }
-  | { kind: "diverted" };
-
 export type HandleProgressiveServerActionRequestOptions = {
   actionId: string | null;
   allowedOrigins: string[];
@@ -316,16 +304,14 @@ export type HandleServerActionRscRequestOptions<
   middlewareRequestHeaders: Headers | null;
   middlewareStatus: number | null | undefined;
   /**
-   * Run userland middleware for an internal action-redirect target before that
-   * target is rendered inline. Middleware only ran for the action's own path,
-   * so without this the target's middleware — commonly the app's authorization
-   * boundary — would never see the request. Absent when the app has no
-   * middleware.
+   * Dispatch a synthetic redirect-target GET through the complete App Router
+   * request pipeline. The callback enters a fresh request context and returns
+   * the finalized response, including config rules, middleware, routing, and
+   * response headers.
    */
-  runRedirectTargetMiddleware?: (options: {
-    cleanPathname: string;
-    request: Request;
-  }) => Promise<ActionRedirectMiddlewareResult>;
+  dispatchRedirectTargetRequest: (request: Request) => Promise<Response>;
+  /** next.config headers matched on the action source path, before middleware. */
+  sourceConfigHeaders?: Headers | null;
   mountedSlotsHeader: string | null;
   readBodyWithLimit: ReadBodyWithLimit;
   readFormDataWithLimit: ReadFormDataWithLimit;
@@ -464,6 +450,7 @@ function clearRejectedActionSideEffects(getAndClearPendingCookies: () => string[
 
 function cloneActionRedirectHeaders(
   requestHeaders: Headers,
+  sourceConfigHeaders: Headers | null,
   actionMiddlewareHeaders: Headers | null,
 ): Headers {
   const headers = new Headers(requestHeaders);
@@ -478,8 +465,9 @@ function cloneActionRedirectHeaders(
   // the request headers before running the target pipeline. Merge after
   // stripping the action request's transport headers so a middleware-emitted
   // value such as Accept or Content-Type remains an intentional target header.
-  if (actionMiddlewareHeaders) {
-    for (const [name, value] of actionMiddlewareHeaders) {
+  for (const responseHeaders of [sourceConfigHeaders, actionMiddlewareHeaders]) {
+    if (!responseHeaders) continue;
+    for (const [name, value] of responseHeaders) {
       const normalizedName = name.toLowerCase();
       if (
         ACTION_REDIRECT_FORWARDED_FORBIDDEN_HEADERS.includes(normalizedName) ||
@@ -570,13 +558,14 @@ function cookiePathMatches(cookiePath: string, requestPath: string): boolean {
   return cookiePath.endsWith("/") || requestPath[cookiePath.length] === "/";
 }
 
-function createActionRedirectRenderRequest(options: {
+async function createActionRedirectTargetRequest(options: {
   actionMiddlewareHeaders: Headers | null;
   actionMiddlewareRequestHeaders: Headers | null;
   pendingCookies: readonly string[];
   request: Request;
+  sourceConfigHeaders: Headers | null;
   url: URL;
-}): Request {
+}): Promise<Request> {
   // App middleware request overrides are applied to headers()/cookies() through
   // ALS, while the Request object remains the pre-middleware request. Next.js
   // mutates req.headers before its internal target GET, so reconstruct that
@@ -589,6 +578,7 @@ function createActionRedirectRenderRequest(options: {
     : options.request.headers;
   const headers = cloneActionRedirectHeaders(
     effectiveRequestHeaders,
+    options.sourceConfigHeaders,
     options.actionMiddlewareHeaders,
   );
   // Like Next.js' internal action-redirect GET, this is necessarily a lossy
@@ -610,21 +600,79 @@ function createActionRedirectRenderRequest(options: {
     headers.set("cookie", cookieHeader);
   }
 
+  // Match Next.js' internal redirect fetch: it is a fresh full-tree RSC GET,
+  // not another action request or a patch against the action route's tree.
+  headers.set(RSC_HEADER, "1");
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  stripRscCacheBustingSearchParam(options.url);
+  const requestPath = await createRscRequestUrl(
+    `${options.url.pathname}${options.url.search}`,
+    headers,
+  );
+  const requestUrl = new URL(requestPath, options.url.origin);
+
   return attachRequestCfMetadata(
-    new Request(options.url, { headers, method: "GET" }),
+    new Request(requestUrl, { headers, method: "GET" }),
     options.request,
   );
 }
 
+const ACTION_REDIRECT_MAX_INTERNAL_REDIRECTS = 20;
+const FOLLOWABLE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+async function createActionRedirectFollowRequest(request: Request, url: URL): Promise<Request> {
+  stripRscCacheBustingSearchParam(url);
+  const requestPath = await createRscRequestUrl(`${url.pathname}${url.search}`, request.headers);
+  return attachRequestCfMetadata(
+    new Request(new URL(requestPath, url.origin), {
+      headers: request.headers,
+      method: "GET",
+    }),
+    request,
+  );
+}
+
 /**
- * Headers a pass-through middleware must not be able to change on the action
- * redirect wrapper: `Location` would give the (usually 303) wrapper genuine
- * HTTP-redirect semantics that fetch follows before the client reads the
- * control headers, a foreign `Content-Type` makes the client treat the Flight
- * body as non-RSC and hard-navigate, a stale `Content-Length` misframes the
- * generated Flight stream, and the x-action-* headers steer the client's
- * navigation and cache invalidation.
+ * Resolve a same-origin redirect target through the real App request pipeline.
+ * This mirrors the redirect-following behavior of Next.js' internal fetch while
+ * avoiding a network round trip back into the current Worker/dev server.
  */
+async function dispatchActionRedirectTarget(options: {
+  basePath: string;
+  dispatch: (request: Request) => Promise<Response>;
+  request: Request;
+}): Promise<Response | null> {
+  let request = options.request;
+
+  for (
+    let redirectCount = 0;
+    redirectCount <= ACTION_REDIRECT_MAX_INTERNAL_REDIRECTS;
+    redirectCount++
+  ) {
+    const response = await options.dispatch(request);
+    const location = response.headers.get("location");
+    if (!location || !FOLLOWABLE_REDIRECT_STATUSES.has(response.status)) {
+      return response;
+    }
+
+    response.body?.cancel().catch(() => {});
+    if (redirectCount === ACTION_REDIRECT_MAX_INTERNAL_REDIRECTS) return null;
+
+    const nextUrl = new URL(location, request.url);
+    const currentUrl = new URL(request.url);
+    if (
+      nextUrl.origin !== currentUrl.origin ||
+      (options.basePath !== "" && !hasBasePath(nextUrl.pathname, options.basePath))
+    ) {
+      return null;
+    }
+    request = await createActionRedirectFollowRequest(request, nextUrl);
+  }
+
+  return null;
+}
+
+/** Headers the internally dispatched target must not replace on the action wrapper. */
 const ACTION_REDIRECT_PROTECTED_HEADERS = [
   // Next.js does not copy these connection/framing headers from the internal
   // target GET onto the action wrapper. Set-Cookie is the exception here: it
@@ -639,20 +687,16 @@ const ACTION_REDIRECT_PROTECTED_HEADERS = [
 ];
 
 /**
- * Merge pass-through middleware response headers onto the action redirect
- * wrapper, then restore the wrapper's own protocol headers — including their
- * absence, so middleware can neither replace nor pre-inject them.
+ * Merge the target response headers onto the action redirect wrapper, then
+ * restore the wrapper's own protocol headers — including their absence.
  */
-function mergeActionRedirectMiddlewareHeaders(
-  target: Headers,
-  middlewareHeaders: Headers | null,
-): void {
-  if (!middlewareHeaders) return;
+function mergeActionRedirectTargetHeaders(target: Headers, responseHeaders: Headers | null): void {
+  if (!responseHeaders) return;
 
   const protectedValues = ACTION_REDIRECT_PROTECTED_HEADERS.map(
     (name) => [name, target.get(name)] as const,
   );
-  mergeMiddlewareResponseHeaders(target, middlewareHeaders);
+  mergeMiddlewareResponseHeaders(target, responseHeaders);
   for (const [name, value] of protectedValues) {
     if (value === null) target.delete(name);
     else target.set(name, value);
@@ -861,25 +905,24 @@ function resolveInternalActionRedirectTarget(
   requestUrl: string,
   basePath: string,
 ): URL | null {
-  if (isExternalUrl(redirectUrl)) {
-    const requestOrigin = new URL(requestUrl).origin;
-    const parsed = new URL(redirectUrl);
-    if (parsed.origin !== requestOrigin) return null;
-    if (basePath && !hasBasePath(parsed.pathname, basePath)) return null;
-    return parsed;
-  }
-
-  let resolvedBase = requestUrl;
-  if (!redirectUrl.startsWith("/") && !/^[a-z]+:/i.test(redirectUrl)) {
+  try {
     const parsedRequestUrl = new URL(requestUrl);
-    let pathname = parsedRequestUrl.pathname;
-    if (!pathname.endsWith("/")) {
-      pathname = pathname + "/";
+    let resolvedBase = requestUrl;
+    if (!redirectUrl.startsWith("/") && !/^[a-z]+:/i.test(redirectUrl)) {
+      let pathname = parsedRequestUrl.pathname;
+      if (!pathname.endsWith("/")) {
+        pathname = pathname + "/";
+      }
+      resolvedBase = `${parsedRequestUrl.origin}${pathname}${parsedRequestUrl.search}`;
     }
-    resolvedBase = `${parsedRequestUrl.origin}${pathname}${parsedRequestUrl.search}`;
-  }
 
-  return new URL(redirectUrl, resolvedBase);
+    const resolved = new URL(redirectUrl, resolvedBase);
+    if (resolved.origin !== parsedRequestUrl.origin) return null;
+    if (basePath && !hasBasePath(resolved.pathname, basePath)) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
 }
 
 function isAncestorRouteRedirect(targetPathname: string, currentPathname: string): boolean {
@@ -924,29 +967,18 @@ function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRo
   currentRoute: TRoute | null;
   resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
   targetPathname: string;
-  targetRoute: TRoute;
+  targetRoute: TRoute | null;
 }): boolean {
   if (options.actionWasForwarded) return true;
   if (isAncestorRouteRedirect(options.targetPathname, options.currentPathname)) return true;
   if (isStaleChildSiblingRouteRedirect(options.targetPathname, options.currentPathname)) {
     return true;
   }
-  if (!options.currentRoute || !options.resolveRouteRuntime) return false;
+  if (!options.currentRoute || !options.targetRoute || !options.resolveRouteRuntime) return false;
 
   const currentRuntime = normalizeRuntime(options.resolveRouteRuntime(options.currentRoute));
   const targetRuntime = normalizeRuntime(options.resolveRouteRuntime(options.targetRoute));
   return currentRuntime !== targetRuntime;
-}
-
-/**
- * Decided from lazy thunks as well as hydrated fields so it needs no
- * `ensureRouteLoaded` first: a middleware-blocked target must never execute
- * its modules' top-level code, so the route cannot be hydrated before
- * middleware has cleared it.
- */
-function canRenderActionRedirectTarget(route: AppServerActionRoute): boolean {
-  if (("routeHandler" in route && route.routeHandler) || route.__loadRouteHandler) return false;
-  return (route.page !== null && route.page !== undefined) || route.__loadPage != null;
 }
 
 function getActionHttpFallbackStatus(error: unknown): number | null {
@@ -1448,7 +1480,8 @@ export async function handleServerActionRscRequest<
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       applyEdgeRuntimeHeader(redirectHeaders, options.isEdgeRuntime);
-      mergeActionRedirectMiddlewareHeaders(redirectHeaders, options.middlewareHeaders);
+      mergeActionRedirectTargetHeaders(redirectHeaders, options.sourceConfigHeaders ?? null);
+      mergeActionRedirectTargetHeaders(redirectHeaders, options.middlewareHeaders);
       applyRscCompatibilityIdHeader(redirectHeaders);
       // Prefix basePath onto the redirect target. The client-side handler in
       // app-browser-entry reads ACTION_REDIRECT_HEADER and calls
@@ -1480,15 +1513,39 @@ export async function handleServerActionRscRequest<
         });
       }
 
-      // The real request pipeline strips the internal `_rsc` transport param
-      // before middleware and rendering (app-rsc-handler); the synthetic target
-      // must match, or middleware matchers see a query no navigation carries.
-      // The x-action-redirect header above keeps the verbatim URL — a diverted
-      // client re-request goes through the pipeline's own `_rsc` validation.
-      stripRscCacheBustingSearchParam(redirectTarget);
-      const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
-      const targetMatch = options.matchRoute(targetPathname);
-      if (!targetMatch || !canRenderActionRedirectTarget(targetMatch.route)) {
+      let targetResponse: Response | null = null;
+      try {
+        const targetRequest = await createActionRedirectTargetRequest({
+          actionMiddlewareHeaders: options.middlewareHeaders,
+          actionMiddlewareRequestHeaders: options.middlewareRequestHeaders,
+          // Project the action middleware's Set-Cookie mutations (session
+          // rotation or deletion) into the internal target request first; the
+          // action's own cookies().set() calls land after middleware and win for
+          // the same name, matching Next.js' forwarded-cookie ordering.
+          pendingCookies: [
+            ...(options.sourceConfigHeaders?.getSetCookie() ?? []),
+            ...(options.middlewareHeaders?.getSetCookie() ?? []),
+            ...actionPendingCookies,
+            ...(actionDraftCookie ? [actionDraftCookie] : []),
+          ],
+          request: options.request,
+          sourceConfigHeaders: options.sourceConfigHeaders ?? null,
+          url: redirectTarget,
+        });
+        targetResponse = await dispatchActionRedirectTarget({
+          basePath: options.basePath ?? "",
+          dispatch: options.dispatchRedirectTargetRequest,
+          request: targetRequest,
+        });
+      } catch (error) {
+        console.error("[vinext] Failed to dispatch server action redirect target:", error);
+      }
+      if (
+        !targetResponse ||
+        !targetResponse.headers.get("content-type")?.startsWith(VINEXT_RSC_CONTENT_TYPE) ||
+        !targetResponse.body
+      ) {
+        targetResponse?.body?.cancel().catch(() => {});
         options.clearRequestContext();
         return new Response(null, {
           status: 303,
@@ -1496,130 +1553,27 @@ export async function handleServerActionRscRequest<
         });
       }
 
-      const redirectRenderRequest = createActionRedirectRenderRequest({
-        actionMiddlewareHeaders: options.middlewareHeaders,
-        actionMiddlewareRequestHeaders: options.middlewareRequestHeaders,
-        // Project the action middleware's Set-Cookie mutations (session
-        // rotation or deletion) into the internal target request first; the
-        // action's own cookies().set() calls land after middleware and win for
-        // the same name, matching Next.js' forwarded-cookie ordering.
-        pendingCookies: [
-          ...(options.middlewareHeaders?.getSetCookie() ?? []),
-          ...actionPendingCookies,
-          ...(actionDraftCookie ? [actionDraftCookie] : []),
-        ],
-        request: options.request,
-        url: redirectTarget,
-      });
-      setHeadersContext(
-        headersContextFromRequest(redirectRenderRequest, {
-          draftModeSecret: options.draftModeSecret,
-        }),
-      );
-      // Middleware ran for the action's own path, not the target's. Run it here
-      // (against the headers context above, so request-header overrides land on
-      // the render) and hand anything it wants to change back to the client as a
-      // plain redirect it will re-request through the full pipeline.
-      if (options.runRedirectTargetMiddleware) {
-        const targetMiddleware = await options.runRedirectTargetMiddleware({
-          cleanPathname: targetPathname,
-          request: redirectRenderRequest,
-        });
-        // Diverting costs the target one extra middleware execution, since the
-        // client's navigation runs it again. A pass-through — the common case —
-        // runs it exactly once because no navigation follows, so the extra run
-        // buys a single round-trip redirect for every app that has middleware.
-        if (targetMiddleware.kind === "diverted") {
-          options.clearRequestContext();
-          return new Response(null, {
-            status: 303,
-            headers: withoutRscBodyHeaders(redirectHeaders),
-          });
-        }
-        mergeActionRedirectMiddlewareHeaders(redirectHeaders, targetMiddleware.responseHeaders);
-      }
-      // Hydrate the target only now that middleware has cleared it: importing
-      // its modules runs their top-level code, which a blocked target must
-      // never execute. The dynamic-config / fetch-cache reads below need the
-      // hydrated route.
-      await options.ensureRouteLoaded?.(targetMatch.route);
+      mergeActionRedirectTargetHeaders(redirectHeaders, targetResponse.headers);
+      const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
+      const targetMatch = options.matchRoute(targetPathname);
       const currentMatch = options.currentRouteMatch;
-      // Hydrate the current route before resolving its runtime below.
-      if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
-      const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
-      const redirectSearchParams = prepareActionPageRerenderContext({
-        draftModeCookie: actionDraftCookie,
-        draftModeSecret: options.draftModeSecret,
-        dynamicConfig: redirectDynamicConfig,
-        request: redirectRenderRequest,
-        routePattern: targetMatch.route.pattern,
-        searchParams: redirectTarget.searchParams,
-      });
-      const redirectNavigationParams = resolveAppPageNavigationParams(
-        targetMatch.route,
-        targetMatch.params,
-        targetPathname,
-        null,
-      );
-      options.setNavigationContext({
-        pathname: targetPathname,
-        searchParams: redirectSearchParams,
-        params: redirectNavigationParams,
-      });
-      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(targetMatch.route) ?? null);
-      setCurrentForceDynamicFetchDefault(redirectDynamicConfig === "force-dynamic");
-      setCurrentFetchSoftTags(buildServerActionPageTags(targetMatch.route, targetPathname));
-      // Target middleware can replace the action path's CSP with a freshly
-      // generated nonce. Build the inline target with the nonce on the final
-      // response it represents, not the stale action-path nonce.
-      const redirectScriptNonce = getScriptNonceFromHeaderSources(
-        redirectHeaders,
-        redirectRenderRequest.headers,
-      );
-      const rscStream = await runWithRootParamsScope(
-        pickRootParams(targetMatch.params, targetMatch.route.rootParamNames),
-        () =>
-          runWithRootParamsUsage({ kind: "route" }, async () => {
-            const element = options.buildPageElement({
-              cleanPathname: targetPathname,
-              interceptOpts: undefined,
-              isRscRequest: true,
-              mountedSlotsHeader: null,
-              params: targetMatch.params,
-              request: redirectRenderRequest,
-              route: targetMatch.route,
-              searchParams: redirectSearchParams,
-              scriptNonce: redirectScriptNonce,
-              renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
-              observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
-              observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
-            });
-            const onRenderError = options.createRscOnErrorHandler(
-              redirectRenderRequest,
-              targetPathname,
-              targetMatch.route.pattern,
-            );
-            return options.renderToReadableStream(
-              { root: element, returnValue },
-              { temporaryReferences, onError: onRenderError },
-            );
-          }),
-      );
       const redirectResponseStatus = shouldUseForwardedActionRedirectStatus({
         actionWasForwarded,
         currentPathname: options.cleanPathname,
         currentRoute: currentMatch?.route ?? null,
         resolveRouteRuntime: options.resolveRouteRuntime,
         targetPathname,
-        targetRoute: targetMatch.route,
+        targetRoute: targetMatch?.route ?? null,
       })
         ? 200
         : 303;
 
-      return createServerActionRscResponse(
-        rscStream,
-        { status: redirectResponseStatus, headers: redirectHeaders },
-        options.clearRequestContext,
+      return markAppRscResponseConfigHeadersApplied(
+        createServerActionRscResponse(
+          targetResponse.body,
+          { status: redirectResponseStatus, headers: redirectHeaders },
+          options.clearRequestContext,
+        ),
       );
     }
 
