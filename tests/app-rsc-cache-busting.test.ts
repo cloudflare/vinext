@@ -13,6 +13,7 @@ import {
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
+  VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
@@ -476,6 +477,7 @@ describe("App Router RSC cache-busting", () => {
 
       expect(response?.status).toBe(307);
       expect(response?.headers.get("Location")).toBe("/photos/42?tab=latest");
+      expect(response?.headers.get(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER)).toBe("1");
     }
   });
 

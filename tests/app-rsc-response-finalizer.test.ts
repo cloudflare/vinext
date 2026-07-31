@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
+  VINEXT_RSC_VARY_HEADER,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 
@@ -224,7 +227,10 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
   });
 
   it("protects document redirects from the reserved canonical RSC URL", async () => {
-    const response = new Response(null, { status: 307, headers: { Location: "/old" } });
+    const response = new Response(null, {
+      status: 307,
+      headers: { Location: "/old", [VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER]: "1" },
+    });
     const request = new Request("http://example.com/old?_rsc");
 
     const result = await finalizeAppRscResponse(response, request, {
@@ -239,7 +245,24 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     expect(result.headers.get("location")).toBe("/old");
     expect(result.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(result.headers.get("cache-control")).toContain("no-store");
+    expect(result.headers.get(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER)).toBeNull();
     expect(result.headers.get("x-added")).toBeNull();
+  });
+
+  it("leaves ordinary route-handler redirects with an _rsc query untouched", async () => {
+    const response = new Response(null, { status: 307, headers: { Location: "/target" } });
+    const request = new Request("http://example.com/api/redirect?_rsc=user-value");
+
+    const result = await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(result).toBe(response);
+    expect(result.headers.get("vary")).toBeNull();
+    expect(result.headers.get("cache-control")).toBeNull();
   });
 });
 

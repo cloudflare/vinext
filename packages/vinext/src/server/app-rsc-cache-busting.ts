@@ -26,6 +26,7 @@ import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
  * repeated canonicalization redirects.
  */
 export const VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM = "_rsc";
+export const VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER = "X-Vinext-RSC-Cache-Busting-Redirect";
 export const VINEXT_RSC_COMPATIBILITY_ID_HEADER = "X-Vinext-RSC-Compatibility-Id";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 
@@ -428,6 +429,16 @@ export function createServerActionRequestUrl(href: string): string {
   return `${url.pathname}${url.search}`;
 }
 
+function createRscCacheBustingRedirect(location: string): Response {
+  return new Response(null, {
+    status: 307,
+    headers: {
+      Location: location,
+      [VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER]: "1",
+    },
+  });
+}
+
 export async function createRscRedirectLocation(
   location: string,
   request: Request,
@@ -458,12 +469,7 @@ export async function resolveInvalidRscCacheBustingRequest(
     if (options.validateDocumentRequest === false) return null;
     if (!hasRscCacheBustingSearchParam(url)) return null;
     stripRscCacheBustingSearchParam(url);
-    return new Response(null, {
-      status: 307,
-      headers: {
-        Location: `${url.pathname}${url.search}`,
-      },
-    });
+    return createRscCacheBustingRedirect(`${url.pathname}${url.search}`);
   }
 
   const cacheKeyMode = options.cacheKeyMode ?? getRscCacheKeyMode();
@@ -483,12 +489,7 @@ export async function resolveInvalidRscCacheBustingRequest(
       return null;
     }
 
-    return new Response(null, {
-      status: 307,
-      headers: {
-        Location: `${canonicalUrl.pathname}${canonicalUrl.search}`,
-      },
-    });
+    return createRscCacheBustingRedirect(`${canonicalUrl.pathname}${canonicalUrl.search}`);
   }
 
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
@@ -519,10 +520,5 @@ export async function resolveInvalidRscCacheBustingRequest(
   }
 
   setRscCacheBustingSearchParam(url, expectedHash);
-  return new Response(null, {
-    status: 307,
-    headers: {
-      Location: `${url.pathname}${url.search}`,
-    },
-  });
+  return createRscCacheBustingRedirect(`${url.pathname}${url.search}`);
 }
