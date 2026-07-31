@@ -133,6 +133,7 @@ describe("Cloudflare CDN warmup", () => {
       JSON.stringify({
         basePath: "/base",
         buildId: "build-a",
+        deploymentId: "deploy-a",
         trailingSlash: true,
         paths: ["/", "/about", "/feed.json"],
         appPaths: ["/", "/about"],
@@ -142,6 +143,7 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      deploymentId: "deploy-a",
       paths: ["/base/", "/base/about/", "/base/feed.json"],
       rscPaths: ["/base/", "/base/about/"],
       rscCacheKeyMode: "response-vary",
@@ -361,6 +363,31 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("rejects warm paths that can escape the configured target origin", () => {
+    expect(() =>
+      buildWarmupUrl("https://worker.example.workers.dev", "//attacker.invalid"),
+    ).toThrow("Unsafe CDN warmup pathname");
+  });
+
+  it("rejects protocol-relative base paths from build manifests", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "//attacker.invalid",
+        buildId: "build-a",
+        paths: ["/"],
+        appPaths: [],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: [],
+      rscPaths: [],
+      rscCacheKeyMode: "header-digest",
+    });
+  });
+
   it("requests every warmable path through the target URL", async () => {
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -383,9 +410,9 @@ describe("Cloudflare CDN warmup", () => {
       new Headers(init?.headers).get("RSC") === "1"
         ? new Response("flight", {
             status: 200,
-            headers: { "Content-Type": "text/x-component" },
+            headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/x-component" },
           })
-        : new Response("ok", { status: 200 }),
+        : new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } }),
     );
 
     const result = await warmCdnCacheFromPrerender({
@@ -410,7 +437,8 @@ describe("Cloudflare CDN warmup", () => {
 
   it("warms an already resolved path list without rereading the manifest", async () => {
     const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("ok", { status: 200 }),
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("ok", { status: 200, headers: { "CF-Cache-Status": "HIT" } }),
     );
 
     const result = await warmCdnCache({
@@ -430,9 +458,15 @@ describe("Cloudflare CDN warmup", () => {
       return headers.get("RSC") === "1"
         ? new Response("flight", {
             status: 200,
-            headers: { "Content-Type": "text/x-component; charset=utf-8" },
+            headers: {
+              "CF-Cache-Status": "MISS",
+              "Content-Type": "text/x-component; charset=utf-8",
+            },
           })
-        : new Response("html", { status: 200, headers: { "Content-Type": "text/html" } });
+        : new Response("html", {
+            status: 200,
+            headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/html" },
+          });
     });
 
     const result = await warmCdnCache({
@@ -440,6 +474,7 @@ describe("Cloudflare CDN warmup", () => {
       paths: ["/app", "/pages"],
       rscPaths: ["/app"],
       rscCacheKeyMode: "response-vary",
+      deploymentId: "configured-deploy-id",
       headers: { "Cloudflare-Workers-Version-Overrides": 'app="version-a"' },
       concurrency: 1,
       fetchImpl: fetchMock as typeof fetch,
@@ -457,6 +492,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(rscHeaders.get("Next-Router-Prefetch")).toBeNull();
     expect(rscHeaders.get("Next-Router-Segment-Prefetch")).toBeNull();
     expect(rscHeaders.get("Next-Url")).toBeNull();
+    expect(rscHeaders.get("x-deployment-id")).toBe("configured-deploy-id");
     expect(rscHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe('app="version-a"');
   });
 
@@ -481,7 +517,7 @@ describe("Cloudflare CDN warmup", () => {
     }
   });
 
-  it.each(["BYPASS", "DYNAMIC"])(
+  it.each(["BYPASS", "DYNAMIC", "NONE/UNKNOWN", "unexpected"])(
     "does not count CF-Cache-Status %s responses as warmed",
     async (cacheStatus) => {
       const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -506,6 +542,17 @@ describe("Cloudflare CDN warmup", () => {
       expect(result).toMatchObject({ total: 2, warmed: 0, failed: 2 });
     },
   );
+
+  it("does not count responses without CF-Cache-Status as warmed", async () => {
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: ["/app"],
+      fetchImpl: async () => new Response("html", { status: 200 }),
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
+    expect(result.failures[0]?.error).toBe("missing CF-Cache-Status");
+  });
 
   it("reports warmup failures and throws in strict mode", async () => {
     writeFile(

@@ -267,7 +267,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/"]);
   });
 
-  it("preserves the built RSC cache-key mode when rediscovering paths", async () => {
+  it("preserves built request metadata when rediscovering paths for skip-build", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
@@ -276,6 +276,7 @@ describe("prerender path manifest", () => {
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({
         buildId: "build-a",
+        deploymentId: "built-deploy-id",
         paths: ["/old"],
         appPaths: ["/old"],
         rscCacheKeyMode: "response-vary",
@@ -285,10 +286,11 @@ describe("prerender path manifest", () => {
     const { emitPrerenderPathManifest } =
       await import("../packages/vinext/src/build/prerender-paths.js");
 
-    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, preserveBuildMetadata: true });
 
     expect(manifest).toMatchObject({
       buildId: "build-a",
+      deploymentId: "built-deploy-id",
       paths: ["/"],
       appPaths: ["/"],
       rscCacheKeyMode: "response-vary",

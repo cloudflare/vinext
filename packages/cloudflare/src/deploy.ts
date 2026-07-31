@@ -551,7 +551,7 @@ export async function deployWithCdnWarmup(
     | "warmCdnRetries"
     | "warmCdnStrict"
   > &
-    Pick<CdnWarmOptions, "rscCacheKeyMode" | "rscPaths">,
+    Pick<CdnWarmOptions, "deploymentId" | "rscCacheKeyMode" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
   const wranglerConfig = parseWranglerConfig(root, options.config);
@@ -587,6 +587,7 @@ export async function deployWithCdnWarmup(
         await warmCdnCache({
           targetUrl,
           paths,
+          deploymentId: options.deploymentId,
           headers,
           rscCacheKeyMode: options.rscCacheKeyMode,
           rscPaths: options.rscPaths,
@@ -633,6 +634,7 @@ export async function deployWithCdnWarmup(
       await warmCdnCache({
         targetUrl,
         paths,
+        deploymentId: options.deploymentId,
         concurrency: options.warmCdnConcurrency,
         timeoutMs: options.warmCdnTimeout,
         retries: options.warmCdnRetries,
@@ -964,6 +966,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     if (warmPlan.paths.length > 0) {
       url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
+        deploymentId: warmPlan.deploymentId,
         rscCacheKeyMode: warmPlan.rscCacheKeyMode,
         rscPaths: warmPlan.rscPaths,
         warmCdnConcurrency: options.warmCdnConcurrency,

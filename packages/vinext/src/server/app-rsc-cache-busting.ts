@@ -54,6 +54,7 @@ type CreateRscRequestHeadersOptions = {
   renderMode?: AppRscRenderMode;
   fetchPriority?: "auto" | "high" | "low";
   nextUrl?: string | null;
+  deploymentId?: string;
   prefetchRouterState?: {
     pathAndSearch: string;
     routeId: string;
@@ -305,7 +306,7 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     Accept: VINEXT_RSC_CONTENT_TYPE,
     [RSC_HEADER]: "1",
   });
-  applyDeploymentIdHeader(headers);
+  applyDeploymentIdHeader(headers, options.deploymentId);
 
   if (options.prefetchRouterState) {
     if (options.includePrefetchHeader !== false) {

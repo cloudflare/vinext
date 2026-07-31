@@ -33,7 +33,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     execFileSyncMock.mockReset();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("ok", { status: 200 })),
+      vi.fn(
+        async () => new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } }),
+      ),
     );
   });
 
@@ -56,9 +58,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       return new Headers(init?.headers).get("RSC") === "1"
         ? new Response("flight", {
             status: 200,
-            headers: { "Content-Type": "text/x-component" },
+            headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/x-component" },
           })
-        : new Response("ok", { status: 200 });
+        : new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -92,6 +94,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
     const url = await deployWithCdnWarmup(tmpDir, ["/", "/about"], {
+      deploymentId: "configured-deploy-id",
       rscCacheKeyMode: "response-vary",
       rscPaths: ["/"],
       warmCdnConcurrency: 1,
@@ -123,6 +126,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     expect(fetch).toHaveBeenCalledTimes(3);
     const firstInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
+    const rscInit = vi.mocked(fetch).mock.calls[2]![1] as RequestInit;
     expect(fetch).toHaveBeenNthCalledWith(
       1,
       new URL("https://app.example.com/"),
@@ -141,7 +145,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker="22222222-2222-4222-8222-222222222222"',
     );
-    const rscInit = vi.mocked(fetch).mock.calls[2]![1] as RequestInit;
+    expect(new Headers(rscInit.headers).get("x-deployment-id")).toBe("configured-deploy-id");
     const rscHeaders = new Headers(rscInit.headers);
     expect(rscHeaders.get("RSC")).toBe("1");
     expect(rscHeaders.get("Accept")).toBe("text/x-component");
@@ -234,7 +238,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     vi.mocked(fetch).mockImplementation(async (url) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200 });
+      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -285,7 +289,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     vi.mocked(fetch).mockImplementation(async (url) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200 });
+      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {

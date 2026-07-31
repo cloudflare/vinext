@@ -865,6 +865,7 @@ export async function renderAppPageLifecycle(
       options.isPrerender !== true && mayResolveCacheLifeAfterHeaders && !dynamicUsedDuringBuild;
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
       cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
+      cdnTags: options.getPageTags(),
       staleTimePending,
       // Only on renders already known to be dynamic. A render that becomes
       // dynamic while streaming keeps the pending marker; its completed body

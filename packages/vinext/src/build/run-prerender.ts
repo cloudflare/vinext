@@ -346,6 +346,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     fs.mkdirSync(manifestDir, { recursive: true });
     writePrerenderIndex(allRoutes, manifestDir, {
       buildId: config.buildId,
+      deploymentId: config.deploymentId,
       trailingSlash: config.trailingSlash,
     });
   } finally {

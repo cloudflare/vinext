@@ -23,6 +23,7 @@ import {
 import { createStaticGenerationHeadersContext } from "../packages/vinext/src/server/app-static-generation.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { buildAppPageRscResponse } from "../packages/vinext/src/server/app-page-response.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
@@ -97,16 +98,55 @@ describe("CloudflareCdnCacheAdapter", () => {
       { RSC: "unexpected" },
       { RSC: "1", "Next-Router-State-Tree": "state-a" },
       { RSC: "1", "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell" },
+      { RSC: "1", "X-Vinext-Client-Reuse-Manifest": "source-state" },
       { "X-Vinext-Interception-Context": "/feed" },
     ];
     for (const headers of variantHeaders) {
       await expect(buildFor(headers)).resolves.toEqual({
         "Cache-Control": "no-store",
-        "CDN-Cache-Control": "no-store",
-        "Cloudflare-CDN-Cache-Control": "no-store",
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
         "Cache-Tag": null,
       });
     }
+  });
+
+  it("routes static RSC responses through stable-variant cache admission", async () => {
+    setCdnCacheAdapter(adapter);
+    const buildFor = async (headers: HeadersInit) => {
+      const request = new Request("https://example.com/blog?_rsc", { headers });
+      return runWithHeadersContext(headersContextFromRequest(request), () =>
+        buildAppPageRscResponse(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("flight"));
+              controller.close();
+            },
+          }),
+          {
+            cdnTags: ["/blog", "posts"],
+            middlewareContext: { headers: null, status: null },
+            policy: {
+              cacheControl: "s-maxage=31536000, stale-while-revalidate",
+              cacheState: "STATIC",
+            },
+          },
+        ),
+      );
+    };
+
+    const baseResponse = await buildFor({ RSC: "1" });
+    expect(baseResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
+    expect(baseResponse.headers.get("Cache-Tag")).toBe("/blog,posts");
+
+    const sourceVariantResponse = await buildFor({
+      RSC: "1",
+      "X-Vinext-Interception-Context": "/feed",
+    });
+    expect(sourceVariantResponse.headers.get("Cache-Control")).toBe("no-store");
+    expect(sourceVariantResponse.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(sourceVariantResponse.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(sourceVariantResponse.headers.get("Cache-Tag")).toBeNull();
   });
 
   it("bypasses non-base variants after force-static rendering hides request APIs", async () => {
@@ -125,8 +165,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     );
     expect(responseHeaders).toEqual({
       "Cache-Control": "no-store",
-      "CDN-Cache-Control": "no-store",
-      "Cloudflare-CDN-Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
       "Cache-Tag": null,
     });
   });
@@ -144,8 +184,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     );
     expect(responseHeaders).toEqual({
       "Cache-Control": "no-store",
-      "CDN-Cache-Control": "no-store",
-      "Cloudflare-CDN-Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
       "Cache-Tag": null,
     });
   });
@@ -186,9 +226,41 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
 
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(response.headers.get("CDN-Cache-Control")).toBe("no-store");
-    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("removes middleware cache directives from no-store responses without config headers", async () => {
+    setCdnCacheAdapter(adapter);
+    const request = new Request("https://example.com/blog?_rsc", {
+      headers: { RSC: "1", "Next-Router-State-Tree": "state-a" },
+    });
+    const response = new Response("flight", {
+      headers: {
+        "Cache-Control": "no-store",
+        "CDN-Cache-Control": "public, max-age=3600",
+        "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
+      },
+    });
+
+    await runWithHeadersContext(headersContextFromRequest(request), () =>
+      finalizeAppRscResponse(response, request, {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: {
+          cookies: {},
+          headers: request.headers,
+          host: "example.com",
+          query: new URL(request.url).searchParams,
+        },
+      }),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
   });
 
   it("skips tags containing the comma separator or that are too long", () => {
@@ -199,12 +271,9 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["Cache-Tag"]).toBe("ok");
   });
 
-  it("returns no-store at every Cloudflare cache-control layer without a policy", () => {
+  it("returns only no-store (no CDN-Cache-Control) when there is no cacheable policy", () => {
     expect(adapter.buildResponseHeaders({ cacheControl: "" })).toEqual({
       "Cache-Control": "no-store",
-      "CDN-Cache-Control": "no-store",
-      "Cloudflare-CDN-Cache-Control": "no-store",
-      "Cache-Tag": null,
     });
   });
 
@@ -218,8 +287,8 @@ describe("CloudflareCdnCacheAdapter", () => {
       const headers = adapter.buildResponseHeaders({ cacheControl: cc, tags: ["x"] });
       expect(headers).toEqual({
         "Cache-Control": cc,
-        "CDN-Cache-Control": "no-store",
-        "Cloudflare-CDN-Cache-Control": "no-store",
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
         "Cache-Tag": null,
       });
     }

@@ -983,6 +983,7 @@ export async function prerenderPages({
     if (!skipManifest)
       writePrerenderIndex(results, manifestDir, {
         buildId: config.buildId,
+        deploymentId: config.deploymentId,
         trailingSlash: config.trailingSlash,
       });
 
@@ -1675,6 +1676,7 @@ export async function prerenderApp({
     if (!skipManifest)
       writePrerenderIndex(results, manifestDir, {
         buildId: config.buildId,
+        deploymentId: config.deploymentId,
         trailingSlash: config.trailingSlash,
       });
 
@@ -1793,9 +1795,9 @@ function parseCacheControlSeconds(cacheControl: string, directive: string): numb
 export function writePrerenderIndex(
   routes: PrerenderRouteResult[],
   outDir: string,
-  options?: { buildId?: string; trailingSlash?: boolean },
+  options?: { buildId?: string; deploymentId?: string; trailingSlash?: boolean },
 ): void {
-  const { buildId, trailingSlash } = options ?? {};
+  const { buildId, deploymentId, trailingSlash } = options ?? {};
   // Produce a stripped-down version for the index (omit outputFiles detail)
   const indexRoutes = routes.map((r) => {
     if (r.status === "rendered") {
@@ -1820,6 +1822,7 @@ export function writePrerenderIndex(
 
   const index = {
     ...(buildId ? { buildId } : {}),
+    ...(deploymentId ? { deploymentId } : {}),
     ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
     routes: indexRoutes,
     pregeneratedConcretePaths: buildPregeneratedConcretePathTable({ routes: indexRoutes }),

@@ -25,6 +25,8 @@ export type CdnWarmOptions = {
   rscPaths?: readonly string[];
   /** RSC URL mode compiled into the deployed browser/server bundles. */
   rscCacheKeyMode?: RscCacheKeyMode;
+  /** Deployment ID compiled into client-side RSC request headers. */
+  deploymentId?: string;
   headers?: HeadersInit;
   concurrency?: number;
   timeoutMs?: number;
@@ -48,6 +50,7 @@ export type CdnWarmResult = {
 };
 
 export type PrerenderWarmPlan = {
+  deploymentId?: string;
   paths: string[];
   rscPaths: string[];
   rscCacheKeyMode: RscCacheKeyMode;
@@ -56,6 +59,34 @@ export type PrerenderWarmPlan = {
 type PrerenderPathWarmPlan = PrerenderWarmPlan & {
   pathConfig: Pick<PrerenderPathManifest, "basePath" | "trailingSlash">;
 };
+
+function hasControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+}
+
+function isSafeWarmPathname(pathname: string): boolean {
+  return (
+    pathname.startsWith("/") &&
+    !pathname.startsWith("//") &&
+    !/[\\?#]/.test(pathname) &&
+    !hasControlCharacter(pathname)
+  );
+}
+
+function isSafeWarmPathAndSearch(value: string): boolean {
+  const queryIndex = value.indexOf("?");
+  const pathname = queryIndex === -1 ? value : value.slice(0, queryIndex);
+  const search = queryIndex === -1 ? "" : value.slice(queryIndex + 1);
+  return (
+    isSafeWarmPathname(pathname) &&
+    !search.includes("#") &&
+    !search.includes("\\") &&
+    !hasControlCharacter(search)
+  );
+}
 
 function applyWarmPathConfig(
   pathname: string,
@@ -71,6 +102,7 @@ function applyWarmPathConfig(
 
 function toPublicWarmPlan(plan: PrerenderPathWarmPlan): PrerenderWarmPlan {
   return {
+    ...(plan.deploymentId ? { deploymentId: plan.deploymentId } : {}),
     paths: plan.paths,
     rscPaths: plan.rscPaths,
     rscCacheKeyMode: plan.rscCacheKeyMode,
@@ -95,7 +127,19 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
     const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as unknown;
     if (!parsed || typeof parsed !== "object") return null;
     const manifest = parsed as PrerenderPathManifest;
-    if (manifest.basePath !== undefined && typeof manifest.basePath !== "string") return null;
+    if (
+      manifest.basePath !== undefined &&
+      (typeof manifest.basePath !== "string" ||
+        (manifest.basePath !== "" && !isSafeWarmPathname(manifest.basePath)))
+    ) {
+      return null;
+    }
+    if (
+      manifest.deploymentId !== undefined &&
+      (typeof manifest.deploymentId !== "string" || !/^[a-zA-Z0-9_-]+$/.test(manifest.deploymentId))
+    ) {
+      return null;
+    }
     if (manifest.trailingSlash !== undefined && typeof manifest.trailingSlash !== "boolean") {
       return null;
     }
@@ -154,14 +198,15 @@ function readPrerenderPathWarmPlan(
     trailingSlash: manifest.trailingSlash,
   };
   const paths = manifest.paths
-    .filter((pathname) => pathname.startsWith("/"))
+    .filter(isSafeWarmPathname)
     .map((pathname) => applyWarmPathConfig(pathname, pathConfig));
   const pathSet = new Set(paths);
   const rscPaths = (manifest.appPaths ?? [])
-    .filter((pathname) => pathname.startsWith("/"))
+    .filter(isSafeWarmPathname)
     .map((pathname) => applyWarmPathConfig(pathname, pathConfig))
     .filter((pathname) => pathSet.has(pathname));
   return {
+    ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
     paths,
     rscPaths,
     rscCacheKeyMode: manifest.rscCacheKeyMode ?? "header-digest",
@@ -209,13 +254,21 @@ export function readPrerenderWarmPlan(
     basePath: pathManifestPlan?.pathConfig.basePath,
     trailingSlash: pathManifestPlan?.pathConfig.trailingSlash ?? manifest.trailingSlash,
   };
+  const fullManifestDeploymentId =
+    typeof manifest.deploymentId === "string" && /^[a-zA-Z0-9_-]+$/.test(manifest.deploymentId)
+      ? manifest.deploymentId
+      : undefined;
+  const paths = getPrerenderedConcretePaths(manifest, options).filter(isSafeWarmPathname);
+  const rscPaths = getPrerenderedConcretePaths(manifest, {
+    ...options,
+    router: "app",
+  }).filter(isSafeWarmPathname);
   return {
-    paths: getPrerenderedConcretePaths(manifest, options).map((pathname) =>
-      applyWarmPathConfig(pathname, pathConfig),
-    ),
-    rscPaths: getPrerenderedConcretePaths(manifest, { ...options, router: "app" }).map((pathname) =>
-      applyWarmPathConfig(pathname, pathConfig),
-    ),
+    ...(pathManifestPlan?.deploymentId || fullManifestDeploymentId
+      ? { deploymentId: pathManifestPlan?.deploymentId ?? fullManifestDeploymentId }
+      : {}),
+    paths: paths.map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
+    rscPaths: rscPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
     rscCacheKeyMode: pathManifestPlan?.rscCacheKeyMode ?? "header-digest",
   };
 }
@@ -234,20 +287,30 @@ export function getWarmPathsFromPrerenderManifest(
   return getPrerenderedConcretePaths(manifest, options);
 }
 
-function normalizeWarmPath(pathname: string): string {
-  return pathname.startsWith("/") ? pathname : `/${pathname}`;
-}
-
 export function buildWarmupUrl(targetUrl: string, pathname: string): URL {
-  return new URL(
-    normalizeWarmPath(pathname),
-    targetUrl.endsWith("/") ? targetUrl : `${targetUrl}/`,
-  );
+  if (!isSafeWarmPathAndSearch(pathname)) {
+    throw new Error(`Unsafe CDN warmup pathname: ${JSON.stringify(pathname)}`);
+  }
+  const target = new URL(targetUrl);
+  const resolved = new URL(pathname, target);
+  if (resolved.origin !== target.origin) {
+    throw new Error(`CDN warmup pathname escaped target origin: ${JSON.stringify(pathname)}`);
+  }
+  return resolved;
 }
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
+
+const ADMITTED_CF_CACHE_STATUSES = new Set([
+  "HIT",
+  "MISS",
+  "EXPIRED",
+  "REVALIDATED",
+  "UPDATING",
+  "STALE",
+]);
 
 async function fetchWithTimeout(
   fetchImpl: typeof fetch,
@@ -310,9 +373,9 @@ async function warmOnePath(
           lastError = `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
           break;
         }
-        const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
-        if (cacheStatus === "BYPASS" || cacheStatus === "DYNAMIC") {
-          lastError = `CF-Cache-Status: ${cacheStatus}`;
+        const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "";
+        if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
+          lastError = cacheStatus ? `CF-Cache-Status: ${cacheStatus}` : "missing CF-Cache-Status";
           break;
         }
         return { path: target.label, ok: true };
@@ -363,7 +426,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const commonHeaders = new Headers(options.headers);
   for (const pathname of options.rscPaths ?? []) {
     const rscHeaders = new Headers(commonHeaders);
-    for (const [name, value] of createRscRequestHeaders()) rscHeaders.set(name, value);
+    for (const [name, value] of createRscRequestHeaders({ deploymentId: options.deploymentId })) {
+      rscHeaders.set(name, value);
+    }
     requests.push({
       headers: rscHeaders,
       kind: "rsc",

@@ -29,6 +29,13 @@ type FinalizeAppRscResponseOptions = {
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 
+function reapplyNonCacheableCdnPolicy(headers: Headers): void {
+  const cacheControl = headers.get("Cache-Control");
+  if (cacheControl && /\b(?:no-store|no-cache|private)\b/i.test(cacheControl)) {
+    applyCdnResponseHeaders(headers, { cacheControl });
+  }
+}
+
 /**
  * Apply App Router response finalization that must happen outside individual
  * route dispatchers.
@@ -74,6 +81,7 @@ export async function finalizeAppRscResponse(
   }
 
   if (!HAS_CONFIG_HEADERS || !options.configHeaders.length) {
+    reapplyNonCacheableCdnPolicy(response.headers);
     return response;
   }
 
@@ -102,6 +110,14 @@ export async function finalizeAppRscResponse(
     requestContext: options.requestContext,
     basePathState: { basePath: options.basePath, hadBasePath },
   });
+
+  // A route/runtime no-store decision is authoritative over next.config
+  // headers. Re-run that generic policy through the active adapter after
+  // config headers so an adapter can remove provider-owned cache directives
+  // that would otherwise re-enable shared caching. Cacheable responses are not
+  // re-applied because their browser-facing Cache-Control does not retain the
+  // original shared-cache lifetime.
+  reapplyNonCacheableCdnPolicy(response.headers);
 
   // Static-file 405 responses are synthesized before config headers run.
   // Reassert their body metadata afterward so a matching headers() rule cannot

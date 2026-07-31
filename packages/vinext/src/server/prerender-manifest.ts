@@ -20,6 +20,7 @@ export type PrerenderManifestRoute = {
 
 export type PrerenderManifest = {
   buildId?: string;
+  deploymentId?: string;
   trailingSlash?: boolean;
   routes?: PrerenderManifestRoute[];
   pregeneratedConcretePaths?: Array<[string, string[]]>;

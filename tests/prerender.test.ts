@@ -724,7 +724,7 @@ describe("writePrerenderIndex", () => {
         },
       ],
       dir,
-      { buildId: "b1" },
+      { buildId: "b1", deploymentId: "deploy-1" },
     );
 
     const index = JSON.parse(fs.readFileSync(path.join(dir, "vinext-prerender.json"), "utf-8"));
@@ -734,6 +734,7 @@ describe("writePrerenderIndex", () => {
       expire: 300,
       stale: 30,
     });
+    expect(index.deploymentId).toBe("deploy-1");
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

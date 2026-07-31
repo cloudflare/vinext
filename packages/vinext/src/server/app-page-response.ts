@@ -1,4 +1,5 @@
 import {
+  applyCdnResponseHeaders,
   buildRevalidateCacheControl,
   NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
@@ -74,6 +75,8 @@ type AppPageHtmlResponsePolicy = {
 
 type BuildAppPageRscResponseOptions = {
   cacheTags?: readonly string[];
+  /** Stable page tags available when routing the response through a CDN adapter. */
+  cdnTags?: readonly string[];
   dynamicStaleTimeSeconds?: number;
   /** The render is being captured for a cache write but streams before its cacheLife resolves. */
   staleTimePending?: boolean;
@@ -346,13 +349,22 @@ export function buildAppPageRscResponse(
   if (options.staleTimePending) {
     headers.set(VINEXT_STALE_TIME_PENDING_HEADER, "1");
   }
-  if (options.policy.cacheControl) {
-    headers.set("Cache-Control", options.policy.cacheControl);
-  }
+  if (options.policy.cacheControl) headers.set("Cache-Control", options.policy.cacheControl);
   if (options.policy.cacheState) {
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.policy.cacheControl && options.policy.cacheState !== "MISS") {
+    const policyIsNonCacheable = /\b(?:no-store|no-cache|private)\b/i.test(
+      options.policy.cacheControl,
+    );
+    applyCdnResponseHeaders(headers, {
+      cacheControl: policyIsNonCacheable
+        ? options.policy.cacheControl
+        : (headers.get("Cache-Control") ?? options.policy.cacheControl),
+      tags: options.cdnTags,
+    });
+  }
   if (options.renderedPathAndSearch) {
     headers.set(
       VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,

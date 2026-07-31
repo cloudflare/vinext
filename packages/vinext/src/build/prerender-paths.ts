@@ -27,6 +27,7 @@ import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 export type PrerenderPathManifest = {
   basePath?: string;
   buildId?: string;
+  deploymentId?: string;
   trailingSlash?: boolean;
   paths: string[];
   /** Build-discovered paths owned by the App Router and eligible for RSC warming. */
@@ -478,9 +479,11 @@ export async function emitPrerenderPathManifest(
   const rscCacheKeyMode = preserveBuildMetadata
     ? (existingManifest.rscCacheKeyMode ?? "header-digest")
     : (options.rscCacheKeyMode ?? existingManifest?.rscCacheKeyMode);
+  const deploymentId = preserveBuildMetadata ? existingManifest.deploymentId : config.deploymentId;
   const manifest: PrerenderPathManifest = {
     ...(basePath ? { basePath } : {}),
     buildId: config.buildId,
+    ...(deploymentId ? { deploymentId } : {}),
     trailingSlash,
     paths,
     appPaths,

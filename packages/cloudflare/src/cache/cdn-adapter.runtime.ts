@@ -48,6 +48,7 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -78,6 +79,7 @@ const RSC_VARIANT_HEADERS = [
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 ] as const;
 
 /**
@@ -191,12 +193,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
-      return {
-        "Cache-Control": NO_STORE,
-        "CDN-Cache-Control": NO_STORE,
-        "Cloudflare-CDN-Cache-Control": NO_STORE,
-        "Cache-Tag": null,
-      };
+      return { "Cache-Control": NO_STORE };
     }
 
     // A non-cacheable policy (no-store / no-cache / private) must never be
@@ -205,8 +202,8 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
       return {
         "Cache-Control": input.cacheControl,
-        "CDN-Cache-Control": NO_STORE,
-        "Cloudflare-CDN-Cache-Control": NO_STORE,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
         "Cache-Tag": null,
       };
     }
@@ -214,8 +211,8 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (hasNonCanonicalWorkersCacheVariant()) {
       return {
         "Cache-Control": NO_STORE,
-        "CDN-Cache-Control": NO_STORE,
-        "Cloudflare-CDN-Cache-Control": NO_STORE,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
         "Cache-Tag": null,
       };
     }

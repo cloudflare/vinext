@@ -399,6 +399,7 @@ describe("deploy prerender config wiring", () => {
       JSON.stringify({
         basePath: "/built-base",
         buildId: "build-a",
+        deploymentId: "built-deploy-id",
         paths: ["/stale"],
         appPaths: ["/stale"],
         rscCacheKeyMode: "response-vary",
@@ -416,6 +417,7 @@ describe("deploy prerender config wiring", () => {
     ).toEqual({
       basePath: "/built-base",
       buildId: "build-a",
+      deploymentId: "built-deploy-id",
       trailingSlash: true,
       paths: [],
       appPaths: [],
