@@ -482,7 +482,9 @@ function cloneActionRedirectHeaders(
   return headers;
 }
 
-function readSetCookieNameValue(setCookie: string): { name: string; value: string } | null {
+function readSetCookieNameValue(
+  setCookie: string,
+): { name: string; value: string | undefined } | null {
   const equalsIndex = setCookie.indexOf("=");
   if (equalsIndex <= 0) return null;
 
@@ -492,12 +494,16 @@ function readSetCookieNameValue(setCookie: string): { name: string; value: strin
 
   let value: string;
   try {
-    value = decodeURIComponent(encodedValue);
+    // ResponseCookies parses the pair once, then parseSetCookie decodes the
+    // extracted value again before RequestCookies serializes it.
+    value = decodeURIComponent(decodeURIComponent(encodedValue));
   } catch {
     return null;
   }
 
-  return { name, value };
+  // @edge-runtime/cookies compacts an empty value out of the parsed response
+  // cookie. getForwardedHeaders treats that undefined value as a deletion.
+  return { name, value: value === "" ? undefined : value };
 }
 
 function applySetCookieMutationsToRequestCookieHeader(
@@ -510,9 +516,10 @@ function applySetCookieMutationsToRequestCookieHeader(
     const entry = readSetCookieNameValue(setCookie);
     if (!entry) continue;
     // Match Next.js' ResponseCookies -> RequestCookies projection exactly:
-    // attributes such as Path and Max-Age are discarded, and a deletion is
-    // forwarded as an empty value rather than removing the cookie name.
-    cookies.set(entry.name, entry.value);
+    // attributes such as Path and Max-Age are discarded, while a compacted
+    // empty value deletes the request cookie.
+    if (entry.value === undefined) cookies.delete(entry.name);
+    else cookies.set(entry.name, entry.value);
   }
 
   return cookies.size === 0
@@ -547,11 +554,10 @@ async function createActionRedirectTargetRequest(options: {
     headers.get("cookie"),
     options.pendingCookies,
   );
-  if (cookieHeader === null) {
-    headers.delete("cookie");
-  } else {
-    headers.set("cookie", cookieHeader);
-  }
+  // Next.js unconditionally assigns RequestCookies.toString() to the internal
+  // target request, so an empty jar is represented as Cookie: rather than by
+  // omitting the header.
+  headers.set("cookie", cookieHeader ?? "");
 
   // Match Next.js' internal redirect fetch: it is a fresh full-tree RSC GET,
   // not another action request or a patch against the action route's tree.

@@ -1782,7 +1782,7 @@ describe("app server action execution helpers", () => {
     expect(targetRequest!.headers.get("x-rsc-action")).toBeNull();
     expect(targetRequest!.headers.get("next-router-state-tree")).toBeNull();
     expect(targetRequest!.headers.get("x-vinext-mw-ctx")).toBeNull();
-    expect(targetRequest!.headers.get("cookie")).toBe("session=1; deleted=; theme=dark");
+    expect(targetRequest!.headers.get("cookie")).toBe("session=1; theme=dark");
     expect(Reflect.get(targetRequest!, "cf")).toEqual({ country: "AU" });
   });
 
@@ -2068,6 +2068,7 @@ describe("app server action execution helpers", () => {
           ["set-cookie", "session=; Max-Age=0"],
           ["set-cookie", "csrf=rotated"],
           ["set-cookie", "admin=1; Path=/account"],
+          ["set-cookie", "encoded=%2520; Path=/"],
           ["x-action-auth-context", "member"],
         ]),
         middlewareRequestHeaders: new Headers({
@@ -2083,10 +2084,29 @@ describe("app server action execution helpers", () => {
     );
 
     expect(targetRequest).not.toBeNull();
-    expect(targetRequest!.headers.get("cookie")).toBe("session=; csrf=rotated; admin=1");
+    expect(targetRequest!.headers.get("cookie")).toBe("csrf=rotated; admin=1; encoded=%20");
     expect(targetRequest!.headers.get("x-auth-context")).toBe("sanitized");
     expect(targetRequest!.headers.get("x-attacker-controlled")).toBeNull();
     expect(targetRequest!.headers.get("x-action-auth-context")).toBe("member");
+  });
+
+  it("forwards an empty Cookie header to the target pipeline", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.has("cookie")).toBe(true);
+    expect(targetRequest!.headers.get("cookie")).toBe("");
   });
 
   // Next.js follows same-origin redirects from its internal target fetch. The
