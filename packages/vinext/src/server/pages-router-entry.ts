@@ -200,11 +200,10 @@ async function handleRequest(
         typeof handleApiRoute === "function"
           ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")
           : null,
-      serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
+      serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
         if (!env?.ASSETS) return false;
         if (isImageOptimizationPath(requestPathname)) {
-          const imageUrl = new URL(request.url);
-          imageUrl.pathname = requestPathname;
+          const imageUrl = new URL(resolvedUrl, request.url);
           const imageRequest = new Request(imageUrl, request);
           const allowedWidths = [
             ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),

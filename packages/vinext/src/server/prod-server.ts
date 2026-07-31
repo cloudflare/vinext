@@ -2212,15 +2212,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // (/_next/static/*) were already served above. Middleware response headers
         // (including next.config headers staged by the pipeline) are passed through so
         // Set-Cookie / security headers from middleware are included in the response.
-        serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
+        serveFilesystemRoute: async (requestPathname, stagedHeaders, phase, resolvedUrl) => {
           // Next.js resolves middleware and beforeFiles rewrites before
           // dispatching the built-in image endpoint.
           if (isImageOptimizationPath(requestPathname)) {
             for (const [name, value] of Object.entries(stagedHeaders)) {
               res.setHeader(name, value);
             }
-            const parsedUrl = new URL(rawUrl, "http://localhost");
-            parsedUrl.pathname = requestPathname;
+            const parsedUrl = new URL(resolvedUrl, "http://localhost");
             const params = parseImageParams(
               parsedUrl,
               allowedImageWidths,

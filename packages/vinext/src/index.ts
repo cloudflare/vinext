@@ -5468,12 +5468,16 @@ export const loadServerActionClient = ${
                   const reqWithBody = new Request(new URL(url, requestOrigin), externalInit);
                   return proxyExternalRequest(reqWithBody, externalUrl);
                 },
-                serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
+                serveFilesystemRoute: async (
+                  requestPathname,
+                  stagedHeaders,
+                  phase,
+                  resolvedUrl,
+                ) => {
                   // Next.js resolves middleware and beforeFiles rewrites before
                   // dispatching the built-in image endpoint.
                   if (isImageOptimizationPath(requestPathname)) {
-                    const imageRequestUrl = new URL(url, requestOrigin);
-                    imageRequestUrl.pathname = requestPathname;
+                    const imageRequestUrl = new URL(resolvedUrl, requestOrigin);
                     const allowedWidths = [
                       ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
                       ...(nextConfig.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),

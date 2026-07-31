@@ -178,7 +178,7 @@ export type PagesPipelineDeps = {
   /**
    * Optional filesystem/static-asset probe supplied by each runtime adapter.
    * Called post-middleware (so middleware can intercept/redirect public files) with the
-   * original basePath-stripped pathname and the staged middleware response headers.
+   * resolved basePath-stripped pathname and URL plus the staged middleware response headers.
    * Node may write directly to `res` and return true; dev/Workers return a Response.
    * Resolves false to continue through rewrites, API routes, and page rendering.
    */
@@ -187,6 +187,7 @@ export type PagesPipelineDeps = {
         requestPathname: string,
         stagedHeaders: HeaderRecord,
         phase: FilesystemRoutePhase,
+        resolvedUrl: string,
       ) => Promise<boolean | Response>)
     | null;
 };
@@ -364,7 +365,12 @@ export async function runPagesRequest(
     phase: FilesystemRoutePhase,
   ): Promise<PagesPipelineResult | null> => {
     if (!deps.serveFilesystemRoute) return null;
-    const served = await deps.serveFilesystemRoute(requestPathname, middlewareHeaders, phase);
+    const served = await deps.serveFilesystemRoute(
+      requestPathname,
+      middlewareHeaders,
+      phase,
+      resolvedUrl,
+    );
     if (served instanceof Response) {
       const isStaticMethodNotAllowed =
         served.status === 405 && served.headers.get("allow") === "GET, HEAD";

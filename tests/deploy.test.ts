@@ -1824,6 +1824,7 @@ describe("readPagesRouterEntrySource", () => {
     expect(basePathPos).toBeLessThan(filesystemPos);
     expect(filesystemPos).toBeLessThan(imagePos);
     expect(content).not.toContain("isImageOptimizationPath(pathname)");
+    expect(content).toContain("new URL(resolvedUrl, request.url)");
   });
 
   it("threads configured image widths and qualities into optimization validation", () => {
