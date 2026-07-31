@@ -98,12 +98,11 @@ PLAYWRIGHT_PROJECT=pages-router-complex pnpm run test:e2e
   degrades under it, so the `@atlas/*` alias is wired into both bundlers
   explicitly (webpack hook + Vite `resolve.alias`); tsconfig `paths` (without
   the removed `baseUrl`) stays authoritative for the type checker.
-- **vinext dev (Cloudflare plugin): 59/73 specs pass; the 14 known gaps are
+- **vinext dev (Cloudflare plugin): 62/73 specs pass; the 11 known gaps are
   marked `test.fixme` so the passing surface runs in CI.** Known gaps:
   `generateBuildId` is invoked at dev startup (Next.js only calls it at build
-  time — the e2e server exports `RELEASE_TAG` to compensate), shallow routing
-  + `router.events` (including a hydration knock-on that breaks page
-  interactivity), the `next/image` custom-loader/`fill` path, raw
+  time — the e2e server exports `RELEASE_TAG` to compensate), the `next/image`
+  custom-loader/`fill` path, raw
   `/_next/data` interception and the `/_next/image` 403 middleware branches,
   the `history.replaceState`-beside-the-router hybrid, the gallery scrub
   redirect, cacheable-404 surrogate headers, the `afterFiles` type-ahead
