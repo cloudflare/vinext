@@ -7010,6 +7010,10 @@ export const loadServerActionClient = ${
     plugins.push(
       createActionOwnerManifestPlugin({
         canonicalizeModuleId: canonicalize,
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
         getRoutes: () => rscActionOwnerRoutes ?? [],
         onComplete() {
           rscActionOwnerRoutes = null;

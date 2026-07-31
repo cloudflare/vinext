@@ -87,7 +87,7 @@ describe("app browser server action client", () => {
         syncCurrentHistoryState: vi.fn(),
         syncServerActionHttpFallbackHead: vi.fn(),
       }),
-    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;%2Ftarget;307;", handled: true });
+    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/target;307;", handled: true });
 
     expect(renderRedirectPayload).toHaveBeenCalledWith(
       elements,

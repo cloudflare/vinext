@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { getPluginApi } from "@vitejs/plugin-rsc";
+import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import path from "pathslash";
 import type { Plugin, ResolvedConfig, Rollup } from "vite";
 import type { AppRoute } from "../routing/app-route-graph.js";
@@ -27,6 +27,7 @@ function getModuleInfo(context: Rollup.PluginContext, id: string) {
 
 export function createActionOwnerManifestPlugin(options: {
   canonicalizeModuleId: (id: string) => string;
+  getManager: (config: ResolvedConfig) => Promise<RscPluginManager | undefined>;
   getRoutes: () => readonly AppRoute[];
   onComplete?: () => void;
 }): Plugin {
@@ -48,12 +49,11 @@ export function createActionOwnerManifestPlugin(options: {
     load(id) {
       if (id === RESOLVED_ACTION_OWNER_MANIFEST_ID) return "export default null";
     },
-    generateBundle() {
-      const pluginApi = getPluginApi(config);
-      if (!pluginApi) {
+    async generateBundle() {
+      const manager = await options.getManager(config);
+      if (!manager) {
         throw new Error("vinext: failed to access @vitejs/plugin-rsc through getPluginApi().");
       }
-      const manager = pluginApi.manager;
       if (manager.isScanBuild) return;
 
       if (this.environment.name === "rsc") {
