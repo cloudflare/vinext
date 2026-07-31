@@ -511,15 +511,23 @@ function applySetCookieMutationsToRequestCookieHeader(
   setCookies: readonly string[],
 ): string | null {
   const cookies = parseEdgeRequestCookieHeader(cookieHeader ?? "");
+  const responseCookies = new Map<string, string | undefined>();
 
   for (const setCookie of setCookies) {
     const entry = readSetCookieNameValue(setCookie);
     if (!entry) continue;
+    // ResponseCookies stores response mutations in a name-keyed Map before
+    // getForwardedHeaders applies them. Repeated names therefore collapse to
+    // the last value without changing their first insertion order.
+    responseCookies.set(entry.name, entry.value);
+  }
+
+  for (const [name, value] of responseCookies) {
     // Match Next.js' ResponseCookies -> RequestCookies projection exactly:
     // attributes such as Path and Max-Age are discarded, while a compacted
     // empty value deletes the request cookie.
-    if (entry.value === undefined) cookies.delete(entry.name);
-    else cookies.set(entry.name, entry.value);
+    if (value === undefined) cookies.delete(name);
+    else cookies.set(name, value);
   }
 
   return cookies.size === 0

@@ -2109,6 +2109,29 @@ describe("app server action execution helpers", () => {
     expect(targetRequest!.headers.get("cookie")).toBe("");
   });
 
+  it("collapses repeated response cookies before forwarding the target request", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        getAndClearPendingCookies() {
+          return ["foo=new; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        middlewareHeaders: new Headers({ "set-cookie": "foo=; Max-Age=0" }),
+        request: createFetchActionRequest({ cookie: "a=1; foo=old; b=2" }),
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("a=1; foo=new; b=2");
+  });
+
   // Next.js follows same-origin redirects from its internal target fetch. The
   // in-process dispatcher must do the same so config and middleware redirects
   // can still produce a single action response containing the final Flight.
