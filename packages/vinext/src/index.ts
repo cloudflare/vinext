@@ -92,6 +92,7 @@ import {
   isNextDataPathname,
   normalizeNextDataPagePathname,
   parseNextDataPathname,
+  shouldAddTrailingSlashToPagesDataPath,
   urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
@@ -5211,7 +5212,11 @@ export const loadServerActionClient = ${
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   const pagePathname = normalizeNextDataPagePathname(
                     dataMatch.pagePathname,
-                    capturedMiddlewarePath !== null && nextConfig?.trailingSlash === true,
+                    shouldAddTrailingSlashToPagesDataPath(
+                      capturedMiddlewarePath !== null,
+                      nextConfig?.trailingSlash === true,
+                      nextConfig?.skipProxyUrlNormalize === true,
+                    ),
                   );
                   url = pagePathname + qs;
                   if (!nextConfig?.skipProxyUrlNormalize) middlewareUrl = url;

@@ -116,6 +116,20 @@ export function normalizeNextDataPagePathname(pagePathname: string, trailingSlas
 }
 
 /**
+ * Next.js only applies `trailingSlash` while normalizing a data URL for
+ * middleware when proxy URL normalization is enabled. With
+ * `skipProxyUrlNormalize`, the data route must retain the page's canonical
+ * pathname without adding a slash.
+ */
+export function shouldAddTrailingSlashToPagesDataPath(
+  hasMiddleware: boolean,
+  trailingSlash: boolean,
+  skipProxyUrlNormalize: boolean,
+): boolean {
+  return hasMiddleware && trailingSlash && !skipProxyUrlNormalize;
+}
+
+/**
  * Build the JSON envelope returned by `/_next/data/<buildId>/<page>.json`.
  * Mirrors Next.js' `RenderResult(JSON.stringify(props))` path in
  * `packages/next/src/server/render.tsx` (search for `isNextDataRequest`).

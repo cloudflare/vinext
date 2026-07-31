@@ -1502,7 +1502,7 @@ describe("Pages Router entry template", () => {
 
       expect(code).toContain("export function normalizeDataRequest(request)");
       expect(code).toContain(
-        "vinextConfig.basePath,\n    hasMiddleware && vinextConfig.trailingSlash",
+        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
       );
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).toContain('"skipProxyUrlNormalize":true');

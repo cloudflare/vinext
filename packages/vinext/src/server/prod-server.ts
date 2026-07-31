@@ -54,6 +54,7 @@ import {
   normalizeNextDataPagePathname,
   isNextDataPathname,
   parseNextDataPathname,
+  shouldAddTrailingSlashToPagesDataPath,
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
   urlParserCreatesPagesDataPath,
@@ -2167,7 +2168,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
           const pagePathname = normalizeNextDataPagePathname(
             dataMatch.pagePathname,
-            hasMiddleware && trailingSlash,
+            shouldAddTrailingSlashToPagesDataPath(
+              hasMiddleware,
+              trailingSlash,
+              skipProxyUrlNormalize,
+            ),
           );
           url = pagePathname + qs;
           requestPathname = pagePathname;
