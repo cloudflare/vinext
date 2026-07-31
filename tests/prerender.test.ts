@@ -1726,7 +1726,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
       }
     });
 
-    it("renders /about speculatively", () => {
+    it("renders /about as ISR", () => {
       const r = findRoute(allResults, "/about");
       expect(r).toMatchObject({ route: "/about", status: "rendered", revalidate: 60 });
       if (r?.status === "rendered") {
