@@ -353,6 +353,35 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   return headers;
 }
 
+/**
+ * Collapse a complete, source-independent RSC payload onto the same request
+ * shape used by an uncached client navigation. Caches with verbatim `Vary`
+ * support can then reuse one warmed response for Link prefetches and soft
+ * navigations instead of storing one variant per source route.
+ *
+ * Contextual requests must retain their full header shape: interception and
+ * mounted-slot state can change the rendered tree, while a non-navigation
+ * render mode represents a partial payload rather than the full destination.
+ */
+export function canonicalizeFullRscRequestHeaders(
+  headers: Headers,
+  cacheKeyMode: RscCacheKeyMode = getRscCacheKeyMode(),
+): boolean {
+  if (cacheKeyMode !== "response-vary" || headers.has(VINEXT_RSC_RENDER_MODE_HEADER)) {
+    return false;
+  }
+
+  headers.delete(NEXT_ROUTER_PREFETCH_HEADER);
+  headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
+  if (headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) || headers.has(VINEXT_MOUNTED_SLOTS_HEADER)) {
+    return false;
+  }
+
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(NEXT_URL_HEADER);
+  return true;
+}
+
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
@@ -369,6 +398,27 @@ export async function createRscRequestUrl(
     cacheKeyMode === "response-vary" ? "" : await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
   return `${url.pathname}${url.search}`;
+}
+
+/**
+ * Preserve the semantic request variant in browser-local cache keys even when
+ * the network URL is canonicalized for a response-`Vary` cache. This prevents
+ * route-tree and loading-shell payloads from colliding with the complete RSC
+ * response stored for navigation.
+ */
+export async function createRscClientRequestIdentity(
+  href: string,
+  headers: Headers,
+): Promise<{ cacheKeyUrl: string; requestUrl: string }> {
+  const cacheKeyMode = getRscCacheKeyMode();
+  const requestUrl = await createRscRequestUrl(href, headers, cacheKeyMode);
+  return {
+    cacheKeyUrl:
+      cacheKeyMode === "header-digest"
+        ? requestUrl
+        : await createRscRequestUrl(href, headers, "header-digest"),
+    requestUrl,
+  };
 }
 
 export function createServerActionRequestUrl(href: string): string {

@@ -310,6 +310,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     for (const cc of [
       "no-store, must-revalidate",
       "private, no-cache, no-store, max-age=0, must-revalidate",
+      "Private, No-Cache, No-Store, max-age=0, must-revalidate",
     ]) {
       const headers = adapter.buildResponseHeaders({ cacheControl: cc, tags: ["x"] });
       expect(headers).toEqual({

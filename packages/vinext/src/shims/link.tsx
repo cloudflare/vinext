@@ -454,7 +454,11 @@ function prefetchUrl(
           restoreRscResponse,
           PREFETCH_CACHE_TTL,
         } = navigation;
-        const { createRscRequestUrl } = rscCacheBusting;
+        const {
+          canonicalizeFullRscRequestHeaders,
+          createRscClientRequestIdentity,
+          createRscRequestUrl,
+        } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -519,14 +523,18 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
+        if (autoPrefetch.cacheForNavigation) {
+          canonicalizeFullRscRequestHeaders(headers);
+        }
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
-        const rscUrl = await createRscRequestUrl(fullHref, headers);
+        const { requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl } =
+          await createRscClientRequestIdentity(fullHref, headers);
         const additionalRscUrls =
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]
             : [];
-        const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+        const cacheKey = AppElementsWire.encodeCacheKey(rscCacheKeyUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
@@ -560,14 +568,18 @@ function prefetchUrl(
           if (mountedSlotsHeader) {
             shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
           }
-          const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
-          const shellCacheKey = AppElementsWire.encodeCacheKey(shellRscUrl, interceptionContext);
+          const { requestUrl: shellRscUrl, cacheKeyUrl: shellCacheKeyUrl } =
+            await createRscClientRequestIdentity(fullHref, shellHeaders);
+          const shellCacheKey = AppElementsWire.encodeCacheKey(
+            shellCacheKeyUrl,
+            interceptionContext,
+          );
           const shellCache = getPrefetchCache();
           let shellEntry = shellCache.get(shellCacheKey);
           if (shellEntry === undefined) {
             getPrefetchedUrls().add(shellCacheKey);
             prefetchRscResponse(
-              shellRscUrl,
+              shellCacheKeyUrl,
               scheduleAppPrefetchFetch(
                 (signal) =>
                   fetch(shellRscUrl, {
@@ -674,9 +686,10 @@ function prefetchUrl(
                 if (mountedSlotsHeader) {
                   shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
                 }
-                const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
+                const { requestUrl: shellRscUrl, cacheKeyUrl: shellCacheKeyUrl } =
+                  await createRscClientRequestIdentity(fullHref, shellHeaders);
                 const shellCacheKey = AppElementsWire.encodeCacheKey(
-                  shellRscUrl,
+                  shellCacheKeyUrl,
                   interceptionContext,
                 );
                 const shellCache = getPrefetchCache();
@@ -684,7 +697,7 @@ function prefetchUrl(
                 if (shellEntry === undefined) {
                   getPrefetchedUrls().add(shellCacheKey);
                   prefetchRscResponse(
-                    shellRscUrl,
+                    shellCacheKeyUrl,
                     scheduleAppPrefetchFetch(
                       (signal) =>
                         fetch(shellRscUrl, {
@@ -746,7 +759,7 @@ function prefetchUrl(
           void fetchLoadingShellForReuse();
         }
         prefetchRscResponse(
-          rscUrl,
+          rscCacheKeyUrl,
           fetchPromise,
           interceptionContext,
           mountedSlotsHeader,

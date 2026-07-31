@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
+  canonicalizeFullRscRequestHeaders,
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -17,7 +18,10 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
-import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
@@ -124,6 +128,48 @@ describe("App Router RSC cache-busting", () => {
         "/photos/42?_rsc",
       );
     });
+  });
+
+  it("canonicalizes complete response-Vary prefetches to the warmed navigation shape", () => {
+    const headers = createRscRequestHeaders({
+      nextUrl: "/source",
+      prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+    });
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+
+    expect(canonicalizeFullRscRequestHeaders(headers, "response-vary")).toBe(true);
+    expect(Object.fromEntries(headers)).toEqual({
+      accept: "text/x-component",
+      rsc: "1",
+    });
+  });
+
+  it("does not canonicalize contextual or partial RSC requests", () => {
+    for (const headers of [
+      createRscRequestHeaders({ interceptionContext: "/feed" }),
+      createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" }),
+      createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL }),
+    ]) {
+      const snapshot = Array.from(headers);
+      expect(canonicalizeFullRscRequestHeaders(headers, "response-vary")).toBe(false);
+      expect(Array.from(headers)).toEqual(snapshot);
+    }
+  });
+
+  it("keeps source context but removes partial-prefetch markers from contextual full payloads", () => {
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      nextUrl: "/feed",
+      prefetchRouterState: { pathAndSearch: "/feed", routeId: "route:/feed" },
+    });
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+
+    expect(canonicalizeFullRscRequestHeaders(headers, "response-vary")).toBe(false);
+    expect(headers.get("X-Vinext-Interception-Context")).toBe("/feed");
+    expect(headers.get("Next-Router-State-Tree")).not.toBeNull();
+    expect(headers.get("Next-Url")).toBe("/feed");
+    expect(headers.get("Next-Router-Prefetch")).toBeNull();
+    expect(headers.get("Next-Router-Segment-Prefetch")).toBeNull();
   });
 
   it("keeps router state but omits the prefetch header for a full prefetch", () => {

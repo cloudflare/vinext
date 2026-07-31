@@ -154,4 +154,77 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
 
     await setDraftMode(request, false);
   });
+
+  test("makes Link prefetches and soft navigations match the warmed RSC cache shape", async ({
+    page,
+  }) => {
+    const prefetchResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/about" && url.searchParams.has("_rsc");
+    });
+    await page.goto(BASE_URL);
+    const prefetchResponse = await prefetchResponsePromise;
+
+    const alternatePage = await page.context().newPage();
+    const alternatePrefetchResponsePromise = alternatePage.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/about" && url.searchParams.has("_rsc");
+    });
+    await alternatePage.goto(`${BASE_URL}/cache-source`);
+    const alternatePrefetchResponse = await alternatePrefetchResponsePromise;
+    await alternatePage.close();
+
+    const navigationResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/blog/hello-world" && url.searchParams.has("_rsc");
+    });
+    await page.click("#cdn-navigation-link");
+    const navigationResponse = await navigationResponsePromise;
+    await expect(page.locator("h1")).toHaveText("Blog post");
+
+    const variantHeaders = [
+      "rsc",
+      "next-router-state-tree",
+      "next-router-prefetch",
+      "next-router-segment-prefetch",
+      "next-url",
+      "x-vinext-interception-context",
+      "x-vinext-mounted-slots",
+      "x-vinext-rsc-render-mode",
+    ] as const;
+    const requestShape = (response: typeof prefetchResponse) => {
+      const url = new URL(response.url());
+      const headers = response.request().headers();
+      return {
+        query: url.search,
+        accept: headers.accept,
+        vary: Object.fromEntries(variantHeaders.map((name) => [name, headers[name] ?? null])),
+        clientReuse: headers["x-vinext-client-reuse-manifest"] ?? null,
+      };
+    };
+
+    expect(requestShape(prefetchResponse)).toEqual({
+      query: "?_rsc",
+      accept: "text/x-component",
+      vary: {
+        rsc: "1",
+        "next-router-state-tree": null,
+        "next-router-prefetch": null,
+        "next-router-segment-prefetch": null,
+        "next-url": null,
+        "x-vinext-interception-context": null,
+        "x-vinext-mounted-slots": null,
+        "x-vinext-rsc-render-mode": null,
+      },
+      clientReuse: null,
+    });
+    expect(requestShape(navigationResponse)).toEqual(requestShape(prefetchResponse));
+    expect(requestShape(alternatePrefetchResponse)).toEqual(requestShape(prefetchResponse));
+
+    for (const response of [prefetchResponse, alternatePrefetchResponse, navigationResponse]) {
+      const headers = response.headers();
+      expect(headers["cache-control"]).not.toContain("no-store");
+      expect(headers["cdn-cache-control"]).toContain("max-age=");
+    }
+  });
 });

@@ -1581,6 +1581,32 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("uses the warmed navigation request shape for reusable response-Vary prefetches", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const [input, init] = result.fetch.mock.calls[0] ?? [];
+      expect(input).toBe("/viewport-prefetch-target?_rsc");
+      const requestHeaders = new Headers(init?.headers);
+      expect(requestHeaders.get("rsc")).toBe("1");
+      expect(requestHeaders.get("accept")).toBe("text/x-component");
+      expect(requestHeaders.get("next-router-prefetch")).toBeNull();
+      expect(requestHeaders.get("next-router-segment-prefetch")).toBeNull();
+      expect(requestHeaders.get("next-router-state-tree")).toBeNull();
+      expect(requestHeaders.get("next-url")).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("does not viewport-prefetch same-page query and hash links", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
@@ -2141,6 +2167,7 @@ describe("Link prefetch scheduling", () => {
   });
 
   it("uses a loading shell before full-prefetching explicit links with search params", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
@@ -2182,6 +2209,17 @@ describe("Link prefetch scheduling", () => {
       expect(
         (fullFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
       ).toBeNull();
+      expect(
+        (fullFetchInit?.headers as Headers | undefined)?.get("next-router-prefetch"),
+      ).toBeNull();
+      expect(
+        (fullFetchInit?.headers as Headers | undefined)?.get("next-router-segment-prefetch"),
+      ).toBeNull();
+      expect(
+        (fullFetchInit?.headers as Headers | undefined)?.get("next-router-state-tree"),
+      ).toBeNull();
+      expect((fullFetchInit?.headers as Headers | undefined)?.get("next-url")).toBeNull();
+      expect(fullUrl.search).toBe("?searchParam=b_full&_rsc");
     } finally {
       result.restoreNodeEnv();
     }
@@ -2617,6 +2655,7 @@ describe("Link prefetch scheduling", () => {
     // test/e2e/app-dir/segment-cache/max-prefetch-inlining/max-prefetch-inlining.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/max-prefetch-inlining/max-prefetch-inlining.test.ts
     vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
       href: "/viewport-prefetch-target",
@@ -2658,8 +2697,16 @@ describe("Link prefetch scheduling", () => {
       const fullFetchInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
       const fullHeaders = fullFetchInit?.headers as Headers | undefined;
       expect(fullHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
-      expect(fullHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
-      expect(fullHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
+      expect(fullHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBeNull();
+      expect(fullHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBeNull();
+      expect(fullHeaders?.get("next-router-state-tree")).toBeNull();
+      expect(fullHeaders?.get("next-url")).toBeNull();
+      expect(Array.from(getPrefetchCache().values())).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ cacheForNavigation: false, prefetchKind: "route-tree" }),
+          expect.objectContaining({ cacheForNavigation: true, prefetchKind: "navigation" }),
+        ]),
+      );
     } finally {
       await flushPrefetchTasks();
       result.restoreNodeEnv();

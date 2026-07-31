@@ -1,6 +1,6 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import { RSC_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
@@ -44,9 +44,9 @@ function reapplyNonCacheableCdnPolicy(headers: Headers): void {
  * handling, so that every response path (page, route handler, server action,
  * metadata, not-found) gets headers applied consistently.
  *
- * Skips 3xx redirect responses. Response.redirect() creates immutable
- * headers that throw on mutation, and Next.js does not apply config headers
- * to redirects regardless.
+ * Skips config-header matching for 3xx redirects. RSC redirects are cloned so
+ * immutable `Response.redirect()` headers can still receive the framework's
+ * `Vary` and authoritative no-store policy.
  */
 export async function finalizeAppRscResponse(
   response: Response,
@@ -56,7 +56,16 @@ export async function finalizeAppRscResponse(
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.
   if (response.status >= 300 && response.status < 400) {
-    return response;
+    if (request.headers.get(RSC_HEADER) !== "1") return response;
+
+    const headers = new Headers(response.headers);
+    mergeVaryHeader(headers, VINEXT_RSC_VARY_HEADER);
+    applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
   }
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {

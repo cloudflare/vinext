@@ -203,6 +203,25 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
 
     expect(response.headers.get("x-added")).toBeNull();
   });
+
+  it("clones RSC redirects with Vary and no-store cache protection", async () => {
+    const response = Response.redirect("http://example.com/new", 307);
+    const request = new Request("http://example.com/old?_rsc", { headers: { RSC: "1" } });
+
+    const result = await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [{ source: "/old", headers: [{ key: "x-added", value: "no" }] }],
+      i18nConfig: null,
+      requestContext: makeRequestContext(request.headers),
+    });
+
+    expect(result).not.toBe(response);
+    expect(result.status).toBe(307);
+    expect(result.headers.get("location")).toBe("http://example.com/new");
+    expect(result.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+    expect(result.headers.get("cache-control")).toContain("no-store");
+    expect(result.headers.get("x-added")).toBeNull();
+  });
 });
 
 // ── basePath stripping ──────────────────────────────────────────────────

@@ -39,7 +39,10 @@ import {
 } from "./navigation.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { withBasePath } from "./url-utils.js";
-import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import {
+  createRscClientRequestIdentity,
+  createRscRequestHeaders,
+} from "../server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../server/app-rsc-render-mode.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
@@ -334,8 +337,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               if (mountedSlotsHeader) {
                 headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
               }
-              const rscUrl = await createRscRequestUrl(actionHref, headers);
-              const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+              const { requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl } =
+                await createRscClientRequestIdentity(actionHref, headers);
+              const cacheKey = AppElementsWire.encodeCacheKey(rscCacheKeyUrl, interceptionContext);
               // Dedup: skip if already in-flight or a fresh cache entry exists,
               // matching the gate link.tsx applies to avoid double-fetching a
               // payload that a nearby <Link> already prefetched.
@@ -356,7 +360,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
                 purpose: "prefetch",
               });
               prefetchRscResponse(
-                rscUrl,
+                rscCacheKeyUrl,
                 fetchPromise,
                 interceptionContext,
                 mountedSlotsHeader,

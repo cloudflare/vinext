@@ -162,6 +162,7 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
+  canonicalizeFullRscRequestHeaders,
   createRscRequestHeaders,
   createRscRequestUrl,
   getVinextRscCompatibilityId,
@@ -1786,6 +1787,7 @@ function bootstrapHydration(
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
         });
+        const usesCanonicalSharedRequest = canonicalizeFullRscRequestHeaders(requestHeaders);
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
@@ -2093,7 +2095,7 @@ function bootstrapHydration(
           // paths did not satisfy the navigation and a real request is required.
           // Computed from the nav-start router state so it matches the snapshot
           // the request would have carried if produced earlier.
-          if (navigationKind === "navigate") {
+          if (navigationKind === "navigate" && !usesCanonicalSharedRequest) {
             const clientReuseManifestHeader =
               createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
             if (clientReuseManifestHeader !== null) {

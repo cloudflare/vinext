@@ -85,6 +85,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   delete (globalThis as any).window;
   delete (globalThis as any).fetch;
 });
@@ -997,6 +998,7 @@ describe("prefetch cache eviction", () => {
   });
 
   it('caches kind: "full" router.prefetch for navigation on loading-shell routes (#2707)', async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
     ];
@@ -1018,6 +1020,9 @@ describe("prefetch cache eviction", () => {
     // suppresses Next-Router-Prefetch (matches Link's prefetch={true}).
     expect(fetchedHeaders?.get("Next-Router-Prefetch")).toBeNull();
     expect(fetchedHeaders?.get("Next-Router-Segment-Prefetch")).toBeNull();
+    expect(fetchedHeaders?.get("Next-Router-State-Tree")).toBeNull();
+    expect(fetchedHeaders?.get("Next-Url")).toBeNull();
+    expect(fetchedUrl).toBe("/reports?_rsc");
 
     const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
     await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");

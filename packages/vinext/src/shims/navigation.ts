@@ -30,6 +30,8 @@ import {
   createHashOnlyHistoryStatePreservingNavigationMetadata,
 } from "../server/app-history-state.js";
 import {
+  canonicalizeFullRscRequestHeaders,
+  createRscClientRequestIdentity,
   createRscRequestHeaders,
   createRscRequestUrl,
   stripRscCacheBustingSearchParam,
@@ -2698,14 +2700,18 @@ const _appRouter: AppRouterInstance = {
         headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
         headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, __prefetchInlining ? "/__PAGE__" : "1");
       }
+      if (reusable) {
+        canonicalizeFullRscRequestHeaders(headers);
+      }
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
-      const [rscUrl, ...additionalRscUrls] = await Promise.all([
-        createRscRequestUrl(fullHref, headers),
-        ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref
-          ? [createRscRequestUrl(rewrittenPrefetchHref, headers)]
-          : []),
-      ]);
+      const [{ requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl }, ...additionalRscUrls] =
+        await Promise.all([
+          createRscClientRequestIdentity(fullHref, headers),
+          ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref
+            ? [createRscRequestUrl(rewrittenPrefetchHref, headers)]
+            : []),
+        ]);
       // A navigation to this same href can start in the same task as this call
       // and win the race above (hybrid-route module load, policy import, RSC
       // URL generation). Nothing was registered in the cache during that
@@ -2713,7 +2719,7 @@ const _appRouter: AppRouterInstance = {
       // one here would break the one-request-per-route invariant. Mirrors
       // Link's equivalent guard.
       if (setup.cancelled) return;
-      const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+      const cacheKey = AppElementsWire.encodeCacheKey(rscCacheKeyUrl, interceptionContext);
       const prefetched = getPrefetchedUrls();
       if (reusable) {
         // A previous learning-only prefetch for the same URL must not satisfy
@@ -2736,7 +2742,7 @@ const _appRouter: AppRouterInstance = {
       }
       prefetched.add(cacheKey);
       prefetchRscResponse(
-        rscUrl,
+        rscCacheKeyUrl,
         scheduleAppPrefetchFetch(
           (signal) =>
             fetch(rscUrl, {
