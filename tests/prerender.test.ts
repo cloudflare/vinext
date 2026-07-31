@@ -1728,7 +1728,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
 
     it("renders /about speculatively", () => {
       const r = findRoute(allResults, "/about");
-      expect(r).toMatchObject({ route: "/about", status: "rendered", revalidate: false });
+      expect(r).toMatchObject({ route: "/about", status: "rendered", revalidate: 60 });
       if (r?.status === "rendered") {
         expect(r.outputFiles).toContain("about.html");
       }
@@ -1741,7 +1741,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
           route: "/blog/:slug",
           path: `/blog/${slug}`,
           status: "rendered",
-          revalidate: false,
+          revalidate: 60,
         });
         if (r?.status === "rendered") {
           expect(r.outputFiles).toContain(`blog/${slug}.html`);
