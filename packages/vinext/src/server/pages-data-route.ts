@@ -201,10 +201,10 @@ type NormalizePagesDataRequestResult =
       notFoundResponse: null;
     }
   | {
-      isDataReq: false;
+      isDataReq: true;
       request: Request;
       normalizedPathname: null;
-      search: "";
+      search: string;
       notFoundResponse: Response;
     }
   | {
@@ -222,9 +222,10 @@ type NormalizePagesDataRequestResult =
  *
  * Returns:
  * - `isDataReq: false, notFoundResponse: null` — not a data request.
- * - `isDataReq: false, notFoundResponse: Response` — looks like a data URL but
- *   the buildId does not match; callers should return `notFoundResponse`
- *   immediately so stale clients fall back to a hard navigation.
+ * - `isDataReq: true, normalizedPathname: null` — looks like a data URL but
+ *   the buildId does not match. Callers may defer `notFoundResponse` until
+ *   after middleware so `skipProxyUrlNormalize` middleware can intercept the
+ *   original URL.
  * - `isDataReq: true` — valid data request; `request` is re-pointed at the
  *   normalized page path, `normalizedPathname` carries the bare page path, and
  *   `search` carries the original query string for callers that need to
@@ -254,10 +255,10 @@ export function normalizePagesDataRequest(
   const dataMatch = buildId ? parseNextDataPathname(dataPathname, buildId) : null;
   if (!dataMatch) {
     return {
-      isDataReq: false,
+      isDataReq: true,
       request,
       normalizedPathname: null,
-      search: "",
+      search: reqUrl.search,
       notFoundResponse: buildNextDataNotFoundResponse(),
     };
   }

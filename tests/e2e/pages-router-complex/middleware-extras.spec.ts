@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
  * asset-prefix rewrite, and the hard 403 on the built-in image endpoint.
  */
 test.describe("middleware extras", () => {
-  test.fixme("answers raw /_next/data requests with a hardNavTo payload", async ({ request }) => {
+  test("answers raw /_next/data requests with a hardNavTo payload", async ({ request }) => {
     const response = await request.get("/_next/data/whatever/journal.json?x=1", {
       maxRedirects: 0,
     });

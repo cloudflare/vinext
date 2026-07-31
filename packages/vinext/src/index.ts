@@ -5191,13 +5191,12 @@ export const loadServerActionClient = ${
 
               // ── `_next/data` normalization (Pages Router) ──────────────
               // Client-side navigations in the Pages Router fetch
-              // `/_next/data/<buildId>/<page>.json`. Normalize the URL to the
-              // page path BEFORE middleware runs so middleware sees `/page`
-              // (matching Next.js — see `handleNextDataRequest` in
-              // base-server.ts). If the buildId is missing (dev) or matches,
-              // accept the request; if it is present and wrong, fall through
-              // to the dot-extension skip below which returns 404.
+              // `/_next/data/<buildId>/<page>.json`. Route matching uses the
+              // normalized page path, while skipProxyUrlNormalize preserves the
+              // original URL for middleware. A stale build ID is likewise
+              // deferred until after middleware so it may answer the raw URL.
               let isDataReq = false;
+              let dataNotFoundResponse: Response | null = null;
               if (isNextDataPathname(pathname)) {
                 // Use the plugin's resolved buildId so a user-supplied
                 // `generateBuildId` in next.config.mjs is honored in dev —
@@ -5215,7 +5214,7 @@ export const loadServerActionClient = ${
                     capturedMiddlewarePath !== null && nextConfig?.trailingSlash === true,
                   );
                   url = pagePathname + qs;
-                  middlewareUrl = url;
+                  if (!nextConfig?.skipProxyUrlNormalize) middlewareUrl = url;
                   routeUrl = url;
                   pathname = pagePathname;
                   configMatchPathname = pagePathname;
@@ -5234,9 +5233,16 @@ export const loadServerActionClient = ${
                     "Content-Type": "application/json",
                   };
                   if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
-                  res.writeHead(404, notFoundHeaders);
-                  res.end("{}");
-                  return;
+                  if (!nextConfig?.skipProxyUrlNormalize) {
+                    res.writeHead(404, notFoundHeaders);
+                    res.end("{}");
+                    return;
+                  }
+                  isDataReq = true;
+                  dataNotFoundResponse = new Response("{}", {
+                    status: 404,
+                    headers: notFoundHeaders,
+                  });
                 }
               }
 
@@ -5259,7 +5265,7 @@ export const loadServerActionClient = ${
                 req.method !== "GET" && req.method !== "HEAD" && isExistingDevPublicFile(pathname);
               let filePathMatchesPagesRoute = false;
               const requestHostname = getUrlHostname(requestOrigin);
-              if (isFilePathRequest && !filePathMatchesRewrite) {
+              if (isFilePathRequest && !filePathMatchesRewrite && !isDataReq) {
                 const [pageRoutes, apiRoutes] = await Promise.all([
                   pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
                   apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
@@ -5283,6 +5289,7 @@ export const loadServerActionClient = ${
               }
               if (
                 isFilePathRequest &&
+                !isDataReq &&
                 !filePathMatchesRewrite &&
                 !filePathMatchesPagesRoute &&
                 !isExistingPublicMutation
@@ -5305,9 +5312,9 @@ export const loadServerActionClient = ${
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );
-              // Only a successfully parsed `/_next/data/...json` URL is a data
-              // request. The inbound x-nextjs-data header is internal and must
-              // not let callers opt normal URLs into the data redirect protocol.
+              // Only a recognized `/_next/data/...json` URL is a data request.
+              // The inbound x-nextjs-data header is internal and must not let
+              // callers opt normal URLs into the data redirect protocol.
               const isDataRequest = isDataReq;
               // Strip internal headers from inbound requests so they cannot be
               // forged to influence routing or impersonate internal state.
@@ -5445,6 +5452,7 @@ export const loadServerActionClient = ${
                 isDataReq,
                 isDataRequest,
                 hasMiddleware: capturedMiddlewarePath !== null,
+                dataNotFoundResponse,
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 configMatchPathname,

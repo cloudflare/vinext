@@ -119,6 +119,7 @@ export async function generateServerEntry(
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
+    skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],

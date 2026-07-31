@@ -552,7 +552,7 @@ describe("analyzeConfig", () => {
     expect(item?.detail).toContain("not applicable");
   });
 
-  it("detects unrecognized middleware and proxy config options as unsupported", () => {
+  it("detects middleware and proxy config support", () => {
     writeFile(
       "next.config.mjs",
       `export default {
@@ -571,13 +571,15 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
+    expect(items.find((item) => item.name === "skipMiddlewareUrlNormalize")?.status).toBe(
+      "partial",
+    );
+    expect(items.find((item) => item.name === "skipProxyUrlNormalize")?.status).toBe("partial");
     const unsupportedNames = items
       .filter((item) => item.status === "unsupported")
       .map((item) => item.name);
 
     expect(unsupportedNames).toEqual([
-      "skipMiddlewareUrlNormalize",
-      "skipProxyUrlNormalize",
       "experimental.middlewarePrefetch",
       "experimental.proxyPrefetch",
       "experimental.middlewareClientMaxBodySize",

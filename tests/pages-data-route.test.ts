@@ -250,7 +250,7 @@ describe("pages-data-route", () => {
       try {
         const req = new Request("http://localhost/_next/data/stale-build-id/about.json");
         const result = normalizePagesDataRequest(req, BUILD_ID);
-        expect(result.isDataReq).toBe(false);
+        expect(result.isDataReq).toBe(true);
         expect(result.notFoundResponse).not.toBeNull();
         expect(result.notFoundResponse!.status).toBe(404);
         expect(result.notFoundResponse!.headers.get("x-nextjs-deployment-id")).toBe(

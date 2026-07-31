@@ -164,10 +164,13 @@ async function handleRequest(
       }
     }
 
+    const middlewareRequest = request;
     const dataNorm = normalizeDataRequest(request);
-    if (dataNorm.notFoundResponse) return dataNorm.notFoundResponse;
+    if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
+      return dataNorm.notFoundResponse;
+    }
     const isDataReq = dataNorm.isDataReq;
-    if (isDataReq) {
+    if (isDataReq && dataNorm.normalizedPathname) {
       request = dataNorm.request;
       pathname = dataNorm.normalizedPathname;
     }
@@ -199,6 +202,9 @@ async function handleRequest(
       isDataRequest: isDataReq,
       hasMiddleware,
       ctx,
+      middlewareRequest:
+        isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,
+      dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
       authorizeOnDemandRevalidate:
         typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,

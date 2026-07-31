@@ -1928,6 +1928,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const pagesAssetPathPrefix = assetPrefixPathname(assetPrefix);
   const assetBase = basePath ? `${basePath}/` : "/";
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+  const skipProxyUrlNormalize: boolean = vinextConfig?.skipProxyUrlNormalize ?? false;
   const i18nConfig = vinextConfig?.i18n ?? null;
   const configRedirects = vinextConfig?.redirects ?? [];
   const configRewrites = vinextConfig?.rewrites ?? {
@@ -2141,13 +2142,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
       // ── 3b. `_next/data` normalization ────────────────────────────
       // Pages Router client-side navigations fetch
-      // `/_next/data/<buildId>/<page>.json`. The page path must be normalized
-      // BEFORE middleware runs so middleware sees `/page`, matching Next.js
-      // (see `handleNextDataRequest` in base-server.ts). If the buildId in the
-      // URL does not match this server's buildId we return a JSON 404 right
-      // here — stale clients can fall back to a hard navigation without
-      // accidentally triggering middleware/SSR on a bogus path.
+      // `/_next/data/<buildId>/<page>.json`. Route matching uses the normalized
+      // page path, while skipProxyUrlNormalize preserves the original URL for
+      // middleware. A stale build ID is deferred until middleware continues.
       let isDataReq = false;
+      let dataNotFoundResponse: Response | null = null;
       const originalRenderUrl = url;
       if (isNextDataPathname(requestPathname)) {
         const dataMatch = pagesBuildId
@@ -2157,19 +2156,24 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           // Wrong buildId (or malformed) — surface a JSON 404 so the client
           // hard-navigates instead of silently rendering an empty page.
           const notFound = buildNextDataNotFoundResponse();
-          await sendWebResponse(notFound, req, res, compress);
-          return;
+          if (!skipProxyUrlNormalize) {
+            await sendWebResponse(notFound, req, res, compress);
+            return;
+          }
+          isDataReq = true;
+          dataNotFoundResponse = notFound;
+        } else {
+          isDataReq = true;
+          const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+          const pagePathname = normalizeNextDataPagePathname(
+            dataMatch.pagePathname,
+            hasMiddleware && trailingSlash,
+          );
+          url = pagePathname + qs;
+          requestPathname = pagePathname;
+          pathname = pagePathname;
+          configMatchPathname = pagePathname;
         }
-        isDataReq = true;
-        const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        const pagePathname = normalizeNextDataPagePathname(
-          dataMatch.pagePathname,
-          hasMiddleware && trailingSlash,
-        );
-        url = pagePathname + qs;
-        requestPathname = pagePathname;
-        pathname = pagePathname;
-        configMatchPathname = pagePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry
@@ -2181,9 +2185,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         i18nConfig,
         typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
       );
-      // Only a successfully parsed `/_next/data/...json` URL is a data
-      // request. The inbound x-nextjs-data header is internal and must not let
-      // callers opt normal URLs into the data redirect protocol.
+      // Only a recognized `/_next/data/...json` URL is a data request. The
+      // inbound x-nextjs-data header is internal and must not let callers opt
+      // normal URLs into the data redirect protocol.
       const isDataRequest = isDataReq;
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
@@ -2198,6 +2202,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // @ts-expect-error — duplex needed for streaming request bodies
         duplex: hasBody ? "half" : undefined,
       });
+      const middlewareRequest =
+        isDataReq && skipProxyUrlNormalize
+          ? new Request(new URL(originalRenderUrl, webRequest.url), webRequest)
+          : undefined;
 
       // ── Delegate steps 3–11 to the shared Pages Router pipeline ──
       const deps: PagesPipelineDeps = {
@@ -2211,6 +2219,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         isDataReq,
         isDataRequest,
         hasMiddleware,
+        middlewareRequest,
+        dataNotFoundResponse,
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
