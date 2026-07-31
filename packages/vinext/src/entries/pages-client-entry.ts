@@ -57,6 +57,7 @@ export async function generateClientEntry(
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
   options: {
     appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[];
+    devErrorOverlay?: boolean;
     instrumentationClientPath?: string | null;
     middlewareMatcher?: StaticMiddlewareMatcher | undefined;
     reactPreamble?: boolean;
@@ -92,6 +93,9 @@ export async function generateClientEntry(
     )
   ).filter((pattern): pattern is string => pattern !== null);
   const instrumentationClientPath = options.instrumentationClientPath ?? null;
+  const devErrorOverlayImport = options.devErrorOverlay
+    ? 'import * as devErrorOverlay from "vinext/dev-error-overlay";\n'
+    : "";
   const clientRewrites = toClientRewrites(nextConfig.rewrites);
 
   // Build a map of route pattern -> dynamic import.
@@ -142,7 +146,7 @@ export async function generateClientEntry(
   // Next.js's `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`.
   const reactStrictModeEnabled = nextConfig.reactStrictMode === true;
 
-  return `${userInstrumentationImport}${reactPreambleImport}
+  return `${userInstrumentationImport}${reactPreambleImport}${devErrorOverlayImport}
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
@@ -227,7 +231,7 @@ async function hydrate() {
 
   let hydrateRootOptions;
   if (import.meta.env.DEV) {
-    const overlay = await import("vinext/dev-error-overlay");
+    const overlay = ${options.devErrorOverlay ? "devErrorOverlay" : 'await import("vinext/dev-error-overlay")'};
     overlay.installDevErrorOverlay();
     overlay.installViteHmrErrorHandler(import.meta.hot);
     overlay.reportInitialDevServerErrors();
@@ -246,7 +250,8 @@ async function hydrate() {
     return;
   }
 
-  const pageModule = await loader();
+  const initialModules = window.__VINEXT_INITIAL_PAGES_MODULES__;
+  const pageModule = initialModules?.[${hasApp ? 1 : 0}] ?? (await loader());
   const PageComponent = pageModule.default;
   if (!PageComponent) {
     console.error("[vinext] Page module has no default export");
@@ -258,7 +263,7 @@ async function hydrate() {
     hasApp
       ? `
   try {
-    const appModule = await appLoader();
+    const appModule = initialModules?.[0] ?? (await appLoader());
     const AppComponent = appModule.default;
     window.__VINEXT_APP__ = AppComponent;
     element = React.createElement(AppComponent, {

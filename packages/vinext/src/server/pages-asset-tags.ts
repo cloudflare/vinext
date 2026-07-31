@@ -9,7 +9,7 @@
  * template string.
  */
 
-import { createNonceAttribute } from "./html.js";
+import { createNonceAttribute, safeJsonStringify } from "./html.js";
 import { assetServingUrlFromBaseAnchored } from "../utils/manifest-paths.js";
 import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 import { getPagesClientAssets } from "./pages-client-assets.js";
@@ -158,23 +158,81 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
     return value.endsWith(".js") ? url : appendDeploymentIdQuery(url, options.deploymentId);
   };
 
+  // In development the shared client entry discovers the current page at
+  // runtime, so its page/App imports are normally asynchronous. Install the
+  // error overlay first, then expose those exact modules through an ordered
+  // parser-visible module before the client entry runs. The entry consumes the
+  // exported namespaces synchronously, allowing hydrateRoot() to install
+  // React's delegated event handlers before the document load event exposes
+  // the page as interactive.
+  const runtimeAssets = getPagesClientAssets();
+  const clientEntry = runtimeAssets.clientEntry;
+  const devModuleUrls = runtimeAssets.devModuleUrls;
+  const isDevBootstrap = !!clientEntry && !!devModuleUrls && options.moduleIds.length > 0;
+  if (isDevBootstrap) {
+    if (runtimeAssets.devErrorOverlay) {
+      const overlayImports = [
+        runtimeAssets.instrumentationClient
+          ? `import ${safeJsonStringify(runtimeAssets.instrumentationClient)};`
+          : "",
+        runtimeAssets.reactPreamble
+          ? `import ${safeJsonStringify(runtimeAssets.reactPreamble)};`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const overlayImportPrefix = overlayImports ? `${overlayImports}\n` : "";
+      tags.push(`<script type="module"${nonceAttr}>${overlayImportPrefix}import * as devErrorOverlay from ${safeJsonStringify(runtimeAssets.devErrorOverlay)};
+devErrorOverlay.installDevErrorOverlay();
+devErrorOverlay.reportInitialDevServerErrors();</script>`);
+    }
+
+    const imports: string[] = [];
+    if (runtimeAssets.instrumentationClient && !runtimeAssets.devErrorOverlay) {
+      imports.push(`import ${safeJsonStringify(runtimeAssets.instrumentationClient)};`);
+    }
+    if (runtimeAssets.reactPreamble) {
+      imports.push(`import ${safeJsonStringify(runtimeAssets.reactPreamble)};`);
+    }
+    const moduleRefs: string[] = [];
+    for (let i = 0; i < options.moduleIds.length; i++) {
+      const moduleId = options.moduleIds[i];
+      const moduleUrl = moduleId ? devModuleUrls[moduleId] : undefined;
+      if (!moduleUrl) {
+        moduleRefs.push("null");
+        continue;
+      }
+      const ref = `initialModule${i}`;
+      imports.push(`import * as ${ref} from ${safeJsonStringify(moduleUrl)};`);
+      moduleRefs.push(ref);
+    }
+    imports.push(`const nextDataElement = document.getElementById("__NEXT_DATA__");
+if (nextDataElement?.textContent) {
+  window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
+  window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
+  window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
+  window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
+}`);
+    imports.push(`window.__VINEXT_INITIAL_PAGES_MODULES__ = [${moduleRefs.join(",")}];`);
+    tags.push(`<script type="module"${nonceAttr}>${imports.join("\n")}</script>`);
+  }
+
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
   // tags — they are fetched on demand when the dynamic import() executes.
-  const runtimeAssets = getPagesClientAssets();
   const lazyChunks = runtimeAssets.lazyChunks ?? null;
   const lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
 
   // Development adapters provide the Vite-served virtual entry explicitly.
   // Production builds use the client entry registered from the emitted sidecar.
-  const clientEntry = runtimeAssets.clientEntry;
   if (clientEntry) {
+    const clientEntryHref = isDevBootstrap ? clientEntry : href(clientEntry);
     seen.add(clientEntry);
     tags.push(
       '<link rel="modulepreload"' +
         nonceAttr +
         ' href="' +
-        href(clientEntry) +
+        clientEntryHref +
         '"' +
         preloadCrossOriginAttr +
         " />",
@@ -184,7 +242,7 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         deferAttr +
         nonceAttr +
         ' src="' +
-        href(clientEntry) +
+        clientEntryHref +
         '"' +
         scriptCrossOriginAttr +
         "></script>",

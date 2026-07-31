@@ -43,7 +43,7 @@ export type GalleryWallProps = PageLiftedProps & {
 
 export type GalleryWallComponentProps = Omit<
   GalleryWallProps,
-  "lifted" | "graphSnapshot" | "edgeProbeData"
+  "graphSnapshot" | "edgeProbeData"
 >;
 
 const SORT_ORDERS = ["featured", "newest", "alpha"] as const;
@@ -62,7 +62,7 @@ const orderAssets = (assets: AssetCard[], sort: SortOrder): AssetCard[] => {
   }
 };
 
-const GalleryWall = ({ wallPath, startPage }: GalleryWallComponentProps) => {
+const GalleryWall = ({ wallPath, startPage, lifted }: GalleryWallComponentProps) => {
   const router = useRouter();
   const leaf = wallPath.split("/").filter(Boolean)[1] ?? "";
   const node = useGraphOp<TopicNode>("nodeByTrail", { trail: leaf });
@@ -109,6 +109,7 @@ const GalleryWall = ({ wallPath, startPage }: GalleryWallComponentProps) => {
         data-start-page={startPage}
         data-sort={sort}
         data-from-snapshot={node.fromSnapshot}
+        data-rendered-at-ms={lifted.renderedAtMs}
       >
         <h1>Wall: {node.data?.name ?? "…"}</h1>
         <label>

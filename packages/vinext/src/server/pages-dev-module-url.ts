@@ -1,4 +1,4 @@
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 
 function normalizeBase(base: string): string {
   if (!base || base === "/") return "/";
@@ -13,9 +13,9 @@ function encodePagesDevModulePath(modulePath: string): string {
     .replace(/#/g, "%23");
 }
 
-export function createPagesDevAssetUrl(assetPath: string): string {
+export function createPagesDevAssetUrl(assetPath: string, viteBase = "/"): string {
   const normalizedAssetPath = assetPath.replace(/^\/+/, "");
-  return "/" + encodePagesDevModulePath(normalizedAssetPath);
+  return normalizeBase(viteBase) + encodePagesDevModulePath(normalizedAssetPath);
 }
 
 export function createPagesDevModuleUrl(
@@ -27,5 +27,12 @@ export function createPagesDevModuleUrl(
   // Windows shapes there); pathslash's win32 already emits "/" on any host.
   const pathImpl = /^[A-Za-z]:[\\/]/.test(viteRoot) ? path.win32 : path;
   const relativePath = pathImpl.relative(viteRoot, moduleFilePath);
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith("../") ||
+    pathImpl.isAbsolute(relativePath)
+  ) {
+    return normalizeBase(viteBase) + "@fs/" + encodePagesDevModulePath(toSlash(moduleFilePath));
+  }
   return normalizeBase(viteBase) + encodePagesDevModulePath(relativePath);
 }

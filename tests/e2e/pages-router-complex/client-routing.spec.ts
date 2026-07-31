@@ -10,14 +10,24 @@ type BeaconWindow = Window & {
  * Client-side routing behaviours: shallow router.push with the internal
  * dynamic-route pattern, router.events subscriptions, and the trial-mark
  * reset hook built on next/compat/router.
+ *
+ * Next.js parity references:
+ * https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+ * https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/router-events.test.ts
  */
 test.describe("shallow routing and router events", () => {
-  test.fixme("changing sort shallow-navigates without re-running gSSP", async ({ page }) => {
+  test("changing sort shallow-navigates without re-running gSSP", async ({ page }) => {
     await page.goto("/gallery/skies/clips");
     await expect(page.locator('[data-testid="gallery-wall"]')).toHaveAttribute(
       "data-sort",
       "featured",
     );
+    const renderedAtMs = await page
+      .locator('[data-testid="gallery-wall"]')
+      .getAttribute("data-rendered-at-ms");
+    if (!renderedAtMs) {
+      throw new Error("gallery wall did not expose its gSSP render timestamp");
+    }
 
     // Plant a marker: a shallow transition must NOT be a full document load.
     await page.evaluate(() => {
@@ -31,6 +41,10 @@ test.describe("shallow routing and router events", () => {
       "data-sort",
       "alpha",
     );
+    await expect(page.locator('[data-testid="gallery-wall"]')).toHaveAttribute(
+      "data-rendered-at-ms",
+      renderedAtMs,
+    );
 
     const marker = await page.evaluate(() => (window as BeaconWindow).__nav_marker__);
     expect(marker).toBe(true);
@@ -40,7 +54,7 @@ test.describe("shallow routing and router events", () => {
     expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
   });
 
-  test.fixme("shallow transitions fire router events observed by the progress frame", async ({
+  test("shallow transitions fire router events observed by the progress frame", async ({
     page,
   }) => {
     await page.goto("/gallery/skies/clips");
@@ -60,7 +74,7 @@ test.describe("shallow routing and router events", () => {
     expect(phases.indexOf("start")).toBeLessThan(phases.indexOf("complete"));
   });
 
-  test.fixme("route changes reset the per-page trial marks", async ({ page }) => {
+  test("route changes reset the per-page trial marks", async ({ page }) => {
     await page.goto("/gallery/skies/clips");
     await page.evaluate(() => {
       (window as BeaconWindow).__ATLAS_TRIALS_ACTIVE__ = ["stale-flag"];

@@ -45,6 +45,7 @@ import {
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
+import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./server/pages-dev-module-url.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
@@ -283,6 +284,14 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector",
 ]);
 
+const CLIENT_FRAMEWORK_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
+  "react",
+  "react-dom",
+  "react-dom/client",
+  "react/jsx-runtime",
+  "react/jsx-dev-runtime",
+]);
+
 const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
   /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
 const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
@@ -512,6 +521,7 @@ function toRelativeFileEntry(root: string, absPath: string): string {
 }
 
 const DEV_PAGES_CLIENT_ENTRY = "/@id/__x00__virtual:vinext-client-entry";
+const DEV_REACT_PREAMBLE = "/@id/__x00__@vitejs/plugin-react/preamble";
 const STYLESHEET_IMPORT_RE = /\.(?:css|scss|sass)$/i;
 const STYLESHEET_FILE_RE = /\.(?:css|scss|sass)$/i;
 const SCRIPT_IMPORT_RE = /\.(?:[cm]?[jt]sx?)$/i;
@@ -1140,6 +1150,8 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
  */
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
 const _serverDir = path.resolve(__dirname, "server");
+const _clientDir = path.resolve(__dirname, "client");
+const _devErrorOverlayPath = resolveShimModulePath(_clientDir, "dev-error-overlay");
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 const _appBrowserServerActionClientPath = resolveShimModulePath(
   _serverDir,
@@ -1557,6 +1569,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       : [];
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
+      devErrorOverlay: isServeCommand,
       instrumentationClientPath,
       middlewareMatcher: middlewarePath
         ? extractMiddlewareMatcherConfig(middlewarePath)
@@ -3090,7 +3103,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
             "@tailwindcss/oxide",
           ]),
-          ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
+          ...(!hasAppDir && hasPagesDir
+            ? {
+                include: mergeStringArrayValues(
+                  incomingInclude,
+                  CLIENT_FRAMEWORK_OPTIMIZE_DEPS_INCLUDE,
+                ),
+              }
+            : incomingInclude.length > 0
+              ? { include: incomingInclude }
+              : {}),
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
@@ -3278,14 +3300,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
                 include: [
-                  ...new Set([
-                    ...incomingInclude,
-                    "react",
-                    "react-dom",
-                    "react-dom/client",
-                    "react/jsx-runtime",
-                    "react/jsx-dev-runtime",
-                  ]),
+                  ...new Set([...incomingInclude, ...CLIENT_FRAMEWORK_OPTIMIZE_DEPS_INCLUDE]),
                 ],
                 // The client scanner also crawls app/ source files, so it
                 // needs the same JSX-in-`.js` handling (moduleTypes/loader) as
@@ -3321,6 +3336,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               consumer: "client",
               optimizeDeps: {
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
+                include: mergeStringArrayValues(
+                  incomingInclude,
+                  CLIENT_FRAMEWORK_OPTIMIZE_DEPS_INCLUDE,
+                ),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -3349,6 +3368,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               consumer: "client",
               optimizeDeps: {
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
+                include: mergeStringArrayValues(
+                  incomingInclude,
+                  CLIENT_FRAMEWORK_OPTIMIZE_DEPS_INCLUDE,
+                ),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -3720,9 +3743,35 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (id === RESOLVED_PAGES_CLIENT_ASSETS) {
             const metadata: {
               clientEntry: string;
+              devErrorOverlay?: string;
+              devModuleUrls?: Record<string, string>;
+              instrumentationClient?: string;
+              reactPreamble?: string;
               ssrManifest?: Record<string, string[]>;
-            } = { clientEntry: DEV_PAGES_CLIENT_ENTRY };
+            } = {
+              clientEntry: createPagesDevAssetUrl(
+                DEV_PAGES_CLIENT_ENTRY,
+                this.environment.config.base,
+              ),
+              devErrorOverlay: createPagesDevModuleUrl(
+                root,
+                _devErrorOverlayPath,
+                this.environment.config.base,
+              ),
+              instrumentationClient: instrumentationClientPath
+                ? createPagesDevModuleUrl(
+                    root,
+                    instrumentationClientPath,
+                    this.environment.config.base,
+                  )
+                : undefined,
+              reactPreamble:
+                options.react === false
+                  ? undefined
+                  : createPagesDevAssetUrl(DEV_REACT_PREAMBLE, this.environment.config.base),
+            };
             const ssrManifest: Record<string, string[]> = {};
+            const devModuleUrls: Record<string, string> = {};
             const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
             const pagesRoutes = await pagesRouter(
               pagesDir,
@@ -3738,14 +3787,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               this.resolve.bind(this),
             );
             for (const moduleFilePath of moduleFilePaths) {
+              const moduleId = toSlash(moduleFilePath);
+              devModuleUrls[moduleId] = createPagesDevModuleUrl(
+                root,
+                moduleFilePath,
+                this.environment.config.base,
+              );
               const stylesheetAssets = await collectDevPagesAppStylesheetAssets(
                 moduleFilePath,
                 getModuleDependencies,
               );
-              if (stylesheetAssets.length > 0) {
-                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
-              }
+              if (stylesheetAssets.length > 0) ssrManifest[moduleId] = stylesheetAssets;
             }
+            metadata.devModuleUrls = devModuleUrls;
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
             return `export default ${JSON.stringify(metadata)};`;
           }

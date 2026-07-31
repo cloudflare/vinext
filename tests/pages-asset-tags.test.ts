@@ -267,7 +267,11 @@ describe("collectAssetTags", () => {
   });
 
   it("injects the registered development client entry without a manifest", () => {
-    setPagesClientAssets({ clientEntry: "/@id/__x00__virtual:vinext-client-entry" });
+    setPagesClientAssets({
+      clientEntry: "/@id/__x00__virtual:vinext-client-entry",
+      instrumentationClient: "/instrumentation-client.ts",
+      reactPreamble: "/@id/__x00__@vitejs/plugin-react/preamble",
+    });
     const result = collectAssetTags({
       manifest: null,
       moduleIds: [],
@@ -282,6 +286,78 @@ describe("collectAssetTags", () => {
     expect(result).toContain(
       '<script type="module" defer nonce="dev-nonce" src="/@id/__x00__virtual:vinext-client-entry" crossorigin></script>',
     );
+  });
+
+  it("primes development page modules before the shared client entry", () => {
+    setPagesClientAssets({
+      clientEntry: "/@id/__x00__virtual:vinext-client-entry",
+      devErrorOverlay: "/packages/vinext/src/client/dev-error-overlay.tsx",
+      devModuleUrls: {
+        "/project/pages/_app.tsx": "/pages/_app.tsx",
+        "/project/pages/index.tsx": "/pages/index.tsx",
+      },
+      instrumentationClient: "/instrumentation-client.ts",
+      reactPreamble: "/@id/__x00__@vitejs/plugin-react/preamble",
+    });
+    const result = collectAssetTags({
+      manifest: null,
+      moduleIds: ["/project/pages/_app.tsx", "/project/pages/index.tsx"],
+      scriptNonce: "dev-nonce",
+      disableOptimizedLoading: false,
+    });
+
+    expect(result).toContain('document.getElementById("__NEXT_DATA__")');
+    expect(result).toContain('import "/instrumentation-client.ts";');
+    expect(result).toContain('import "/@id/__x00__@vitejs/plugin-react/preamble";');
+    expect(result).toContain(
+      'import * as devErrorOverlay from "/packages/vinext/src/client/dev-error-overlay.tsx";',
+    );
+    expect(result).toContain("devErrorOverlay.installDevErrorOverlay();");
+    expect(result).toContain('import * as initialModule0 from "/pages/_app.tsx";');
+    expect(result).toContain('import * as initialModule1 from "/pages/index.tsx";');
+    expect(result).toContain(
+      "window.__VINEXT_INITIAL_PAGES_MODULES__ = [initialModule0,initialModule1]",
+    );
+    expect(result).toContain('src="/@id/__x00__virtual:vinext-client-entry" crossorigin></script>');
+    expect(result.indexOf("devErrorOverlay.installDevErrorOverlay();")).toBeLessThan(
+      result.indexOf('import * as initialModule0 from "/pages/_app.tsx"'),
+    );
+    expect(result.indexOf('import "/instrumentation-client.ts";')).toBeLessThan(
+      result.indexOf(
+        'import * as devErrorOverlay from "/packages/vinext/src/client/dev-error-overlay.tsx"',
+      ),
+    );
+    expect(result.indexOf('import * as initialModule0 from "/pages/_app.tsx"')).toBeLessThan(
+      result.indexOf('src="/@id/__x00__virtual:vinext-client-entry"'),
+    );
+    expect(result).not.toContain('src="/pages/');
+  });
+
+  it("keeps development modules on Vite's base instead of assetPrefix", () => {
+    setPagesClientAssets({
+      clientEntry: "/docs/@id/__x00__virtual:vinext-client-entry",
+      devErrorOverlay: "/docs/packages/vinext/src/client/dev-error-overlay.tsx",
+      devModuleUrls: {
+        "/project/pages/index.tsx": "/docs/pages/index.tsx",
+      },
+      instrumentationClient: "/docs/instrumentation-client.ts",
+      reactPreamble: "/docs/@id/__x00__@vitejs/plugin-react/preamble",
+    });
+    const result = collectAssetTags({
+      manifest: null,
+      moduleIds: ["/project/pages/index.tsx"],
+      disableOptimizedLoading: false,
+      basePath: "/docs",
+      assetPrefix: "https://cdn.example.com/assets",
+    });
+
+    expect(result).toContain('import "/docs/instrumentation-client.ts";');
+    expect(result).toContain('import "/docs/@id/__x00__@vitejs/plugin-react/preamble";');
+    expect(result).toContain('import * as initialModule0 from "/docs/pages/index.tsx";');
+    expect(result).toContain(
+      'src="/docs/@id/__x00__virtual:vinext-client-entry" crossorigin></script>',
+    );
+    expect(result).not.toContain("cdn.example.com");
   });
 
   it("includes shared framework- chunks", () => {

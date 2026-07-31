@@ -237,7 +237,10 @@ describe("optimizeDeps.exclude for vinext", () => {
         root: tmpDir,
         build: {},
         plugins: [],
-        optimizeDeps: { exclude: ["@lingui/macro"] },
+        optimizeDeps: {
+          exclude: ["@lingui/macro"],
+          include: ["some-pages-client-dep"],
+        },
       };
       const result = await (mainPlugin as any).config(mockConfig, {
         command: "build",
@@ -245,6 +248,26 @@ describe("optimizeDeps.exclude for vinext", () => {
 
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
+      expect(result.optimizeDeps?.include).toEqual(
+        expect.arrayContaining([
+          "some-pages-client-dep",
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+          "react/jsx-dev-runtime",
+        ]),
+      );
+      expect(result.environments.client.optimizeDeps?.include).toEqual(
+        expect.arrayContaining([
+          "some-pages-client-dep",
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+          "react/jsx-dev-runtime",
+        ]),
+      );
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
@@ -679,13 +702,25 @@ describe("optimizeDeps.exclude for vinext", () => {
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
-      await (mainPlugin as any).config(
+      const result = await (mainPlugin as any).config(
         {
           root: tmpDir,
           build: {},
           plugins: [{ name: "vite-plugin-cloudflare" }],
+          optimizeDeps: { include: ["already-client-included"] },
         },
         { command: "serve" },
+      );
+
+      expect(result.environments.client.optimizeDeps?.include).toEqual(
+        expect.arrayContaining([
+          "already-client-included",
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+          "react/jsx-dev-runtime",
+        ]),
       );
 
       const workerEnvConfig = {

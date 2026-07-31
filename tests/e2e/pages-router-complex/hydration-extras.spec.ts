@@ -44,10 +44,21 @@ test.describe("hydration boundaries", () => {
     expect(await stamp()).toBe(first);
   });
 
-  test.fixme("flyouts open and close client-side", async ({ page }) => {
+  test("flyouts open and close client-side", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.addEventListener(
+        "load",
+        () => {
+          const trigger = [...document.querySelectorAll("a")].find(
+            (link) => link.textContent === "Primary flyout",
+          );
+          trigger?.addEventListener("click", (event) => event.preventDefault(), { once: true });
+          trigger?.click();
+        },
+        { once: true },
+      );
+    });
     await page.goto("/diagnostics");
-    await expect(page.locator('[data-testid="primary-flyout"]')).toHaveCount(0);
-    await page.getByText("Primary flyout", { exact: true }).click();
     await expect(page.locator('[data-testid="primary-flyout"]')).toBeVisible();
     await page.locator('[data-testid="primary-flyout"] button').click();
     await expect(page.locator('[data-testid="primary-flyout"]')).toHaveCount(0);
