@@ -158,22 +158,62 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   test("makes Link prefetches and soft navigations match the warmed RSC cache shape", async ({
     page,
   }) => {
+    const aboutRscRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      const headers = request.headers();
+      const isAboutPath = url.pathname === "/about" || url.pathname === "/about.rsc";
+      const isRsc =
+        url.pathname.endsWith(".rsc") ||
+        url.searchParams.has("_rsc") ||
+        headers.rsc === "1" ||
+        headers.accept?.includes("text/x-component");
+      if (isAboutPath && isRsc) {
+        aboutRscRequests.push(request.url());
+      }
+    });
     const prefetchResponsePromise = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/about" && url.searchParams.has("_rsc");
     });
     await page.goto(BASE_URL);
     const prefetchResponse = await prefetchResponsePromise;
+    await prefetchResponse.finished();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
 
-    const alternatePage = await page.context().newPage();
-    const alternatePrefetchResponsePromise = alternatePage.waitForResponse((response) => {
+    await page.click("#cdn-layout-counter");
+    await expect(page.locator("#cdn-layout-counter")).toHaveText("Layout state: 1");
+    await page.click("#cdn-prefetch-link");
+    await expect(page.locator("h1")).toHaveText("About");
+    await expect(page.locator("#cdn-layout-counter")).toHaveText("Layout state: 1");
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    expect(aboutRscRequests).toHaveLength(1);
+
+    const alternatePrefetchResponsePromise = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/about" && url.searchParams.has("_rsc");
     });
-    await alternatePage.goto(`${BASE_URL}/cache-source`);
+    await page.goto(`${BASE_URL}/cache-source`);
     const alternatePrefetchResponse = await alternatePrefetchResponsePromise;
-    await alternatePage.close();
 
+    const navigationReadyPromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/about" && url.searchParams.has("_rsc");
+    });
+    await page.goto(BASE_URL);
+    await navigationReadyPromise;
+    await page.click("#cdn-layout-counter");
+    await expect(page.locator("#cdn-layout-counter")).toHaveText("Layout state: 1");
     const navigationResponsePromise = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/blog/hello-world" && url.searchParams.has("_rsc");
@@ -181,6 +221,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     await page.click("#cdn-navigation-link");
     const navigationResponse = await navigationResponsePromise;
     await expect(page.locator("h1")).toHaveText("Blog post");
+    await expect(page.locator("#cdn-layout-counter")).toHaveText("Layout state: 1");
 
     const variantHeaders = [
       "rsc",
