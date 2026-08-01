@@ -496,6 +496,303 @@ describe("prerenderApp — RSC extraction", () => {
 
 // ─── Pages Router ─────────────────────────────────────────────────────────────
 
+describe("prerenderPages — getInitialProps build classification", () => {
+  it("does not persist no-store output from a statically opaque page export", async () => {
+    const root = tmpDir("vinext-prerender-opaque-gip-");
+    const pagesDir = path.join(root, "pages");
+    const componentsDir = path.join(root, "components");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.mkdirSync(componentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(componentsDir, "Account.tsx"),
+      "function Account() { return <div>account</div> }\n" +
+        "Account.getInitialProps = async () => ({})\n" +
+        "export default Account\n",
+    );
+    // Next.js checks the loaded component. The route source itself contains no
+    // getInitialProps syntax for a static analyzer to discover.
+    fs.writeFileSync(
+      path.join(pagesDir, "index.tsx"),
+      'export { default } from "../components/Account"\n',
+    );
+
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "text/html");
+      res.setHeader("cache-control", "private, no-cache, no-store, max-age=0");
+      res.end("<html><body>request-derived</body></html>");
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await pagesRouter(pagesDir);
+      const apiRoutes = await apiRouter(pagesDir);
+      const defaultOutDir = path.join(root, "default-out");
+      const defaultResult = await prerenderPages({
+        mode: "default",
+        routes,
+        apiRoutes,
+        pagesDir,
+        outDir: defaultOutDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(defaultResult.routes, "/")).toMatchObject({
+        status: "skipped",
+        reason: "dynamic",
+      });
+      expect(fs.existsSync(path.join(defaultOutDir, "index.html"))).toBe(false);
+
+      // Explicit static export still runs and writes getInitialProps output.
+      const exportOutDir = path.join(root, "export-out");
+      const exportResult = await prerenderPages({
+        mode: "export",
+        routes,
+        apiRoutes,
+        pagesDir,
+        outDir: exportOutDir,
+        config: await resolveNextConfig({ output: "export" }),
+        _prodServer: { server, port },
+      });
+      expect(findRoute(exportResult.routes, "/")).toMatchObject({ status: "rendered" });
+      expect(fs.existsSync(path.join(exportOutDir, "index.html"))).toBe(true);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not export a static 404 through custom _error.getInitialProps", async () => {
+    // Ported from Next.js: test/integration/static-404/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/integration/static-404/test/index.test.ts
+    const root = tmpDir("vinext-prerender-error-gip-404-");
+    const pagesDir = path.join(root, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pagesDir, "_error.tsx"),
+      "function ErrorPage() { return <div>error</div> }\n" +
+        "ErrorPage.getInitialProps = async () => ({ statusCode: 404 })\n" +
+        "export default ErrorPage\n",
+    );
+
+    const server = createServer((_req, res) => {
+      res.statusCode = 404;
+      res.setHeader("content-type", "text/html");
+      res.setHeader("cache-control", "private, no-cache, no-store, max-age=0");
+      res.end("<html><body>dynamic error</body></html>");
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderPages({
+        mode: "default",
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir: path.join(root, "out"),
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(result.routes, "/404")).toMatchObject({
+        status: "skipped",
+        reason: "dynamic",
+      });
+      expect(fs.existsSync(path.join(root, "out", "404.html"))).toBe(false);
+
+      const exportResult = await prerenderPages({
+        mode: "export",
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir: path.join(root, "export-out"),
+        config: await resolveNextConfig({ output: "export" }),
+        _prodServer: { server, port },
+      });
+      expect(findRoute(exportResult.routes, "/404")).toMatchObject({
+        status: "skipped",
+        reason: "dynamic",
+      });
+      expect(fs.existsSync(path.join(root, "export-out", "404.html"))).toBe(false);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("lets custom _app.getInitialProps opt only automatic pages out of prerendering", async () => {
+    // Ported from Next.js: test/integration/static-404/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/integration/static-404/test/index.test.ts
+    const root = tmpDir("vinext-prerender-app-gip-");
+    const pagesDir = path.join(root, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pagesDir, "_app.tsx"),
+      "const App = class extends React.Component {\n" +
+        "  static async getInitialProps({ ctx }) { return { pageProps: { url: ctx.req.url } } }\n" +
+        "  render() { const { Component, pageProps } = this.props; return <Component {...pageProps} /> }\n" +
+        "}\n" +
+        "export { App as default }\n",
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "index.tsx"),
+      "export default function Index() { return <div>index</div> }\n",
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "with-static-props.tsx"),
+      "export default function Page() { return <div>gsp</div> }\n" +
+        "export async function getStaticProps() { return { props: {} } }\n",
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      "export default function NotFound() { return <div>not found</div> }\n",
+    );
+
+    const requestedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      requestedPaths.push(pathname);
+      res.setHeader("content-type", "text/html");
+      res.statusCode = pathname === "/404" ? 404 : 200;
+      res.end(`<html><body>${pathname}</body></html>`);
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await pagesRouter(pagesDir);
+      const apiRoutes = await apiRouter(pagesDir);
+      const config = await resolveNextConfig({});
+
+      const defaultOutDir = path.join(root, "default-out");
+      const defaultResult = await prerenderPages({
+        mode: "default",
+        routes,
+        apiRoutes,
+        pagesDir,
+        outDir: defaultOutDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(defaultResult.routes, "/")).toMatchObject({
+        status: "skipped",
+        reason: "ssr",
+      });
+      expect(findRoute(defaultResult.routes, "/with-static-props")).toMatchObject({
+        status: "rendered",
+      });
+      expect(findRoute(defaultResult.routes, "/404")).toMatchObject({
+        status: "skipped",
+        reason: "ssr",
+      });
+      expect(requestedPaths).toEqual(["/with-static-props"]);
+      expect(fs.existsSync(path.join(defaultOutDir, "index.html"))).toBe(false);
+      expect(fs.existsSync(path.join(defaultOutDir, "404.html"))).toBe(false);
+
+      // Next.js still runs getInitialProps during `output: "export"`; it only
+      // warns. Export mode therefore renders these same routes explicitly.
+      requestedPaths.length = 0;
+      const exportOutDir = path.join(root, "export-out");
+      const exportResult = await prerenderPages({
+        mode: "export",
+        routes,
+        apiRoutes,
+        pagesDir,
+        outDir: exportOutDir,
+        config: await resolveNextConfig({ output: "export" }),
+        _prodServer: { server, port },
+      });
+      expect(findRoute(exportResult.routes, "/")).toMatchObject({ status: "rendered" });
+      expect(findRoute(exportResult.routes, "/with-static-props")).toMatchObject({
+        status: "rendered",
+      });
+      expect(findRoute(exportResult.routes, "/404")).toMatchObject({ status: "rendered" });
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects getInitialProps and getServerSideProps on static status pages", async () => {
+    // Ported from Next.js: test/integration/404-page/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/integration/404-page/test/index.test.ts
+    // Ported from Next.js: test/integration/500-page/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/integration/500-page/test/index.test.ts
+    const root = tmpDir("vinext-prerender-status-page-data-");
+    const pagesDir = path.join(root, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      "function NotFound() { return <div>not found</div> }\n" +
+        "NotFound.getInitialProps = async () => ({})\n" +
+        "export default NotFound\n",
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "500.tsx"),
+      "export default function Error500() { return <div>error</div> }\n" +
+        "export async function getServerSideProps() { return { props: {} } }\n",
+    );
+
+    let requestCount = 0;
+    const server = createServer((_req, res) => {
+      requestCount++;
+      res.setHeader("content-type", "text/html");
+      res.end("<html><body>unexpected render</body></html>");
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await pagesRouter(pagesDir);
+      const result = await prerenderPages({
+        mode: "default",
+        routes,
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir: path.join(root, "out"),
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+
+      const page404 = findRoute(result.routes, "/404");
+      expect(page404).toMatchObject({
+        status: "error",
+        fatal: true,
+      });
+      const page500 = findRoute(result.routes, "/500");
+      expect(page500).toMatchObject({
+        status: "error",
+        fatal: true,
+      });
+      if (page404?.status !== "error" || page500?.status !== "error") {
+        throw new Error("expected both static status pages to fail prerender");
+      }
+      expect(page404.error).toContain(
+        "`pages/404` can not have getInitialProps/getServerSideProps",
+      );
+      expect(page500.error).toContain(
+        "`pages/500` can not have getInitialProps/getServerSideProps",
+      );
+      expect(requestCount).toBe(0);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("prerenderPages — default mode (pages-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];

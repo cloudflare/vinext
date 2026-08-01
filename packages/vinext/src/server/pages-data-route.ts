@@ -143,13 +143,14 @@ export function buildNextDataPropsJsonResponse(
   init?: ResponseInit,
 ): Response {
   const body = safeJsonStringify(props);
+  // Build through `Headers` so callers can pass a `Headers` carrying repeated
+  // `Set-Cookie` entries; a plain object spread would collapse them.
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   return new Response(body, {
     status: init?.status ?? 200,
     statusText: init?.statusText,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers as Record<string, string> | undefined),
-    },
+    headers,
   });
 }
 

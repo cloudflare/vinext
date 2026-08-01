@@ -81,6 +81,8 @@ import {
 } from "./pages-document-initial-props.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import {
+  assertPagesStaticStatusPageDataHooks,
+  hasPagesAppGetInitialPropsOverride,
   hasPagesGetInitialProps,
   loadDevAppInitialProps,
   loadPagesGetInitialProps,
@@ -143,6 +145,11 @@ function applyDevPagesPreviewResponse(res: ServerResponse, preview: PagesPreview
 }
 
 const DEV_PAGES_CACHE_CONTROL = "no-cache, must-revalidate";
+
+/** Node header bags are case-preserving, so match Cache-Control case-insensitively. */
+function hasCacheControlHeader(headers: Record<string, unknown>): boolean {
+  return Object.keys(headers).some((key) => key.toLowerCase() === "cache-control");
+}
 const PAGES_CACHE_ONE_YEAR_SECONDS = 31_536_000;
 
 function applyDevPagesCacheHeaders(
@@ -989,6 +996,11 @@ export function createSSRHandler(
           res.end("Page has no default export");
           return;
         }
+        assertPagesStaticStatusPageDataHooks(
+          patternToNextFormat(route.pattern),
+          PageComponent,
+          pageModule.getServerSideProps,
+        );
 
         // Refs #1463: reject non-GET/HEAD methods on static (no
         // getServerSideProps) Pages routes with 405 + Allow: GET, HEAD.
@@ -1123,6 +1135,15 @@ export function createSSRHandler(
         const gsspExtraHeaders: Record<string, string | string[]> = {};
 
         const hasAppGetInitialProps = hasPagesGetInitialProps(AppComponent);
+
+        // Mirrors the production resolver: a real getInitialProps makes the
+        // render per-request, so the response must not be cached. Inheriting
+        // App's getInitialProps is not an override and stays optimizable — but
+        // the inherited copy still delegates to the page's own method, so a page
+        // declaring one is per-request regardless of what the App does.
+        let ranPagesGetInitialProps =
+          hasPagesAppGetInitialPropsOverride(AppComponent) ||
+          hasPagesGetInitialProps(PageComponent);
 
         // Thin glue over loadDevAppInitialProps: build the React AppTree closure,
         // delegate the decision to the tested helper, and apply the result.
@@ -1293,10 +1314,7 @@ export function createSSRHandler(
           // Skip when gSSP already set one via res.setHeader (case-insensitive)
           // or when ISR is layered on top below — that branch overwrites this
           // default with the ISR cache-control. Fixes #1461.
-          const hasUserCacheControl = Object.keys(gsspExtraHeaders).some(
-            (k) => k.toLowerCase() === "cache-control",
-          );
-          if (!hasUserCacheControl) {
+          if (!hasCacheControlHeader(gsspExtraHeaders)) {
             gsspExtraHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
           }
         }
@@ -1459,6 +1477,7 @@ export function createSSRHandler(
           if (initialProps) {
             pageProps = { ...pageProps, ...initialProps };
             renderProps = { ...renderProps, pageProps };
+            ranPagesGetInitialProps = true;
           }
         }
 
@@ -1475,6 +1494,15 @@ export function createSSRHandler(
           if (typeof pageModule.getStaticProps === "function") {
             dataHeaders["Cache-Control"] = DEV_PAGES_CACHE_CONTROL;
             dataHeaders[NEXTJS_CACHE_HEADER] = isOnDemandRevalidate ? "REVALIDATED" : "HIT";
+          } else if (
+            ranPagesGetInitialProps &&
+            !hasCacheControlHeader(dataHeaders) &&
+            // getInitialProps writes through `res.setHeader`, and these headers
+            // later win via writeHead — so an explicit user policy lives here,
+            // not in the local bag.
+            !res.hasHeader("Cache-Control")
+          ) {
+            dataHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
           }
           if ((statusCode ?? 200) === 200) {
             const matchedPathname = `${locale ? `/${locale}` : ""}${patternToNextFormat(route.pattern)}`;
@@ -1685,6 +1713,15 @@ export function createSSRHandler(
             : isOnDemandRevalidate
               ? "REVALIDATED"
               : "HIT";
+        } else if (
+          ranPagesGetInitialProps &&
+          !hasCacheControlHeader(extraHeaders) &&
+          // `extraHeaders` is passed to writeHead, which overrides earlier
+          // setHeader calls — so a policy set inside getInitialProps would be
+          // silently replaced unless we look at the live response too.
+          !res.hasHeader("Cache-Control")
+        ) {
+          extraHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
         }
         applyDevPagesPreviewHeaders(extraHeaders, requestPreview);
 
@@ -1880,6 +1917,13 @@ async function renderErrorPage(
       candidateLoaded = true;
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
+      if (candidate !== "_error") {
+        assertPagesStaticStatusPageDataHooks(
+          `/${candidate}`,
+          ErrorComponent,
+          errorModule.getServerSideProps,
+        );
+      }
 
       // Try to load _app.tsx to wrap the error page
       // oxlint-disable-next-line typescript/no-explicit-any

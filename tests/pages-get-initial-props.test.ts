@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  assertPagesStaticStatusPageDataHooks,
   type DevAppInitialPropsContext,
   loadDevAppInitialProps,
 } from "../packages/vinext/src/server/pages-get-initial-props.js";
@@ -164,5 +165,41 @@ describe("loadDevAppInitialProps", () => {
       kind: "render",
       pageProps: { routeTag: "_posts_[slug]" },
     });
+  });
+});
+
+describe("assertPagesStaticStatusPageDataHooks", () => {
+  // Ported from Next.js: test/integration/404-page/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/404-page/test/index.test.ts
+  // Ported from Next.js: test/integration/500-page/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/500-page/test/index.test.ts
+  it.each(["/404", "/500"])("rejects page getInitialProps on %s", (pathname) => {
+    const page = Object.assign(function Page() {}, { getInitialProps() {} });
+    expect(() => assertPagesStaticStatusPageDataHooks(pathname, page, undefined)).toThrow(
+      `\`pages${pathname}\` can not have getInitialProps/getServerSideProps`,
+    );
+  });
+
+  it.each(["/404", "/500"])("rejects getServerSideProps on %s", (pathname) => {
+    expect(() =>
+      assertPagesStaticStatusPageDataHooks(
+        pathname,
+        function Page() {},
+        () => {},
+      ),
+    ).toThrow(`\`pages${pathname}\` can not have getInitialProps/getServerSideProps`);
+  });
+
+  it("allows static data hooks and ordinary pages", () => {
+    expect(() =>
+      assertPagesStaticStatusPageDataHooks("/404", function Page() {}, undefined),
+    ).not.toThrow();
+    expect(() =>
+      assertPagesStaticStatusPageDataHooks(
+        "/account",
+        Object.assign(function Page() {}, { getInitialProps() {} }),
+        undefined,
+      ),
+    ).not.toThrow();
   });
 });

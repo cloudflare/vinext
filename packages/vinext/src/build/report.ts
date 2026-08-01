@@ -177,6 +177,193 @@ function hasNamedExportInProgram(program: Program, name: string): boolean {
   return false;
 }
 
+/**
+ * A `getInitialProps` that resolves to a non-function is not a data hook — the
+ * runtime helper only recognises a callable. Bare `static getInitialProps;`,
+ * `getInitialProps = undefined`/`null` (a disabled feature flag), and other
+ * statically evident non-function values must stay static.
+ */
+function isCallableGetInitialProps(value: Expression | null | undefined): boolean {
+  if (!value) return false;
+  const expression = unwrapStaticExpression(value);
+  if (expression.type === "Identifier") return expression.name !== "undefined";
+  return (
+    expression.type !== "Literal" &&
+    expression.type !== "TemplateLiteral" &&
+    expression.type !== "ArrayExpression" &&
+    expression.type !== "ObjectExpression"
+  );
+}
+
+function classHasStaticGetInitialProps(declaration: ESTree.Class): boolean {
+  return declaration.body.body.some((element) => {
+    // A method is always callable; a class field only when it initialises to
+    // something callable.
+    if (element.type === "MethodDefinition") {
+      return element.static && propertyKeyName(element.key) === "getInitialProps";
+    }
+    return (
+      element.type === "PropertyDefinition" &&
+      element.static &&
+      propertyKeyName(element.key) === "getInitialProps" &&
+      isCallableGetInitialProps(element.value)
+    );
+  });
+}
+
+/**
+ * Collects the local bindings a default export can resolve to. HOC wrappers
+ * (`export default withRouter(Page)`) are the supported legacy shape and this
+ * repo's `withRouter` forwards `getInitialProps` to the returned component, so
+ * the wrapped identifier has to count as the page too.
+ */
+function collectDefaultExportNames(
+  declaration: ESTree.ExportDefaultDeclaration["declaration"],
+  names: Set<string>,
+): void {
+  if (declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") {
+    if (declaration.id) names.add(declaration.id.name);
+    return;
+  }
+
+  if (declaration.type === "Identifier") {
+    names.add(declaration.name);
+    return;
+  }
+
+  // `withRouter(Page)`, `connect(…)(Page)`, `memo(withA(Page))` — the page is an
+  // argument. The callee is the wrapper, never the page.
+  if (declaration.type === "CallExpression") {
+    for (const argument of declaration.arguments) {
+      if (argument.type !== "SpreadElement") collectDefaultExportNames(argument, names);
+    }
+    return;
+  }
+
+  // The wrappers unwrapStaticExpression strips, e.g. `Page as NextPage`.
+  if (
+    declaration.type === "ParenthesizedExpression" ||
+    declaration.type === "TSAsExpression" ||
+    declaration.type === "TSSatisfiesExpression" ||
+    declaration.type === "TSTypeAssertion" ||
+    declaration.type === "TSNonNullExpression"
+  ) {
+    collectDefaultExportNames(declaration.expression, names);
+  }
+}
+
+/**
+ * Detects a Pages Router `getInitialProps` declaration: either the function
+ * form (`Page.getInitialProps = …`) or a static member on a class. Only
+ * top-level statements are inspected, matching the rest of this module's AST
+ * analysis.
+ *
+ * Both forms are scoped to the module's default export. A non-exported helper
+ * that happens to declare `getInitialProps` must not force an otherwise-static
+ * route to SSR.
+ */
+function hasPagesGetInitialPropsInProgram(program: Program): boolean {
+  const defaultExportNames = new Set<string>();
+  for (const node of program.body) {
+    if (node.type === "ExportDefaultDeclaration") {
+      collectDefaultExportNames(node.declaration, defaultExportNames);
+      continue;
+    }
+
+    // `export { Page as default }` is equivalent to `export default Page`.
+    // Missing this form classifies a request-dependent page as static even
+    // though the runtime receives the same default-exported component.
+    if (node.type === "ExportNamedDeclaration") {
+      for (const specifier of node.specifiers) {
+        if (moduleExportNameValue(specifier.exported) !== "default") continue;
+        const localName = moduleExportNameValue(specifier.local);
+        if (localName) defaultExportNames.add(localName);
+      }
+    }
+  }
+
+  // `const Wrapped = withRouter(Page); export default Wrapped` — follow
+  // top-level variable initializers so the wrapped page counts too. Loops to a
+  // fixed point for chains (`const A = withRouter(Page); const B = memo(A)`).
+  let resolved = true;
+  while (resolved) {
+    resolved = false;
+    for (const node of program.body) {
+      const statement = node.type === "ExportNamedDeclaration" ? node.declaration : node;
+      if (statement?.type !== "VariableDeclaration") continue;
+      for (const declarator of statement.declarations) {
+        if (
+          declarator.id.type !== "Identifier" ||
+          !defaultExportNames.has(declarator.id.name) ||
+          !declarator.init
+        ) {
+          continue;
+        }
+        const before = defaultExportNames.size;
+        collectDefaultExportNames(declarator.init, defaultExportNames);
+        if (defaultExportNames.size > before) resolved = true;
+      }
+    }
+  }
+
+  return program.body.some((node) => {
+    if (node.type === "ExpressionStatement") {
+      const { expression } = node;
+      return (
+        expression.type === "AssignmentExpression" &&
+        expression.left.type === "MemberExpression" &&
+        expression.left.object.type === "Identifier" &&
+        defaultExportNames.has(expression.left.object.name) &&
+        propertyKeyName(expression.left.property) === "getInitialProps" &&
+        isCallableGetInitialProps(expression.right)
+      );
+    }
+
+    if (node.type === "ExportDefaultDeclaration") {
+      if (node.declaration.type === "ClassDeclaration") {
+        return classHasStaticGetInitialProps(node.declaration);
+      }
+      if (node.declaration.type === "ClassExpression") {
+        return classHasStaticGetInitialProps(node.declaration);
+      }
+      if (
+        node.declaration.type === "ParenthesizedExpression" ||
+        node.declaration.type === "TSAsExpression" ||
+        node.declaration.type === "TSSatisfiesExpression" ||
+        node.declaration.type === "TSTypeAssertion" ||
+        node.declaration.type === "TSNonNullExpression"
+      ) {
+        const declaration = unwrapStaticExpression(node.declaration);
+        return declaration.type === "ClassExpression" && classHasStaticGetInitialProps(declaration);
+      }
+      return false;
+    }
+
+    const declaration = node.type === "ExportNamedDeclaration" ? node.declaration : node;
+    if (declaration?.type === "VariableDeclaration") {
+      return declaration.declarations.some((declarator) => {
+        if (
+          declarator.id.type !== "Identifier" ||
+          !defaultExportNames.has(declarator.id.name) ||
+          !declarator.init
+        ) {
+          return false;
+        }
+        const initializer = unwrapStaticExpression(declarator.init);
+        return initializer.type === "ClassExpression" && classHasStaticGetInitialProps(initializer);
+      });
+    }
+
+    return (
+      node.type === "ClassDeclaration" &&
+      node.id !== null &&
+      node.id !== undefined &&
+      defaultExportNames.has(node.id.name) &&
+      classHasStaticGetInitialProps(node)
+    );
+  });
+}
+
 function unwrapStaticExpression(expression: Expression): Expression {
   let current = expression;
   while (
@@ -661,6 +848,8 @@ export function classifyLayoutSegmentConfig(code: string): LayoutBuildClassifica
 export function classifyPagesRoute(filePath: string): {
   type: RouteType;
   revalidate?: number;
+  /** Which data-fetching API forced `ssr`, so callers can name it in errors. */
+  ssrSource?: "getServerSideProps" | "getInitialProps";
 } {
   // API routes are identified by their path
   const normalized = toSlash(filePath);
@@ -678,7 +867,14 @@ export function classifyPagesRoute(filePath: string): {
   const program = parseRouteModule(code);
 
   if (program && hasNamedExportInProgram(program, "getServerSideProps")) {
-    return { type: "ssr" };
+    return { type: "ssr", ssrSource: "getServerSideProps" };
+  }
+
+  // Next.js excludes pages with getInitialProps from automatic static
+  // optimization. Treat them as SSR so request-derived props can never be
+  // prerendered into publicly cached static files.
+  if (program && hasPagesGetInitialPropsInProgram(program)) {
+    return { type: "ssr", ssrSource: "getInitialProps" };
   }
 
   if (program && hasNamedExportInProgram(program, "getStaticProps")) {

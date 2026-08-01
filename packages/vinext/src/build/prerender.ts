@@ -25,7 +25,12 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
-import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
+import {
+  classifyPagesRoute,
+  classifyAppRoute,
+  getAppRouteRenderEntryPath,
+  hasExportedName,
+} from "./report.js";
 import {
   concatUint8Arrays,
   decodeRscEmbeddedChunk,
@@ -35,7 +40,11 @@ import {
 import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims/cache-handler";
 import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
-import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
+import {
+  createValidFileMatcher,
+  findFileWithExtensions,
+  findFileWithExts,
+} from "../routing/file-matcher.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
@@ -608,6 +617,14 @@ export async function prerenderPages({
   const fileMatcher = createValidFileMatcher(config.pageExtensions);
   const results: PrerenderRouteResult[] = [];
 
+  // Ported from Next.js:
+  // packages/next/src/build/index.ts (`customAppGetInitialPropsPromise`).
+  // A custom `_app.getInitialProps` disables Automatic Static Optimization,
+  // but does not opt pages using getStaticProps out of prerendering.
+  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+  const hasCustomAppGetInitialProps =
+    appFilePath !== null && classifyPagesRoute(appFilePath).ssrSource === "getInitialProps";
+
   if (!pagesBundlePath && !options._prodServer) {
     throw new Error(
       "[vinext] prerenderPages: either pagesBundlePath or _prodServer must be provided.",
@@ -758,22 +775,59 @@ export async function prerenderPages({
     };
     const pagesToRender: PageToRender[] = [];
 
+    const invalidStatusPages = new Set<string>();
     for (const route of bundlePageRoutes) {
       // Skip Next.js special pages (_app, _document, _error)
       if (BLOCKED_PAGES.includes(route.pattern)) continue;
+
+      const {
+        type,
+        revalidate: classifiedRevalidate,
+        ssrSource,
+      } = classifyPagesRoute(route.filePath);
+
+      // Ported from Next.js:
+      // test/integration/404-page/test/index.test.ts
+      // test/integration/500-page/test/index.test.ts
+      // Static status pages cannot use per-request data hooks. Next.js rejects
+      // both getInitialProps and getServerSideProps during every production
+      // build instead of quietly turning these pages into SSR routes.
+      if ((route.pattern === "/404" || route.pattern === "/500") && type === "ssr") {
+        invalidStatusPages.add(route.pattern);
+        results.push({
+          route: route.pattern,
+          status: "error",
+          error: `\`pages${route.pattern}\` can not have getInitialProps/getServerSideProps, https://nextjs.org/docs/messages/404-get-initial-props`,
+          fatal: true,
+        });
+        continue;
+      }
+
       // `/404` is rendered by the dedicated 404 block below. Production serves
       // it with a 404 status, so the generic static-page loop must not treat
       // that non-2xx response as a prerender failure.
       if (route.pattern === "/404") continue;
 
-      const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
-
       // Route type detection uses static file analysis (classifyPagesRoute).
       // Rendering is always done via HTTP through a local prod server, so we
       // don't have direct access to module exports at prerender time.
-      const effectiveType = type;
+      const hasStaticProps = hasExportedName(
+        fs.readFileSync(route.filePath, "utf-8"),
+        "getStaticProps",
+      );
+      const effectiveType =
+        mode !== "export" && hasCustomAppGetInitialProps && type === "static" && !hasStaticProps
+          ? "ssr"
+          : type;
 
-      if (effectiveType === "ssr") {
+      // Next.js runs `getInitialProps` at export time and only discourages it
+      // (errors/get-initial-props-export); `getServerSideProps` is the API that
+      // hard-errors (errors/gssp-export). Outside export mode a getInitialProps
+      // page still opts out of Automatic Static Optimization, so it must not be
+      // prerendered into shared output.
+      const exportsWithGetInitialProps = mode === "export" && ssrSource === "getInitialProps";
+
+      if (effectiveType === "ssr" && !exportsWithGetInitialProps) {
         if (mode === "export") {
           results.push({
             route: route.pattern,
@@ -888,6 +942,25 @@ export async function prerenderPages({
         let result: PrerenderRouteResult;
         try {
           const response = await renderPage(urlPath);
+          const cacheControl = response.headers.get("cache-control")?.toLowerCase() ?? "";
+          // Static source analysis is only an early skip optimization. The
+          // rendered response is authoritative: imported/re-exported
+          // getInitialProps components and other statically opaque dynamic
+          // shapes reach the runtime, which marks them no-store. Never persist
+          // that request-derived output into the shared prerender cache.
+          // `output: "export"` is deliberately exempt because Next.js runs
+          // getInitialProps once and writes its result for explicit export.
+          if (mode !== "export" && cacheControl.includes("no-store")) {
+            await response.body?.cancel();
+            result = { route: route.pattern, status: "skipped", reason: "dynamic" };
+            onProgress?.({
+              completed: ++completed,
+              total: pagesToRender.length,
+              route: urlPath,
+              status: result.status,
+            });
+            return result;
+          }
           const outputFiles: string[] = [];
           const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
           const htmlFullPath = path.join(outDir, htmlOutputPath);
@@ -952,13 +1025,26 @@ export async function prerenderPages({
     renderPool?.assertHealthy();
 
     // ── Render 404 page ───────────────────────────────────────────────────
-    const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
+    const custom404FilePath = findFileWithExts(pagesDir, "404", fileMatcher);
+    const hasCustom404 = custom404FilePath !== null;
     const hasErrorPage = findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
-    if (hasCustom404 || hasErrorPage) {
+    const custom404HasStaticProps =
+      custom404FilePath !== null &&
+      hasExportedName(fs.readFileSync(custom404FilePath, "utf-8"), "getStaticProps");
+    const shouldPrerender404 =
+      !invalidStatusPages.has("/404") &&
+      (mode === "export" || !hasCustomAppGetInitialProps || custom404HasStaticProps);
+    if (shouldPrerender404 && (hasCustom404 || hasErrorPage)) {
       try {
         const notFoundRes = await renderPage(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH);
+        const cacheControl = notFoundRes.headers.get("cache-control")?.toLowerCase() ?? "";
         const contentType = notFoundRes.headers.get("content-type") ?? "";
-        if (notFoundRes.status === 404 && contentType.includes("text/html")) {
+        // Unlike ordinary page getInitialProps, a non-static `_error` does not
+        // produce an automatic 404 artifact even for an explicit export.
+        if (cacheControl.includes("no-store")) {
+          await notFoundRes.body?.cancel();
+          results.push({ route: "/404", status: "skipped", reason: "dynamic" });
+        } else if (notFoundRes.status === 404 && contentType.includes("text/html")) {
           const html404 = await notFoundRes.text();
           const fullPath = path.join(outDir, "404.html");
           fs.writeFileSync(fullPath, html404, "utf-8");
@@ -976,6 +1062,12 @@ export async function prerenderPages({
         // worker cannot silently skip an existing custom 404.
         renderPool?.recordRenderError(e);
       }
+    } else if (
+      !invalidStatusPages.has("/404") &&
+      hasCustomAppGetInitialProps &&
+      (hasCustom404 || hasErrorPage)
+    ) {
+      results.push({ route: "/404", status: "skipped", reason: "ssr" });
     }
     renderPool?.assertHealthy();
 

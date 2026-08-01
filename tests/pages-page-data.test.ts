@@ -126,6 +126,66 @@ describe("pages page data", () => {
     });
   });
 
+  // `_app.getInitialProps` mutates the same `ctx.res` a getServerSideProps page
+  // would. Dropping it loses the status/headers it set and the caller can no
+  // longer tell the response is per-request.
+  it("returns the mutable response after _app.getInitialProps runs", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps({ ctx }: { ctx: { res: { statusCode: number } } }) {
+            ctx.res.statusCode = 503;
+            return { pageProps: {} };
+          },
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "render", gsspRes: { statusCode: 503 } });
+  });
+
+  // `class MyApp extends App {}` inherits getInitialProps rather than overriding
+  // it. Next.js still auto-static-optimizes those pages, so exposing gsspRes
+  // here would wrongly force the response to no-store.
+  it("does not expose a response for an _app that inherits getInitialProps", async () => {
+    const inherited = () => ({ pageProps: {} });
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps: inherited,
+          origGetInitialProps: inherited,
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "render", gsspRes: null });
+  });
+
+  // The inherited App.getInitialProps still delegates to the page's own
+  // getInitialProps, so the render is per-request even though the app itself
+  // overrides nothing. This is the most common Pages setup.
+  it("exposes the response when an inherited _app delegates to a page getInitialProps", async () => {
+    const inherited = () => ({ pageProps: {} });
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps: inherited,
+          origGetInitialProps: inherited,
+        }),
+        pageModule: {
+          default: Object.assign(
+            function Page() {
+              return null;
+            },
+            { getInitialProps: () => ({ viewer: "alice" }) },
+          ),
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "render", gsspRes: { statusCode: 200 } });
+  });
+
   it("renders fresh ISR HTML while preserving custom document gaps and tail scripts", async () => {
     const html = await renderPagesIsrHtml({
       buildId: "build-123",
@@ -638,6 +698,9 @@ describe("pages page data", () => {
     expect(result).toMatchObject({
       kind: "render",
       pageProps: { reqUrl: "/3", asPath: "/3" },
+      gsspRes: {
+        statusCode: 200,
+      },
     });
   });
 

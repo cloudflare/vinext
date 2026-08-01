@@ -74,6 +74,41 @@ export function hasPagesGetInitialProps(component: unknown): boolean {
   return getInitialPropsFn(component) !== null;
 }
 
+/**
+ * Next.js reserves `/404` and `/500` for static status pages. Page-level
+ * getInitialProps/getServerSideProps are rejected in both dev and production;
+ * a custom `_app.getInitialProps` remains valid and is intentionally not part
+ * of this check.
+ */
+export function assertPagesStaticStatusPageDataHooks(
+  pathname: string,
+  component: unknown,
+  getServerSideProps: unknown,
+): void {
+  if (
+    (pathname === "/404" || pathname === "/500") &&
+    (hasPagesGetInitialProps(component) || typeof getServerSideProps === "function")
+  ) {
+    throw new Error(
+      `\`pages${pathname}\` can not have getInitialProps/getServerSideProps, https://nextjs.org/docs/messages/404-get-initial-props`,
+    );
+  }
+}
+
+/**
+ * True when a custom `_app` genuinely overrides `getInitialProps`. Extending the
+ * built-in `App` inherits it, and Next.js still auto-static-optimizes those
+ * pages — so the inherited copy (tracked as `origGetInitialProps`) must not
+ * count as an override.
+ */
+export function hasPagesAppGetInitialPropsOverride(component: unknown): boolean {
+  const getInitialProps = getInitialPropsFn(component);
+  return (
+    getInitialProps !== null &&
+    getInitialProps !== getObjectProperty(component, "origGetInitialProps")
+  );
+}
+
 export function isResponseSent(res: unknown): boolean {
   return (
     getObjectProperty(res, "headersSent") === true ||

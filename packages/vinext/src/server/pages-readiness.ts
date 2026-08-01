@@ -1,5 +1,6 @@
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
+import { hasPagesAppGetInitialPropsOverride } from "./pages-get-initial-props.js";
 
 /**
  * Shared Pages Router readiness modeling.
@@ -39,9 +40,7 @@ export function buildPagesReadinessNextData(options: {
   const hasPageGip =
     typeof (options.pageModule.default as { getInitialProps?: unknown } | undefined)
       ?.getInitialProps === "function";
-  const hasAppGip =
-    typeof options.appComponent?.getInitialProps === "function" &&
-    options.appComponent.getInitialProps !== options.appComponent.origGetInitialProps;
+  const hasAppGip = hasPagesAppGetInitialPropsOverride(options.appComponent);
   const autoExport = !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip;
   return {
     gssp: hasPageGssp,

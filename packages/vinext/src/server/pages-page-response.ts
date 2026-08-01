@@ -154,6 +154,13 @@ type RenderPagesPageResponseOptions = {
   setDocumentInitialHead?: ((head: ReactNode[]) => void) | undefined;
   documentReqRes?: PagesDocumentReqRes | null;
   gsspRes: PagesGsspResponse | null;
+  /**
+   * True when the caller applies `applyPagesErrorCachePolicy` afterwards. That
+   * policy owns Cache-Control for `/404`, `/500`, and `/_error` renders and
+   * treats a pre-existing `no-store` as a deliberate opt-out, so the generic
+   * `gsspRes` default below must not claim the header first.
+   */
+  deferErrorCachePolicy?: boolean;
   isrCacheKey: (router: string, pathname: string) => string;
   /** Filesystem-route identity used for ISR persistence and cache tags. */
   isrCachePathname?: string;
@@ -700,7 +707,7 @@ export async function renderPagesPageResponse(
     }
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {
     responseHeaders.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
-  } else if (options.gsspRes && !userSetCacheControl) {
+  } else if (options.gsspRes && !userSetCacheControl && !options.deferErrorCachePolicy) {
     // Default for getServerSideProps responses, matching Next.js
     // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
     // CDNs and browsers could cache per-request gssp responses.
