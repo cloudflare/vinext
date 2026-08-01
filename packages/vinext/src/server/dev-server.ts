@@ -930,6 +930,10 @@ export function createSSRHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const requestPreviewData = requestPreview.data;
+        // Pages preview cookies are decoded by this router rather than
+        // next/headers. Publish the result to cache shims before any page data
+        // function runs so preview fetches cannot use shared entries.
+        requestContext.draftModeEnabled = requestPreviewData !== false;
         // Try to load _app.tsx if it exists. This happens before the readiness
         // predicate so app-level getInitialProps participates in the same
         // initial Pages Router state as the client __NEXT_DATA__ payload.

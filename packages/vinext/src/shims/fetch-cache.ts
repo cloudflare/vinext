@@ -22,7 +22,7 @@
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { markDynamicUsage } from "./headers.js";
+import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
@@ -872,8 +872,16 @@ function createFetchDedupeCandidate(
     return null;
   }
 
-  const request =
-    typeof input === "string" || input instanceof URL ? new Request(input, init) : input;
+  // Request bodies are deliberately excluded from dedupe. Keep that early
+  // exit before constructing an effective Request so POST and consumed-body
+  // inputs retain their existing pass-through behavior.
+  if (input instanceof Request && input.method !== "GET" && input.method !== "HEAD") {
+    return null;
+  }
+
+  // Construct the effective Request so init overrides (especially headers)
+  // participate in the per-render dedupe key for GET/HEAD Request inputs.
+  const request = new Request(input, init);
 
   if ((request.method !== "GET" && request.method !== "HEAD") || request.keepalive) {
     return null;
@@ -1026,6 +1034,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> {
+    // Draft renders are not static generations. Bypass both shared fetch-cache
+    // reads and writes, matching Next.js's `workStore.isDraftMode` guard.
+    if (isDraftModeEnabled()) {
+      // Draft fetches are fresh dependencies for layout-reuse observation even
+      // though they still use request-scoped memoization below.
+      recordDynamicFetchObservation(input);
+      // Keep request-scoped fetch memoization active while skipping the
+      // persistent cache. This is the same path used by other uncached
+      // fetches in this shim.
+      return dedupeFetch(input, init);
+    }
+
     const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
       | NextFetchOptions
       | undefined;

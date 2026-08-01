@@ -3043,6 +3043,17 @@ export default function PreviewPage({ preview }) {
 }\n`,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "preview-cache.tsx"),
+      `import { isDraftModeEnabled } from "vinext/shims/headers";
+
+export function getServerSideProps() {
+  return { props: { draftModeEnabled: isDraftModeEnabled() } };
+}
+export default function PreviewCachePage({ draftModeEnabled }) {
+  return <p id="draft-mode-enabled">{String(draftModeEnabled)}</p>;
+}\n`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "gssp-not-found.tsx"),
       `export function getServerSideProps() { return { notFound: true }; }
 export default function Page() { return null; }\n`,
@@ -3110,6 +3121,24 @@ export default function Page(props) {
         "private, no-cache, no-store, max-age=0, must-revalidate",
       );
     }
+  });
+
+  it("propagates Pages preview state to request-scoped cache guards", async () => {
+    const readDraftModeFlag = async (cookie?: string): Promise<boolean> => {
+      const response = await fetch(`${previewBaseUrl}/preview-cache`, {
+        headers: cookie ? { cookie } : undefined,
+      });
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const nextDataMatch = html.match(
+        /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+      );
+      expect(nextDataMatch).toBeTruthy();
+      return JSON.parse(nextDataMatch![1]!).props.pageProps.draftModeEnabled;
+    };
+
+    expect(await readDraftModeFlag()).toBe(false);
+    expect(await readDraftModeFlag(await enablePreview())).toBe(true);
   });
 
   it("renders unlisted fallback false and fallback true paths with real preview props", async () => {

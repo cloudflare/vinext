@@ -273,4 +273,23 @@ describe("app layout param observation", () => {
       completeness: "complete",
     });
   });
+
+  it("observes draft fetches as dynamic layout dependencies", () => {
+    ensureFetchPatch();
+    const tracker = createAppLayoutParamAccessTracker();
+
+    void runWithRequestContext(createRequestContext({ draftModeEnabled: true }), () => {
+      tracker.runLayoutProbe("layout:/draft", () => {
+        void fetch("data:application/json,%7B%22draft%22%3Atrue%7D", {
+          next: { revalidate: 60 },
+        }).catch(() => {});
+      });
+    });
+
+    expect(tracker.getLayoutObservation("layout:/draft")).toMatchObject({
+      cacheableFetchCount: 0,
+      dynamicFetchCount: 1,
+      completeness: "complete",
+    });
+  });
 });

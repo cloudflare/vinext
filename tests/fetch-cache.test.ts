@@ -56,7 +56,8 @@ const {
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
 const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
-const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+const { consumeDynamicUsage, setHeadersContext } =
+  await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
@@ -105,6 +106,105 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Same count = cached
     expect(fetchMock).toHaveBeenCalledTimes(1); // Only one real fetch
+  });
+
+  it("bypasses the shared fetch cache in draft mode", async () => {
+    const url = "https://api.example.com/draft-mode";
+    const fetchOptions = { next: { revalidate: 3600 } };
+    const enterRequest = (draftModeEnabled: boolean) => {
+      setHeadersContext({
+        headers: new Headers(),
+        cookies: new Map(),
+        draftModeEnabled,
+      });
+    };
+
+    try {
+      const fetchInRequest = async (draftModeEnabled: boolean) => {
+        enterRequest(draftModeEnabled);
+        return runWithFetchCache(() => fetch(url, fetchOptions));
+      };
+
+      // Seed the shared entry with published content.
+      const published = await fetchInRequest(false);
+      expect((await published.json()).count).toBe(1);
+
+      // Draft mode must bypass both the shared read and the shared write.
+      const draft = await fetchInRequest(true);
+      expect((await draft.json()).count).toBe(2);
+
+      // The draft response must not replace the published shared entry.
+      const cachedPublished = await fetchInRequest(false);
+      expect((await cachedPublished.json()).count).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it("dedupes draft fetches within a render scope without persisting them", async () => {
+    const url = "https://api.example.com/draft-mode-dedupe";
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+      draftModeEnabled: true,
+    });
+
+    try {
+      const results = await runWithFetchCache(async () => {
+        const [first, second] = await Promise.all([
+          fetch(url, { next: { revalidate: 3600 } }),
+          fetch(url, { next: { revalidate: 3600 } }),
+        ]);
+        return {
+          results: await Promise.all([first.json(), second.json()]),
+          dynamicFetches: peekDynamicFetchObservations(),
+        };
+      });
+
+      expect(results.results).toEqual([
+        { url, count: 1 },
+        { url, count: 1 },
+      ]);
+      expect(results.dynamicFetches).toEqual([url]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it("includes Request init overrides in draft dedupe keys", async () => {
+    const url = "https://api.example.com/draft-mode-request-overrides";
+    const request = new Request(url);
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+      draftModeEnabled: true,
+    });
+
+    try {
+      const results = await runWithFetchCache(async () => {
+        const [first, second] = await Promise.all([
+          fetch(request, {
+            headers: { Authorization: "Bearer first" },
+            next: { revalidate: 3600 },
+          }),
+          fetch(request, {
+            headers: { Authorization: "Bearer second" },
+            next: { revalidate: 3600 },
+          }),
+        ]);
+        return Promise.all([first.json(), second.json()]);
+      });
+
+      expect(results).toEqual([
+        { url, count: 1 },
+        { url, count: 2 },
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      setHeadersContext(null);
+    }
   });
 
   it("cache: 'force-cache' caches indefinitely", async () => {

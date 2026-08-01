@@ -646,6 +646,10 @@ export function createPagesPageHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const previewData = preview.data;
+        // Pages preview cookies are decoded by this router rather than
+        // next/headers. Publish the result to cache shims before any page data
+        // function runs so preview fetches cannot use shared entries.
+        uCtx.draftModeEnabled = previewData !== false;
         const pagesNextData = {
           ...buildPagesReadinessNextData({
             pageModule,

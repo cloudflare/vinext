@@ -24,6 +24,7 @@ import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
+import { isDraftModeEnabled } from "../packages/vinext/src/shims/headers.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 
 // ---------------------------------------------------------------------------
@@ -470,12 +471,18 @@ describe("createPagesPageHandler — preview responses", () => {
 
   it("activates preview on pages with server props", async () => {
     const setSSRContext = vi.fn();
+    let draftModeEnabled = false;
     const handler = createPagesPageHandler(
       makeOpts({
         pageRoutes: [
           makeRoute(
             "/",
-            makePageModule({ getServerSideProps: async () => ({ props: { preview: true } }) }),
+            makePageModule({
+              getServerSideProps: async () => {
+                draftModeEnabled = isDraftModeEnabled();
+                return { props: { preview: true } };
+              },
+            }),
           ),
         ],
         setSSRContext,
@@ -489,6 +496,7 @@ describe("createPagesPageHandler — preview responses", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(draftModeEnabled).toBe(true);
     expect(setSSRContext).toHaveBeenCalledWith(
       expect.objectContaining({
         isPreview: true,

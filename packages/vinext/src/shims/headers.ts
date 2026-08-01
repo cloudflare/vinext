@@ -1118,8 +1118,14 @@ export function isDraftModeRequest(request: Request, draftModeSecret: string): b
  * callers fall back to an explicitly supplied request when needed.
  */
 export function getActiveDraftModeState(): boolean | null {
-  const context = _getState().headersContext;
-  if (!context) return null;
+  const state = _getState();
+  const context = state.headersContext;
+  if (!context) {
+    // Pages Router preview state is decoded by the router rather than by a
+    // next/headers context. Read that state from the unified request pipeline
+    // so cache shims can apply the same draft-mode guard to Pages renders.
+    return isInsideUnifiedScope() ? getRequestContext().draftModeEnabled : null;
+  }
   if (context.draftModeEnabled !== undefined) return context.draftModeEnabled;
   const secret = context.draftModeSecret;
   if (secret === undefined) return false;
