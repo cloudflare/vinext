@@ -458,6 +458,8 @@ function prefetchUrl(
           canonicalizeFullRscRequestHeaders,
           createRscClientRequestIdentity,
           createRscRequestUrl,
+          getRscCacheKeyMode,
+          isRscPrewarmEligibleHref,
         } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
@@ -523,16 +525,19 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
-        if (autoPrefetch.cacheForNavigation) {
+        const usesCanonicalSharedRequest =
+          autoPrefetch.cacheForNavigation &&
+          getRscCacheKeyMode() === "response-vary" &&
+          (await isRscPrewarmEligibleHref(fullHref, __basePath)) &&
           canonicalizeFullRscRequestHeaders(headers);
-        }
+        const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const { requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl } =
-          await createRscClientRequestIdentity(fullHref, headers);
+          await createRscClientRequestIdentity(fullHref, headers, requestCacheKeyMode);
         const additionalRscUrls =
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
-            ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]
+            ? [await createRscRequestUrl(rewrittenPrefetchHref, headers, requestCacheKeyMode)]
             : [];
         const cacheKey = AppElementsWire.encodeCacheKey(rscCacheKeyUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
@@ -724,7 +729,11 @@ function prefetchUrl(
                 await shellEntry?.pending?.catch(() => {});
                 const renderedPathAndSearch = shellEntry?.snapshot?.renderedPathAndSearch;
                 if (renderedPathAndSearch) {
-                  const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
+                  const renderedRscUrl = await createRscRequestUrl(
+                    renderedPathAndSearch,
+                    headers,
+                    requestCacheKeyMode,
+                  );
                   const cachedRenderedResponse = peekPrefetchResponseForNavigation(
                     renderedRscUrl,
                     interceptionContext,

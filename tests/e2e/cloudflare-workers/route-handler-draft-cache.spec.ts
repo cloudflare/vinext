@@ -45,7 +45,7 @@ async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
 test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   test.beforeAll(async () => {
     server = spawn(
-      "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; ../../../node_modules/.bin/vp build --config vite.cdn-cache.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4195",
+      "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; ../../../node_modules/.bin/vp run vinext#build && VINEXT_TEST_CDN_CACHE=1 node ../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4195",
       { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
     );
     await waitForServer();
@@ -176,7 +176,34 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       const url = new URL(response.url());
       return url.pathname === "/about" && url.searchParams.has("_rsc");
     });
-    await page.goto(BASE_URL);
+    const eligibilityManifestResponsePromise = page.waitForResponse((response) =>
+      /\/vinext-rsc-prewarm-[a-f0-9]{16}\.json$/.test(new URL(response.url()).pathname),
+    );
+    const initialResponse = await page.goto(BASE_URL);
+    expect(initialResponse).not.toBeNull();
+    const initialHtml = await initialResponse!.text();
+    expect(initialHtml).toContain('name="vinext-rsc-prewarm-manifest"');
+    const eligibilityManifestMeta = initialHtml.match(
+      /<meta name="vinext-rsc-prewarm-manifest" content="([^"]+)">/,
+    );
+    expect(eligibilityManifestMeta).not.toBeNull();
+
+    const eligibilityManifestResponse = await eligibilityManifestResponsePromise;
+    expect(eligibilityManifestResponse.status()).toBe(200);
+    expect(eligibilityManifestResponse.url()).toBe(
+      new URL(eligibilityManifestMeta![1], BASE_URL).href,
+    );
+    expect(eligibilityManifestResponse.headers()["content-type"]).toContain("application/json");
+    const eligibilityManifest = (await eligibilityManifestResponse.json()) as {
+      version: number;
+      paths: string[];
+    };
+    expect(eligibilityManifest.version).toBe(1);
+    expect(eligibilityManifest.paths).toContain("/about");
+    expect(eligibilityManifest.paths).toContain("/blog/hello-world");
+    expect(eligibilityManifest.paths).not.toContain("/force-dynamic/prefetch");
+    expect(eligibilityManifest.paths).not.toContain("/force-dynamic/navigation");
+
     const prefetchResponse = await prefetchResponsePromise;
     await prefetchResponse.finished();
     await page.evaluate(
@@ -266,6 +293,64 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       const headers = response.headers();
       expect(headers["cache-control"]).not.toContain("no-store");
       expect(headers["cdn-cache-control"]).toContain("max-age=");
+    }
+  });
+
+  test("keeps source-specific headers and hashed URLs for force-dynamic RSC requests", async ({
+    page,
+  }) => {
+    const prefetchResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/force-dynamic/prefetch" && url.searchParams.has("_rsc");
+    });
+    await page.goto(`${BASE_URL}/force-dynamic-source`);
+    const prefetchResponse = await prefetchResponsePromise;
+    await prefetchResponse.finished();
+
+    await page.click("#cdn-layout-counter");
+    await expect(page.locator("#cdn-layout-counter")).toHaveText("Layout state: 1");
+    const navigationResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/force-dynamic/navigation" && url.searchParams.has("_rsc");
+    });
+    await page.click("#cdn-dynamic-navigation-link");
+    const navigationResponse = await navigationResponsePromise;
+    await expect(page.locator("h1")).toHaveText("Force dynamic navigation");
+    await expect(page.locator("#cdn-layout-counter")).toHaveText("Layout state: 1");
+
+    const requestShape = (response: typeof prefetchResponse) => {
+      const url = new URL(response.url());
+      const headers = response.request().headers();
+      return {
+        url,
+        headers,
+        rscHash: url.searchParams.get("_rsc"),
+      };
+    };
+    const prefetch = requestShape(prefetchResponse);
+    const navigation = requestShape(navigationResponse);
+
+    for (const request of [prefetch, navigation]) {
+      expect(request.rscHash).toMatch(/^[A-Za-z0-9_-]{16}$/);
+      expect(request.url.search).toBe(`?_rsc=${request.rscHash}`);
+      expect(request.headers.accept).toBe("text/x-component");
+      expect(request.headers.rsc).toBe("1");
+      expect(request.headers["next-router-state-tree"]).toBeTruthy();
+      expect(request.headers["next-url"]).toBe("/force-dynamic-source");
+    }
+    expect(navigation.rscHash).not.toBe(prefetch.rscHash);
+
+    expect(prefetch.headers["next-router-prefetch"]).toBe("1");
+    expect(prefetch.headers["next-router-segment-prefetch"]).toBe("1");
+    expect(navigation.headers["next-router-prefetch"]).toBeUndefined();
+    expect(navigation.headers["next-router-segment-prefetch"]).toBeUndefined();
+
+    for (const response of [prefetchResponse, navigationResponse]) {
+      const headers = response.headers();
+      expect(headers["cache-control"]).toContain("no-store");
+      expect(headers["cdn-cache-control"]).toBeUndefined();
+      expect(headers["cloudflare-cdn-cache-control"]).toBeUndefined();
+      expect(headers["cache-tag"]).toBeUndefined();
     }
   });
 });

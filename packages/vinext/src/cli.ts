@@ -717,6 +717,7 @@ async function buildApp() {
       root,
       concurrency: parsed.prerenderConcurrency,
       nextConfig: resolvedNextConfig,
+      rscCacheKeyMode: resolveRscCacheKeyMode(buildConfigMetadata.cacheConfig),
     });
     await emitPrerenderPathManifest({
       root,

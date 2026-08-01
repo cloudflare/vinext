@@ -1020,9 +1020,14 @@ describe("prefetch cache eviction", () => {
     // suppresses Next-Router-Prefetch (matches Link's prefetch={true}).
     expect(fetchedHeaders?.get("Next-Router-Prefetch")).toBeNull();
     expect(fetchedHeaders?.get("Next-Router-Segment-Prefetch")).toBeNull();
+    // This isolated navigation harness has no browser navigation runtime from
+    // which to derive a router tree, but it still preserves the available
+    // source URL instead of canonicalizing an unproven route.
     expect(fetchedHeaders?.get("Next-Router-State-Tree")).toBeNull();
-    expect(fetchedHeaders?.get("Next-Url")).toBeNull();
-    expect(fetchedUrl).toBe("/reports?_rsc");
+    expect(fetchedHeaders?.get("Next-Url")).toBe("/");
+    expect(new URL(fetchedUrl, "http://localhost").searchParams.get("_rsc")).toMatch(
+      /^[A-Za-z0-9_-]{16}$/,
+    );
 
     const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
     await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");

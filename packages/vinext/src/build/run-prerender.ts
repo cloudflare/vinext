@@ -35,6 +35,7 @@ import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -103,6 +104,8 @@ type RunPrerenderOptions = {
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
+  /** RSC URL strategy selected by the configured CDN cache adapter. */
+  rscCacheKeyMode?: RscCacheKeyMode;
   /**
    * Maximum number of routes rendered in parallel.
    * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
@@ -373,7 +376,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  injectPregeneratedConcretePaths(root);
+  injectPregeneratedConcretePaths(root, {
+    assetPrefix: config.assetPrefix,
+    deploymentId: config.deploymentId,
+    emitRscPrewarmManifest: options.rscCacheKeyMode === "response-vary",
+  });
   if (fs.existsSync(rscBundlePath)) {
     rememberCurrentServerEntryImportMtime(rscBundlePath);
   }

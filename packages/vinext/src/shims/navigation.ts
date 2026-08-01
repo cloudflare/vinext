@@ -34,6 +34,8 @@ import {
   createRscClientRequestIdentity,
   createRscRequestHeaders,
   createRscRequestUrl,
+  getRscCacheKeyMode,
+  isRscPrewarmEligibleHref,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -2700,16 +2702,19 @@ const _appRouter: AppRouterInstance = {
         headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
         headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, __prefetchInlining ? "/__PAGE__" : "1");
       }
-      if (reusable) {
+      const usesCanonicalSharedRequest =
+        reusable &&
+        getRscCacheKeyMode() === "response-vary" &&
+        (await isRscPrewarmEligibleHref(fullHref, __basePath)) &&
         canonicalizeFullRscRequestHeaders(headers);
-      }
+      const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
       const [{ requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl }, ...additionalRscUrls] =
         await Promise.all([
-          createRscClientRequestIdentity(fullHref, headers),
+          createRscClientRequestIdentity(fullHref, headers, requestCacheKeyMode),
           ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref
-            ? [createRscRequestUrl(rewrittenPrefetchHref, headers)]
+            ? [createRscRequestUrl(rewrittenPrefetchHref, headers, requestCacheKeyMode)]
             : []),
         ]);
       // A navigation to this same href can start in the same task as this call

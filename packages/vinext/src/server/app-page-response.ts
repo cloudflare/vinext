@@ -24,6 +24,7 @@ import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
+import { hasRscPrewarmManifestMeta, injectRscPrewarmManifestMeta } from "./app-rsc-prewarm-meta.js";
 
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
@@ -417,7 +418,9 @@ export function buildAppPageHtmlResponse(
 
   applyTimingHeader(headers, options.timing);
 
-  return new Response(body, {
+  if (hasRscPrewarmManifestMeta()) headers.delete("Content-Length");
+
+  return new Response(injectRscPrewarmManifestMeta(body), {
     status: options.middlewareContext.status ?? 200,
     headers,
   });

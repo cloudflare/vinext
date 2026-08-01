@@ -5,6 +5,7 @@ import {
   type PrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import {
+  getPrewarmableAppPaths,
   getPrerenderedConcretePaths,
   readPrerenderManifest,
   type PrerenderManifest,
@@ -223,9 +224,6 @@ export function readPrerenderWarmPlan(
 ): PrerenderWarmPlan {
   const shouldPreferPrerenderManifest = options?.includeFallbackShells === true;
   const pathManifestPlan = readPrerenderPathWarmPlan(root, options);
-  if (!shouldPreferPrerenderManifest) {
-    if (pathManifestPlan !== null) return toPublicWarmPlan(pathManifestPlan);
-  }
 
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
@@ -236,8 +234,11 @@ export function readPrerenderWarmPlan(
         console.warn(
           "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
         );
-        return toPublicWarmPlan(pathManifestPlan);
+        return { ...toPublicWarmPlan(pathManifestPlan), rscPaths: [] };
       }
+    }
+    if (pathManifestPlan !== null) {
+      return { ...toPublicWarmPlan(pathManifestPlan), rscPaths: [] };
     }
     const message = "[vinext] CDN warmup skipped: prerender manifest not found.";
     if (options?.strict) throw new Error(message);
@@ -261,16 +262,17 @@ export function readPrerenderWarmPlan(
     typeof manifest.deploymentId === "string" && /^[a-zA-Z0-9_-]+$/.test(manifest.deploymentId)
       ? manifest.deploymentId
       : undefined;
-  const paths = getPrerenderedConcretePaths(manifest, options).filter(isSafeWarmPathname);
-  const rscPaths = getPrerenderedConcretePaths(manifest, {
-    ...options,
-    router: "app",
-  }).filter(isSafeWarmPathname);
+  const manifestPaths = getPrerenderedConcretePaths(manifest, options).filter(isSafeWarmPathname);
+  const paths =
+    !shouldPreferPrerenderManifest && pathManifestPlan !== null
+      ? pathManifestPlan.paths
+      : manifestPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig));
+  const rscPaths = getPrewarmableAppPaths(manifest).filter(isSafeWarmPathname);
   return {
     ...(pathManifestPlan?.deploymentId || fullManifestDeploymentId
       ? { deploymentId: pathManifestPlan?.deploymentId ?? fullManifestDeploymentId }
       : {}),
-    paths: paths.map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
+    paths,
     rscPaths: rscPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
     rscCacheKeyMode: pathManifestPlan?.rscCacheKeyMode ?? "header-digest",
   };

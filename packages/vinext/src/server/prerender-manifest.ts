@@ -46,6 +46,41 @@ export function getRenderedAppRoutes(routes: PrerenderManifestRoute[]): Prerende
   return routes.filter((r) => r.status === "rendered" && r.router === "app");
 }
 
+function hasNonCacheableResponseHeaders(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+  for (const [name, value] of Object.entries(headers)) {
+    const lowerName = name.toLowerCase();
+    if (
+      lowerName !== "cache-control" &&
+      lowerName !== "cdn-cache-control" &&
+      lowerName !== "cloudflare-cdn-cache-control"
+    ) {
+      continue;
+    }
+    if (/\b(?:no-store|no-cache|private)\b/i.test(value)) return true;
+  }
+  return false;
+}
+
+/**
+ * A prerendered App route is safe to address through the shared, source-independent
+ * RSC cache shape only when its completed build result has a cacheable lifetime.
+ * `revalidate: 0` and explicit private/no-store policies fail closed.
+ */
+export function isPrewarmableAppRoute(route: PrerenderManifestRoute): boolean {
+  const hasCacheableLifetime =
+    route.revalidate === false ||
+    (typeof route.revalidate === "number" &&
+      Number.isFinite(route.revalidate) &&
+      route.revalidate > 0);
+  return (
+    route.status === "rendered" &&
+    route.router === "app" &&
+    hasCacheableLifetime &&
+    !hasNonCacheableResponseHeaders(route.headers)
+  );
+}
+
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {
   const byPattern = new Map<string, string[]>();
   for (const r of routes) {
@@ -69,6 +104,11 @@ function isErrorDocumentRoute(pathname: string, route: PrerenderManifestRoute): 
     route.route === "/500" ||
     route.route === "/_error"
   );
+}
+
+function isUnresolvedRoutePattern(pathname: string, route: PrerenderManifestRoute): boolean {
+  if (route.path !== undefined || pathname !== route.route) return false;
+  return route.route.split("/").some((segment) => segment.startsWith(":"));
 }
 
 /**
@@ -147,6 +187,30 @@ export function getPrerenderedConcretePaths(
       continue;
     }
     if (!options?.includeErrorDocuments && isErrorDocumentRoute(pathname, route)) {
+      continue;
+    }
+    if (seen.has(pathname)) continue;
+    seen.add(pathname);
+    paths.push(pathname);
+  }
+  return paths;
+}
+
+/** Select exact concrete App paths whose completed prerender is CDN-prewarmable. */
+export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
+  const routes = manifest.routes;
+  if (!routes?.length) return [];
+
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const route of routes) {
+    if (!isPrewarmableAppRoute(route)) continue;
+    const pathname = route.path ?? route.route;
+    if (
+      isUnresolvedRoutePattern(pathname, route) ||
+      isFallbackShellArtifactPath(pathname, route) ||
+      isErrorDocumentRoute(pathname, route)
+    ) {
       continue;
     }
     if (seen.has(pathname)) continue;

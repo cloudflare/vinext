@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,8 @@ beforeEach(() => {
 afterEach(() => {
   clearPregeneratedConcretePaths();
   delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+  delete globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL;
+  delete globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -165,5 +168,161 @@ describe("injectPregeneratedConcretePaths", () => {
       expect.stringContaining("[vinext] Failed to read prerender manifest"),
       expect.any(SyntaxError),
     );
+  });
+
+  it("emits a content-hashed eligibility asset from final cacheable App results", () => {
+    writeFile(
+      "dist/server/index.js",
+      'export default { fetch() { return new Response("ok"); } };\n',
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "test",
+        routes: [
+          {
+            route: "/static",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/posts/:slug",
+            path: "/posts/first/",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+          {
+            route: "/dynamic",
+            status: "skipped",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/private",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+            headers: { "Cache-Control": "private, no-store" },
+          },
+          {
+            route: "/pages",
+            status: "rendered",
+            router: "pages",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir, {
+      deploymentId: "deploy-a",
+      emitRscPrewarmManifest: true,
+    });
+
+    const assetsDir = path.join(tmpDir, "dist/client/_next/static");
+    const assetNames = fs
+      .readdirSync(assetsDir)
+      .filter((name) => /^vinext-rsc-prewarm-[a-f0-9]{16}\.json$/.test(name));
+    expect(assetNames).toHaveLength(1);
+    const assetContent = fs.readFileSync(path.join(assetsDir, assetNames[0]), "utf-8");
+    const contentHash = createHash("sha256").update(assetContent).digest("hex").slice(0, 16);
+    expect(assetNames[0]).toBe(`vinext-rsc-prewarm-${contentHash}.json`);
+    expect(JSON.parse(assetContent)).toEqual({
+      version: 1,
+      paths: ["/static", "/posts/first"],
+    });
+
+    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    expect(output).toContain(
+      `globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL = "/_next/static/${assetNames[0]}?dpl=deploy-a";`,
+    );
+    expect(output).toContain(
+      'globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/static","/posts/first"];',
+    );
+  });
+
+  it("changes the eligibility asset hash with its content and removes the stale asset", () => {
+    writeFile(
+      "dist/server/index.js",
+      'export default { fetch() { return new Response("ok"); } };\n',
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        routes: [
+          {
+            route: "/first",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    injectPregeneratedConcretePaths(tmpDir, { emitRscPrewarmManifest: true });
+
+    const assetsDir = path.join(tmpDir, "dist/client/_next/static");
+    const [firstAsset] = fs.readdirSync(assetsDir);
+
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        routes: [
+          {
+            route: "/second",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    injectPregeneratedConcretePaths(tmpDir, { emitRscPrewarmManifest: true });
+
+    const [secondAsset] = fs.readdirSync(assetsDir);
+    expect(secondAsset).not.toBe(firstAsset);
+    expect(fs.existsSync(path.join(assetsDir, firstAsset))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(assetsDir, secondAsset), "utf-8"))).toEqual({
+      version: 1,
+      paths: ["/second"],
+    });
+  });
+
+  it("does not emit RSC eligibility without a final cacheable App result", () => {
+    writeFile(
+      "dist/server/index.js",
+      'export default { fetch() { return new Response("ok"); } };\n',
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        routes: [
+          {
+            route: "/dynamic",
+            status: "skipped",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir, { emitRscPrewarmManifest: true });
+
+    expect(fs.existsSync(path.join(tmpDir, "dist/client/_next/static"))).toBe(false);
+    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    expect(output).not.toContain("__VINEXT_RSC_PREWARM");
+    expect(globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL).toBeUndefined();
+    expect(globalThis.__VINEXT_RSC_PREWARMABLE_PATHS).toBeUndefined();
   });
 });

@@ -165,6 +165,9 @@ import {
   canonicalizeFullRscRequestHeaders,
   createRscRequestHeaders,
   createRscRequestUrl,
+  getRscCacheKeyMode,
+  isRscPrewarmEligibleHref,
+  preloadRscPrewarmManifest,
   getVinextRscCompatibilityId,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
@@ -1476,6 +1479,9 @@ function registerServerActionCallback(): void {
 }
 
 async function main(): Promise<void> {
+  if (getRscCacheKeyMode() === "response-vary") {
+    void preloadRscPrewarmManifest();
+  }
   if (!claimInitialAppRouterBootstrap()) return;
 
   if (hasServerActions) registerServerActionCallback();
@@ -1782,12 +1788,23 @@ function bootstrapHydration(
         // visited-response cache miss is confirmed below — its producer iterates
         // the visible layout ids and binary-searches a byte budget, which is
         // pure waste on the cache-hit soft-nav path.
+        const sourceHref = clientNavigationSnapshotHref(
+          navigationInitiationState.navigationSnapshot,
+        );
+        const sourceUrl = new URL(sourceHref, window.location.origin);
         const requestHeaders = createRscRequestHeaders({
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
+          includePrefetchHeader: false,
+          nextUrl: sourceUrl.pathname + sourceUrl.search,
+          prefetchRouterState: getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null,
         });
-        const usesCanonicalSharedRequest = canonicalizeFullRscRequestHeaders(requestHeaders);
+        const usesCanonicalSharedRequest =
+          getRscCacheKeyMode() === "response-vary" &&
+          (await isRscPrewarmEligibleHref(currentHref, __basePath)) &&
+          canonicalizeFullRscRequestHeaders(requestHeaders);
+        const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
@@ -1816,12 +1833,12 @@ function bootstrapHydration(
               responseUrl: settledPrefetchedResponse.url,
               visibleRscUrl: targetPathAndSearch,
             })
-          : await createRscRequestUrl(targetPathAndSearch, requestHeaders);
+          : await createRscRequestUrl(targetPathAndSearch, requestHeaders, requestCacheKeyMode);
         const additionalPrefetchRscUrls = settledPrefetchedResponse
           ? additionalPrefetchPathAndSearch
           : await Promise.all(
               additionalPrefetchPathAndSearch.map((href) =>
-                createRscRequestUrl(href, requestHeaders),
+                createRscRequestUrl(href, requestHeaders, requestCacheKeyMode),
               ),
             );
         const visitedResponseCandidate = shouldBypassNavigationCache

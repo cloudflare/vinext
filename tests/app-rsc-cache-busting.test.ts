@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
@@ -19,6 +19,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { resetRscPrewarmManifestForTesting } from "../packages/vinext/src/client/rsc-prewarm-eligibility.js";
 import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
@@ -27,6 +28,11 @@ import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
 const textEncoder = new TextEncoder();
+
+afterEach(() => {
+  delete globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
+  resetRscPrewarmManifestForTesting();
+});
 
 function encodeBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -113,7 +119,7 @@ describe("App Router RSC cache-busting", () => {
     );
   });
 
-  it("uses one bare RSC URL when the cache keys response Vary values verbatim", async () => {
+  it("uses a digest URL by default even when the configured cache honors response Vary", async () => {
     const feedHeaders = createRscRequestHeaders({
       interceptionContext: "/feed",
       mountedSlotsHeader: "slot:modal:/",
@@ -124,9 +130,11 @@ describe("App Router RSC cache-busting", () => {
     });
 
     await withEnvVar("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary", async () => {
-      await expect(createRscRequestUrl("/photos/42", feedHeaders)).resolves.toBe("/photos/42?_rsc");
-      await expect(createRscRequestUrl("/photos/42", galleryHeaders)).resolves.toBe(
-        "/photos/42?_rsc",
+      await expect(createRscRequestUrl("/photos/42", feedHeaders)).resolves.toContain(
+        "/photos/42?_rsc=",
+      );
+      await expect(createRscRequestUrl("/photos/42", galleryHeaders)).resolves.toContain(
+        "/photos/42?_rsc=",
       );
     });
   });
@@ -157,7 +165,7 @@ describe("App Router RSC cache-busting", () => {
     }
   });
 
-  it("keeps source context but removes partial-prefetch markers from contextual full payloads", () => {
+  it("leaves every header untouched when a contextual request cannot be canonicalized", () => {
     const headers = createRscRequestHeaders({
       interceptionContext: "/feed",
       nextUrl: "/feed",
@@ -165,12 +173,17 @@ describe("App Router RSC cache-busting", () => {
     });
     headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
 
+    const snapshot = Array.from(headers);
     expect(canonicalizeFullRscRequestHeaders(headers, "response-vary")).toBe(false);
-    expect(headers.get("X-Vinext-Interception-Context")).toBe("/feed");
-    expect(headers.get("Next-Router-State-Tree")).not.toBeNull();
-    expect(headers.get("Next-Url")).toBe("/feed");
-    expect(headers.get("Next-Router-Prefetch")).toBeNull();
-    expect(headers.get("Next-Router-Segment-Prefetch")).toBeNull();
+    expect(Array.from(headers)).toEqual(snapshot);
+  });
+
+  it("does not canonicalize client-reuse variants", () => {
+    const headers = createRscRequestHeaders({ clientReuseManifestHeader: '{"entries":[]}' });
+    const snapshot = Array.from(headers);
+
+    expect(canonicalizeFullRscRequestHeaders(headers, "response-vary")).toBe(false);
+    expect(Array.from(headers)).toEqual(snapshot);
   });
 
   it("keeps router state but omits the prefetch header for a full prefetch", () => {
@@ -334,24 +347,27 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
-  it("accepts bare RSC variants when response Vary owns the header dimensions", async () => {
+  it("rejects bare contextual RSC variants even when response Vary owns cache dimensions", async () => {
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/photos/42"];
     const headers = createRscRequestHeaders({
       interceptionContext: "/feed",
       mountedSlotsHeader: "slot:modal:/",
     });
     const request = new Request("https://example.com/photos/42?_rsc", { headers });
 
-    await expect(
-      resolveInvalidRscCacheBustingRequest({
-        cacheKeyMode: "response-vary",
-        isRscRequest: true,
-        request,
-      }),
-    ).resolves.toBeNull();
+    const response = await resolveInvalidRscCacheBustingRequest({
+      cacheKeyMode: "response-vary",
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toMatch(/^\/photos\/42\?_rsc=.+/);
   });
 
-  it("redirects legacy .rsc transport URLs to the one response-Vary client shape", async () => {
-    const request = new Request("https://example.com/photos/42.rsc?tab=latest", {
+  it("redirects eligible legacy .rsc transport URLs to the one response-Vary client shape", async () => {
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/photos/42"];
+    const request = new Request("https://example.com/photos/42.rsc", {
       headers: createRscRequestHeaders(),
     });
 
@@ -362,11 +378,28 @@ describe("App Router RSC cache-busting", () => {
     });
 
     expect(response?.status).toBe(307);
-    expect(response?.headers.get("Location")).toBe("/photos/42?tab=latest&_rsc");
+    expect(response?.headers.get("Location")).toBe("/photos/42?_rsc");
+  });
+
+  it("does not accept the shared bare URL for an ineligible path", async () => {
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/about"];
+    const request = new Request("https://example.com/photos/42?_rsc", {
+      headers: createRscRequestHeaders({ nextUrl: "/source" }),
+    });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      cacheKeyMode: "response-vary",
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toMatch(/^\/photos\/42\?_rsc=.+/);
   });
 
   it("canonicalizes encoded .rsc transport suffixes without decoding path delimiters", async () => {
-    const request = new Request("https://example.com/photos%2Farchive/42%2E%72%73%63?tab=latest", {
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/photos%2Farchive/42"];
+    const request = new Request("https://example.com/photos%2Farchive/42%2E%72%73%63", {
       headers: createRscRequestHeaders(),
     });
 
@@ -376,7 +409,7 @@ describe("App Router RSC cache-busting", () => {
       request,
     });
 
-    expect(response?.headers.get("Location")).toBe("/photos%2Farchive/42?tab=latest&_rsc");
+    expect(response?.headers.get("Location")).toBe("/photos%2Farchive/42?_rsc");
   });
 
   it("keeps headerless .rsc compatibility requests on their transport URL", async () => {
@@ -399,15 +432,14 @@ describe("App Router RSC cache-busting", () => {
   });
 
   it("canonicalizes every alternate response-Vary URL spelling to one bare _rsc key", async () => {
-    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
-    const digest = await computeRscCacheBustingSearchParam(headers);
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/photos/42"];
+    const headers = createRscRequestHeaders();
 
     for (const nonCanonicalUrl of [
-      `https://example.com/photos/42?_rsc=${digest}`,
+      "https://example.com/photos/42?_rsc=stale",
       "https://example.com/photos/42?_rsc=",
       "https://example.com/photos/42?%5Frsc",
       "https://example.com/photos/42?_rsc&_rsc",
-      "https://example.com/photos/42?_rsc&tab=latest",
       "https://example.com/photos/42?_rsc=attacker",
     ]) {
       const response = await resolveInvalidRscCacheBustingRequest({
@@ -417,9 +449,7 @@ describe("App Router RSC cache-busting", () => {
       });
 
       expect(response?.status).toBe(307);
-      expect(response?.headers.get("Location")).toBe(
-        nonCanonicalUrl.includes("tab=latest") ? "/photos/42?tab=latest&_rsc" : "/photos/42?_rsc",
-      );
+      expect(response?.headers.get("Location")).toBe("/photos/42?_rsc");
     }
   });
 

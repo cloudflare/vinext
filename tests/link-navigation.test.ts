@@ -1346,6 +1346,7 @@ async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
   nodeEnv: string;
+  prewarmablePaths?: string[];
   props?: Record<string, unknown>;
   requireRef?: boolean;
   routeManifest?: RouteManifest;
@@ -1377,6 +1378,15 @@ async function renderIsolatedLink(options: {
   const fetch = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
     Promise.resolve(new Response("")),
   );
+  const prewarmManifestUrl = "/_next/static/vinext-rsc-prewarm-test.json";
+  const browserFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (requestUrl === prewarmManifestUrl) {
+      return Promise.resolve(Response.json({ version: 1, paths: options.prewarmablePaths ?? [] }));
+    }
+    return fetch(input, init);
+  });
   const navigate = vi.fn();
   const pagePrefetchLinks: CapturedPrefetchLinkElement[] = [];
   const location = {
@@ -1390,7 +1400,7 @@ async function renderIsolatedLink(options: {
       ? undefined
       : createTestNavigationRuntime(navigate, options.routeManifest ?? null);
 
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", browserFetch);
   vi.stubGlobal("document", {
     createElement: vi.fn(() => ({})),
     getElementById: vi.fn(() => null),
@@ -1400,6 +1410,11 @@ async function renderIsolatedLink(options: {
         pagePrefetchLinks.push(node);
       }),
     },
+    querySelector: vi.fn(() =>
+      options.prewarmablePaths
+        ? { getAttribute: (name: string) => (name === "content" ? prewarmManifestUrl : null) }
+        : null,
+    ),
   });
   vi.stubGlobal("window", {
     ...(navigationRuntime === undefined
@@ -1587,6 +1602,7 @@ describe("Link prefetch scheduling", () => {
     const result = await renderIsolatedLink({
       href: "/viewport-prefetch-target",
       nodeEnv: "production",
+      prewarmablePaths: ["/viewport-prefetch-target"],
     });
 
     try {
@@ -2217,9 +2233,9 @@ describe("Link prefetch scheduling", () => {
       ).toBeNull();
       expect(
         (fullFetchInit?.headers as Headers | undefined)?.get("next-router-state-tree"),
-      ).toBeNull();
-      expect((fullFetchInit?.headers as Headers | undefined)?.get("next-url")).toBeNull();
-      expect(fullUrl.search).toBe("?searchParam=b_full&_rsc");
+      ).toBeTruthy();
+      expect((fullFetchInit?.headers as Headers | undefined)?.get("next-url")).toBe("/current");
+      expect(fullUrl.searchParams.get("_rsc")).toMatch(/^[A-Za-z0-9_-]{16}$/);
     } finally {
       result.restoreNodeEnv();
     }
@@ -2660,6 +2676,7 @@ describe("Link prefetch scheduling", () => {
     const result = await renderIsolatedLink({
       href: "/viewport-prefetch-target",
       nodeEnv: "production",
+      prewarmablePaths: ["/viewport-prefetch-target"],
     });
 
     try {

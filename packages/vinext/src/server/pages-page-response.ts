@@ -4,6 +4,11 @@ import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
+  hasRscPrewarmManifestMeta,
+  injectRscPrewarmManifestMeta,
+  injectRscPrewarmManifestMetaHtml,
+} from "./app-rsc-prewarm-meta.js";
+import {
   applyCdnResponseHeaders,
   BROWSER_REVALIDATE_CACHE_CONTROL,
   shouldUseNextDeployCacheControl,
@@ -709,6 +714,7 @@ export async function renderPagesPageResponse(
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
   }
+  if (hasRscPrewarmManifestMeta()) responseHeaders.delete("Content-Length");
 
   // Bot / crawler path: buffer the complete HTML, emit as a single chunk, and
   // attach an ETag. Bots (Googlebot, Google-PageRenderer, etc.) cannot parse
@@ -740,7 +746,7 @@ export async function renderPagesPageResponse(
   // NOTE: This check is intentionally placed after the Cache-Control / header
   // setup above so bot responses still carry the correct cache semantics.
   if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
-    const fullHtml = await readStreamAsText(compositeStream);
+    const fullHtml = injectRscPrewarmManifestMetaHtml(await readStreamAsText(compositeStream));
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
@@ -757,7 +763,7 @@ export async function renderPagesPageResponse(
   }
 
   const response: PagesStreamedHtmlResponse = Object.assign(
-    new Response(compositeStream, {
+    new Response(injectRscPrewarmManifestMeta(compositeStream), {
       status: finalStatus,
       headers: responseHeaders,
     }),

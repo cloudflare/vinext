@@ -127,6 +127,114 @@ describe("Cloudflare CDN warmup", () => {
     expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/cached/intro"]);
   });
 
+  it("takes RSC warm paths only from exact cacheable final App prerenders", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/static", "/posts/first", "/dynamic", "/private", "/pages"],
+        appPaths: ["/static", "/posts/first", "/dynamic", "/private"],
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/static",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/posts/:slug",
+            path: "/posts/first",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+          {
+            route: "/dynamic",
+            status: "skipped",
+            router: "app",
+          },
+          {
+            route: "/fallback/:slug",
+            path: "/fallback/[slug]",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: true,
+          },
+          {
+            route: "/private",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+            headers: { "Cache-Control": "private, no-store" },
+          },
+          {
+            route: "/pages",
+            status: "rendered",
+            router: "pages",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/500",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/failed",
+            status: "error",
+            router: "app",
+          },
+          {
+            route: "/revalidate-zero",
+            status: "rendered",
+            router: "app",
+            revalidate: 0,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/static", "/posts/first", "/dynamic", "/private", "/pages"],
+      rscPaths: ["/static", "/posts/first"],
+      rscCacheKeyMode: "response-vary",
+    });
+  });
+
+  it("does not trust discovery-time appPaths when the final manifest is missing", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/static", "/dynamic"],
+        appPaths: ["/static", "/dynamic"],
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/static", "/dynamic"],
+      rscPaths: [],
+      rscCacheKeyMode: "response-vary",
+    });
+  });
+
   it("warms the client-visible basePath and trailing-slash URL shapes", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
@@ -138,6 +246,28 @@ describe("Cloudflare CDN warmup", () => {
         paths: ["/", "/about", "/feed.json"],
         appPaths: ["/", "/about"],
         rscCacheKeyMode: "response-vary",
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/about",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
       }),
     );
     writeFile("dist/server/BUILD_ID", "build-a\n");
@@ -183,7 +313,7 @@ describe("Cloudflare CDN warmup", () => {
     ]);
   });
 
-  it("keeps the built RSC URL mode when selecting fallback shells", () => {
+  it("keeps the built RSC URL mode while excluding fallback shells from RSC warmup", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({
@@ -221,7 +351,7 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true })).toEqual({
       paths: ["/", "/blog/[slug]", "/about"],
-      rscPaths: ["/", "/blog/[slug]"],
+      rscPaths: ["/"],
       rscCacheKeyMode: "response-vary",
     });
   });

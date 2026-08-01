@@ -1,10 +1,16 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "pathslash";
-import { readPrerenderManifest } from "../server/prerender-manifest.js";
+import { getPrewarmableAppPaths, readPrerenderManifest } from "../server/prerender-manifest.js";
+import { normalizeRscPrewarmPath } from "../client/rsc-prewarm-eligibility.js";
+import { resolveAssetsDir } from "../utils/asset-prefix.js";
+import { renderVinextBuiltUrl } from "../utils/built-asset-url.js";
 import { escapeRegExp } from "../utils/regex.js";
 
 declare global {
   var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
+  var __VINEXT_RSC_PREWARM_MANIFEST_URL: unknown;
+  var __VINEXT_RSC_PREWARMABLE_PATHS: unknown;
 }
 
 const VINEXT_PREGEN_START = "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */";
@@ -14,7 +20,45 @@ const VINEXT_PREGEN_RE = new RegExp(
   "g",
 );
 
-export function injectPregeneratedConcretePaths(root: string): void {
+const RSC_PREWARM_MANIFEST_PREFIX = "vinext-rsc-prewarm-";
+
+function emitRscPrewarmManifest(
+  root: string,
+  paths: string[],
+  options: { assetPrefix?: string; deploymentId?: string },
+): string | undefined {
+  const assetPrefix = options.assetPrefix ?? "";
+  const assetsDir = path.join(root, "dist", "client", resolveAssetsDir(assetPrefix));
+  if (fs.existsSync(assetsDir)) {
+    for (const name of fs.readdirSync(assetsDir)) {
+      if (name.startsWith(RSC_PREWARM_MANIFEST_PREFIX) && name.endsWith(".json")) {
+        fs.rmSync(path.join(assetsDir, name), { force: true });
+      }
+    }
+  }
+  if (paths.length === 0) return undefined;
+
+  const content = JSON.stringify({ version: 1, paths }) + "\n";
+  const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+  const fileName = `${RSC_PREWARM_MANIFEST_PREFIX}${hash}.json`;
+  fs.mkdirSync(assetsDir, { recursive: true });
+  fs.writeFileSync(path.join(assetsDir, fileName), content, "utf-8");
+  return renderVinextBuiltUrl(
+    `${resolveAssetsDir(assetPrefix)}/${fileName}`,
+    assetPrefix,
+    options.deploymentId,
+    "html",
+  );
+}
+
+export function injectPregeneratedConcretePaths(
+  root: string,
+  options: {
+    assetPrefix?: string;
+    deploymentId?: string;
+    emitRscPrewarmManifest?: boolean;
+  } = {},
+): void {
   const workerEntry = path.resolve(root, "dist", "server", "index.js");
   if (!fs.existsSync(workerEntry)) return;
 
@@ -23,16 +67,39 @@ export function injectPregeneratedConcretePaths(root: string): void {
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
   const table = manifest?.pregeneratedConcretePaths ?? [];
+  const prewarmablePaths =
+    options.emitRscPrewarmManifest && manifest
+      ? getPrewarmableAppPaths(manifest).map((pathname) => normalizeRscPrewarmPath(pathname))
+      : [];
+  const prewarmManifestUrl = emitRscPrewarmManifest(root, prewarmablePaths, options);
 
   if (table.length > 0) {
     globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
-    code =
-      `${VINEXT_PREGEN_START}\n` +
-      `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n` +
-      `${VINEXT_PREGEN_END}\n` +
-      code;
   } else {
     delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+  }
+  if (prewarmManifestUrl) {
+    globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL = prewarmManifestUrl;
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = prewarmablePaths;
+  } else {
+    delete globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL;
+    delete globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
+  }
+
+  if (table.length > 0 || prewarmManifestUrl) {
+    code =
+      `${VINEXT_PREGEN_START}\n` +
+      (table.length > 0
+        ? `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n`
+        : "") +
+      (prewarmManifestUrl
+        ? `globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL = ${JSON.stringify(prewarmManifestUrl)};\n`
+        : "") +
+      (prewarmablePaths.length > 0
+        ? `globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ${JSON.stringify(prewarmablePaths)};\n`
+        : "") +
+      `${VINEXT_PREGEN_END}\n` +
+      code;
   }
 
   fs.writeFileSync(workerEntry, code);
