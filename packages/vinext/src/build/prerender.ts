@@ -23,7 +23,10 @@ import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
-import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
+import {
+  buildPregeneratedConcretePathTable,
+  isCdnCachePolicyHeaderName,
+} from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -1450,13 +1453,18 @@ export async function prerenderApp({
             const response = await rscHandler(htmlRequest);
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
+            const persistedHeaders: Record<string, string> = {};
+            for (const [name, value] of response.headers) {
+              if (isCdnCachePolicyHeaderName(name)) persistedHeaders[name] = value;
+            }
+            if (linkHeader) persistedHeaders.link = linkHeader;
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
-            if (!response.ok || cacheControl.includes("no-store")) {
+            if (!response.ok || /\bno-store\b/i.test(cacheControl)) {
               await response.body?.cancel();
               return {
                 cacheControl,
-                linkHeader,
+                persistedHeaders,
                 html: null,
                 ok: response.ok,
                 requestCacheLife: null,
@@ -1472,7 +1480,7 @@ export async function prerenderApp({
             const processCacheLife = _consumeRequestScopedCacheLife();
             return {
               cacheControl,
-              linkHeader,
+              persistedHeaders,
               html,
               ok: true,
               requestCacheLife: responseCacheLife ?? processCacheLife,
@@ -1499,7 +1507,7 @@ export async function prerenderApp({
         // as a dynamic skip even for concrete generateStaticParams paths: a
         // generated param decides which URLs are admissible, not that the
         // render output is reusable.
-        if (htmlCacheControl.includes("no-store")) {
+        if (/\bno-store\b/i.test(htmlCacheControl)) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
 
@@ -1543,6 +1551,9 @@ export async function prerenderApp({
             throw new Error(
               `[vinext] prerenderApp: RSC fallback returned ${rscRes.status} for ${urlPath}`,
             );
+          }
+          for (const [name, value] of rscRes.headers) {
+            if (isCdnCachePolicyHeaderName(name)) htmlRender.persistedHeaders[name] = value;
           }
           rscData = new Uint8Array(await rscRes.arrayBuffer());
         }
@@ -1589,7 +1600,9 @@ export async function prerenderApp({
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
-          ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
+          ...(Object.keys(htmlRender.persistedHeaders).length > 0
+            ? { headers: htmlRender.persistedHeaders }
+            : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
         };

@@ -66,6 +66,23 @@ import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 
+function readBuiltRscCacheKeyMode(root: string): "header-digest" | "response-vary" | undefined {
+  try {
+    const serverDir = path.join(root, "dist", "server");
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(serverDir, "vinext-prerender-paths.json"), "utf-8"),
+    ) as { buildId?: unknown; rscCacheKeyMode?: unknown };
+    const buildId = fs.readFileSync(path.join(serverDir, "BUILD_ID"), "utf-8").trim();
+    if (manifest.buildId !== buildId) return undefined;
+    return manifest.rscCacheKeyMode === "header-digest" ||
+      manifest.rscCacheKeyMode === "response-vary"
+      ? manifest.rscCacheKeyMode
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type DeployOptions = {
@@ -889,8 +906,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
+  const builtRscCacheKeyMode = options.skipBuild ? readBuiltRscCacheKeyMode(info.root) : undefined;
+  let prerenderPathManifest: Awaited<ReturnType<typeof emitPrerenderPathManifest>> = null;
   if (shouldEmitPrerenderPathManifest) {
-    await emitPrerenderPathManifest({
+    prerenderPathManifest = await emitPrerenderPathManifest({
       root: info.root,
       nextConfig,
       preserveBuildMetadata: options.skipBuild,
@@ -916,6 +935,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
       root: info.root,
       concurrency: options.prerenderConcurrency,
       nextConfig,
+      rscCacheKeyMode:
+        builtRscCacheKeyMode ??
+        prerenderPathManifest?.rscCacheKeyMode ??
+        resolveRscCacheKeyMode(viteConfigMetadata.cacheConfig),
     });
     ranPrerender = true;
   }

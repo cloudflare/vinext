@@ -4,9 +4,9 @@ import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
-  hasRscPrewarmManifestMeta,
   injectRscPrewarmManifestMeta,
   injectRscPrewarmManifestMetaHtml,
+  removeRscPrewarmManifestInvalidatedHeaders,
 } from "./app-rsc-prewarm-meta.js";
 import {
   applyCdnResponseHeaders,
@@ -714,7 +714,7 @@ export async function renderPagesPageResponse(
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
   }
-  if (hasRscPrewarmManifestMeta()) responseHeaders.delete("Content-Length");
+  removeRscPrewarmManifestInvalidatedHeaders(responseHeaders);
 
   // Bot / crawler path: buffer the complete HTML, emit as a single chunk, and
   // attach an ETag. Bots (Googlebot, Google-PageRenderer, etc.) cannot parse

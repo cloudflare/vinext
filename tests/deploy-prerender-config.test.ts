@@ -94,7 +94,10 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
       'import { cloudflare } from "@cloudflare/vite-plugin";',
       'import vinext from "../packages/vinext/src/index";',
       ...(cacheConfig
-        ? ['import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter";']
+        ? [
+            'import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter";',
+            'import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";',
+          ]
         : []),
       "",
       "export default defineConfig({",
@@ -212,6 +215,41 @@ describe("deploy prerender config wiring", () => {
         concurrency: undefined,
         nextConfig: expect.any(Object),
       }),
+    );
+  });
+
+  it("passes the CDN adapter RSC cache-key mode to deploy prerendering", async () => {
+    writeProject('{ routes: "*" }', "{ cdn: cdnAdapter() }");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: tmpDir,
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+  });
+
+  it("preserves the built RSC cache-key mode for skip-build prerendering", async () => {
+    writeProject('{ routes: "*" }', "{ cdn: cdnAdapter() }");
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/"],
+        appPaths: ["/"],
+        rscCacheKeyMode: "header-digest",
+      }),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({ rscCacheKeyMode: "header-digest" }),
     );
   });
 

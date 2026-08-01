@@ -6,6 +6,7 @@ import { normalizeRscPrewarmPath } from "../client/rsc-prewarm-eligibility.js";
 import { resolveAssetsDir } from "../utils/asset-prefix.js";
 import { renderVinextBuiltUrl } from "../utils/built-asset-url.js";
 import { escapeRegExp } from "../utils/regex.js";
+import { injectRscPrewarmManifestMetaHtml } from "../server/app-rsc-prewarm-meta.js";
 
 declare global {
   var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
@@ -51,6 +52,20 @@ function emitRscPrewarmManifest(
   );
 }
 
+function injectRscPrewarmMetaIntoHtmlFiles(directory: string): void {
+  if (!fs.existsSync(directory)) return;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      injectRscPrewarmMetaIntoHtmlFiles(entryPath);
+    } else if (entry.isFile() && entry.name.endsWith(".html")) {
+      const html = fs.readFileSync(entryPath, "utf-8");
+      const injected = injectRscPrewarmManifestMetaHtml(html);
+      if (injected !== html) fs.writeFileSync(entryPath, injected, "utf-8");
+    }
+  }
+}
+
 export function injectPregeneratedConcretePaths(
   root: string,
   options: {
@@ -60,9 +75,6 @@ export function injectPregeneratedConcretePaths(
   } = {},
 ): void {
   const workerEntry = path.resolve(root, "dist", "server", "index.js");
-  if (!fs.existsSync(workerEntry)) return;
-
-  let code = fs.readFileSync(workerEntry, "utf-8").replace(VINEXT_PREGEN_RE, "");
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
@@ -85,6 +97,14 @@ export function injectPregeneratedConcretePaths(
     delete globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL;
     delete globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
   }
+
+  if (prewarmManifestUrl) {
+    injectRscPrewarmMetaIntoHtmlFiles(path.join(root, "dist", "server", "prerendered-routes"));
+    injectRscPrewarmMetaIntoHtmlFiles(path.join(root, "dist", "client"));
+  }
+
+  if (!fs.existsSync(workerEntry)) return;
+  let code = fs.readFileSync(workerEntry, "utf-8").replace(VINEXT_PREGEN_RE, "");
 
   if (table.length > 0 || prewarmManifestUrl) {
     code =

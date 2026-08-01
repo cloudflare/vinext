@@ -15,6 +15,12 @@ export function hasRscPrewarmManifestMeta(): boolean {
   return getRscPrewarmManifestMetaHtml().length > 0;
 }
 
+export function removeRscPrewarmManifestInvalidatedHeaders(headers: Headers): void {
+  if (!hasRscPrewarmManifestMeta()) return;
+  headers.delete("Content-Length");
+  headers.delete("ETag");
+}
+
 export function injectRscPrewarmManifestMetaHtml(html: string): string {
   const metaHtml = getRscPrewarmManifestMetaHtml();
   if (!metaHtml || html.includes(`name="${RSC_PREWARM_MANIFEST_META_NAME}"`)) return html;

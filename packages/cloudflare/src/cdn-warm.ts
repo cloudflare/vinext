@@ -265,16 +265,28 @@ export function readPrerenderWarmPlan(
   const manifestPaths = getPrerenderedConcretePaths(manifest, options).filter(isSafeWarmPathname);
   const paths =
     !shouldPreferPrerenderManifest && pathManifestPlan !== null
-      ? pathManifestPlan.paths
+      ? [...pathManifestPlan.paths]
       : manifestPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig));
-  const rscPaths = getPrewarmableAppPaths(manifest).filter(isSafeWarmPathname);
+  const rscCacheKeyMode = pathManifestPlan?.rscCacheKeyMode ?? "header-digest";
+  const rscPaths =
+    rscCacheKeyMode === "response-vary"
+      ? getPrewarmableAppPaths(manifest).filter(isSafeWarmPathname)
+      : [];
+  const configuredRscPaths = rscPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig));
+  const htmlPathSet = new Set(paths);
+  for (const pathname of configuredRscPaths) {
+    if (!htmlPathSet.has(pathname)) {
+      htmlPathSet.add(pathname);
+      paths.push(pathname);
+    }
+  }
   return {
     ...(pathManifestPlan?.deploymentId || fullManifestDeploymentId
       ? { deploymentId: pathManifestPlan?.deploymentId ?? fullManifestDeploymentId }
       : {}),
     paths,
-    rscPaths: rscPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
-    rscCacheKeyMode: pathManifestPlan?.rscCacheKeyMode ?? "header-digest",
+    rscPaths: configuredRscPaths,
+    rscCacheKeyMode,
   };
 }
 

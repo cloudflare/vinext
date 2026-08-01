@@ -80,6 +80,26 @@ function buildQueryInvariantRenderObservation(): RenderObservation {
   });
 }
 
+it("injects the RSC eligibility manifest into cached App HTML", async () => {
+  globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL = "/_next/static/prewarm.json";
+  try {
+    const response = buildAppPageCachedResponse(
+      buildCachedAppPageValue("<html><head></head><body>cached</body></html>"),
+      {
+        cacheState: "HIT",
+        isRscRequest: false,
+        revalidateSeconds: 60,
+      },
+    );
+
+    await expect(response?.text()).resolves.toContain(
+      'name="vinext-rsc-prewarm-manifest" content="/_next/static/prewarm.json"',
+    );
+  } finally {
+    delete globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL;
+  }
+});
+
 describe("app page cache helpers", () => {
   it("builds implicit page cache tags with unique extra tags", () => {
     expect(buildAppPageCacheTags("/blog/hello", ["custom", "_N_T_/blog/layout"])).toEqual([

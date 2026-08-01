@@ -287,6 +287,78 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
+  it("retains final cache policy headers so non-cacheable App results are not prewarmable", async () => {
+    const root = tmpDir("vinext-prerender-cache-policy-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+    );
+    fs.mkdirSync(path.join(appDir, "no-store"));
+    fs.writeFileSync(
+      path.join(appDir, "no-store", "page.tsx"),
+      "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+    );
+
+    const rscPayload = '0:["$","div",null,{"children":"private"}]\n';
+    const server = createServer((req, res) => {
+      if (req.url === "/__vinext_nonexistent_for_404__") {
+        res.statusCode = 404;
+        res.end("not found");
+        return;
+      }
+      if (req.url === "/no-store") {
+        res.setHeader("Cache-Control", "public, No-Store");
+      } else {
+        res.setHeader("Cache-Control", "private, max-age=60");
+        res.setHeader("Cloudflare-CDN-Cache-Control", "no-cache");
+      }
+      res.setHeader("content-type", "text/html");
+      res.end(
+        `<html><body>${runtimeRscChunkScript(rscPayload)}${runtimeRscDoneScript()}</body></html>`,
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const [{ prerenderApp }, { appRouter }, { resolveNextConfig }, { getPrewarmableAppPaths }] =
+        await Promise.all([
+          import("../packages/vinext/src/build/prerender.js"),
+          import("../packages/vinext/src/routing/app-router.js"),
+          import("../packages/vinext/src/config/next-config.js"),
+          import("../packages/vinext/src/server/prerender-manifest.js"),
+        ]);
+      const prerenderResult = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+
+      const route = findRoute(prerenderResult.routes, "/");
+      expect(route).toMatchObject({
+        status: "rendered",
+        headers: {
+          "cache-control": "private, max-age=60",
+          "cloudflare-cdn-cache-control": "no-cache",
+        },
+      });
+      if (!route || route.status !== "rendered") throw new Error("Expected rendered route");
+      expect(getPrewarmableAppPaths({ routes: [route] })).toEqual([]);
+      expect(findRoute(prerenderResult.routes, "/no-store")).toMatchObject({
+        status: "skipped",
+        reason: "dynamic",
+      });
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to a second RSC: 1 invocation when middleware short-circuits with custom HTML", async () => {
     // Middleware that returns a 200 HTML body bypasses the App Router
     // pipeline — the response contains no embed chunks. The driver must

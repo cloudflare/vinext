@@ -220,6 +220,10 @@ describe("injectPregeneratedConcretePaths", () => {
         ],
       }),
     );
+    writeFile(
+      "dist/server/prerendered-routes/static.html",
+      "<html><head></head><body>static</body></html>",
+    );
 
     injectPregeneratedConcretePaths(tmpDir, {
       deploymentId: "deploy-a",
@@ -246,6 +250,38 @@ describe("injectPregeneratedConcretePaths", () => {
     expect(output).toContain(
       'globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/static","/posts/first"];',
     );
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/server/prerendered-routes/static.html"), "utf-8"),
+    ).toContain(`name="vinext-rsc-prewarm-manifest"`);
+  });
+
+  it("emits eligibility metadata for static export HTML without a Worker entry", () => {
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/client/about.html", "<html><head></head><body>about</body></html>");
+
+    injectPregeneratedConcretePaths(tmpDir, { emitRscPrewarmManifest: true });
+
+    expect(fs.readFileSync(path.join(tmpDir, "dist/client/about.html"), "utf-8")).toContain(
+      'name="vinext-rsc-prewarm-manifest"',
+    );
+    expect(
+      fs
+        .readdirSync(path.join(tmpDir, "dist/client/_next/static"))
+        .some((name) => /^vinext-rsc-prewarm-[a-f0-9]{16}\.json$/.test(name)),
+    ).toBe(true);
   });
 
   it("changes the eligibility asset hash with its content and removes the stale asset", () => {

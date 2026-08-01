@@ -204,12 +204,19 @@ describe("App Router RSC cache-busting", () => {
     expect(createServerActionRequestUrl("/server?name=alice#section")).toBe("/server?name=alice");
   });
 
-  it("attaches client reuse manifests without making them shared cache variants", async () => {
+  it("includes client reuse manifests in the RSC cache identity", async () => {
     const manifestHeader = '{"entries":[]}';
     const headers = createRscRequestHeaders({ clientReuseManifestHeader: manifestHeader });
 
     expect(headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)).toBe(manifestHeader);
-    await expect(createRscRequestUrl("/dashboard", headers)).resolves.toBe("/dashboard?_rsc");
+    await expect(createRscRequestUrl("/dashboard", headers)).resolves.toMatch(
+      /^\/dashboard\?_rsc=.+/,
+    );
+    await expect(
+      computeRscCacheBustingSearchParam(
+        createRscRequestHeaders({ clientReuseManifestHeader: '{"entries":["other"]}' }),
+      ),
+    ).resolves.not.toBe(await computeRscCacheBustingSearchParam(headers));
   });
 
   it("changes the hash when a varying header changes", async () => {
@@ -397,6 +404,22 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.headers.get("Location")).toMatch(/^\/photos\/42\?_rsc=.+/);
   });
 
+  it("moves headerless bare RSC requests for ineligible paths to the non-canonical transport", async () => {
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/about"];
+    const request = new Request("https://example.com/photos/42?_rsc", {
+      headers: createRscRequestHeaders(),
+    });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      cacheKeyMode: "response-vary",
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe("/photos/42.rsc?_rsc");
+  });
+
   it("canonicalizes encoded .rsc transport suffixes without decoding path delimiters", async () => {
     globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/photos%2Farchive/42"];
     const request = new Request("https://example.com/photos%2Farchive/42%2E%72%73%63", {
@@ -515,7 +538,7 @@ describe("App Router RSC cache-busting", () => {
     // Mirrors Next.js App Router's base Vary header:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+      "RSC, x-nextjs-deployment-id, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Client-Reuse-Manifest",
     );
     expect(VINEXT_RSC_VARY_HEADER.split(", ")).not.toContain("Accept");
   });

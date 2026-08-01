@@ -8,7 +8,10 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
-import { hasRscPrewarmManifestMeta, injectRscPrewarmManifestMeta } from "./app-rsc-prewarm-meta.js";
+import {
+  injectRscPrewarmManifestMeta,
+  removeRscPrewarmManifestInvalidatedHeaders,
+} from "./app-rsc-prewarm-meta.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
@@ -299,7 +302,7 @@ export async function renderAppPageHtmlResponse(
   }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
-  if (hasRscPrewarmManifestMeta()) headers.delete("Content-Length");
+  removeRscPrewarmManifestInvalidatedHeaders(headers);
 
   return new Response(injectRscPrewarmManifestMeta(safeStream), {
     status: options.status,

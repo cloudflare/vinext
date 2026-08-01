@@ -46,17 +46,19 @@ export function getRenderedAppRoutes(routes: PrerenderManifestRoute[]): Prerende
   return routes.filter((r) => r.status === "rendered" && r.router === "app");
 }
 
+export function isCdnCachePolicyHeaderName(name: string): boolean {
+  const lowerName = name.toLowerCase();
+  return (
+    lowerName === "cache-control" ||
+    lowerName === "cdn-cache-control" ||
+    lowerName.endsWith("-cdn-cache-control")
+  );
+}
+
 function hasNonCacheableResponseHeaders(headers: Record<string, string> | undefined): boolean {
   if (!headers) return false;
   for (const [name, value] of Object.entries(headers)) {
-    const lowerName = name.toLowerCase();
-    if (
-      lowerName !== "cache-control" &&
-      lowerName !== "cdn-cache-control" &&
-      lowerName !== "cloudflare-cdn-cache-control"
-    ) {
-      continue;
-    }
+    if (!isCdnCachePolicyHeaderName(name)) continue;
     if (/\b(?:no-store|no-cache|private)\b/i.test(value)) return true;
   }
   return false;

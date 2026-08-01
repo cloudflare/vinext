@@ -22,6 +22,10 @@ import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
+import {
+  injectRscPrewarmManifestMetaHtml,
+  removeRscPrewarmManifestInvalidatedHeaders,
+} from "./app-rsc-prewarm-meta.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -281,8 +285,9 @@ export function buildAppPageCachedResponse(
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
   });
+  removeRscPrewarmManifestInvalidatedHeaders(htmlHeaders);
 
-  return new Response(cachedValue.html, {
+  return new Response(injectRscPrewarmManifestMetaHtml(cachedValue.html), {
     status,
     headers: htmlHeaders,
   });

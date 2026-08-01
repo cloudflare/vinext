@@ -238,6 +238,18 @@ describe("Form SSR rendering", () => {
     expect(html).toContain("</form>");
   });
 
+  it("normalizes string actions to trailingSlash config", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    vi.resetModules();
+    const { default: TrailingSlashForm } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(TrailingSlashForm, { action: "/search" }),
+    );
+
+    expect(html).toContain('action="/search/"');
+  });
+
   it("renders with function action (server action)", () => {
     const serverAction = async (_formData: FormData) => {
       "use server";

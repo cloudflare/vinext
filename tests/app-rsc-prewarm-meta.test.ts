@@ -4,6 +4,7 @@ import {
   getRscPrewarmManifestMetaHtml,
   injectRscPrewarmManifestMeta,
   injectRscPrewarmManifestMetaHtml,
+  removeRscPrewarmManifestInvalidatedHeaders,
 } from "../packages/vinext/src/server/app-rsc-prewarm-meta.js";
 
 const META_URL = "/assets/rsc-prewarm-manifest.abc123.json";
@@ -42,6 +43,15 @@ describe("RSC prewarm manifest meta", () => {
     expect(getRscPrewarmManifestMetaHtml()).toContain(
       'content="/asset?x=&lt;tag&gt;&amp;quote=&quot;yes&quot;"',
     );
+  });
+
+  it("removes representation validators invalidated by HTML injection", () => {
+    const headers = new Headers({ "Content-Length": "123", ETag: '"before"' });
+
+    removeRscPrewarmManifestInvalidatedHeaders(headers);
+
+    expect(headers.get("Content-Length")).toBeNull();
+    expect(headers.get("ETag")).toBeNull();
   });
 
   it("injects before a split uppercase closing head tag", async () => {

@@ -38,7 +38,7 @@ import {
   prefetchRscResponse,
 } from "./navigation.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { withBasePath } from "./url-utils.js";
+import { normalizePathTrailingSlash, withBasePath } from "./url-utils.js";
 import {
   createRscClientRequestIdentity,
   createRscRequestHeaders,
@@ -54,6 +54,7 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 // upstream `form.tsx` notes "this should not have basePath added, because we
 // can't add it before hydration").
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+const __trailingSlash = process.env.__VINEXT_TRAILING_SLASH === "true";
 
 // Props that <Form> does not allow users to set directly, matching Next.js's
 // DISALLOWED_FORM_PROPS in packages/next/src/client/form-shared.tsx.
@@ -299,7 +300,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
   const setRefs = useMergedRef(setFormRef, ref ?? null);
 
   // Compute actionHref unconditionally (empty string for function actions — unused).
-  const actionHref = typeof action === "string" ? withBasePath(action, __basePath) : "";
+  const actionHref =
+    typeof action === "string"
+      ? normalizePathTrailingSlash(withBasePath(action, __basePath), __trailingSlash)
+      : "";
 
   // Viewport-based prefetch: when the form enters the viewport, prefetch the
   // RSC payload for the action URL. App Router only; disabled in dev (matches

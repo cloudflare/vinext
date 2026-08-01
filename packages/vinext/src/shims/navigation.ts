@@ -56,6 +56,7 @@ import {
 import { extractRscCompletionMetadata } from "../server/rsc-completion-metadata.js";
 import {
   isHashOnlyBrowserUrlChange,
+  normalizePathTrailingSlash,
   toBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
@@ -244,6 +245,7 @@ const isServer = typeof window === "undefined";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+const __trailingSlash = process.env.__VINEXT_TRAILING_SLASH === "true";
 /** prefetch inlining (Segment Cache wire mode), injected by the plugin at build time */
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 
@@ -836,9 +838,9 @@ function toAppPrefetchDestination(href: string): string | null {
   const browserHref = toBrowserNavigationHref(localHref, window.location.href, __basePath);
   try {
     const url = new URL(browserHref, window.location.href);
-    return `${url.pathname}${url.search}`;
+    return normalizePathTrailingSlash(`${url.pathname}${url.search}`, __trailingSlash);
   } catch {
-    return browserHref.split("#", 1)[0];
+    return normalizePathTrailingSlash(browserHref.split("#", 1)[0], __trailingSlash);
   }
 }
 
