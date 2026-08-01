@@ -11,9 +11,7 @@ import {
   buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
-  getZeroPercentStagingTraffic,
   parseDeployArgs,
-  resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
   runWranglerDeploy,
@@ -3480,74 +3478,5 @@ pattern = "staging.example.com/*"
       name: "my-worker-staging",
       customDomain: "staging.example.com",
     });
-  });
-});
-
-// ─── CDN warmup Worker version overrides ───────────────────────────────────
-
-describe("resolveWorkerNameForVersionOverride", () => {
-  it("uses the top-level Worker name for production", () => {
-    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
-    expect(resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), {})).toBe("my-worker");
-  });
-
-  it("uses the CLI Worker name exactly when provided", () => {
-    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "config-worker" }));
-    expect(
-      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), {
-        name: "cli-worker",
-        env: "staging",
-      }),
-    ).toBe("cli-worker");
-  });
-
-  it("appends the target environment for Wrangler legacy environments", () => {
-    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
-    expect(
-      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
-    ).toBe("my-worker-staging");
-  });
-
-  it("uses env-specific Worker names for Wrangler legacy environments", () => {
-    writeFile(
-      tmpDir,
-      "wrangler.jsonc",
-      JSON.stringify({
-        name: "my-worker",
-        env: { staging: { name: "custom-staging-worker" } },
-      }),
-    );
-    expect(
-      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
-    ).toBe("custom-staging-worker");
-  });
-
-  it("keeps the service name for Wrangler service environments", () => {
-    writeFile(
-      tmpDir,
-      "wrangler.jsonc",
-      JSON.stringify({
-        name: "my-worker",
-        legacy_env: false,
-        env: { staging: {} },
-      }),
-    );
-    expect(
-      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
-    ).toBe("my-worker");
-  });
-});
-
-describe("getZeroPercentStagingTraffic", () => {
-  it("does not stage the uploaded version when it is already the current deployment", () => {
-    expect(
-      getZeroPercentStagingTraffic(
-        {
-          versions: [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
-          output: "{}",
-        },
-        "22222222-2222-4222-8222-222222222222",
-      ),
-    ).toBeNull();
   });
 });

@@ -226,10 +226,33 @@ describe("deploy prerender config wiring", () => {
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        injectPregeneratedPaths: true,
         root: tmpDir,
         rscCacheKeyMode: "response-vary",
       }),
     );
+  });
+
+  it("runs the final prerender eligibility pass for warm-only deploys", async () => {
+    writeProject("undefined", "{ cdn: cdnAdapter() }");
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        injectPregeneratedPaths: false,
+        root: tmpDir,
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
+      ),
+    ).toMatchObject({ rscCacheKeyMode: "response-vary" });
   });
 
   it("preserves the built RSC cache-key mode for skip-build prerendering", async () => {
@@ -430,7 +453,7 @@ describe("deploy prerender config wiring", () => {
     ]);
   });
 
-  it("discovers warmup paths during skip-build warm CDN deploys", async () => {
+  it("preserves built warmup paths during skip-build CDN deploys", async () => {
     writeApiOnlyProject();
     writeFile(
       "dist/server/vinext-prerender-paths.json",
@@ -457,14 +480,16 @@ describe("deploy prerender config wiring", () => {
       buildId: "build-a",
       deploymentId: "built-deploy-id",
       trailingSlash: true,
-      paths: [],
-      appPaths: [],
+      paths: ["/stale"],
+      appPaths: ["/stale"],
       rscCacheKeyMode: "response-vary",
     });
-    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
-      expect.stringContaining("wrangler"),
-      "deploy",
-    ]);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
+      }),
+    ).toBe(true);
   });
 
   it("loads non-literal cache descriptors from plugin metadata", async () => {

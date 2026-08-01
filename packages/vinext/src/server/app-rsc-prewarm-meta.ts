@@ -11,7 +11,7 @@ export function getRscPrewarmManifestMetaHtml(): string {
   return `<meta name="${RSC_PREWARM_MANIFEST_META_NAME}" content="${escapeHtmlAttr(manifestUrl)}">`;
 }
 
-export function hasRscPrewarmManifestMeta(): boolean {
+function hasRscPrewarmManifestMeta(): boolean {
   return getRscPrewarmManifestMetaHtml().length > 0;
 }
 
@@ -21,12 +21,24 @@ export function removeRscPrewarmManifestInvalidatedHeaders(headers: Headers): vo
   headers.delete("ETag");
 }
 
+const RSC_PREWARM_MANIFEST_META_SOURCE = `<meta\\b(?=[^>]*\\bname\\s*=\\s*(["'])${RSC_PREWARM_MANIFEST_META_NAME}\\1)[^>]*>`;
+
+function updateRscPrewarmManifestMetaInHead(html: string, metaHtml: string): string {
+  const headEnd = html.toLowerCase().indexOf("</head>");
+  if (headEnd === -1) return html;
+
+  const head = html.slice(0, headEnd);
+  const tail = html.slice(headEnd);
+  const existingMeta = new RegExp(RSC_PREWARM_MANIFEST_META_SOURCE, "i");
+  if (existingMeta.test(head)) {
+    return head.replace(new RegExp(RSC_PREWARM_MANIFEST_META_SOURCE, "gi"), metaHtml) + tail;
+  }
+  return metaHtml ? head + metaHtml + tail : html;
+}
+
 export function injectRscPrewarmManifestMetaHtml(html: string): string {
   const metaHtml = getRscPrewarmManifestMetaHtml();
-  if (!metaHtml || html.includes(`name="${RSC_PREWARM_MANIFEST_META_NAME}"`)) return html;
-  const index = html.toLowerCase().indexOf("</head>");
-  if (index === -1) return html;
-  return html.slice(0, index) + metaHtml + html.slice(index);
+  return updateRscPrewarmManifestMetaInHead(html, metaHtml);
 }
 
 /** Inject the small, content-hashed eligibility-manifest URL into App HTML. */
@@ -39,7 +51,6 @@ export function injectRscPrewarmManifestMeta(
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const closeTag = "</head>";
-  const existingMetaMarker = `name="${RSC_PREWARM_MANIFEST_META_NAME}"`;
   const maxHeadScanChars = 64 * 1024;
   let pending = "";
   let injected = false;
@@ -57,13 +68,7 @@ export function injectRscPrewarmManifestMeta(
 
         const index = pending.toLowerCase().indexOf(closeTag);
         if (index !== -1) {
-          controller.enqueue(
-            encoder.encode(
-              pending.includes(existingMetaMarker)
-                ? pending
-                : pending.slice(0, index) + metaHtml + pending.slice(index),
-            ),
-          );
+          controller.enqueue(encoder.encode(updateRscPrewarmManifestMetaInHead(pending, metaHtml)));
           pending = "";
           injected = true;
           return;

@@ -322,6 +322,17 @@ describe("CloudflareCdnCacheAdapter", () => {
     }
   });
 
+  it("uses a CDN-scoped no-store policy for browser no-cache responses", () => {
+    expect(
+      adapter.buildResponseHeaders({ cacheControl: "no-cache, max-age=0", tags: ["x"] }),
+    ).toEqual({
+      "Cache-Control": "no-cache, max-age=0",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": "no-store",
+      "Cache-Tag": null,
+    });
+  });
+
   it("revalidateTag purges the Workers Cache by tag via ctx.cache.purge", async () => {
     const purge = vi.fn(async () => {});
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {

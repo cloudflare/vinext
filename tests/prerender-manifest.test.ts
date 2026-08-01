@@ -120,6 +120,22 @@ describe("getPrewarmableAppPaths", () => {
           fallback: false,
           headers: { "Cloudflare-CDN-Cache-Control": "no-cache" },
         },
+        {
+          route: "/vary-all",
+          status: "rendered",
+          router: "app",
+          revalidate: 60,
+          fallback: false,
+          headers: { Vary: "Accept-Encoding, *" },
+        },
+        {
+          route: "/sets-cookie",
+          status: "rendered",
+          router: "app",
+          revalidate: 60,
+          fallback: false,
+          hasSetCookie: true,
+        },
       ],
     };
 

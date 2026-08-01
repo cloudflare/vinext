@@ -16,7 +16,11 @@ import {
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
-import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
+import {
+  applyDeploymentIdHeader,
+  getDeploymentId,
+  NEXT_DEPLOYMENT_ID_HEADER,
+} from "../utils/deployment-id.js";
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 import { isServerRscPrewarmEligiblePathname } from "../client/rsc-prewarm-eligibility.js";
 export {
@@ -40,7 +44,7 @@ export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 
 export const VINEXT_RSC_VARY_HEADER = [
   RSC_HEADER,
-  NEXTJS_DEPLOYMENT_ID_HEADER,
+  NEXT_DEPLOYMENT_ID_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,

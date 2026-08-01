@@ -1054,6 +1054,31 @@ describe("prefetch cache eviction", () => {
     expect(new URL(fetchedUrl!, "http://localhost").pathname).toBe("/reports/");
   });
 
+  it("normalizes programmatic navigation URLs to trailingSlash config", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigate = vi.fn(async () => {});
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+
+    await navigation.navigateClientSide("/reports", "push", true);
+
+    expect(navigate).toHaveBeenCalledWith(
+      "/reports/",
+      0,
+      "navigate",
+      "push",
+      undefined,
+      false,
+      undefined,
+      expect.anything(),
+      "transition",
+    );
+  });
+
   it("keeps default-kind router.prefetch learning-only on loading-shell routes (#2707)", async () => {
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },

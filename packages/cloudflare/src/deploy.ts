@@ -15,7 +15,10 @@ import { createRequire } from "node:module";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths";
+import {
+  emitPrerenderPathManifest,
+  type PrerenderPathManifest,
+} from "vinext/internal/build/prerender-paths";
 import { resolveRscCacheKeyMode } from "vinext/internal/cache-adapters";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
@@ -55,31 +58,25 @@ import {
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
 import {
-  runWranglerDeploymentStatus,
   runWranglerTriggersDeploy,
   runWranglerVersionDeploy,
   runWranglerVersionUpload,
-  type WranglerDeploymentStatus,
-  type WranglerVersionTraffic,
 } from "./version-deploy.js";
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 
-function readBuiltRscCacheKeyMode(root: string): "header-digest" | "response-vary" | undefined {
+function readBuiltPrerenderPathManifest(root: string): PrerenderPathManifest | null {
   try {
     const serverDir = path.join(root, "dist", "server");
     const manifest = JSON.parse(
       fs.readFileSync(path.join(serverDir, "vinext-prerender-paths.json"), "utf-8"),
-    ) as { buildId?: unknown; rscCacheKeyMode?: unknown };
+    ) as PrerenderPathManifest;
     const buildId = fs.readFileSync(path.join(serverDir, "BUILD_ID"), "utf-8").trim();
-    if (manifest.buildId !== buildId) return undefined;
-    return manifest.rscCacheKeyMode === "header-digest" ||
-      manifest.rscCacheKeyMode === "response-vary"
-      ? manifest.rscCacheKeyMode
-      : undefined;
+    if (manifest.buildId !== buildId || !Array.isArray(manifest.paths)) return null;
+    return manifest;
   } catch {
-    return undefined;
+    return null;
   }
 }
 
@@ -571,12 +568,7 @@ export async function deployWithCdnWarmup(
     Pick<CdnWarmOptions, "deploymentId" | "rscCacheKeyMode" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
-  const wranglerConfig = parseWranglerConfig(root, options.config);
-  const deploymentStatus = readWranglerDeploymentStatus(root, options);
-  const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
-  let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
-  let warmedBeforePromotion = false;
   let triggersApplied = false;
 
   function applyTriggers(): void {
@@ -585,95 +577,47 @@ export async function deployWithCdnWarmup(
     triggersApplied = true;
   }
 
-  if (stagingTraffic) {
-    staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
-    try {
-      applyTriggers();
-    } catch (error) {
-      throw withStagedVersionCleanupNote(error);
-    }
-    const targetUrl = resolveCdnWarmupTargetUrl(
-      root,
-      staged.deployedUrl ?? triggersDeployedUrl,
-      options,
-    );
-    const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
-    const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
-    if (targetUrl && headers) {
-      try {
-        await warmCdnCache({
-          targetUrl,
-          paths,
-          deploymentId: options.deploymentId,
-          headers,
-          rscCacheKeyMode: options.rscCacheKeyMode,
-          rscPaths: options.rscPaths,
-          concurrency: options.warmCdnConcurrency,
-          timeoutMs: options.warmCdnTimeout,
-          retries: options.warmCdnRetries,
-          strict: options.warmCdnStrict,
-        });
-      } catch (error) {
-        throw withStagedVersionCleanupNote(error);
-      }
-      warmedBeforePromotion = true;
-    } else if (options.warmCdnStrict) {
-      throw new Error(
-        "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
-          "Configure a route/custom domain and Worker name, or rerun without --warm-cdn-strict. " +
-          getStagedVersionCleanupNote(),
-      );
-    }
-  } else {
-    console.warn(
-      "  CDN warmup: pre-traffic version override skipped because the current deployment is not a single 100% version.",
-    );
-  }
-
   const deployed = runWranglerVersionDeploy(
     root,
     [{ versionId: upload.versionId, percentage: 100 }],
     options,
-    warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
+    "promote-uploaded",
   );
-  if (!warmedBeforePromotion) {
-    try {
-      applyTriggers();
-    } catch (error) {
-      throw withPromotedVersionTriggerNote(error);
-    }
-    const targetUrl = resolveCdnWarmupTargetUrl(
-      root,
-      deployed.deployedUrl ?? triggersDeployedUrl,
-      options,
+  try {
+    applyTriggers();
+  } catch (error) {
+    throw withPromotedVersionTriggerNote(error);
+  }
+  const targetUrl = resolveCdnWarmupTargetUrl(
+    root,
+    deployed.deployedUrl ?? triggersDeployedUrl,
+    options,
+  );
+  if (targetUrl) {
+    await warmCdnCache({
+      targetUrl,
+      paths,
+      deploymentId: options.deploymentId,
+      concurrency: options.warmCdnConcurrency,
+      timeoutMs: options.warmCdnTimeout,
+      retries: options.warmCdnRetries,
+      rscCacheKeyMode: options.rscCacheKeyMode,
+      rscPaths: options.rscPaths,
+      strict: options.warmCdnStrict,
+    });
+  } else if (options.warmCdnStrict) {
+    throw new Error(
+      "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
+        "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or rerun without --warm-cdn-strict.",
     );
-    if (targetUrl) {
-      await warmCdnCache({
-        targetUrl,
-        paths,
-        deploymentId: options.deploymentId,
-        concurrency: options.warmCdnConcurrency,
-        timeoutMs: options.warmCdnTimeout,
-        retries: options.warmCdnRetries,
-        rscCacheKeyMode: options.rscCacheKeyMode,
-        rscPaths: options.rscPaths,
-        strict: options.warmCdnStrict,
-      });
-    } else if (options.warmCdnStrict) {
-      throw new Error(
-        "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
-          "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or rerun without --warm-cdn-strict.",
-      );
-    } else {
-      console.warn(
-        "  CDN warmup skipped: no production URL could be inferred from wrangler config or output.",
-      );
-    }
+  } else {
+    console.warn(
+      "  CDN warmup skipped: no production URL could be inferred from wrangler config or output.",
+    );
   }
   return (
     deployed.deployedUrl ??
     triggersDeployedUrl ??
-    staged?.deployedUrl ??
     upload.previewUrl ??
     "(URL not detected in wrangler output)"
   );
@@ -699,83 +643,8 @@ export function resolveCdnWarmupTargetUrl(
   return deployedUrl;
 }
 
-function readWranglerDeploymentStatus(
-  root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
-): WranglerDeploymentStatus | null {
-  try {
-    return runWranglerDeploymentStatus(root, options);
-  } catch {
-    return null;
-  }
-}
-
-export function getZeroPercentStagingTraffic(
-  deployment: WranglerDeploymentStatus | null,
-  versionId: string,
-): WranglerVersionTraffic[] | null {
-  const current = deployment?.versions ?? [];
-  if (current.length !== 1 || current[0].percentage !== 100) {
-    return null;
-  }
-  if (current[0].versionId === versionId) {
-    return null;
-  }
-  return [current[0], { versionId, percentage: 0 }];
-}
-
 function getWranglerTargetEnv(options: Pick<DeployOptions, "preview" | "env">): string | undefined {
   return options.env || (options.preview ? "preview" : undefined);
-}
-
-type ParsedWranglerConfig = NonNullable<ReturnType<typeof parseWranglerConfig>>;
-
-export function resolveWorkerNameForVersionOverride(
-  config: ParsedWranglerConfig | null,
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
-): string | undefined {
-  if (options.name) {
-    return options.name;
-  }
-
-  const env = getWranglerTargetEnv(options);
-  if (!env) {
-    return config?.name;
-  }
-
-  if (config?.legacyEnv === false) {
-    return config.name;
-  }
-
-  return config?.env?.[env]?.name ?? (config?.name ? `${config.name}-${env}` : undefined);
-}
-
-function quoteStructuredHeaderString(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
-export function buildVersionOverrideHeaders(
-  workerName: string | undefined,
-  versionId: string,
-): HeadersInit | undefined {
-  if (!workerName) return undefined;
-  return {
-    "Cloudflare-Workers-Version-Overrides": `${workerName}=${quoteStructuredHeaderString(versionId)}`,
-  };
-}
-
-function withStagedVersionCleanupNote(error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  return new Error(`${message} ${getStagedVersionCleanupNote()}`, {
-    cause: error,
-  });
-}
-
-function getStagedVersionCleanupNote(): string {
-  return (
-    "The uploaded version may remain staged at 0% with the previous version still serving 100% traffic; " +
-    "rerun deploy to promote it or use `wrangler versions deploy` to choose the desired version split."
-  );
 }
 
 function withPromotedVersionTriggerNote(error: unknown): Error {
@@ -906,16 +775,22 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  const builtRscCacheKeyMode = options.skipBuild ? readBuiltRscCacheKeyMode(info.root) : undefined;
-  let prerenderPathManifest: Awaited<ReturnType<typeof emitPrerenderPathManifest>> = null;
-  if (shouldEmitPrerenderPathManifest) {
+  const builtPrerenderPathManifest = options.skipBuild
+    ? readBuiltPrerenderPathManifest(info.root)
+    : null;
+  const builtRscCacheKeyMode = builtPrerenderPathManifest
+    ? (builtPrerenderPathManifest.rscCacheKeyMode ?? "header-digest")
+    : undefined;
+  const resolvedRscCacheKeyMode =
+    builtRscCacheKeyMode ?? resolveRscCacheKeyMode(viteConfigMetadata.cacheConfig);
+  let prerenderPathManifest: Awaited<ReturnType<typeof emitPrerenderPathManifest>> =
+    builtPrerenderPathManifest;
+  if (shouldEmitPrerenderPathManifest && !builtPrerenderPathManifest) {
     prerenderPathManifest = await emitPrerenderPathManifest({
       root: info.root,
       nextConfig,
       preserveBuildMetadata: options.skipBuild,
-      rscCacheKeyMode: options.skipBuild
-        ? undefined
-        : resolveRscCacheKeyMode(viteConfigMetadata.cacheConfig),
+      rscCacheKeyMode: resolvedRscCacheKeyMode,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }
@@ -925,8 +800,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // when next.config.js sets `output: 'export'` (every route must be statically
   // exportable). The CLI flag wins when more than one trigger is present.
   let ranPrerender = false;
-  if (prerenderDecision) {
-    console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
+  if (prerenderDecision || options.warmCdnCache) {
+    console.log(
+      `\n  ${
+        prerenderDecision
+          ? formatVinextPrerenderLabel(prerenderDecision)
+          : "Pre-rendering cacheable routes for CDN warmup..."
+      }`,
+    );
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
@@ -934,16 +815,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
     await runPrerender({
       root: info.root,
       concurrency: options.prerenderConcurrency,
+      injectPregeneratedPaths: Boolean(prerenderDecision),
       nextConfig,
-      rscCacheKeyMode:
-        builtRscCacheKeyMode ??
-        prerenderPathManifest?.rscCacheKeyMode ??
-        resolveRscCacheKeyMode(viteConfigMetadata.cacheConfig),
+      rscCacheKeyMode: prerenderPathManifest?.rscCacheKeyMode ?? resolvedRscCacheKeyMode,
     });
     ranPrerender = true;
   }
 
-  if (ranPrerender) {
+  if (ranPrerender && prerenderDecision) {
     try {
       await populateKVCacheFromPrerenderedArtifacts(
         root,

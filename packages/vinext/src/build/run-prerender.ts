@@ -106,6 +106,8 @@ type RunPrerenderOptions = {
   rscBundlePath?: string;
   /** RSC URL strategy selected by the configured CDN cache adapter. */
   rscCacheKeyMode?: RscCacheKeyMode;
+  /** Whether rendered artifacts should become runtime pregenerated routes. */
+  injectPregeneratedPaths?: boolean;
   /**
    * Maximum number of routes rendered in parallel.
    * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
@@ -380,6 +382,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     assetPrefix: config.assetPrefix,
     deploymentId: config.deploymentId,
     emitRscPrewarmManifest: options.rscCacheKeyMode === "response-vary",
+    includePregeneratedConcretePaths: options.injectPregeneratedPaths !== false,
   });
   if (fs.existsSync(rscBundlePath)) {
     rememberCurrentServerEntryImportMtime(rscBundlePath);

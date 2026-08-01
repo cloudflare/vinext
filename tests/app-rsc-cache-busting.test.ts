@@ -538,7 +538,7 @@ describe("App Router RSC cache-busting", () => {
     // Mirrors Next.js App Router's base Vary header:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, x-nextjs-deployment-id, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Client-Reuse-Manifest",
+      "RSC, x-deployment-id, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Client-Reuse-Manifest",
     );
     expect(VINEXT_RSC_VARY_HEADER.split(", ")).not.toContain("Accept");
   });

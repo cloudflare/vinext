@@ -15,6 +15,8 @@ export type PrerenderManifestRoute = {
   router?: string;
   fallback?: boolean;
   headers?: Record<string, string>;
+  /** The final rendered response attempted to set a cookie; values are never persisted. */
+  hasSetCookie?: boolean;
   tags?: string[];
 };
 
@@ -58,6 +60,9 @@ export function isCdnCachePolicyHeaderName(name: string): boolean {
 function hasNonCacheableResponseHeaders(headers: Record<string, string> | undefined): boolean {
   if (!headers) return false;
   for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === "vary" && value.split(",").some((token) => token.trim() === "*")) {
+      return true;
+    }
     if (!isCdnCachePolicyHeaderName(name)) continue;
     if (/\b(?:no-store|no-cache|private)\b/i.test(value)) return true;
   }
@@ -79,6 +84,7 @@ export function isPrewarmableAppRoute(route: PrerenderManifestRoute): boolean {
     route.status === "rendered" &&
     route.router === "app" &&
     hasCacheableLifetime &&
+    route.hasSetCookie !== true &&
     !hasNonCacheableResponseHeaders(route.headers)
   );
 }

@@ -199,11 +199,24 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // A non-cacheable policy (no-store / no-cache / private) must never be
     // promoted to an edge cache. Clear any cacheable headers this adapter owns
     // in case middleware stamped them before the final policy was known.
-    if (/\b(?:no-store|no-cache|private)\b/i.test(input.cacheControl)) {
+    if (/\b(?:no-store|private)\b/i.test(input.cacheControl)) {
       return {
         "Cache-Control": input.cacheControl,
         "CDN-Cache-Control": null,
         "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      };
+    }
+
+    // Workers Caching stores `Cache-Control: no-cache` responses and
+    // revalidates them on every request. Preserve that browser-facing policy,
+    // but use Cloudflare's higher-priority CDN-scoped header to prohibit edge
+    // storage entirely.
+    if (/\bno-cache\b/i.test(input.cacheControl)) {
+      return {
+        "Cache-Control": input.cacheControl,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": NO_STORE,
         "Cache-Tag": null,
       };
     }

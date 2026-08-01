@@ -1783,11 +1783,6 @@ function bootstrapHydration(
         const shouldBypassNavigationCache =
           earlyIntentDecision?.kind === "flightNavigation" &&
           earlyIntentDecision.bypassNavigationCache;
-        // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
-        // it never affects the cache-busting URL. Defer producing it until the
-        // visited-response cache miss is confirmed below — its producer iterates
-        // the visible layout ids and binary-searches a byte budget, which is
-        // pure waste on the cache-hit soft-nav path.
         const sourceHref = clientNavigationSnapshotHref(
           navigationInitiationState.navigationSnapshot,
         );
@@ -1804,6 +1799,18 @@ function bootstrapHydration(
           getRscCacheKeyMode() === "response-vary" &&
           (await isRscPrewarmEligibleHref(currentHref, __basePath)) &&
           canonicalizeFullRscRequestHeaders(requestHeaders);
+        // The client reuse manifest changes which layout segments the server
+        // may omit, so it is part of both the response Vary contract and the
+        // digest URL. Produce it before computing the URL and visited-response
+        // key; doing this only on a live-fetch miss would let responses for
+        // different visible layout states alias in both caches.
+        if (navigationKind === "navigate" && !usesCanonicalSharedRequest) {
+          const clientReuseManifestHeader =
+            createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
+          if (clientReuseManifestHeader !== null) {
+            requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+          }
+        }
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
@@ -1826,6 +1833,11 @@ function bootstrapHydration(
           navigationKind,
           targetPathAndSearch,
         });
+        const liveRscUrl = await createRscRequestUrl(
+          targetPathAndSearch,
+          requestHeaders,
+          requestCacheKeyMode,
+        );
         const rscUrl = settledPrefetchedResponse
           ? resolvePrefetchNavigationResponseUrl({
               additionalRscUrls: additionalPrefetchPathAndSearch,
@@ -1833,7 +1845,7 @@ function bootstrapHydration(
               responseUrl: settledPrefetchedResponse.url,
               visibleRscUrl: targetPathAndSearch,
             })
-          : await createRscRequestUrl(targetPathAndSearch, requestHeaders, requestCacheKeyMode);
+          : liveRscUrl;
         const additionalPrefetchRscUrls = settledPrefetchedResponse
           ? additionalPrefetchPathAndSearch
           : await Promise.all(
@@ -1843,7 +1855,7 @@ function bootstrapHydration(
             );
         const visitedResponseCandidate = shouldBypassNavigationCache
           ? {
-              cacheKey: AppElementsWire.encodeCacheKey(rscUrl, requestInterceptionContext),
+              cacheKey: AppElementsWire.encodeCacheKey(liveRscUrl, requestInterceptionContext),
               entry: null,
               facts: {
                 candidate: "missing",
@@ -1851,7 +1863,7 @@ function bootstrapHydration(
               } satisfies Extract<VisitedResponseCacheCandidateFacts, { candidate: "missing" }>,
             }
           : readVisitedResponseCacheCandidate(
-              rscUrl,
+              liveRscUrl,
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
@@ -1978,7 +1990,7 @@ function bootstrapHydration(
           });
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
-            deleteVisitedResponse(rscUrl, requestInterceptionContext);
+            deleteVisitedResponse(liveRscUrl, requestInterceptionContext);
             continue;
           }
           return;
@@ -2108,18 +2120,7 @@ function bootstrapHydration(
         }
 
         if (!navResponse) {
-          // Produce the client reuse manifest only now that prefetch/optimistic
-          // paths did not satisfy the navigation and a real request is required.
-          // Computed from the nav-start router state so it matches the snapshot
-          // the request would have carried if produced earlier.
-          if (navigationKind === "navigate" && !usesCanonicalSharedRequest) {
-            const clientReuseManifestHeader =
-              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
-            if (clientReuseManifestHeader !== null) {
-              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
-            }
-          }
-          navResponse = await fetch(rscUrl, {
+          navResponse = await fetch(liveRscUrl, {
             headers: requestHeaders,
             credentials: "include",
             priority: "auto",
@@ -2335,7 +2336,7 @@ function bootstrapHydration(
           if (cacheRestorable) {
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
-              rscUrl,
+              liveRscUrl,
               interceptionContext,
               snapshot,
               navParams,
@@ -2359,7 +2360,7 @@ function bootstrapHydration(
             // responses remain replayable after their visible commit.
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
-              rscUrl,
+              liveRscUrl,
               interceptionContext,
               snapshot,
               navParams,

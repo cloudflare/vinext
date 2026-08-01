@@ -284,6 +284,37 @@ describe("injectPregeneratedConcretePaths", () => {
     ).toBe(true);
   });
 
+  it("can emit eligibility without promoting rendered artifacts to runtime routes", () => {
+    writeFile(
+      "dist/server/index.js",
+      'export default { fetch() { return new Response("ok"); } };\n',
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        pregeneratedConcretePaths: [["/about", ["/about"]]],
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir, {
+      emitRscPrewarmManifest: true,
+      includePregeneratedConcretePaths: false,
+    });
+
+    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    expect(output).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS =");
+    expect(output).toContain('__VINEXT_RSC_PREWARMABLE_PATHS = ["/about"]');
+  });
+
   it("changes the eligibility asset hash with its content and removes the stale asset", () => {
     writeFile(
       "dist/server/index.js",
@@ -303,10 +334,13 @@ describe("injectPregeneratedConcretePaths", () => {
         ],
       }),
     );
+    writeFile("dist/client/index.html", "<html><head></head><body>home</body></html>");
     injectPregeneratedConcretePaths(tmpDir, { emitRscPrewarmManifest: true });
 
     const assetsDir = path.join(tmpDir, "dist/client/_next/static");
     const [firstAsset] = fs.readdirSync(assetsDir);
+    const firstHtml = fs.readFileSync(path.join(tmpDir, "dist/client/index.html"), "utf-8");
+    expect(firstHtml).toContain(firstAsset);
 
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -331,6 +365,9 @@ describe("injectPregeneratedConcretePaths", () => {
       version: 1,
       paths: ["/second"],
     });
+    const secondHtml = fs.readFileSync(path.join(tmpDir, "dist/client/index.html"), "utf-8");
+    expect(secondHtml).toContain(secondAsset);
+    expect(secondHtml).not.toContain(firstAsset);
   });
 
   it("does not emit RSC eligibility without a final cacheable App result", () => {

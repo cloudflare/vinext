@@ -301,6 +301,13 @@ describe("prerenderApp — RSC extraction", () => {
       path.join(appDir, "no-store", "page.tsx"),
       "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
     );
+    for (const route of ["vary-all", "sets-cookie"]) {
+      fs.mkdirSync(path.join(appDir, route));
+      fs.writeFileSync(
+        path.join(appDir, route, "page.tsx"),
+        "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+      );
+    }
 
     const rscPayload = '0:["$","div",null,{"children":"private"}]\n';
     const server = createServer((req, res) => {
@@ -311,6 +318,12 @@ describe("prerenderApp — RSC extraction", () => {
       }
       if (req.url === "/no-store") {
         res.setHeader("Cache-Control", "public, No-Store");
+      } else if (req.url === "/vary-all") {
+        res.setHeader("Cache-Control", "public, max-age=60");
+        res.setHeader("Vary", "Accept-Encoding, *");
+      } else if (req.url === "/sets-cookie") {
+        res.setHeader("Cache-Control", "public, max-age=60");
+        res.setHeader("Set-Cookie", "private-token=secret; HttpOnly");
       } else {
         res.setHeader("Cache-Control", "private, max-age=60");
         res.setHeader("Cloudflare-CDN-Cache-Control", "no-cache");
@@ -353,6 +366,24 @@ describe("prerenderApp — RSC extraction", () => {
         status: "skipped",
         reason: "dynamic",
       });
+      const varyAll = findRoute(prerenderResult.routes, "/vary-all");
+      expect(varyAll).toMatchObject({
+        status: "rendered",
+        headers: { vary: "Accept-Encoding, *" },
+      });
+      const setsCookie = findRoute(prerenderResult.routes, "/sets-cookie");
+      expect(setsCookie).toMatchObject({ status: "rendered", hasSetCookie: true });
+      if (setsCookie?.status === "rendered") {
+        expect(setsCookie.headers).not.toHaveProperty("set-cookie");
+      }
+      expect(
+        getPrewarmableAppPaths({
+          routes: [varyAll, setsCookie].filter(
+            (candidate): candidate is Extract<typeof candidate, { status: "rendered" }> =>
+              candidate?.status === "rendered",
+          ),
+        }),
+      ).toEqual([]);
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });

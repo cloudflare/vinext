@@ -72,13 +72,17 @@ export function injectPregeneratedConcretePaths(
     assetPrefix?: string;
     deploymentId?: string;
     emitRscPrewarmManifest?: boolean;
+    includePregeneratedConcretePaths?: boolean;
   } = {},
 ): void {
   const workerEntry = path.resolve(root, "dist", "server", "index.js");
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
-  const table = manifest?.pregeneratedConcretePaths ?? [];
+  const table =
+    options.includePregeneratedConcretePaths === false
+      ? []
+      : (manifest?.pregeneratedConcretePaths ?? []);
   const prewarmablePaths =
     options.emitRscPrewarmManifest && manifest
       ? getPrewarmableAppPaths(manifest).map((pathname) => normalizeRscPrewarmPath(pathname))
@@ -98,10 +102,8 @@ export function injectPregeneratedConcretePaths(
     delete globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
   }
 
-  if (prewarmManifestUrl) {
-    injectRscPrewarmMetaIntoHtmlFiles(path.join(root, "dist", "server", "prerendered-routes"));
-    injectRscPrewarmMetaIntoHtmlFiles(path.join(root, "dist", "client"));
-  }
+  injectRscPrewarmMetaIntoHtmlFiles(path.join(root, "dist", "server", "prerendered-routes"));
+  injectRscPrewarmMetaIntoHtmlFiles(path.join(root, "dist", "client"));
 
   if (!fs.existsSync(workerEntry)) return;
   let code = fs.readFileSync(workerEntry, "utf-8").replace(VINEXT_PREGEN_RE, "");

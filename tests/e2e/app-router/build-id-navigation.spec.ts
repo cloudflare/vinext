@@ -1,5 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
+import {
+  computeRscCacheBustingSearchParam,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
+} from "../../../packages/vinext/src/server/app-rsc-cache-busting";
 
 const BASE = "http://localhost:4174";
 const VISITED_CACHE_MARKER = "__VINEXT_VISITED_CACHE_MARKER__";
@@ -128,6 +132,10 @@ test.describe("App Router RSC compatibility navigation", () => {
     );
     expect(manifest.entries.every((entry) => entry.id.startsWith("layout:"))).toBe(true);
     expect(manifestHeaders[0]!.length).toBeLessThanOrEqual(4096);
+    const requestHeaders = new Headers(rscResponse.request().headers());
+    await expect(computeRscCacheBustingSearchParam(requestHeaders)).resolves.toBe(
+      new URL(rscResponse.url()).searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM),
+    );
   });
 
   test("refetches unproofed same-build visited RSC payloads instead of reloading", async ({

@@ -80,6 +80,22 @@ describe("RSC prewarm manifest meta", () => {
     ).toHaveLength(1);
   });
 
+  it("replaces a stale manifest meta tag in string HTML", () => {
+    const html = `<html><head><meta name="${RSC_PREWARM_MANIFEST_META_NAME}" content="/old.json"></head><body></body></html>`;
+
+    const output = injectRscPrewarmManifestMetaHtml(html);
+
+    expect(output).toContain(`content="${META_URL}"`);
+    expect(output).not.toContain("/old.json");
+  });
+
+  it("removes a stale manifest meta tag when eligibility is empty", () => {
+    vi.stubGlobal("__VINEXT_RSC_PREWARM_MANIFEST_URL", undefined);
+    const html = `<html><head><meta name="${RSC_PREWARM_MANIFEST_META_NAME}" content="/old.json"></head><body></body></html>`;
+
+    expect(injectRscPrewarmManifestMetaHtml(html)).toBe("<html><head></head><body></body></html>");
+  });
+
   it("does not duplicate an existing manifest meta tag in streamed HTML", async () => {
     const meta = getRscPrewarmManifestMetaHtml();
     const html = `<html><head>${meta}</head><body></body></html>`;
@@ -90,5 +106,14 @@ describe("RSC prewarm manifest meta", () => {
 
     expect(output).toBe(html);
     expect(output.match(new RegExp(RSC_PREWARM_MANIFEST_META_NAME, "g"))).toHaveLength(1);
+  });
+
+  it("replaces a stale manifest meta tag in streamed HTML", async () => {
+    const html = `<html><head><meta name="${RSC_PREWARM_MANIFEST_META_NAME}" content="/old.json"></head><body></body></html>`;
+
+    const output = await readText(injectRscPrewarmManifestMeta(textStream([html])));
+
+    expect(output).toContain(`content="${META_URL}"`);
+    expect(output).not.toContain("/old.json");
   });
 });

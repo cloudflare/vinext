@@ -160,6 +160,8 @@ export type PrerenderRouteResult =
       router: "app" | "pages";
       /** Response headers that must be replayed with the prerendered artifact. */
       headers?: Record<string, string>;
+      /** The rendered response attempted to set a cookie; values are never persisted. */
+      hasSetCookie?: true;
       /** Cache tags collected while rendering this route. */
       tags?: string[];
       /** Set to true when this is a PPR fallback shell. */
@@ -1455,7 +1457,9 @@ export async function prerenderApp({
             const linkHeader = response.headers.get("link");
             const persistedHeaders: Record<string, string> = {};
             for (const [name, value] of response.headers) {
-              if (isCdnCachePolicyHeaderName(name)) persistedHeaders[name] = value;
+              if (isCdnCachePolicyHeaderName(name) || name.toLowerCase() === "vary") {
+                persistedHeaders[name] = value;
+              }
             }
             if (linkHeader) persistedHeaders.link = linkHeader;
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
@@ -1464,6 +1468,7 @@ export async function prerenderApp({
               await response.body?.cancel();
               return {
                 cacheControl,
+                hasSetCookie: response.headers.has("set-cookie"),
                 persistedHeaders,
                 html: null,
                 ok: response.ok,
@@ -1480,6 +1485,7 @@ export async function prerenderApp({
             const processCacheLife = _consumeRequestScopedCacheLife();
             return {
               cacheControl,
+              hasSetCookie: response.headers.has("set-cookie"),
               persistedHeaders,
               html,
               ok: true,
@@ -1553,8 +1559,11 @@ export async function prerenderApp({
             );
           }
           for (const [name, value] of rscRes.headers) {
-            if (isCdnCachePolicyHeaderName(name)) htmlRender.persistedHeaders[name] = value;
+            if (isCdnCachePolicyHeaderName(name) || name.toLowerCase() === "vary") {
+              htmlRender.persistedHeaders[name] = value;
+            }
           }
+          htmlRender.hasSetCookie ||= rscRes.headers.has("set-cookie");
           rscData = new Uint8Array(await rscRes.arrayBuffer());
         }
 
@@ -1599,6 +1608,7 @@ export async function prerenderApp({
             : {}),
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
+          ...(htmlRender.hasSetCookie ? { hasSetCookie: true as const } : {}),
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
           ...(Object.keys(htmlRender.persistedHeaders).length > 0
             ? { headers: htmlRender.persistedHeaders }
@@ -1821,6 +1831,7 @@ export function writePrerenderIndex(
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         ...(typeof r.stale === "number" ? { stale: r.stale } : {}),
         router: r.router,
+        ...(r.hasSetCookie ? { hasSetCookie: true } : {}),
         ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
         ...(r.path ? { path: r.path } : {}),

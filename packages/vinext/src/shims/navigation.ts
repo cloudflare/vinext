@@ -2393,7 +2393,10 @@ export async function navigateClientSide(
   // `link.tsx`.
   const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
-    const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+    const fullHref = normalizePathTrailingSlash(
+      toBrowserNavigationHref(normalizedHref, window.location.href, __basePath),
+      __trailingSlash,
+    );
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
@@ -2403,7 +2406,10 @@ export async function navigateClientSide(
     return;
   }
 
-  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  const fullHref = normalizePathTrailingSlash(
+    toBrowserNavigationHref(normalizedHref, window.location.href, __basePath),
+    __trailingSlash,
+  );
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.

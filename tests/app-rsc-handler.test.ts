@@ -20,7 +20,6 @@ import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
@@ -2232,7 +2231,7 @@ describe("createAppRscHandler", () => {
     );
   });
 
-  it("passes parsed ClientReuseManifest hints from canonical RSC requests to page dispatch", async () => {
+  it("passes parsed ClientReuseManifest hints from valid RSC requests to page dispatch", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const manifest = createClientReuseManifest({
       entries: [
@@ -2251,14 +2250,11 @@ describe("createAppRscHandler", () => {
       dispatchMatchedPage,
     });
 
-    const response = await handler(
-      new Request("https://example.test/docs/about.rsc", {
-        headers: {
-          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify(manifest),
-        },
-      }),
-      null,
-    );
+    const headers = createRscRequestHeaders({
+      clientReuseManifestHeader: JSON.stringify(manifest),
+    });
+    const rscUrl = await createRscRequestUrl("/docs/about", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
     expect(response.status).toBe(200);
     expect(dispatchMatchedPage).toHaveBeenCalledWith(

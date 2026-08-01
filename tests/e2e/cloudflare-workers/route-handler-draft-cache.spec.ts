@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../fixtures";
+import { computeRscCacheBustingSearchParam } from "../../../packages/vinext/src/server/app-rsc-cache-busting";
 
 const FIXTURE_DIR = `${process.cwd()}/tests/fixtures/cf-app-basic`;
 const BASE_URL = "http://localhost:4195";
@@ -332,6 +333,9 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
 
     for (const request of [prefetch, navigation]) {
       expect(request.rscHash).toMatch(/^[A-Za-z0-9_-]{16}$/);
+      await expect(computeRscCacheBustingSearchParam(new Headers(request.headers))).resolves.toBe(
+        request.rscHash,
+      );
       expect(request.url.search).toBe(`?_rsc=${request.rscHash}`);
       expect(request.headers.accept).toBe("text/x-component");
       expect(request.headers.rsc).toBe("1");
