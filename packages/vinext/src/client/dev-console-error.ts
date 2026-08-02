@@ -28,8 +28,7 @@ function formatObject(value: unknown, depth: number): string {
 
   if (isError(value)) return String(value);
   if (typeof value === "bigint") return `${value.toString()}n`;
-  if (typeof value === "function")
-    return value.name ? `[Function: ${value.name}]` : "[Function]";
+  if (typeof value === "function") return value.name ? `[Function: ${value.name}]` : "[Function]";
   if (typeof value === "symbol") return value.toString();
   if (value === undefined) return "undefined";
   if (typeof value === "string") return JSON.stringify(value);
@@ -129,9 +128,7 @@ export function formatConsoleArgs(args: readonly unknown[]): string {
 const REACT_ERROR_STACK_BOTTOM_FRAME_REGEX =
   /\s+(at Object\.react_stack_bottom_frame.*)|(react_stack_bottom_frame@.*)|(at react-stack-bottom-frame.*)|(react-stack-bottom-frame@.*)/;
 
-export function getStackIgnoringStrictMode(
-  stack: string | undefined,
-): string | undefined {
+export function getStackIgnoringStrictMode(stack: string | undefined): string | undefined {
   return stack?.split(REACT_ERROR_STACK_BOTTOM_FRAME_REGEX)[0];
 }
 
@@ -168,8 +165,6 @@ export function isSameReportedError(
 const HYDRATION_ATTRIBUTE_MISMATCH =
   /A tree hydrated but some attributes of the server rendered HTML didn't match the client properties\./;
 
-export function isAttributeOnlyHydrationWarningMessage(
-  message: string,
-): boolean {
+export function isAttributeOnlyHydrationWarningMessage(message: string): boolean {
   return HYDRATION_ATTRIBUTE_MISMATCH.test(message);
 }
