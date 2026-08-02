@@ -458,15 +458,11 @@ function schedulePagesIsrCacheWrite(options: Parameters<typeof writePagesIsrCach
   getRequestExecutionContext()?.waitUntil(cacheWritePromise);
 }
 
-function applyGsspHeaders(
+export function applyGsspResponseHeaders(
   headers: Headers,
   gsspRes: PagesGsspResponse | null,
-  statusCode?: number,
-): number {
-  if (!gsspRes) {
-    return statusCode ?? 200;
-  }
-
+): void {
+  if (!gsspRes) return;
   const gsspHeaders = gsspRes.getHeaders();
   for (const key of Object.keys(gsspHeaders)) {
     const value = gsspHeaders[key];
@@ -485,6 +481,18 @@ function applyGsspHeaders(
       headers.set(key, String(value));
     }
   }
+}
+
+function applyGsspHeaders(
+  headers: Headers,
+  gsspRes: PagesGsspResponse | null,
+  statusCode?: number,
+): number {
+  if (!gsspRes) {
+    return statusCode ?? 200;
+  }
+
+  applyGsspResponseHeaders(headers, gsspRes);
   if (!headers.has("Content-Type")) {
     headers.set("Content-Type", "text/html; charset=utf-8");
   }
