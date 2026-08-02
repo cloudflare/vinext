@@ -1227,6 +1227,16 @@ describe("App Router Production server (startProdServer)", () => {
     expect(json).toHaveProperty("message");
   });
 
+  it("preserves config Link headers alongside React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</llms.txt>; rel="describedby"; type="text/plain"');
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).toContain("rel=preload");
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
   it("lets route handlers synchronously catch updateTag errors without crashing", async () => {

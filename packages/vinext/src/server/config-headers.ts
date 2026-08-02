@@ -6,6 +6,8 @@ import {
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 
+const APPENDABLE_RESPONSE_HEADER_NAMES = new Set(["link", "set-cookie", "vary"]);
+
 type ApplyConfigHeadersOptions = {
   configHeaders: NextHeader[];
   pathname: string;
@@ -68,7 +70,7 @@ export function applyConfigHeadersToResponse(
   );
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
-    if (lowerName === "vary" || lowerName === "set-cookie") {
+    if (APPENDABLE_RESPONSE_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
     } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
       responseHeaders.set(header.key, header.value);

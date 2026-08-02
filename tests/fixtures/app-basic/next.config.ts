@@ -217,6 +217,17 @@ const nextConfig: NextConfig = {
           { key: "X-Action-Header-Collision", value: "source" },
         ],
       },
+      // Regression for #2788: this discovery Link must coexist with the
+      // React preload Link emitted by app/config-link-preload/page.tsx.
+      {
+        source: "/config-link-preload",
+        headers: [
+          {
+            key: "Link",
+            value: '</llms.txt>; rel="describedby"; type="text/plain"',
+          },
+        ],
+      },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {
         source: "/about",

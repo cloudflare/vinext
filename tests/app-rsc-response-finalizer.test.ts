@@ -54,6 +54,41 @@ describe("finalizeAppRscResponse — config header application", () => {
     expect(response.headers.get("x-route-value")).toBe("target");
   });
 
+  it("preserves config Link headers alongside framework preload links", async () => {
+    // Regression for #2788: React and next/font emit preload Link headers before
+    // App Router response finalization applies matching next.config.js headers.
+    const response = new Response("body", {
+      status: 200,
+      headers: {
+        Link: '</agent-test.woff2>; rel=preload; as="font"; crossorigin=""; type="font/woff2"',
+      },
+    });
+    const request = new Request("http://example.com/");
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/",
+          headers: [
+            {
+              key: "Link",
+              value: '</llms.txt>; rel="describedby"; type="text/plain"',
+            },
+          ],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    const link = response.headers.get("link") ?? "";
+    expect(link).toContain('</llms.txt>; rel="describedby"; type="text/plain"');
+    expect(link).toContain(
+      '</agent-test.woff2>; rel=preload; as="font"; crossorigin=""; type="font/woff2"',
+    );
+  });
+
   it("adds the App Router RSC vary header when no config headers are configured", async () => {
     // Behavior: App Router responses always carry the RSC vary key, even when
     // no next.config.js headers match. This covers app route handlers that
