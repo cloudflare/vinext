@@ -348,6 +348,28 @@ describe("prefetch cache eviction", () => {
     expect(prefetched.has(originalRscUrl)).toBe(false);
   });
 
+  it("keeps source-dependent client-reuse snapshots scoped to their exact RSC digest", () => {
+    const sourceRscUrl = "/dashboard?_rsc=hashA";
+    const otherRscUrl = "/dashboard?_rsc=hashB";
+    const snapshot = {
+      buffer: new TextEncoder().encode("source-dependent-flight").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: sourceRscUrl,
+    };
+
+    seedPrefetchResponseSnapshot(sourceRscUrl, snapshot, null, null, undefined, {
+      exactVariant: true,
+    });
+
+    expect(hasPrefetchCacheEntryForNavigation(otherRscUrl, null, null)).toBe(false);
+    expect(consumePrefetchResponse(otherRscUrl, null, null)).toBeNull();
+    expect(hasPrefetchCacheEntryForNavigation(sourceRscUrl, null, null)).toBe(true);
+    expect(consumePrefetchResponse(sourceRscUrl, null, null)).toMatchObject(snapshot);
+  });
+
   it("keeps learning-only prefetch responses out of navigation consumption", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();

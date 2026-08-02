@@ -545,6 +545,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   } = normalized;
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
+  // Final prerender validation must exercise the same bare `?_rsc` URL that
+  // browsers will use after the eligibility manifest is emitted. The route is
+  // not in that manifest yet, so only the authenticated, prerender-only server
+  // may provisionally admit it while its response policy is being inspected.
+  const allowUnlistedPrewarmProbe =
+    process.env.VINEXT_PRERENDER === "1" && request.headers.has(VINEXT_PRERENDER_SECRET_HEADER);
   let resolvedUrl = cleanPathname + url.search;
   const originalResolvedUrl = resolvedUrl;
   const getResolvedSearchParams = () => new URL(resolvedUrl, url).searchParams;
@@ -638,6 +644,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const rscCacheBustingRedirect = hadBasePath
     ? await resolveInvalidRscCacheBustingRequest({
+        allowUnlistedPrewarmProbe,
         isRscRequest,
         request,
         validateDocumentRequest: false,
@@ -713,6 +720,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const validateClaimedOutsideBasePathRsc = async (): Promise<Response | null> => {
     if (hadBasePath || !filesystemRouteEligible) return null;
     return resolveInvalidRscCacheBustingRequest({
+      allowUnlistedPrewarmProbe,
       isRscRequest,
       request,
       validateDocumentRequest: false,
@@ -1159,6 +1167,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // this point instead of redirecting route-handler requests before matching.
   if (!isRscRequest && (!match || !match.route.routeHandler)) {
     const documentCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
+      allowUnlistedPrewarmProbe,
       isRscRequest,
       request,
     });

@@ -105,7 +105,7 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
-  it("prefers the build-discovered prerender path manifest", () => {
+  it("preserves non-App discovery paths and adds final-render paths", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({
@@ -124,7 +124,7 @@ describe("Cloudflare CDN warmup", () => {
     );
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
-    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/cached/intro"]);
+    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/cached/intro", "/old"]);
   });
 
   it("takes RSC warm paths only from exact cacheable final App prerenders", () => {
@@ -217,9 +217,33 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      paths: ["/static", "/posts/first", "/dynamic", "/private", "/pages", "/late-discovery"],
+      paths: ["/static", "/posts/first", "/pages", "/late-discovery"],
       rscPaths: ["/static", "/posts/first", "/late-discovery"],
       rscCacheKeyMode: "response-vary",
+    });
+  });
+
+  it("adds final-render-only HTML paths in header-digest mode", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/known"], rscCacheKeyMode: "header-digest" }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/known", status: "rendered", router: "app", revalidate: false },
+          { route: "/late", status: "rendered", router: "app", revalidate: 60 },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/known", "/late"],
+      rscPaths: [],
+      rscCacheKeyMode: "header-digest",
     });
   });
 

@@ -16,11 +16,7 @@ import {
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
-import {
-  applyDeploymentIdHeader,
-  getDeploymentId,
-  NEXT_DEPLOYMENT_ID_HEADER,
-} from "../utils/deployment-id.js";
+import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 import { isServerRscPrewarmEligiblePathname } from "../client/rsc-prewarm-eligibility.js";
 export {
@@ -44,7 +40,6 @@ export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 
 export const VINEXT_RSC_VARY_HEADER = [
   RSC_HEADER,
-  NEXT_DEPLOYMENT_ID_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -85,6 +80,8 @@ type CreateRscRequestHeadersOptions = {
 };
 
 type ResolveInvalidRscCacheBustingRequestOptions = {
+  /** Treat this exact route as a candidate while a trusted prerender probe validates its response. */
+  allowUnlistedPrewarmProbe?: boolean;
   isRscRequest: boolean;
   request: Request;
   cacheKeyMode?: RscCacheKeyMode;
@@ -534,10 +531,11 @@ export async function resolveInvalidRscCacheBustingRequest(
   stripRscCacheBustingSearchParam(unmarkedUrl);
   const isPrewarmEligibleUrl =
     unmarkedUrl.search === "" &&
-    isServerRscPrewarmEligiblePathname(
-      stripRscSuffix(unmarkedUrl.pathname),
-      process.env.__NEXT_ROUTER_BASEPATH ?? "",
-    );
+    (options.allowUnlistedPrewarmProbe === true ||
+      isServerRscPrewarmEligiblePathname(
+        stripRscSuffix(unmarkedUrl.pathname),
+        process.env.__NEXT_ROUTER_BASEPATH ?? "",
+      ));
 
   if (
     cacheKeyMode === "response-vary" &&

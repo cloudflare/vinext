@@ -773,6 +773,7 @@ function storeVisitedResponseSnapshot(
   elements?: AppElements,
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
+  prefetchExactVariant: boolean = false,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
@@ -794,6 +795,7 @@ function storeVisitedResponseSnapshot(
       interceptionContext,
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
+      { exactVariant: prefetchExactVariant },
     );
   }
   return () => {
@@ -1833,19 +1835,23 @@ function bootstrapHydration(
           navigationKind,
           targetPathAndSearch,
         });
-        const liveRscUrl = await createRscRequestUrl(
-          targetPathAndSearch,
-          requestHeaders,
-          requestCacheKeyMode,
-        );
-        const rscUrl = settledPrefetchedResponse
+        let liveRscUrl: string | null = null;
+        const getLiveRscUrl = async (): Promise<string> => {
+          liveRscUrl ??= await createRscRequestUrl(
+            targetPathAndSearch,
+            requestHeaders,
+            requestCacheKeyMode,
+          );
+          return liveRscUrl;
+        };
+        let activeRscUrl = settledPrefetchedResponse
           ? resolvePrefetchNavigationResponseUrl({
               additionalRscUrls: additionalPrefetchPathAndSearch,
               origin: window.location.origin,
               responseUrl: settledPrefetchedResponse.url,
               visibleRscUrl: targetPathAndSearch,
             })
-          : liveRscUrl;
+          : await getLiveRscUrl();
         const additionalPrefetchRscUrls = settledPrefetchedResponse
           ? additionalPrefetchPathAndSearch
           : await Promise.all(
@@ -1855,7 +1861,7 @@ function bootstrapHydration(
             );
         const visitedResponseCandidate = shouldBypassNavigationCache
           ? {
-              cacheKey: AppElementsWire.encodeCacheKey(liveRscUrl, requestInterceptionContext),
+              cacheKey: AppElementsWire.encodeCacheKey(activeRscUrl, requestInterceptionContext),
               entry: null,
               facts: {
                 candidate: "missing",
@@ -1863,7 +1869,7 @@ function bootstrapHydration(
               } satisfies Extract<VisitedResponseCacheCandidateFacts, { candidate: "missing" }>,
             }
           : readVisitedResponseCacheCandidate(
-              liveRscUrl,
+              activeRscUrl,
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
@@ -1887,7 +1893,7 @@ function bootstrapHydration(
           settledPrefetchedResponse !== null ||
           (prefetchProbeDecision.kind === "probe" &&
             hasPrefetchCacheEntryForNavigation(
-              rscUrl,
+              activeRscUrl,
               requestInterceptionContext,
               mountedSlotsHeader,
               {
@@ -1990,7 +1996,7 @@ function bootstrapHydration(
           });
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
-            deleteVisitedResponse(liveRscUrl, requestInterceptionContext);
+            deleteVisitedResponse(activeRscUrl, requestInterceptionContext);
             continue;
           }
           return;
@@ -2014,7 +2020,7 @@ function bootstrapHydration(
                 { additionalRscUrls: additionalPrefetchPathAndSearch },
               )
             : await consumePrefetchResponseForNavigation(
-                rscUrl,
+                activeRscUrl,
                 requestInterceptionContext,
                 mountedSlotsHeader,
                 {
@@ -2029,7 +2035,7 @@ function bootstrapHydration(
               additionalRscUrls: additionalPrefetchRscUrls,
               origin: window.location.origin,
               responseUrl: prefetchedResponse.url,
-              visibleRscUrl: rscUrl,
+              visibleRscUrl: activeRscUrl,
             });
             const publication = prepareConsumedPrefetchResponseForPublication(
               prefetchedResponse,
@@ -2120,7 +2126,8 @@ function bootstrapHydration(
         }
 
         if (!navResponse) {
-          navResponse = await fetch(liveRscUrl, {
+          activeRscUrl = await getLiveRscUrl();
+          navResponse = await fetch(activeRscUrl, {
             headers: requestHeaders,
             credentials: "include",
             priority: "auto",
@@ -2333,10 +2340,14 @@ function bootstrapHydration(
             requestInterceptionContext,
             metadata.interceptionContext,
           );
+          // A client-reuse response may omit layouts based on the source tree.
+          // Its raw response may remain reusable for the exact digest, but must
+          // not participate in the generic prefetch cache's path-only aliasing.
+          const prefetchExactVariant = requestHeaders.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
           if (cacheRestorable) {
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
-              liveRscUrl,
+              activeRscUrl,
               interceptionContext,
               snapshot,
               navParams,
@@ -2345,6 +2356,7 @@ function bootstrapHydration(
               undefined,
               true,
               prefetchSnapshot,
+              prefetchExactVariant,
             );
           } else {
             const state = committedState;
@@ -2360,7 +2372,7 @@ function bootstrapHydration(
             // responses remain replayable after their visible commit.
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
-              liveRscUrl,
+              activeRscUrl,
               interceptionContext,
               snapshot,
               navParams,
@@ -2369,6 +2381,7 @@ function bootstrapHydration(
               committedElements,
               true,
               prefetchSnapshot,
+              prefetchExactVariant,
             );
           }
         } catch {

@@ -1,4 +1,15 @@
 import fs from "node:fs";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
+  RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+} from "./headers.js";
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -17,6 +28,8 @@ export type PrerenderManifestRoute = {
   headers?: Record<string, string>;
   /** The final rendered response attempted to set a cookie; values are never persisted. */
   hasSetCookie?: boolean;
+  /** A required response-side prewarm probe rejected this route. */
+  prewarmable?: false;
   tags?: string[];
 };
 
@@ -57,11 +70,33 @@ export function isCdnCachePolicyHeaderName(name: string): boolean {
   );
 }
 
-function hasNonCacheableResponseHeaders(headers: Record<string, string> | undefined): boolean {
+const CONTROLLED_PREWARM_VARY_HEADERS = new Set(
+  [
+    RSC_HEADER,
+    NEXT_ROUTER_STATE_TREE_HEADER,
+    NEXT_ROUTER_PREFETCH_HEADER,
+    NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+    NEXT_URL_HEADER,
+    VINEXT_INTERCEPTION_CONTEXT_HEADER,
+    VINEXT_MOUNTED_SLOTS_HEADER,
+    VINEXT_RSC_RENDER_MODE_HEADER,
+    VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  ].map((name) => name.toLowerCase()),
+);
+
+export function hasNonCacheablePrewarmHeaders(
+  headers: Headers | Record<string, string> | undefined,
+): boolean {
   if (!headers) return false;
-  for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() === "vary" && value.split(",").some((token) => token.trim() === "*")) {
-      return true;
+  for (const [name, value] of headers instanceof Headers ? headers : Object.entries(headers)) {
+    const lowerName = name.toLowerCase();
+    if (lowerName === "set-cookie") return true;
+    if (lowerName === "vary") {
+      for (const token of value.split(",")) {
+        const fieldName = token.trim().toLowerCase();
+        if (!fieldName) continue;
+        if (fieldName === "*" || !CONTROLLED_PREWARM_VARY_HEADERS.has(fieldName)) return true;
+      }
     }
     if (!isCdnCachePolicyHeaderName(name)) continue;
     if (/\b(?:no-store|no-cache|private)\b/i.test(value)) return true;
@@ -75,6 +110,10 @@ function hasNonCacheableResponseHeaders(headers: Record<string, string> | undefi
  * `revalidate: 0` and explicit private/no-store policies fail closed.
  */
 export function isPrewarmableAppRoute(route: PrerenderManifestRoute): boolean {
+  return route.router === "app" && isPrewarmableRoute(route);
+}
+
+export function isPrewarmableRoute(route: PrerenderManifestRoute): boolean {
   const hasCacheableLifetime =
     route.revalidate === false ||
     (typeof route.revalidate === "number" &&
@@ -82,10 +121,10 @@ export function isPrewarmableAppRoute(route: PrerenderManifestRoute): boolean {
       route.revalidate > 0);
   return (
     route.status === "rendered" &&
-    route.router === "app" &&
     hasCacheableLifetime &&
+    route.prewarmable !== false &&
     route.hasSetCookie !== true &&
-    !hasNonCacheableResponseHeaders(route.headers)
+    !hasNonCacheablePrewarmHeaders(route.headers)
   );
 }
 
@@ -198,6 +237,28 @@ export function getPrerenderedConcretePaths(
       continue;
     }
     if (seen.has(pathname)) continue;
+    seen.add(pathname);
+    paths.push(pathname);
+  }
+  return paths;
+}
+
+export function getPrewarmableConcretePaths(
+  manifest: PrerenderManifest,
+  options?: PrerenderedPathSelectionOptions,
+): string[] {
+  const routes = manifest.routes;
+  if (!routes?.length) return [];
+
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const route of routes) {
+    if (!isPrewarmableRoute(route)) continue;
+    if (options?.router && route.router !== options.router) continue;
+    const pathname = route.path ?? route.route;
+    if (!options?.includeFallbackShells && isFallbackShellArtifactPath(pathname, route)) continue;
+    if (!options?.includeErrorDocuments && isErrorDocumentRoute(pathname, route)) continue;
+    if (isUnresolvedRoutePattern(pathname, route) || seen.has(pathname)) continue;
     seen.add(pathname);
     paths.push(pathname);
   }

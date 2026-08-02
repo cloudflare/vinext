@@ -333,6 +333,8 @@ export type PrefetchCacheKind = "loading-shell" | "navigation" | "route-tree";
 
 export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
+  /** Require an exact `_rsc` URL match; source-dependent payloads cannot path-alias. */
+  exactVariant?: boolean;
   expiresAt?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
   mountedSlotsHeader?: string | null;
@@ -610,6 +612,7 @@ function findPrefetchCacheEntryForNavigation(
 
   for (const [cacheKey, entry] of cache) {
     if (entry.cacheForNavigation === false) continue;
+    if (entry.exactVariant) continue;
 
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
@@ -1055,6 +1058,7 @@ export function seedPrefetchResponseSnapshot(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
+  options: { exactVariant?: boolean } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1065,6 +1069,7 @@ export function seedPrefetchResponseSnapshot(
   const timestamp = Date.now();
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: true,
+    ...(options.exactVariant ? { exactVariant: true } : {}),
     cacheKeys: new Set([cacheKey]),
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,

@@ -267,6 +267,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         skipManifest: true,
         config,
         concurrency: options.concurrency,
+        probeRscCachePolicy: options.rscCacheKeyMode === "response-vary",
         rscBundlePath,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
@@ -382,7 +383,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     assetPrefix: config.assetPrefix,
     deploymentId: config.deploymentId,
     emitRscPrewarmManifest: options.rscCacheKeyMode === "response-vary",
-    includePregeneratedConcretePaths: options.injectPregeneratedPaths !== false,
+    preservePregeneratedConcretePaths: options.injectPregeneratedPaths === false,
   });
   if (fs.existsSync(rscBundlePath)) {
     rememberCurrentServerEntryImportMtime(rscBundlePath);

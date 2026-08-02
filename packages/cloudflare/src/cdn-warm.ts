@@ -6,7 +6,7 @@ import {
 } from "vinext/internal/build/prerender-paths";
 import {
   getPrewarmableAppPaths,
-  getPrerenderedConcretePaths,
+  getPrewarmableConcretePaths,
   readPrerenderManifest,
   type PrerenderManifest,
   type PrerenderedPathSelectionOptions,
@@ -58,6 +58,7 @@ export type PrerenderWarmPlan = {
 };
 
 type PrerenderPathWarmPlan = PrerenderWarmPlan & {
+  appPaths: string[];
   pathConfig: Pick<PrerenderPathManifest, "basePath" | "trailingSlash">;
 };
 
@@ -192,6 +193,7 @@ function readPrerenderPathWarmPlan(
     return {
       paths: [],
       rscPaths: [],
+      appPaths: [],
       rscCacheKeyMode: "header-digest",
       pathConfig: {},
     };
@@ -205,14 +207,15 @@ function readPrerenderPathWarmPlan(
     .filter(isSafeWarmPathname)
     .map((pathname) => applyWarmPathConfig(pathname, pathConfig));
   const pathSet = new Set(paths);
-  const rscPaths = (manifest.appPaths ?? [])
+  const appPaths = (manifest.appPaths ?? [])
     .filter(isSafeWarmPathname)
-    .map((pathname) => applyWarmPathConfig(pathname, pathConfig))
-    .filter((pathname) => pathSet.has(pathname));
+    .map((pathname) => applyWarmPathConfig(pathname, pathConfig));
+  const rscPaths = appPaths.filter((pathname) => pathSet.has(pathname));
   return {
     ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
     paths,
     rscPaths,
+    appPaths,
     rscCacheKeyMode: manifest.rscCacheKeyMode ?? "header-digest",
     pathConfig,
   };
@@ -262,11 +265,32 @@ export function readPrerenderWarmPlan(
     typeof manifest.deploymentId === "string" && /^[a-zA-Z0-9_-]+$/.test(manifest.deploymentId)
       ? manifest.deploymentId
       : undefined;
-  const manifestPaths = getPrerenderedConcretePaths(manifest, options).filter(isSafeWarmPathname);
+  const manifestPaths = getPrewarmableConcretePaths(manifest, options)
+    .filter(isSafeWarmPathname)
+    .map((pathname) => applyWarmPathConfig(pathname, pathConfig));
+  const finalPathSet = new Set(manifestPaths);
+  const representedPathSet = new Set(
+    (manifest.routes ?? [])
+      .map((route) => route.path ?? route.route)
+      .filter(isSafeWarmPathname)
+      .map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
+  );
+  const discoveredAppPathSet = new Set(pathManifestPlan?.appPaths ?? []);
   const paths =
     !shouldPreferPrerenderManifest && pathManifestPlan !== null
-      ? [...pathManifestPlan.paths]
-      : manifestPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig));
+      ? pathManifestPlan.paths.filter(
+          (pathname) =>
+            finalPathSet.has(pathname) ||
+            (!representedPathSet.has(pathname) && !discoveredAppPathSet.has(pathname)),
+        )
+      : [];
+  const selectedPathSet = new Set(paths);
+  for (const pathname of manifestPaths) {
+    if (!selectedPathSet.has(pathname)) {
+      selectedPathSet.add(pathname);
+      paths.push(pathname);
+    }
+  }
   const rscCacheKeyMode = pathManifestPlan?.rscCacheKeyMode ?? "header-digest";
   const rscPaths =
     rscCacheKeyMode === "response-vary"
@@ -301,7 +325,7 @@ export function getWarmPathsFromPrerenderManifest(
   manifest: PrerenderManifest,
   options?: PrerenderedPathSelectionOptions,
 ): string[] {
-  return getPrerenderedConcretePaths(manifest, options);
+  return getPrewarmableConcretePaths(manifest, options);
 }
 
 export function buildWarmupUrl(targetUrl: string, pathname: string): URL {

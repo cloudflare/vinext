@@ -315,6 +315,32 @@ describe("injectPregeneratedConcretePaths", () => {
     expect(output).toContain('__VINEXT_RSC_PREWARMABLE_PATHS = ["/about"]');
   });
 
+  it("preserves an existing pregenerated table during warm-only reinjection", () => {
+    writeFile(
+      "dist/server/index.js",
+      `/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */\n` +
+        `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old",["/old"]]];\n` +
+        `/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */\nexport default {};\n`,
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        pregeneratedConcretePaths: [["/new", ["/new"]]],
+        routes: [{ route: "/new", status: "rendered", router: "app", revalidate: false }],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir, {
+      emitRscPrewarmManifest: true,
+      preservePregeneratedConcretePaths: true,
+    });
+
+    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    expect(output).toContain('[["/old",["/old"]]]');
+    expect(output).not.toContain('[["/new",["/new"]]]');
+    expect(output).toContain('__VINEXT_RSC_PREWARMABLE_PATHS = ["/new"]');
+  });
+
   it("changes the eligibility asset hash with its content and removes the stale asset", () => {
     writeFile(
       "dist/server/index.js",

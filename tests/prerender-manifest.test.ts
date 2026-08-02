@@ -136,6 +136,22 @@ describe("getPrewarmableAppPaths", () => {
           fallback: false,
           hasSetCookie: true,
         },
+        {
+          route: "/vary-user-agent",
+          status: "rendered",
+          router: "app",
+          revalidate: 60,
+          fallback: false,
+          headers: { Vary: "RSC, User-Agent" },
+        },
+        {
+          route: "/probe-rejected",
+          status: "rendered",
+          router: "app",
+          revalidate: 60,
+          fallback: false,
+          prewarmable: false,
+        },
       ],
     };
 

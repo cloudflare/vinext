@@ -25,6 +25,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import {
   buildPregeneratedConcretePathTable,
+  hasNonCacheablePrewarmHeaders,
   isCdnCachePolicyHeaderName,
 } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
@@ -63,6 +64,8 @@ import {
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
+import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
+import { createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import {
   createAppPprFallbackShells,
@@ -162,6 +165,8 @@ export type PrerenderRouteResult =
       headers?: Record<string, string>;
       /** The rendered response attempted to set a cookie; values are never persisted. */
       hasSetCookie?: true;
+      /** A required response-side prewarm probe rejected this route. */
+      prewarmable?: false;
       /** Cache tags collected while rendering this route. */
       tags?: string[];
       /** Set to true when this is a PPR fallback shell. */
@@ -258,6 +263,8 @@ type PrerenderAppOptions = {
    * Absolute path to the pre-built RSC handler bundle (e.g. `dist/server/index.js`).
    */
   rscBundlePath: string;
+  /** Probe the canonical RSC response before declaring a route prewarmable. */
+  probeRscCachePolicy?: boolean;
 } & PrerenderOptions;
 
 // ─── Internal option extensions ───────────────────────────────────────────────
@@ -1538,33 +1545,45 @@ export async function prerenderApp({
         // short-circuits the App Router pipeline with a custom 200 HTML
         // response that never went through createRscEmbedTransform.
         let rscData = extractRscPayloadFromPrerenderedHtml(html);
-        if (rscData === null) {
+        let prewarmable = true;
+        if (rscData === null || options.probeRscCachePolicy) {
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
+          applyDeploymentIdHeader(rscHeaders, config.deploymentId);
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
           }
           if (isSpeculative) {
             rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
           }
-          const rscRequest = new Request(`http://localhost${urlPath}`, {
+          const rscRequestPath = options.probeRscCachePolicy
+            ? await createRscRequestUrl(urlPath, rscHeaders, "response-vary")
+            : urlPath;
+          const rscRequest = new Request(`http://localhost${rscRequestPath}`, {
             headers: rscHeaders,
           });
           const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
             rscHandler(rscRequest),
           );
-          if (!rscRes.ok) {
+          if (!rscRes.ok && rscData === null) {
             await rscRes.body?.cancel();
             throw new Error(
               `[vinext] prerenderApp: RSC fallback returned ${rscRes.status} for ${urlPath}`,
             );
           }
-          for (const [name, value] of rscRes.headers) {
-            if (isCdnCachePolicyHeaderName(name) || name.toLowerCase() === "vary") {
-              htmlRender.persistedHeaders[name] = value;
-            }
+          if (options.probeRscCachePolicy) {
+            prewarmable = rscRes.ok && !hasNonCacheablePrewarmHeaders(rscRes.headers);
           }
-          htmlRender.hasSetCookie ||= rscRes.headers.has("set-cookie");
-          rscData = new Uint8Array(await rscRes.arrayBuffer());
+          if (rscData === null) {
+            for (const [name, value] of rscRes.headers) {
+              if (isCdnCachePolicyHeaderName(name) || name.toLowerCase() === "vary") {
+                htmlRender.persistedHeaders[name] = value;
+              }
+            }
+            htmlRender.hasSetCookie ||= rscRes.headers.has("set-cookie");
+            rscData = new Uint8Array(await rscRes.arrayBuffer());
+          } else {
+            await rscRes.body?.cancel();
+          }
         }
 
         const outputFiles: string[] = [];
@@ -1608,6 +1627,7 @@ export async function prerenderApp({
             : {}),
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
+          ...(!prewarmable ? { prewarmable: false as const } : {}),
           ...(htmlRender.hasSetCookie ? { hasSetCookie: true as const } : {}),
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
           ...(Object.keys(htmlRender.persistedHeaders).length > 0
@@ -1831,6 +1851,7 @@ export function writePrerenderIndex(
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         ...(typeof r.stale === "number" ? { stale: r.stale } : {}),
         router: r.router,
+        ...(r.prewarmable === false ? { prewarmable: false as const } : {}),
         ...(r.hasSetCookie ? { hasSetCookie: true } : {}),
         ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
         ...(r.headers ? { headers: r.headers } : {}),

@@ -301,7 +301,7 @@ describe("prerenderApp — RSC extraction", () => {
       path.join(appDir, "no-store", "page.tsx"),
       "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
     );
-    for (const route of ["vary-all", "sets-cookie"]) {
+    for (const route of ["vary-all", "vary-user-agent", "sets-cookie", "rsc-no-store"]) {
       fs.mkdirSync(path.join(appDir, route));
       fs.writeFileSync(
         path.join(appDir, route, "page.tsx"),
@@ -310,20 +310,36 @@ describe("prerenderApp — RSC extraction", () => {
     }
 
     const rscPayload = '0:["$","div",null,{"children":"private"}]\n';
+    let rscProbeUrl: string | undefined;
     const server = createServer((req, res) => {
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      if (pathname === "/__vinext_nonexistent_for_404__") {
         res.statusCode = 404;
         res.end("not found");
         return;
       }
-      if (req.url === "/no-store") {
+      const isRsc = req.headers.rsc === "1";
+      if (
+        pathname === "/rsc-no-store" &&
+        isRsc &&
+        req.headers["x-deployment-id"] === "test-deployment"
+      ) {
+        rscProbeUrl = req.url;
+        res.setHeader("Cache-Control", "public, max-age=60");
+        res.setHeader("Cloudflare-CDN-Cache-Control", "no-store");
+      } else if (pathname === "/no-store") {
         res.setHeader("Cache-Control", "public, No-Store");
-      } else if (req.url === "/vary-all") {
+      } else if (pathname === "/vary-all") {
         res.setHeader("Cache-Control", "public, max-age=60");
         res.setHeader("Vary", "Accept-Encoding, *");
-      } else if (req.url === "/sets-cookie") {
+      } else if (pathname === "/sets-cookie") {
         res.setHeader("Cache-Control", "public, max-age=60");
         res.setHeader("Set-Cookie", "private-token=secret; HttpOnly");
+      } else if (pathname === "/vary-user-agent") {
+        res.setHeader("Cache-Control", "public, max-age=60");
+        res.setHeader("Vary", "RSC, User-Agent");
+      } else if (pathname === "/rsc-no-store") {
+        res.setHeader("Cache-Control", "public, max-age=60");
       } else {
         res.setHeader("Cache-Control", "private, max-age=60");
         res.setHeader("Cloudflare-CDN-Cache-Control", "no-cache");
@@ -348,7 +364,8 @@ describe("prerenderApp — RSC extraction", () => {
         rscBundlePath: path.join(root, "dist", "server", "index.js"),
         routes: await appRouter(appDir),
         outDir,
-        config: await resolveNextConfig({}),
+        config: await resolveNextConfig({ deploymentId: "test-deployment" }),
+        probeRscCachePolicy: true,
         _prodServer: { server, port },
       });
 
@@ -376,9 +393,14 @@ describe("prerenderApp — RSC extraction", () => {
       if (setsCookie?.status === "rendered") {
         expect(setsCookie.headers).not.toHaveProperty("set-cookie");
       }
+      const varyUserAgent = findRoute(prerenderResult.routes, "/vary-user-agent");
+      expect(varyUserAgent).toMatchObject({ status: "rendered", prewarmable: false });
+      const rscNoStore = findRoute(prerenderResult.routes, "/rsc-no-store");
+      expect(rscNoStore).toMatchObject({ status: "rendered", prewarmable: false });
+      expect(rscProbeUrl).toBe("/rsc-no-store?_rsc");
       expect(
         getPrewarmableAppPaths({
-          routes: [varyAll, setsCookie].filter(
+          routes: [varyAll, setsCookie, varyUserAgent, rscNoStore].filter(
             (candidate): candidate is Extract<typeof candidate, { status: "rendered" }> =>
               candidate?.status === "rendered",
           ),

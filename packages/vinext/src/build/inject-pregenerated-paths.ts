@@ -20,6 +20,8 @@ const VINEXT_PREGEN_RE = new RegExp(
   `${escapeRegExp(VINEXT_PREGEN_START)}[\\s\\S]*?${escapeRegExp(VINEXT_PREGEN_END)}\\n?`,
   "g",
 );
+const VINEXT_PREGENERATED_TABLE_ASSIGNMENT_RE =
+  /globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = [^\n]+;\n?/;
 
 const RSC_PREWARM_MANIFEST_PREFIX = "vinext-rsc-prewarm-";
 
@@ -73,14 +75,16 @@ export function injectPregeneratedConcretePaths(
     deploymentId?: string;
     emitRscPrewarmManifest?: boolean;
     includePregeneratedConcretePaths?: boolean;
+    preservePregeneratedConcretePaths?: boolean;
   } = {},
 ): void {
   const workerEntry = path.resolve(root, "dist", "server", "index.js");
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
+  const preservePregeneratedConcretePaths = options.preservePregeneratedConcretePaths === true;
   const table =
-    options.includePregeneratedConcretePaths === false
+    preservePregeneratedConcretePaths || options.includePregeneratedConcretePaths === false
       ? []
       : (manifest?.pregeneratedConcretePaths ?? []);
   const prewarmablePaths =
@@ -89,10 +93,12 @@ export function injectPregeneratedConcretePaths(
       : [];
   const prewarmManifestUrl = emitRscPrewarmManifest(root, prewarmablePaths, options);
 
-  if (table.length > 0) {
-    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
-  } else {
-    delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+  if (!preservePregeneratedConcretePaths) {
+    if (table.length > 0) {
+      globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
+    } else {
+      delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+    }
   }
   if (prewarmManifestUrl) {
     globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL = prewarmManifestUrl;
@@ -106,14 +112,19 @@ export function injectPregeneratedConcretePaths(
   injectRscPrewarmMetaIntoHtmlFiles(path.join(root, "dist", "client"));
 
   if (!fs.existsSync(workerEntry)) return;
-  let code = fs.readFileSync(workerEntry, "utf-8").replace(VINEXT_PREGEN_RE, "");
+  const originalCode = fs.readFileSync(workerEntry, "utf-8");
+  const preservedTableAssignment = preservePregeneratedConcretePaths
+    ? (originalCode.match(VINEXT_PREGENERATED_TABLE_ASSIGNMENT_RE)?.[0] ?? "")
+    : "";
+  let code = originalCode.replace(VINEXT_PREGEN_RE, "");
 
-  if (table.length > 0 || prewarmManifestUrl) {
+  if (table.length > 0 || preservedTableAssignment || prewarmManifestUrl) {
     code =
       `${VINEXT_PREGEN_START}\n` +
-      (table.length > 0
-        ? `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n`
-        : "") +
+      (preservedTableAssignment ||
+        (table.length > 0
+          ? `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n`
+          : "")) +
       (prewarmManifestUrl
         ? `globalThis.__VINEXT_RSC_PREWARM_MANIFEST_URL = ${JSON.stringify(prewarmManifestUrl)};\n`
         : "") +
