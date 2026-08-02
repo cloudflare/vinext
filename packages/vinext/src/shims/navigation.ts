@@ -32,6 +32,7 @@ import {
 import {
   canonicalizeFullRscRequestHeaders,
   createRscClientRequestIdentity,
+  createRscNavigationCacheVariant,
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
@@ -335,6 +336,8 @@ export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
   /** Require an exact `_rsc` URL match; source-dependent payloads cannot path-alias. */
   exactVariant?: boolean;
+  /** Source-dependent request identity required for normalized path aliasing. */
+  navigationVariant?: string;
   expiresAt?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
   mountedSlotsHeader?: string | null;
@@ -587,6 +590,7 @@ function findPrefetchCacheEntryForNavigation(
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   additionalRscUrls: readonly string[] = [],
+  navigationVariant?: string,
 ): { cacheKey: string; entry: PrefetchCacheEntry } | null {
   const cache = getPrefetchCache();
   const rscUrls = [rscUrl, ...additionalRscUrls];
@@ -613,6 +617,9 @@ function findPrefetchCacheEntryForNavigation(
   for (const [cacheKey, entry] of cache) {
     if (entry.cacheForNavigation === false) continue;
     if (entry.exactVariant) continue;
+    if (entry.navigationVariant !== undefined && entry.navigationVariant !== navigationVariant) {
+      continue;
+    }
 
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
@@ -632,6 +639,7 @@ export function hasPrefetchCacheEntryForNavigation(
   mountedSlotsHeader: string | null = null,
   options: {
     additionalRscUrls?: readonly string[];
+    navigationVariant?: string;
     notifyInvalidation?: boolean;
     onInvalidate?: () => void;
   } = {},
@@ -641,6 +649,7 @@ export function hasPrefetchCacheEntryForNavigation(
     interceptionContext,
     mountedSlotsHeader,
     options.additionalRscUrls,
+    options.navigationVariant,
   );
   if (match === null) return false;
 
@@ -1058,7 +1067,7 @@ export function seedPrefetchResponseSnapshot(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
-  options: { exactVariant?: boolean } = {},
+  options: { exactVariant?: boolean; navigationVariant?: string } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1070,6 +1079,9 @@ export function seedPrefetchResponseSnapshot(
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: true,
     ...(options.exactVariant ? { exactVariant: true } : {}),
+    ...(options.navigationVariant === undefined
+      ? {}
+      : { navigationVariant: options.navigationVariant }),
     cacheKeys: new Set([cacheKey]),
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
@@ -1321,6 +1333,7 @@ export function prefetchRscResponse(
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
     minimumTtlMs?: number;
+    navigationVariant?: string;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1340,6 +1353,9 @@ export function prefetchRscResponse(
     cacheForNavigation: behavior.cacheForNavigation ?? true,
     cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
+    ...(behavior.navigationVariant === undefined
+      ? {}
+      : { navigationVariant: behavior.navigationVariant }),
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
     prefetchKind:
@@ -1436,13 +1452,14 @@ export function peekPrefetchResponseForNavigation(
   rscUrl: string,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
-  options?: { additionalRscUrls?: readonly string[] },
+  options?: { additionalRscUrls?: readonly string[]; navigationVariant?: string },
 ): CachedRscResponse | null {
   const match = findPrefetchCacheEntryForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
     options?.additionalRscUrls,
+    options?.navigationVariant,
   );
   if (!match) return null;
 
@@ -1471,7 +1488,7 @@ export function consumePrefetchResponse(
   rscUrl: string,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
-  options?: { additionalRscUrls?: readonly string[] },
+  options?: { additionalRscUrls?: readonly string[]; navigationVariant?: string },
 ): CachedRscResponse | null {
   const cache = getPrefetchCache();
   const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
@@ -1489,6 +1506,7 @@ export function consumePrefetchResponse(
     interceptionContext,
     mountedSlotsHeader,
     options?.additionalRscUrls,
+    options?.navigationVariant,
   );
   if (!match) return null;
   const { cacheKey, entry } = match;
@@ -1552,6 +1570,7 @@ function consumeMatchedPrefetchResponse(
  */
 type ConsumePrefetchResponseForNavigationOptions = {
   additionalRscUrls?: readonly string[];
+  navigationVariant?: string;
   shouldConsume?: () => boolean;
 };
 
@@ -1567,6 +1586,7 @@ export async function consumePrefetchResponseForNavigation(
     interceptionContext,
     mountedSlotsHeader,
     options?.additionalRscUrls,
+    options?.navigationVariant,
   );
   if (!match) return null;
   const { cacheKey, entry } = match;
@@ -2715,12 +2735,14 @@ const _appRouter: AppRouterInstance = {
         headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
         headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, __prefetchInlining ? "/__PAGE__" : "1");
       }
+      const sourceNavigationVariant = createRscNavigationCacheVariant(headers);
       const usesCanonicalSharedRequest =
         reusable &&
         getRscCacheKeyMode() === "response-vary" &&
         (await isRscPrewarmEligibleHref(fullHref, __basePath)) &&
         canonicalizeFullRscRequestHeaders(headers);
       const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
+      const navigationVariant = usesCanonicalSharedRequest ? undefined : sourceNavigationVariant;
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
       const [{ requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl }, ...additionalRscUrls] =
@@ -2749,6 +2771,7 @@ const _appRouter: AppRouterInstance = {
         if (
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
             additionalRscUrls,
+            navigationVariant,
             onInvalidate: options?.onInvalidate,
           })
         ) {
@@ -2782,6 +2805,7 @@ const _appRouter: AppRouterInstance = {
                   ? DYNAMIC_NAVIGATION_CACHE_TTL
                   : PREFETCH_CACHE_TTL,
               minimumTtlMs: policy.minimumTtlMs,
+              navigationVariant,
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,

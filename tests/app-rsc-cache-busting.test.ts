@@ -4,6 +4,7 @@ import {
   applyRscDeploymentIdHeader,
   canonicalizeFullRscRequestHeaders,
   computeRscCacheBustingSearchParam,
+  createRscNavigationCacheVariant,
   createRscRequestHeaders,
   createRscRequestUrl,
   createServerActionRequestUrl,
@@ -151,6 +152,34 @@ describe("App Router RSC cache-busting", () => {
       accept: "text/x-component",
       rsc: "1",
     });
+  });
+
+  it("uses the same browser alias variant for a prefetch and same-source navigation", () => {
+    const options = {
+      nextUrl: "/source",
+      prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+    };
+    const prefetchHeaders = createRscRequestHeaders(options);
+    prefetchHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+    const navigationHeaders = createRscRequestHeaders({
+      ...options,
+      includePrefetchHeader: false,
+    });
+
+    expect(createRscNavigationCacheVariant(prefetchHeaders)).toBe(
+      createRscNavigationCacheVariant(navigationHeaders),
+    );
+    expect(
+      createRscNavigationCacheVariant(
+        createRscRequestHeaders({
+          nextUrl: "/other-source",
+          prefetchRouterState: {
+            pathAndSearch: "/other-source",
+            routeId: "route:/other-source",
+          },
+        }),
+      ),
+    ).not.toBe(createRscNavigationCacheVariant(prefetchHeaders));
   });
 
   it("does not canonicalize contextual or partial RSC requests", () => {

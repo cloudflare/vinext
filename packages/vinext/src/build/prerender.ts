@@ -65,7 +65,7 @@ import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
-import { createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import { createRscRequestUrl, VINEXT_RSC_CONTENT_TYPE } from "../server/app-rsc-cache-busting.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import {
   createAppPprFallbackShells,
@@ -903,8 +903,17 @@ export async function prerenderPages({
           const outputFiles: string[] = [];
           const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
           const htmlFullPath = path.join(outDir, htmlOutputPath);
+          const persistedHeaders: Record<string, string> = {};
+          for (const [name, value] of response.headers) {
+            if (isCdnCachePolicyHeaderName(name) || name.toLowerCase() === "vary") {
+              persistedHeaders[name] = value;
+            }
+          }
+          const hasSetCookie = response.headers.has("set-cookie");
+          const isRedirect = response.status >= 300 && response.status < 400;
+          const prewarmable = !isRedirect && !hasNonCacheablePrewarmHeaders(response.headers);
 
-          if (response.status >= 300 && response.status < 400) {
+          if (isRedirect) {
             // getStaticProps returned a redirect — emit a meta-refresh HTML page
             // so the static export can represent the redirect without a server.
             const dest = response.headers.get("location") ?? "/";
@@ -936,6 +945,9 @@ export async function prerenderPages({
             // Next.js applies expireTime as the fallback when no route expire exists.
             ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
             router: "pages",
+            ...(!prewarmable ? { prewarmable: false as const } : {}),
+            ...(hasSetCookie ? { hasSetCookie: true as const } : {}),
+            ...(Object.keys(persistedHeaders).length > 0 ? { headers: persistedHeaders } : {}),
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
           };
         } catch (e) {
@@ -1571,7 +1583,15 @@ export async function prerenderApp({
             );
           }
           if (options.probeRscCachePolicy) {
-            prewarmable = rscRes.ok && !hasNonCacheablePrewarmHeaders(rscRes.headers);
+            prewarmable =
+              rscRes.status === 200 &&
+              Boolean(
+                rscRes.headers
+                  .get("content-type")
+                  ?.toLowerCase()
+                  .startsWith(VINEXT_RSC_CONTENT_TYPE),
+              ) &&
+              !hasNonCacheablePrewarmHeaders(rscRes.headers);
           }
           if (rscData === null) {
             for (const [name, value] of rscRes.headers) {

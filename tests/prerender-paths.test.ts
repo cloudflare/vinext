@@ -97,6 +97,49 @@ describe("prerender path manifest", () => {
     expect(closeMock).toHaveBeenCalledOnce();
   });
 
+  it("discovers concrete static metadata without adding RSC companions", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/robots.txt", "User-Agent: *\nAllow: /\n");
+    writeFile("app/sitemap.xml", "<urlset />\n");
+    writeFile("app/manifest.webmanifest", "{}\n");
+    writeFile("app/favicon.ico", "icon");
+    writeFile("app/icon.png", "icon");
+    writeFile("app/icon1.png", "icon");
+    writeFile("app/opengraph-image.jpg", "image");
+    writeFile("app/twitter-image.gif", "image");
+    writeFile("app/apple-icon.png", "icon");
+    writeFile("app/docs/sitemap.xml", "<urlset />\n");
+    writeFile("app/dynamic/sitemap.ts", "export default function sitemap() { return []; }\n");
+    writeFile("app/blog/[slug]/icon.png", "icon");
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.paths).toEqual(
+      expect.arrayContaining([
+        "/",
+        "/robots.txt",
+        "/sitemap.xml",
+        "/manifest.webmanifest",
+        "/favicon.ico",
+        "/icon.png",
+        "/icon1.png",
+        "/opengraph-image.jpg",
+        "/twitter-image.gif",
+        "/apple-icon.png",
+        "/docs/sitemap.xml",
+      ]),
+    );
+    expect(manifest?.paths).not.toContain("/dynamic/sitemap.xml");
+    expect(manifest?.paths.some((pathname) => pathname.startsWith("/blog/"))).toBe(false);
+    expect(manifest?.appPaths).toEqual(["/"]);
+  });
+
   it("skips dynamic warmup paths when static params discovery aborts", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubGlobal(

@@ -23,6 +23,7 @@ import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
+import { scanMetadataFiles } from "../server/metadata-routes.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -161,6 +162,15 @@ function resolveConfiguredRouteDirs(
 function appRouteMayHaveGenerateStaticParams(route: Awaited<ReturnType<typeof appRouter>>[number]) {
   if (fileHasNamedExport(route.pagePath, "generateStaticParams")) return true;
   return route.layouts.some((layoutPath) => fileHasNamedExport(layoutPath, "generateStaticParams"));
+}
+
+function isConcreteStaticMetadataRoute(
+  route: ReturnType<typeof scanMetadataFiles>[number],
+): boolean {
+  return (
+    !route.isDynamic &&
+    !route.routeSegments?.some((segment) => segment.startsWith("[") && segment.endsWith("]"))
+  );
 }
 
 async function shouldStartPathDiscoveryServer(options: {
@@ -447,6 +457,13 @@ export async function emitPrerenderPathManifest(
         for (const pathname of discoveredAppPaths) {
           addPath(paths, seen, pathname);
           addPath(appPaths, seenAppPaths, pathname);
+        }
+        for (const route of scanMetadataFiles(appDir)) {
+          if (isConcreteStaticMetadataRoute(route)) {
+            // Metadata requests have no RSC companion, so they belong only to
+            // the document warm list rather than `appPaths`.
+            addPath(paths, seen, route.servedUrl);
+          }
         }
       }
 

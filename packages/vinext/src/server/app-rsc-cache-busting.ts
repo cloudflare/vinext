@@ -20,6 +20,7 @@ import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 import { isServerRscPrewarmEligiblePathname } from "../client/rsc-prewarm-eligibility.js";
 export {
+  isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
   preloadRscPrewarmManifest,
 } from "../client/rsc-prewarm-eligibility.js";
@@ -212,6 +213,7 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 
 type CreateCacheBustingInputOptions = {
   includeClientReuseManifestHeader?: boolean;
+  includePrefetchHeaders?: boolean;
   includeRenderModeHeader?: boolean;
 };
 
@@ -222,8 +224,12 @@ function createCacheBustingInput(
   // The order of these values determines the hash. Changing it is a breaking
   // cache-key change and requires accepting the previous hash during rollout.
   const values = [
-    headers.get(NEXT_ROUTER_PREFETCH_HEADER),
-    headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
+    ...(options.includePrefetchHeaders === false
+      ? []
+      : [
+          headers.get(NEXT_ROUTER_PREFETCH_HEADER),
+          headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
+        ]),
     headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
     headers.get(NEXT_URL_HEADER),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
@@ -242,6 +248,20 @@ function createCacheBustingInput(
   }
 
   return values.map(normalizeHeaderValue).join(",");
+}
+
+/**
+ * Exact source identity used only for browser-local path aliasing. Prefetch
+ * marker headers differ between a speculative fetch and its click navigation,
+ * while the remaining fields determine the source-dependent payload.
+ */
+export function createRscNavigationCacheVariant(headers: Headers): string {
+  return (
+    createCacheBustingInput(headers, {
+      includeClientReuseManifestHeader: false,
+      includePrefetchHeaders: false,
+    }) ?? ""
+  );
 }
 
 async function sha256CacheBustingHash(input: string): Promise<string> {

@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
   isServerRscPrewarmEligiblePathname,
   normalizeRscPrewarmPath,
+  preloadRscPrewarmManifest,
   resetRscPrewarmManifestForTesting,
   RSC_PREWARM_MANIFEST_META_NAME,
 } from "../packages/vinext/src/client/rsc-prewarm-eligibility.js";
@@ -95,6 +97,27 @@ describe("RSC prewarm browser eligibility", () => {
     resetRscPrewarmManifestForTesting();
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network failure")));
     await expect(isRscPrewarmEligibleHref("/dashboard")).resolves.toBe(false);
+  });
+
+  it("never makes navigation wait for a pending eligibility manifest", async () => {
+    let resolveManifest: ((response: Response) => void) | undefined;
+    installBrowserGlobals({ version: 1, paths: ["/dashboard"] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveManifest = resolve;
+          }),
+      ),
+    );
+
+    const pending = preloadRscPrewarmManifest();
+    expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(false);
+
+    resolveManifest?.(Response.json({ version: 1, paths: ["/dashboard"] }));
+    await pending;
+    expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(true);
   });
 });
 

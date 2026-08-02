@@ -297,4 +297,53 @@ describe("visited response cache freshness", () => {
       ),
     ).toBeNull();
   });
+
+  it("partitions normalized hashed responses by source navigation variant", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      navigationVariant: "tree-a,next-url-a",
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const storedKey = AppElementsWire.encodeCacheKey("/dashboard?_rsc=source-a", null);
+    cache.set(storedKey, entry);
+
+    expect(
+      findVisitedResponseCacheEntry(
+        cache,
+        "/dashboard?_rsc=navigation-b",
+        null,
+        "tree-b,next-url-b",
+      ),
+    ).toBeNull();
+    expect(
+      findVisitedResponseCacheEntry(
+        cache,
+        "/dashboard?_rsc=navigation-a",
+        null,
+        "tree-a,next-url-a",
+      ),
+    ).toEqual({ cacheKey: storedKey, entry });
+  });
+
+  it("keeps client-reuse visited responses scoped to their exact digest", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      exactVariant: true,
+      navigationVariant: "tree-a,next-url-a",
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const storedKey = AppElementsWire.encodeCacheKey("/dashboard?_rsc=reuse-a", null);
+    cache.set(storedKey, entry);
+
+    expect(
+      findVisitedResponseCacheEntry(cache, "/dashboard?_rsc=reuse-b", null, "tree-a,next-url-a"),
+    ).toBeNull();
+    expect(
+      findVisitedResponseCacheEntry(cache, "/dashboard?_rsc=reuse-a", null, "other-source"),
+    ).toEqual({ cacheKey: storedKey, entry });
+  });
 });

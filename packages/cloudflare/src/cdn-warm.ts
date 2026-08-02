@@ -304,10 +304,10 @@ export function readPrerenderWarmPlan(
       paths.push(pathname);
     }
   }
+  const deploymentId =
+    pathManifestPlan !== null ? pathManifestPlan.deploymentId : fullManifestDeploymentId;
   return {
-    ...(pathManifestPlan?.deploymentId || fullManifestDeploymentId
-      ? { deploymentId: pathManifestPlan?.deploymentId ?? fullManifestDeploymentId }
-      : {}),
+    ...(deploymentId ? { deploymentId } : {}),
     paths,
     rscPaths: configuredRscPaths,
     rscCacheKeyMode,

@@ -370,6 +370,39 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(sourceRscUrl, null, null)).toMatchObject(snapshot);
   });
 
+  it("reuses normalized hashed prefetches only for the same source variant", () => {
+    const sourceRscUrl = "/dashboard?_rsc=source-prefetch";
+    const navigationRscUrl = "/dashboard?_rsc=source-navigation";
+    const snapshot = {
+      buffer: new TextEncoder().encode("source-flight").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: sourceRscUrl,
+    };
+
+    seedPrefetchResponseSnapshot(sourceRscUrl, snapshot, null, null, undefined, {
+      navigationVariant: "tree-a,next-url-a",
+    });
+
+    expect(
+      hasPrefetchCacheEntryForNavigation(navigationRscUrl, null, null, {
+        navigationVariant: "tree-b,next-url-b",
+      }),
+    ).toBe(false);
+    expect(
+      consumePrefetchResponse(navigationRscUrl, null, null, {
+        navigationVariant: "tree-b,next-url-b",
+      }),
+    ).toBeNull();
+    expect(
+      consumePrefetchResponse(navigationRscUrl, null, null, {
+        navigationVariant: "tree-a,next-url-a",
+      }),
+    ).toMatchObject(snapshot);
+  });
+
   it("keeps learning-only prefetch responses out of navigation consumption", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();

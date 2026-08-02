@@ -14,6 +14,7 @@ declare global {
 }
 
 let manifestPromise: Promise<ReadonlySet<string>> | null = null;
+let loadedManifestPaths: ReadonlySet<string> | null = null;
 let serverPathsSource: unknown;
 let serverPaths = new Set<string>();
 
@@ -59,23 +60,41 @@ async function loadRscPrewarmManifest(): Promise<ReadonlySet<string>> {
 }
 
 export function preloadRscPrewarmManifest(): Promise<ReadonlySet<string>> {
-  manifestPromise ??= loadRscPrewarmManifest();
+  manifestPromise ??= loadRscPrewarmManifest().then((paths) => {
+    loadedManifestPaths = paths;
+    return paths;
+  });
   return manifestPromise;
 }
 
-export async function isRscPrewarmEligibleHref(href: string, basePath = ""): Promise<boolean> {
-  if (typeof window === "undefined") return false;
+function resolveEligibleHrefPathname(href: string, basePath: string): string | null {
+  if (typeof window === "undefined") return null;
 
   let url: URL;
   try {
     url = new URL(href, window.location.href);
   } catch {
-    return false;
+    return null;
   }
-  if (url.origin !== window.location.origin || url.search !== "") return false;
+  if (url.origin !== window.location.origin || url.search !== "") return null;
+  return normalizeRscPrewarmPath(url.pathname, basePath);
+}
 
+export async function isRscPrewarmEligibleHref(href: string, basePath = ""): Promise<boolean> {
+  const pathname = resolveEligibleHrefPathname(href, basePath);
+  if (pathname === null) return false;
   const paths = await preloadRscPrewarmManifest();
-  return paths.has(normalizeRscPrewarmPath(url.pathname, basePath));
+  return paths.has(pathname);
+}
+
+/**
+ * Synchronous navigation-time check. A pending manifest fails closed so an
+ * optimization asset can never delay a user-initiated navigation.
+ */
+export function isLoadedRscPrewarmEligibleHref(href: string, basePath = ""): boolean {
+  if (loadedManifestPaths === null) return false;
+  const pathname = resolveEligibleHrefPathname(href, basePath);
+  return pathname !== null && loadedManifestPaths.has(pathname);
 }
 
 /** Server-side enforcement for the browser eligibility manifest. */
@@ -100,6 +119,7 @@ export function isServerRscPrewarmEligiblePathname(pathname: string, basePath = 
 /** Test-only reset for isolated browser-global fixtures. */
 export function resetRscPrewarmManifestForTesting(): void {
   manifestPromise = null;
+  loadedManifestPaths = null;
   serverPathsSource = undefined;
   serverPaths = new Set();
 }

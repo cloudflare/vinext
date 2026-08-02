@@ -301,7 +301,14 @@ describe("prerenderApp — RSC extraction", () => {
       path.join(appDir, "no-store", "page.tsx"),
       "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
     );
-    for (const route of ["vary-all", "vary-user-agent", "sets-cookie", "rsc-no-store"]) {
+    for (const route of [
+      "vary-all",
+      "vary-user-agent",
+      "sets-cookie",
+      "rsc-no-store",
+      "rsc-non-flight",
+      "rsc-flight",
+    ]) {
       fs.mkdirSync(path.join(appDir, route));
       fs.writeFileSync(
         path.join(appDir, route, "page.tsx"),
@@ -340,11 +347,16 @@ describe("prerenderApp — RSC extraction", () => {
         res.setHeader("Vary", "RSC, User-Agent");
       } else if (pathname === "/rsc-no-store") {
         res.setHeader("Cache-Control", "public, max-age=60");
+      } else if (pathname === "/rsc-non-flight" || pathname === "/rsc-flight") {
+        res.setHeader("Cache-Control", "public, max-age=60");
       } else {
         res.setHeader("Cache-Control", "private, max-age=60");
         res.setHeader("Cloudflare-CDN-Cache-Control", "no-cache");
       }
-      res.setHeader("content-type", "text/html");
+      res.setHeader(
+        "content-type",
+        pathname === "/rsc-flight" && isRsc ? "text/x-component" : "text/html",
+      );
       res.end(
         `<html><body>${runtimeRscChunkScript(rscPayload)}${runtimeRscDoneScript()}</body></html>`,
       );
@@ -397,15 +409,22 @@ describe("prerenderApp — RSC extraction", () => {
       expect(varyUserAgent).toMatchObject({ status: "rendered", prewarmable: false });
       const rscNoStore = findRoute(prerenderResult.routes, "/rsc-no-store");
       expect(rscNoStore).toMatchObject({ status: "rendered", prewarmable: false });
+      const rscNonFlight = findRoute(prerenderResult.routes, "/rsc-non-flight");
+      expect(rscNonFlight).toMatchObject({ status: "rendered", prewarmable: false });
+      const rscFlight = findRoute(prerenderResult.routes, "/rsc-flight");
+      expect(rscFlight).toMatchObject({ status: "rendered" });
+      if (rscFlight?.status === "rendered") {
+        expect(rscFlight.prewarmable).toBeUndefined();
+      }
       expect(rscProbeUrl).toBe("/rsc-no-store?_rsc");
       expect(
         getPrewarmableAppPaths({
-          routes: [varyAll, setsCookie, varyUserAgent, rscNoStore].filter(
+          routes: [varyAll, setsCookie, varyUserAgent, rscNoStore, rscNonFlight, rscFlight].filter(
             (candidate): candidate is Extract<typeof candidate, { status: "rendered" }> =>
               candidate?.status === "rendered",
           ),
         }),
-      ).toEqual([]);
+      ).toEqual(["/rsc-flight"]);
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });
@@ -1370,6 +1389,80 @@ describe("runPrerender — hybrid app+pages (app-basic)", () => {
       status: "skipped",
       reason: "ssr",
     });
+  });
+});
+
+describe("prerenderPages — CDN prewarm eligibility", () => {
+  it("excludes redirects and final non-cacheable responses", async () => {
+    const root = tmpDir("vinext-prerender-pages-prewarm-");
+    const outDir = path.join(root, "out");
+    const pagesDir = path.join(root, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    const pageSource =
+      "export async function getStaticProps() { return { props: {} }; }\n" +
+      "export default function Page() { return null; }\n";
+    for (const page of ["cacheable", "private", "redirect"]) {
+      fs.writeFileSync(path.join(pagesDir, `${page}.tsx`), pageSource);
+    }
+
+    const server = createServer((req, res) => {
+      const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      if (pathname === "/redirect") {
+        res.statusCode = 307;
+        res.setHeader("Location", "/cacheable");
+      } else if (pathname === "/private") {
+        res.setHeader("Cache-Control", "private, no-store");
+        res.setHeader("Set-Cookie", "session=private; HttpOnly");
+      } else {
+        res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+        res.setHeader("CDN-Cache-Control", "public, max-age=60");
+      }
+      res.setHeader("Content-Type", "text/html");
+      res.end("<html><body>page</body></html>");
+    });
+
+    const port = await listen(server);
+    try {
+      const [
+        { prerenderPages },
+        { pagesRouter, apiRouter },
+        { resolveNextConfig },
+        { getPrewarmableConcretePaths },
+      ] = await Promise.all([
+        import("../packages/vinext/src/build/prerender.js"),
+        import("../packages/vinext/src/routing/pages-router.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+        import("../packages/vinext/src/server/prerender-manifest.js"),
+      ]);
+      const result = await prerenderPages({
+        mode: "default",
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(result.routes, "/redirect")).toMatchObject({
+        status: "rendered",
+        prewarmable: false,
+      });
+      expect(findRoute(result.routes, "/private")).toMatchObject({
+        status: "rendered",
+        prewarmable: false,
+        hasSetCookie: true,
+        headers: { "cache-control": "private, no-store" },
+      });
+      expect(findRoute(result.routes, "/cacheable")).toMatchObject({
+        status: "rendered",
+        headers: { "cdn-cache-control": "public, max-age=60" },
+      });
+      expect(getPrewarmableConcretePaths({ routes: result.routes })).toEqual(["/cacheable"]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

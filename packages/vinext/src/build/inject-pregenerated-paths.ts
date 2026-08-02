@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "pathslash";
 import { getPrewarmableAppPaths, readPrerenderManifest } from "../server/prerender-manifest.js";
 import { normalizeRscPrewarmPath } from "../client/rsc-prewarm-eligibility.js";
-import { resolveAssetsDir } from "../utils/asset-prefix.js";
+import { isAbsoluteAssetPrefix, resolveAssetsDir } from "../utils/asset-prefix.js";
 import { renderVinextBuiltUrl } from "../utils/built-asset-url.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { injectRscPrewarmManifestMetaHtml } from "../server/app-rsc-prewarm-meta.js";
@@ -46,9 +46,13 @@ function emitRscPrewarmManifest(
   const fileName = `${RSC_PREWARM_MANIFEST_PREFIX}${hash}.json`;
   fs.mkdirSync(assetsDir, { recursive: true });
   fs.writeFileSync(path.join(assetsDir, fileName), content, "utf-8");
+  // This manifest controls whether browser requests may use the canonical
+  // warmed RSC shape. Keep it on the deployment origin so an external asset
+  // CDN never adds a CORS or CSP connect-src dependency to navigation.
+  const controlAssetPrefix = isAbsoluteAssetPrefix(assetPrefix) ? "" : assetPrefix;
   return renderVinextBuiltUrl(
     `${resolveAssetsDir(assetPrefix)}/${fileName}`,
-    assetPrefix,
+    controlAssetPrefix,
     options.deploymentId,
     "html",
   );

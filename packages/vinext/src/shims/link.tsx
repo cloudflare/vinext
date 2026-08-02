@@ -457,6 +457,7 @@ function prefetchUrl(
         const {
           canonicalizeFullRscRequestHeaders,
           createRscClientRequestIdentity,
+          createRscNavigationCacheVariant,
           createRscRequestUrl,
           getRscCacheKeyMode,
           isRscPrewarmEligibleHref,
@@ -525,12 +526,14 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
+        const sourceNavigationVariant = createRscNavigationCacheVariant(headers);
         const usesCanonicalSharedRequest =
           autoPrefetch.cacheForNavigation &&
           getRscCacheKeyMode() === "response-vary" &&
           (await isRscPrewarmEligibleHref(fullHref, __basePath)) &&
           canonicalizeFullRscRequestHeaders(headers);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
+        const navigationVariant = usesCanonicalSharedRequest ? undefined : sourceNavigationVariant;
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const { requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl } =
@@ -633,12 +636,15 @@ function prefetchUrl(
         };
         const hasExactNavigationCacheEntry =
           autoPrefetch.cacheForNavigation &&
-          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader);
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
+            navigationVariant,
+          });
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
           (autoPrefetch.cacheForNavigation &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
+              navigationVariant,
             }));
         // A single freshness-aware gate covers both an exact prior prefetch and
         // an equivalent `_rsc` variant; the helper also deletes any stale exact
@@ -738,6 +744,7 @@ function prefetchUrl(
                     renderedRscUrl,
                     interceptionContext,
                     mountedSlotsHeader,
+                    { navigationVariant },
                   );
                   if (cachedRenderedResponse) {
                     return restoreRscResponse(cachedRenderedResponse);
@@ -780,6 +787,7 @@ function prefetchUrl(
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
                 : PREFETCH_CACHE_TTL,
             minimumTtlMs: autoPrefetch.minimumTtlMs,
+            navigationVariant,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
             prepareSnapshot: autoPrefetch.cacheForNavigation

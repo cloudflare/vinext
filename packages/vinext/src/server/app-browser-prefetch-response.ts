@@ -6,6 +6,7 @@ export function peekSettledPrefetchResponseForNavigation(options: {
   bypassNavigationCache: boolean;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
+  navigationVariant?: string;
   navigationKind: "navigate" | "refresh" | "traverse";
   peek?: typeof peekPrefetchResponseForNavigation;
   targetPathAndSearch: string;
@@ -17,7 +18,12 @@ export function peekSettledPrefetchResponseForNavigation(options: {
     options.targetPathAndSearch,
     options.interceptionContext,
     options.mountedSlotsHeader,
-    { additionalRscUrls: options.additionalRscUrls },
+    {
+      additionalRscUrls: options.additionalRscUrls,
+      ...(options.navigationVariant === undefined
+        ? {}
+        : { navigationVariant: options.navigationVariant }),
+    },
   );
 }
 

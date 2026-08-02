@@ -38,7 +38,10 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   }
 }
 
-async function writeFixture(fixtureRoot: string): Promise<void> {
+async function writeFixture(
+  fixtureRoot: string,
+  options: { responseVary?: boolean } = {},
+): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const targetDir = path.join(appDir, "target");
   const settledTargetDir = path.join(appDir, "settled-target");
@@ -47,6 +50,9 @@ async function writeFixture(fixtureRoot: string): Promise<void> {
     fs.mkdir(targetDir, { recursive: true }),
     fs.mkdir(settledTargetDir, { recursive: true }),
     fs.mkdir(noPrefetchTargetDir, { recursive: true }),
+    ...(options.responseVary
+      ? [fs.mkdir(path.join(fixtureRoot, "public"), { recursive: true })]
+      : []),
   ]);
   await linkFixtureNodeModules(fixtureRoot);
 
@@ -57,10 +63,33 @@ async function writeFixture(fixtureRoot: string): Promise<void> {
   await fs.writeFile(
     path.join(appDir, "layout.tsx"),
     `export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return <html><body>{children}</body></html>;
+  return <html>${
+    options.responseVary
+      ? '<head><meta name="vinext-rsc-prewarm-manifest" content="/prewarm.json" /></head>'
+      : ""
+  }<body>{children}</body></html>;
 }
 `,
   );
+  if (options.responseVary) {
+    await fs.writeFile(
+      path.join(fixtureRoot, "public", "prewarm.json"),
+      `${JSON.stringify({ version: 1, paths: ["/target", "/settled-target"] })}\n`,
+    );
+    await fs.writeFile(
+      path.join(fixtureRoot, "response-vary-adapter.mjs"),
+      `export default function createTestAdapter() {
+  return {
+    ownsBackgroundRevalidation: true,
+    async get() { return null; },
+    async set() {},
+    buildResponseHeaders({ cacheControl }) { return { "Cache-Control": cacheControl }; },
+    async revalidateTag() {},
+  };
+}
+`,
+    );
+  }
   await fs.writeFile(
     path.join(appDir, "page.tsx"),
     `import Link from "next/link";
@@ -112,7 +141,18 @@ import react from ${JSON.stringify(pathToFileURL(reactPluginSource).href)};
 import vinext from ${JSON.stringify(pathToFileURL(vinextSource).href)};
 
 export default defineConfig({
-  plugins: [react(), vinext({ appDir: import.meta.dirname, react: false })],
+  plugins: [react(), vinext({
+    appDir: import.meta.dirname,
+    react: false,
+    ${
+      options.responseVary
+        ? `cache: { cdn: {
+      adapter: ${JSON.stringify(pathToFileURL(path.join(fixtureRoot, "response-vary-adapter.mjs")).href)},
+      capabilities: { responseVary: "verbatim" },
+    } },`
+        : ""
+    }
+  })],
 });
 `,
   );
@@ -251,7 +291,7 @@ test("only a settled prepared prefetch commits in the initiating click task", as
   let server: Server | undefined;
 
   try {
-    await writeFixture(fixtureRoot);
+    await writeFixture(fixtureRoot, { responseVary: true });
     const { createBuilder } = await import("vite");
     const builder = await createBuilder({
       root: fixtureRoot,
@@ -282,7 +322,11 @@ test("only a settled prepared prefetch commits in the initiating click task", as
     });
     await page.goto(baseUrl);
     await waitForAppRouterHydration(page);
-    await (await settledFullResponse).finished();
+    const response = await settledFullResponse;
+    await response.finished();
+    expect(new URL(response.url()).search).toBe("?_rsc");
+    expect(response.request().headers()["next-router-state-tree"]).toBeUndefined();
+    expect(response.request().headers()["next-url"]).toBeUndefined();
     // Preparation is CPU-local once the full response body settles.
     await page.waitForTimeout(50);
 

@@ -284,6 +284,39 @@ describe("injectPregeneratedConcretePaths", () => {
     ).toBe(true);
   });
 
+  it("keeps the RSC eligibility manifest on-origin with an absolute assetPrefix", () => {
+    writeFile(
+      "dist/server/index.js",
+      'export default { fetch() { return new Response("ok"); } };\n',
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir, {
+      assetPrefix: "https://cdn.example.com/assets",
+      deploymentId: "deploy-a",
+      emitRscPrewarmManifest: true,
+    });
+
+    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    expect(output).toMatch(
+      /__VINEXT_RSC_PREWARM_MANIFEST_URL = "\/_next\/static\/vinext-rsc-prewarm-[a-f0-9]{16}\.json\?dpl=deploy-a"/,
+    );
+    expect(output).not.toContain("https://cdn.example.com");
+  });
+
   it("can emit eligibility without promoting rendered artifacts to runtime routes", () => {
     writeFile(
       "dist/server/index.js",

@@ -311,6 +311,68 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
+  it("treats a missing deployment ID in the built path manifest as authoritative", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/app"],
+        appPaths: ["/app"],
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        deploymentId: "current-source-id",
+        routes: [
+          {
+            route: "/app",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/app"],
+      rscPaths: ["/app"],
+      rscCacheKeyMode: "response-vary",
+    });
+  });
+
+  it("uses the full prerender deployment ID when no path manifest exists", () => {
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        deploymentId: "full-manifest-id",
+        routes: [
+          {
+            route: "/app",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      deploymentId: "full-manifest-id",
+      paths: ["/app"],
+      rscPaths: [],
+      rscCacheKeyMode: "header-digest",
+    });
+  });
+
   it("uses the full prerender manifest when fallback shell paths are requested", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
