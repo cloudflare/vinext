@@ -59,6 +59,7 @@ import {
 } from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import {
   createAppPprFallbackShells,
@@ -144,6 +145,8 @@ export type PrerenderRouteResult =
       outputFiles: string[];
       revalidate: number | false;
       expire?: number;
+      /** Client-router reuse bound resolved from the prerender's `cacheLife`. */
+      stale?: number;
       /**
        * The concrete prerendered URL path, e.g. `/blog/hello-world`.
        * Only present when the route is dynamic and `path` differs from `route`.
@@ -1571,6 +1574,9 @@ export async function prerenderApp({
               : Math.min(revalidate, renderedCacheControl.revalidate)
             : (renderedCacheControl.revalidate ?? revalidate);
 
+        // Seed the same unclamped claim the runtime write path persists.
+        const renderedStale = resolveClientStaleTimeSeconds(htmlRender.requestCacheLife);
+
         return {
           route: routePattern,
           status: "rendered",
@@ -1579,6 +1585,7 @@ export async function prerenderApp({
           ...(typeof renderedRevalidate === "number"
             ? { expire: renderedCacheControl.expire }
             : {}),
+          ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
@@ -1686,8 +1693,11 @@ export async function prerenderApp({
   }
 }
 
+/** Cache life recovered from a prerendered response; `stale` seeds the ISR entry. */
+type PrerenderCacheLife = { expire?: number; revalidate?: number; stale?: number };
+
 function resolveRenderedCacheControl(
-  requestCacheLife: { expire?: number; revalidate?: number },
+  requestCacheLife: PrerenderCacheLife,
   cacheControl: string,
   fallbackExpireSeconds: number,
 ): { expire: number; revalidate?: number } {
@@ -1707,22 +1717,31 @@ function resolveRenderedCacheControl(
   };
 }
 
-function readPrerenderCacheLifeHeader(
-  headers: Headers,
-): { expire?: number; revalidate?: number } | null {
+function readPrerenderCacheLifeHeader(headers: Headers): PrerenderCacheLife | null {
   const value = headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
   if (!value) return null;
 
   try {
-    const parsed = JSON.parse(value) as { expire?: unknown; revalidate?: unknown };
-    const cacheLife: { expire?: number; revalidate?: number } = {};
+    const parsed = JSON.parse(value) as {
+      expire?: unknown;
+      revalidate?: unknown;
+      stale?: unknown;
+    };
+    const cacheLife: PrerenderCacheLife = {};
     if (typeof parsed.revalidate === "number" && Number.isFinite(parsed.revalidate)) {
       cacheLife.revalidate = parsed.revalidate;
     }
     if (typeof parsed.expire === "number" && Number.isFinite(parsed.expire)) {
       cacheLife.expire = parsed.expire;
     }
-    return cacheLife.revalidate === undefined && cacheLife.expire === undefined ? null : cacheLife;
+    if (typeof parsed.stale === "number" && Number.isFinite(parsed.stale) && parsed.stale >= 0) {
+      cacheLife.stale = parsed.stale;
+    }
+    return cacheLife.revalidate === undefined &&
+      cacheLife.expire === undefined &&
+      cacheLife.stale === undefined
+      ? null
+      : cacheLife;
   } catch {
     return null;
   }
@@ -1785,6 +1804,7 @@ export function writePrerenderIndex(
         status: r.status,
         revalidate: r.revalidate,
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
+        ...(typeof r.stale === "number" ? { stale: r.stale } : {}),
         router: r.router,
         ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
         ...(r.headers ? { headers: r.headers } : {}),

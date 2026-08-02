@@ -24,6 +24,11 @@ type InlineCssManifest = Record<string, string>;
 export type InitialNavigationCacheMetadata = {
   kind: "dynamic" | "static";
   dynamicStaleTimeSeconds?: number;
+  /**
+   * Client reuse bound from the completed render's `cacheLife` — trustworthy
+   * because the done-script is emitted only after the full RSC stream drains.
+   */
+  staleTimeSeconds?: number;
 };
 type InlineCssRewriteResult = {
   html: string;
@@ -81,6 +86,9 @@ function createNavigationRuntimeRscDoneScript(metadata?: InitialNavigationCacheM
           ...(metadata.dynamicStaleTimeSeconds === undefined
             ? {}
             : { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }),
+          ...(metadata.staleTimeSeconds === undefined
+            ? {}
+            : { staleTimeSeconds: metadata.staleTimeSeconds }),
         }) +
         ");") +
     bootstrap +

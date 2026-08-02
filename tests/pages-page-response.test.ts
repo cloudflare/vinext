@@ -4,7 +4,6 @@ import {
   renderPagesPageResponse,
   isPagesStreamingBot,
   generatePagesETag,
-  etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
 
@@ -152,6 +151,20 @@ describe("isPagesStreamingBot", () => {
     ).toBe(true);
   });
 
+  it("detects Google crawlers with the -Google suffix", () => {
+    expect(isPagesStreamingBot("Mediapartners-Google/2.1")).toBe(true);
+    expect(isPagesStreamingBot("AdsBot-Google (+http://www.google.com/adsbot.html)")).toBe(true);
+    expect(isPagesStreamingBot("Mozilla/5.0 Storebot-Google/1.0")).toBe(true);
+  });
+
+  it(
+    "handles long non-matching User-Agents without quadratic backtracking",
+    { timeout: 500 },
+    () => {
+      expect(isPagesStreamingBot("a".repeat(64_000))).toBe(false);
+    },
+  );
+
   it("detects other known HTML-limited bots", () => {
     expect(isPagesStreamingBot("Bingbot/2.0")).toBe(true);
     expect(isPagesStreamingBot("facebookexternalhit/1.1")).toBe(true);
@@ -270,9 +283,7 @@ describe("pages page response", () => {
         html: expect.stringContaining("<div>live-body</div>"),
         pageData: { pageProps: { title: "hello" } },
       }),
-      60,
-      undefined,
-      300,
+      { cacheControl: { revalidate: 60, expire: 300 } },
     );
   });
 
@@ -294,9 +305,7 @@ describe("pages page response", () => {
     expect(common.isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
       expect.objectContaining({ kind: "PAGES" }),
-      false,
-      undefined,
-      undefined,
+      { cacheControl: { revalidate: false } },
     );
   });
 
@@ -323,9 +332,7 @@ describe("pages page response", () => {
       expect.objectContaining({
         html: expect.stringContaining("\u20ac<div>live-body</div>"),
       }),
-      60,
-      undefined,
-      undefined,
+      { cacheControl: { revalidate: 60 } },
     );
   });
 
@@ -1030,7 +1037,7 @@ describe("pages page response", () => {
   // If-None-Match / 304 handling and ISR cache-HIT ETag
   // ---------------------------------------------------------------------------
 
-  it("returns 304 when If-None-Match matches ETag on bot response (fresh-MISS path)", async () => {
+  it("returns 304 for a weak If-None-Match on a strong bot ETag", async () => {
     const common = createCommonOptions();
 
     // First request: compute the ETag from a full bot render.
@@ -1041,12 +1048,12 @@ describe("pages page response", () => {
     const etag = firstResponse.headers.get("etag");
     expect(etag).toBeTruthy();
 
-    // Second request: send If-None-Match matching the ETag.
+    // Second request: send the strong ETag as a weak validator.
     const common2 = createCommonOptions();
     const notModifiedResponse = await renderPagesPageResponse({
       ...common2.options,
       userAgent: "Googlebot",
-      ifNoneMatch: etag as string,
+      ifNoneMatch: `W/${etag}`,
     });
 
     expect(notModifiedResponse.status).toBe(304);
@@ -1093,14 +1100,6 @@ describe("pages page response", () => {
 
     expect(browserResponse.status).toBe(200);
     expect(browserResponse.headers.get("etag")).toBeNull();
-  });
-
-  it("ETag weak-comparison: W/ prefix is ignored when matching If-None-Match", async () => {
-    expect(etagMatches('"abc123"', 'W/"abc123"')).toBe(true);
-    expect(etagMatches('W/"abc123"', '"abc123"')).toBe(true);
-    expect(etagMatches('"abc123"', '"abc123"')).toBe(true);
-    expect(etagMatches('"abc123"', '"other"')).toBe(false);
-    expect(etagMatches('"abc123"', "*")).toBe(true);
   });
 
   it("attaches ETag to ISR cache-HIT response for bot UAs", async () => {

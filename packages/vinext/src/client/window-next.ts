@@ -50,7 +50,7 @@ type AppRouterPublicInstance = {
   back: () => void;
   forward: () => void;
   refresh: () => void;
-  prefetch: (href: string, options?: { onInvalidate?: () => void }) => void;
+  prefetch: (href: string, options?: { kind?: "auto" | "full"; onInvalidate?: () => void }) => void;
   experimental_gesturePush?: (href: string, options?: { scroll?: boolean }) => void;
   /** Default placeholder, matches Next.js. */
   bfcacheId?: string;

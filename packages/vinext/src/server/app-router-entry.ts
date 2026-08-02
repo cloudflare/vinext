@@ -39,7 +39,11 @@ import {
   handleConfiguredImageOptimization,
   isImageOptimizationPath,
 } from "./image-optimization.js";
-import { finalizeMissingStaticAssetResponse, resolveStaticAssetSignal } from "./worker-utils.js";
+import {
+  createStaticAssetRequest,
+  finalizeMissingStaticAssetResponse,
+  resolveStaticAssetSignal,
+} from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -178,7 +182,7 @@ async function handleRequest(
       const assetFetcher = env.ASSETS;
       const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path) =>
-          Promise.resolve(assetFetcher.fetch(new Request(new URL(path, request.url)))),
+          Promise.resolve(assetFetcher.fetch(createStaticAssetRequest(path, request))),
       });
       if (assetResponse) response = assetResponse;
     }

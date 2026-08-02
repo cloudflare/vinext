@@ -366,6 +366,7 @@ export class KVCacheHandler implements CacheHandler {
     let effectiveExpire: number | undefined;
     effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
     effectiveExpire = readCacheControlNumberField(ctx, "expire");
+    const effectiveStale = readCacheControlNumberField(ctx, "stale");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
     }
@@ -380,11 +381,15 @@ export class KVCacheHandler implements CacheHandler {
       typeof effectiveExpire === "number" && effectiveExpire > 0
         ? now + effectiveExpire * 1000
         : null;
-    const cacheControl =
+    const cacheControl: CacheControlMetadata | undefined =
       typeof effectiveRevalidate === "number"
-        ? effectiveExpire === undefined
-          ? { revalidate: effectiveRevalidate }
-          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+        ? {
+            revalidate: effectiveRevalidate,
+            ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
+            // Client-router reuse bound — must survive KV so warm hits replay
+            // the producing render's claim (see CacheControlMetadata.stale).
+            ...(effectiveStale === undefined ? {} : { stale: effectiveStale }),
+          }
         : undefined;
 
     // Prepare entry — convert ArrayBuffers to base64 for JSON storage
@@ -573,6 +578,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     if (!isUnknownRecord(obj.cacheControl)) return null;
     if (typeof obj.cacheControl.revalidate !== "number") return null;
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
+      return null;
+    }
+    if (obj.cacheControl.stale !== undefined && typeof obj.cacheControl.stale !== "number") {
       return null;
     }
   }

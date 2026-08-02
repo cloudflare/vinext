@@ -46,6 +46,7 @@ describe("buildPrerenderKVPairs", () => {
             status: "rendered",
             revalidate: 60,
             expire: 300,
+            stale: 30,
             router: "app",
             headers: { link: "</font.woff2>; rel=preload; as=font" },
             tags: ["test-update-tag"],
@@ -81,7 +82,7 @@ describe("buildPrerenderKVPairs", () => {
       lastModified: 1_000,
       revalidateAt: 61_000,
       expireAt: 301_000,
-      cacheControl: { revalidate: 60, expire: 300 },
+      cacheControl: { revalidate: 60, expire: 300, stale: 30 },
     });
     expect(pairs[0].metadata).toEqual({ tags: htmlEntry.tags });
     expect(htmlEntry.tags).toContain("/about");

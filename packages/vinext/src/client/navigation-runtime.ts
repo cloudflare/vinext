@@ -16,6 +16,12 @@ export type NavigationRuntimeRscBootstrap = {
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
   rsc: NavigationRuntimeRscChunk[];
+  /**
+   * Client reuse bound in seconds resolved from the initial render's completed
+   * `cacheLife` — the done-script sibling of `dynamicStaleTimeSeconds`, which
+   * carries the `experimental.staleTimes` config value instead.
+   */
+  staleTimeSeconds?: number;
 };
 
 type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
@@ -170,23 +176,26 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
   const rsc = Reflect.get(value, "rsc");
+  const staleTimeSeconds = Reflect.get(value, "staleTimeSeconds");
   // getNavigationRuntime() runs at bootstrap/read boundaries, not per chunk.
   // Keep full validation here so malformed ambient state is rejected before
   // hydration consumes it instead of caching a stale validation result.
   return (
     (done === undefined || typeof done === "boolean") &&
-    (dynamicStaleTimeSeconds === undefined ||
-      (typeof dynamicStaleTimeSeconds === "number" &&
-        Number.isFinite(dynamicStaleTimeSeconds) &&
-        dynamicStaleTimeSeconds >= 0)) &&
+    isOptionalStaleTimeSeconds(dynamicStaleTimeSeconds) &&
     (initialCacheKind === undefined ||
       initialCacheKind === "dynamic" ||
       initialCacheKind === "static") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
     Array.isArray(rsc) &&
-    rsc.every(isNavigationRuntimeRscChunk)
+    rsc.every(isNavigationRuntimeRscChunk) &&
+    isOptionalStaleTimeSeconds(staleTimeSeconds)
   );
+}
+
+function isOptionalStaleTimeSeconds(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
 function isReadonlyStringArray(value: unknown): value is readonly string[] {

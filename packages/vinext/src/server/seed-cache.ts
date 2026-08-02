@@ -49,6 +49,8 @@ import {
 type PrerenderCacheSeedMetadata = {
   expireSeconds?: number;
   revalidateSeconds?: number;
+  /** Client reuse bound resolved by the prerender, replayed on cache hits. */
+  staleSeconds?: number;
   /**
    * Path-derived implicit tags (`/foo`, `_N_T_/foo`, `_N_T_/foo/page`, ...)
    * required for `revalidatePath()` to invalidate the seeded entry. See #1486.
@@ -117,6 +119,8 @@ export async function seedMemoryCacheFromPrerender(
     const rscKey = options?.buildAppPageRscKey?.(cachePathname) ?? baseKey + ":rsc";
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
+    const staleSeconds =
+      typeof route.stale === "number" && route.stale >= 0 ? route.stale : undefined;
 
     // Preserve both path-derived implicit tags and user tags collected during
     // prerender so revalidatePath()/revalidateTag() can invalidate the seeded
@@ -133,6 +137,7 @@ export async function seedMemoryCacheFromPrerender(
         route.headers,
         revalidateSeconds,
         expireSeconds,
+        staleSeconds,
         tags,
       )
     ) {
@@ -143,6 +148,7 @@ export async function seedMemoryCacheFromPrerender(
         artifactPathname,
         revalidateSeconds,
         expireSeconds,
+        staleSeconds,
         tags,
       );
       seeded++;
@@ -173,6 +179,7 @@ async function seedHtml(
   headers: Record<string, string> | undefined,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
+  staleSeconds: number | undefined,
   tags: string[] | undefined,
 ): Promise<boolean> {
   const relPath = getOutputPath(pathname, trailingSlash);
@@ -188,7 +195,7 @@ async function seedHtml(
     status: undefined,
   };
 
-  await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds, tags });
+  await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds, staleSeconds, tags });
 
   return true;
 }
@@ -204,6 +211,7 @@ async function seedRsc(
   pathname: string,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
+  staleSeconds: number | undefined,
   tags: string[] | undefined,
 ): Promise<void> {
   const relPath = getRscOutputPath(pathname);
@@ -223,5 +231,5 @@ async function seedRsc(
     status: undefined,
   };
 
-  await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds, tags });
+  await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds, staleSeconds, tags });
 }

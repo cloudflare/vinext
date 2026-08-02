@@ -158,6 +158,147 @@ describe("pages page data", () => {
     expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
+  it("refreshes next/head tags in the regenerated shell without disturbing document markup", async () => {
+    // The collector only yields tags once the page has rendered, so the
+    // regenerated head must come from the callback the render pass invokes
+    // rather than from anything captured beforehand.
+    const collectIsrHeadHTML = vi.fn(() => '<title data-next-head="">fresh</title>');
+
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head><meta charSet="utf-8" data-next-head="" /><title data-next-head="">stale</title><style data-vinext-doc="">.a{}</style></head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
+      collectIsrHeadHTML,
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: {
+        locale: "en",
+        locales: ["en"],
+        defaultLocale: "en",
+        domainLocales: [],
+      },
+      pageProps: { title: "fresh" },
+      params: { slug: "post" },
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(collectIsrHeadHTML).toHaveBeenCalled();
+    expect(html).toContain('<title data-next-head="">fresh</title>');
+    expect(html).not.toContain("stale");
+    // Head markup outside the collector's run belongs to _document and is not
+    // regenerated, so the swap must leave it in place.
+    expect(html).toContain('<style data-vinext-doc="">.a{}</style>');
+    expect(html).toContain("<div>fresh-body</div>");
+  });
+
+  it("leaves the cached head alone when the regeneration collects no head", async () => {
+    const cachedHead = '<title data-next-head="">cached</title>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml: `<!DOCTYPE html><html><head>${cachedHead}</head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
+      collectIsrHeadHTML: vi.fn(() => ""),
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: {
+        locale: "en",
+        locales: ["en"],
+        defaultLocale: "en",
+        domainLocales: [],
+      },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain(cachedHead);
+    expect(html).toContain("<div>fresh-body</div>");
+  });
+
+  it("swaps the whole head run when an inline script body contains a literal </head>", async () => {
+    // A `<script>` body is raw text, and the head serializer only escapes
+    // `</script` — so this string is legal page content, not the closing head
+    // tag. Reading it as markup would end the scan early and leave every tag
+    // after it stale while the fresh head was inserted before it.
+    const inlineScript = '<script data-next-head="">var marker = "</head>";</script>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html><head>${inlineScript}<title data-next-head="">stale</title></head>` +
+        `<body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
+      collectIsrHeadHTML: vi.fn(() => '<title data-next-head="">fresh</title>'),
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain('<title data-next-head="">fresh</title>');
+    expect(html).not.toContain("stale");
+    // The stale script belongs to the same collector run, so the swap replaces
+    // it rather than leaving a duplicate behind the fresh head.
+    expect(html).not.toContain("var marker");
+  });
+
+  it("swaps the whole head run when title RCDATA contains a literal </head>", async () => {
+    // `title` is an RCDATA element: only its own `</title>` end tag closes it,
+    // so `</head>` here is text rather than the document-head boundary.
+    const titleWithMarkupText =
+      '<title data-next-head="">stale prefix </head> stale suffix</title>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head><meta charset="utf-8" data-next-head="" />' +
+        `${titleWithMarkupText}</head>` +
+        '<body><div id="__next"><div>stale-body</div></div>' +
+        '<script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
+      collectIsrHeadHTML: vi.fn(() => '<title data-next-head="">fresh</title>'),
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain('<title data-next-head="">fresh</title>');
+    expect(html).not.toContain("stale prefix");
+    expect(html.match(/<title data-next-head="">/g)).toHaveLength(1);
+  });
+
   it("preserves custom app props in fallback shells", async () => {
     const AppComponent = Object.assign(function App() {}, {
       getInitialProps() {
@@ -245,9 +386,7 @@ describe("pages page data", () => {
           pageProps: { fromApp: true, fromStatic: true },
         },
       }),
-      10,
-      undefined,
-      300,
+      { cacheControl: { revalidate: 10, expire: 300 } },
     );
   });
 
@@ -1199,9 +1338,7 @@ describe("pages page data", () => {
         html: expect.stringContaining("<div>fresh-body</div>"),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      false,
-      undefined,
-      undefined,
+      { cacheControl: { revalidate: false } },
     );
     expect(isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
@@ -1210,9 +1347,7 @@ describe("pages page data", () => {
         html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      false,
-      undefined,
-      undefined,
+      { cacheControl: { revalidate: false } },
     );
   });
 

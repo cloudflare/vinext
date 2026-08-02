@@ -115,10 +115,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     if (target) {
       const rewriteTarget = new URL("/middleware-external-target", target);
       rewriteTarget.search = request.nextUrl.search;
-      if (request.headers.get("x-middleware-test-request-override") === "1") {
+      const override = request.headers.get("x-middleware-test-request-override");
+      if (override === "stray-forwarded-value") {
+        const response = NextResponse.rewrite(rewriteTarget);
+        response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+        return response;
+      }
+      if (override === "1" || override === "strip-credentials") {
         const headers = new Headers(request.headers);
+        headers.set("x-added", "from-middleware");
         headers.set("x-hello-from-middleware1", "hello");
         headers.set("x-hello-from-middleware2", "world");
+        // Credentials deleted here must not reach the external target (#1121 regression).
+        if (override === "strip-credentials") {
+          headers.delete("cookie");
+          headers.delete("authorization");
+        }
         return NextResponse.rewrite(rewriteTarget, { request: { headers } });
       }
       return NextResponse.rewrite(rewriteTarget);
@@ -246,6 +258,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     headers.delete("cookie");
     headers.set("x-from-middleware", "hello-from-middleware");
     return NextResponse.next({ request: { headers } });
+  }
+
+  if (pathname === "/api/header-override-stray") {
+    const response = NextResponse.next();
+    response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+    return response;
   }
 
   // Regression for a bug where a middleware that reads `next/headers` →
@@ -400,6 +418,7 @@ export const config = {
     "/headers/override-from-middleware",
     "/header-override-delete",
     "/api/header-override-delete",
+    "/api/header-override-stray",
     "/api/pages-og",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",

@@ -18,6 +18,7 @@ import { matchesMiddleware, type MatcherConfig } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
 import {
   addBasePathToPathname,
   hasBasePath,
@@ -75,6 +76,12 @@ type ExecuteMiddlewareOptions = {
   isProxy: boolean;
   module: MiddlewareModule;
   normalizedPathname?: string;
+  /**
+   * The caller already created an isolated body branch for middleware. This
+   * lets App Router normalize that branch's URL and headers without adding a
+   * second tee whose preserved side would never be consumed.
+   */
+  requestBodyAlreadyIsolated?: boolean;
   request: Request;
   /**
    * The user's `trailingSlash` config. Plumbed into the NextRequest's NextURL
@@ -155,8 +162,9 @@ function stripMiddlewareHeadersFromResponse(response: Response): Response {
 }
 
 /**
- * Make a same-host URL relative to the request origin. Cross-origin URLs are
- * returned unchanged. Mirrors Next.js's `getRelativeURL` behaviour:
+ * Make a same-host URL relative to the request origin unless removing the
+ * origin would create a protocol-relative redirect. Cross-origin URLs are
+ * returned unchanged. Based on Next.js's `getRelativeURL` behaviour:
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/relativize-url.ts
  */
 function relativizeLocation(location: string, requestUrl: string): string {
@@ -168,6 +176,11 @@ function relativizeLocation(location: string, requestUrl: string): string {
   }
   const base = new URL(requestUrl);
   if (parsed.origin !== base.origin) return parsed.toString();
+  // A leading double slash is a valid same-origin pathname while the URL is
+  // absolute, but becomes a protocol-relative redirect if the origin is
+  // removed. Keep the absolute form for every shape covered by the shared
+  // redirect guard.
+  if (isOpenRedirectShaped(parsed.pathname)) return parsed.toString();
   return parsed.pathname + parsed.search + parsed.hash;
 }
 
@@ -228,11 +241,13 @@ function createNextRequest(
   basePath?: string,
   trailingSlash?: boolean,
   hadBasePath?: boolean,
+  requestBodyAlreadyIsolated = false,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
   // the original request body.
-  let mwRequest = request.body && !request.bodyUsed ? request.clone() : request;
+  let mwRequest =
+    !requestBodyAlreadyIsolated && request.body && !request.bodyUsed ? request.clone() : request;
   // NextURL._stripBasePath only recognises basePath when the request URL's
   // pathname actually starts with the configured prefix. Dev requests may
   // arrive after Vite has stripped that prefix, so restore it for requests
@@ -316,6 +331,7 @@ export async function executeMiddleware(
     options.basePath,
     options.trailingSlash,
     hadBasePath,
+    options.requestBodyAlreadyIsolated,
   );
   if (options.isDataRequest) {
     Object.defineProperty(nextRequest, "__isData", {
@@ -340,7 +356,10 @@ export async function executeMiddleware(
       waitUntilPromises,
     };
   } finally {
-    if (process.env.NODE_ENV !== "development" && nextRequest.body) {
+    // Middleware may transfer its request stream directly into the response.
+    // In that case the response owns consumption; cancelling here would
+    // disturb the body before the server can send it.
+    if (nextRequest.body && response?.body !== nextRequest.body) {
       void nextRequest.body.cancel().catch(() => {});
     }
   }
@@ -389,7 +408,8 @@ export async function executeMiddleware(
               }
             }
             if (normalized !== null) {
-              normalizedLocation = normalized + loc.search + loc.hash;
+              loc.pathname = normalized;
+              normalizedLocation = relativizeLocation(loc.toString(), options.request.url);
             }
           }
         } catch {
@@ -410,12 +430,9 @@ export async function executeMiddleware(
         };
       }
 
-      const responseHeaders = new Headers();
-      for (const [key, value] of response.headers) {
-        if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key.toLowerCase() !== "location") {
-          responseHeaders.append(key, value);
-        }
-      }
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.delete("location");
+      processMiddlewareHeaders(responseHeaders);
       // Rebuild the response with the relativized Location so consumers that
       // forward `result.response` (rather than `result.redirectUrl`) also send
       // the correct header.

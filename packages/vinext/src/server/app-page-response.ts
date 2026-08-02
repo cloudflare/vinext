@@ -5,15 +5,18 @@ import {
 } from "./cache-control.js";
 import {
   NEXT_CACHE_TAGS_HEADER,
+  NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
@@ -41,6 +44,8 @@ type AppPageResponsePolicy = {
 type AppPagePrerenderCacheLife = {
   expire?: number;
   revalidate?: number;
+  /** Client-router dimension — see `resolveClientStaleTimeSeconds`. */
+  stale?: number;
 };
 
 type ResolveAppPageResponsePolicyBaseOptions = {
@@ -70,6 +75,8 @@ type AppPageHtmlResponsePolicy = {
 type BuildAppPageRscResponseOptions = {
   cacheTags?: readonly string[];
   dynamicStaleTimeSeconds?: number;
+  /** The render is being captured for a cache write but streams before its cacheLife resolves. */
+  staleTimePending?: boolean;
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
@@ -120,11 +127,26 @@ function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?:
   }
 }
 
+/**
+ * Only ever set from a *completed* render's cacheLife (cache replay or
+ * prerender seed) — `use cache` scopes keep resolving after headers commit,
+ * so a streaming response can never carry it.
+ */
+export function applyClientStaleTimeHeader(
+  headers: Headers,
+  staleTimeSeconds: number | undefined,
+): void {
+  if (staleTimeSeconds === undefined) return;
+  headers.set(NEXT_ROUTER_STALE_TIME_HEADER, String(Math.floor(staleTimeSeconds)));
+}
+
 function applyPrerenderCacheLifeHeader(
   headers: Headers,
   requestCacheLife: AppPagePrerenderCacheLife | null | undefined,
 ): void {
   if (!requestCacheLife) return;
+  // Build-internal channel: build/prerender.ts turns this into ISR seed
+  // metadata; these responses never reach a browser.
   const payload: AppPagePrerenderCacheLife = {};
   if (
     typeof requestCacheLife.revalidate === "number" &&
@@ -135,7 +157,17 @@ function applyPrerenderCacheLifeHeader(
   if (typeof requestCacheLife.expire === "number" && Number.isFinite(requestCacheLife.expire)) {
     payload.expire = requestCacheLife.expire;
   }
-  if (payload.revalidate === undefined && payload.expire === undefined) return;
+  const stale = resolveClientStaleTimeSeconds(requestCacheLife);
+  if (stale !== undefined) {
+    payload.stale = stale;
+  }
+  if (
+    payload.revalidate === undefined &&
+    payload.expire === undefined &&
+    payload.stale === undefined
+  ) {
+    return;
+  }
   headers.set(VINEXT_PRERENDER_CACHE_LIFE_HEADER, JSON.stringify(payload));
 }
 
@@ -311,6 +343,9 @@ export function buildAppPageRscResponse(
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
   applyDynamicStaleTimeHeader(headers, options.dynamicStaleTimeSeconds);
+  if (options.staleTimePending) {
+    headers.set(VINEXT_STALE_TIME_PENDING_HEADER, "1");
+  }
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
   }

@@ -13,8 +13,13 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "pathslash";
 import zlib from "node:zlib";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
+import {
+  isPrecompressedVariantBeneficial,
+  type PrecompressedEncoding,
+} from "../utils/precompressed-variant.js";
 
 const brotliCompress = promisify(zlib.brotliCompress);
 const gzip = promisify(zlib.gzip);
@@ -47,7 +52,10 @@ const CONCURRENCY = Math.min(os.availableParallelism(), 8);
 type PrecompressResult = {
   filesCompressed: number;
   totalOriginalBytes: number;
-  /** Sum of brotli-compressed sizes (used for compression ratio reporting). */
+  /**
+   * Sum of the representation sizes Brotli negotiation would serve. Falls
+   * back to the original size when Brotli is not beneficial for a file.
+   */
   totalBrotliBytes: number;
 };
 
@@ -126,7 +134,10 @@ export async function precompressAssets(
         // readFile already done before this check — stat()-first would save
         // the read for tiny files but costs an extra syscall per file;
         // sub-1KB hashed assets are rare enough that read-first is cheaper.
-        if (content.length < MIN_SIZE) return;
+        if (content.length < MIN_SIZE) {
+          await removeCompressedVariants(fullPath);
+          return;
+        }
 
         // Compress all variants concurrently within each file
         const compressions: Promise<Buffer>[] = [
@@ -146,20 +157,21 @@ export async function precompressAssets(
         const results = await Promise.all(compressions);
         const [brContent, gzContent, zstdContent] = results;
 
-        const writes = [
-          fsp.writeFile(fullPath + ".br", brContent),
-          fsp.writeFile(fullPath + ".gz", gzContent),
-        ];
-        if (zstdContent) {
-          writes.push(fsp.writeFile(fullPath + ".zst", zstdContent));
-        }
-        await Promise.all(writes);
+        const outcomes = await Promise.all([
+          writeBeneficialVariant(fullPath + ".br", brContent, content.length, "br"),
+          writeBeneficialVariant(fullPath + ".gz", gzContent, content.length, "gzip"),
+          zstdContent
+            ? writeBeneficialVariant(fullPath + ".zst", zstdContent, content.length, "zstd")
+            : removeFileIfPresent(fullPath + ".zst").then(() => false),
+        ]);
 
         // Increment counters only after all writes succeed, so partial
         // failures (e.g. ENOSPC mid-write) don't inflate the reported totals.
-        result.filesCompressed++;
-        result.totalOriginalBytes += content.length;
-        result.totalBrotliBytes += brContent.length;
+        if (outcomes.some(Boolean)) {
+          result.filesCompressed++;
+          result.totalOriginalBytes += content.length;
+          result.totalBrotliBytes += outcomes[0] ? brContent.length : content.length;
+        }
       }),
     );
     // Report progress once per chunk to avoid non-deterministic ordering
@@ -171,4 +183,38 @@ export async function precompressAssets(
   }
 
   return result;
+}
+
+async function writeBeneficialVariant(
+  destination: string,
+  compressed: Buffer,
+  originalSize: number,
+  encoding: PrecompressedEncoding,
+): Promise<boolean> {
+  if (!isPrecompressedVariantBeneficial(compressed.length, originalSize, encoding)) {
+    await removeFileIfPresent(destination);
+    return false;
+  }
+
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fsp.writeFile(temporary, compressed);
+    await fsp.rename(temporary, destination);
+  } catch (error) {
+    await removeFileIfPresent(temporary);
+    throw error;
+  }
+  return true;
+}
+
+async function removeCompressedVariants(fullPath: string): Promise<void> {
+  await Promise.all([
+    removeFileIfPresent(fullPath + ".br"),
+    removeFileIfPresent(fullPath + ".gz"),
+    removeFileIfPresent(fullPath + ".zst"),
+  ]);
+}
+
+async function removeFileIfPresent(filePath: string): Promise<void> {
+  await fsp.rm(filePath, { force: true });
 }

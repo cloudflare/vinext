@@ -66,6 +66,9 @@ export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 
+/** Marks an RSC body carrying completion metadata after the Flight payload. */
+export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Metadata";
+
 /** URL-encoded rendered path and search after middleware/config rewrites. */
 export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
 
@@ -117,6 +120,20 @@ export const NEXT_ACTION_HEADER = "next-action";
 
 /** Next.js action-not-found indicator (value "1"). */
 export const NEXTJS_ACTION_NOT_FOUND_HEADER = "x-nextjs-action-not-found";
+
+/**
+ * Seconds the client router may reuse this response, resolved from the
+ * render's `cacheLife`. Mirrors Next.js's `NEXT_ROUTER_STALE_TIME_HEADER`;
+ * kept out of `Cache-Control`, which owns the shared-cache dimensions.
+ */
+export const NEXT_ROUTER_STALE_TIME_HEADER = "x-nextjs-stale-time";
+
+/**
+ * Marks a streamed cacheable RSC response whose `cacheLife` claim had not
+ * resolved at header time (value "1"). The client bounds such a response at
+ * min(30s floor, dynamic bound) instead of its fallback TTL.
+ */
+export const VINEXT_STALE_TIME_PENDING_HEADER = "X-Vinext-Stale-Time-Pending";
 
 /**
  * Deployment ID header used by the Pages Router for deployment-skew

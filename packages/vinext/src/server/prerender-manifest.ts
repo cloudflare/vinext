@@ -5,6 +5,12 @@ export type PrerenderManifestRoute = {
   status?: string;
   revalidate?: number | false;
   expire?: number;
+  /**
+   * Client-router reuse bound resolved by the prerender's `cacheLife`. Absent on
+   * manifests written by older builds, which seed entries without a
+   * client-freshness claim and leave the client on its configured staleTimes.
+   */
+  stale?: number;
   path?: string;
   router?: string;
   fallback?: boolean;

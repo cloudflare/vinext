@@ -17,6 +17,7 @@ import { buildPagesFixture, buildAppFixture, buildCloudflareAppFixture } from ".
 import {
   extractRscPayloadFromPrerenderedHtml,
   resolveParentParams,
+  writePrerenderIndex,
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
@@ -704,6 +705,39 @@ describe("prerenderPages — default mode (pages-basic)", () => {
   });
 });
 
+describe("writePrerenderIndex", () => {
+  it("carries the resolved cacheLife stale into the written index", () => {
+    // Regression: seedMemoryCacheFromPrerender reads `route.stale` from
+    // vinext-prerender.json — dropping it here silently reverts seeded cache
+    // hits to the configured staleTimes fallback.
+    const dir = tmpDir("vinext-prerender-index-");
+    writePrerenderIndex(
+      [
+        {
+          route: "/cached",
+          status: "rendered",
+          outputFiles: ["cached.html"],
+          revalidate: 60,
+          expire: 300,
+          stale: 30,
+          router: "app",
+        },
+      ],
+      dir,
+      { buildId: "b1" },
+    );
+
+    const index = JSON.parse(fs.readFileSync(path.join(dir, "vinext-prerender.json"), "utf-8"));
+    expect(index.routes[0]).toMatchObject({
+      route: "/cached",
+      revalidate: 60,
+      expire: 300,
+      stale: 30,
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe("prerenderPages — export mode (pages-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];
@@ -863,6 +897,24 @@ describe("prerenderApp — default mode (app-basic)", () => {
       (route: { route: string }) => route.route === "/prerender-cache-life",
     );
     expect(manifestRoute).toMatchObject({ revalidate: 1, expire: 3 });
+  });
+
+  it("embeds the completed cacheLife stale time in prerendered initial HTML", () => {
+    // The prerender path consumes request-scoped cache metadata after the RSC
+    // stream settles. The later HTML done script must reuse that completed
+    // value so hydration seeds the visited-response cache with the same stale
+    // claim that warm HTML/RSC cache-hit headers replay.
+    const r = findRoute(results, "/use-cache-test");
+    expect(r).toMatchObject({
+      route: "/use-cache-test",
+      status: "rendered",
+      revalidate: 1,
+      stale: 30,
+    });
+
+    const html = fs.readFileSync(path.join(outDir, "use-cache-test.html"), "utf-8");
+    expect(html).toContain('"initialCacheKind":"static"');
+    expect(html).toContain('"staleTimeSeconds":30');
   });
 
   it("records collected App Router cache tags for cache seeding", () => {

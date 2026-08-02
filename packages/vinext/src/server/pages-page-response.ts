@@ -13,6 +13,7 @@ import {
   ISR_NEVER_CACHE_CONTROL,
   ISR_NO_STORE_CACHE_CONTROL,
 } from "./isr-decision.js";
+import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
@@ -33,6 +34,7 @@ import {
 } from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
+import { matchesIfNoneMatch } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -58,28 +60,6 @@ export function isPagesStreamingBot(userAgent: string): boolean {
 
 export function generatePagesETag(payload: string): string {
   return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
-}
-
-/**
- * Mirrors Next.js `sendEtagResponse` semantics (weak/strong comparison).
- *
- * A weak ETag `W/"..."` matches both `W/"..."` and `"..."` in `If-None-Match`.
- * A strong ETag `"..."` only matches the same strong token.
- * `*` always matches.
- */
-export function etagMatches(etag: string, ifNoneMatch: string): boolean {
-  if (ifNoneMatch === "*") return true;
-  // Normalise: strip the W/ prefix for comparison. Next.js's
-  // `sendEtagResponse` (packages/next/src/server/send-payload.ts) uses the
-  // `fresh` package, which treats a weak token in `If-None-Match` as matching
-  // the corresponding strong ETag and vice versa (RFC 7232 §2.3.2 weak
-  // comparison). We replicate that behaviour here.
-  const normalize = (t: string) => t.replace(/^W\//, "");
-  const etagNorm = normalize(etag.trim());
-  for (const token of ifNoneMatch.split(",")) {
-    if (normalize(token.trim()) === etagNorm) return true;
-  }
-  return false;
 }
 
 /**
@@ -182,13 +162,7 @@ type RenderPagesPageResponseOptions = {
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
   isStaticPropsRoute?: boolean;
-  isrSet: (
-    key: string,
-    data: CachedPagesValue,
-    revalidateSeconds: number | false,
-    tags?: string[],
-    expireSeconds?: number,
-  ) => Promise<void>;
+  isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
   /**
    * True when rendering a `getStaticPaths` fallback shell for a path that
@@ -469,9 +443,11 @@ async function writePagesIsrCache(options: {
       headers: undefined,
       status: options.status,
     },
-    options.revalidateSeconds,
-    undefined,
-    options.expireSeconds,
+    {
+      cacheControl: isrCacheControl(options.revalidateSeconds, {
+        expireSeconds: options.expireSeconds,
+      }),
+    },
   );
 }
 
@@ -768,7 +744,7 @@ export async function renderPagesPageResponse(
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
-    if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+    if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
       return new Response(null, {
         status: 304,
         headers: responseHeaders,

@@ -4,7 +4,11 @@ import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
-import { loadAppInterceptLayouts } from "./app-route-module-loader.js";
+import {
+  loadAppInterceptLayouts,
+  loadAppInterceptNotFound,
+  loadAppInterceptPage,
+} from "./app-route-module-loader.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type GenerateStaticParams = (args: { params: AppPageParams }) => unknown;
@@ -72,6 +76,7 @@ type BuildAppPageElementResult<TElement> = {
 };
 
 type AppPageInterceptMatch<TPage = unknown> = {
+  interceptionGraphId?: string | null;
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
@@ -98,6 +103,8 @@ type AppPageInterceptMatch<TPage = unknown> = {
   slotKey: string;
   sourceRouteIndex: number;
   sourcePageSegments?: readonly string[] | null;
+  targetPatternParts?: readonly string[];
+  targetRouteGraphId?: string | null;
 };
 
 type ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts> = {
@@ -664,49 +671,8 @@ async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
     return { kind: "none" };
   }
 
-  const loadState = intercept.__loadState;
-  if (loadState?.page != null) intercept.page = loadState.page;
-  if (intercept.__pageLoader && intercept.page == null) {
-    const loading =
-      loadState?.pageLoading ??
-      intercept
-        .__pageLoader()
-        .then((page) => {
-          intercept.page = page;
-          if (loadState) {
-            loadState.page = page;
-            loadState.pageLoading = null;
-          }
-          return page;
-        })
-        .catch((error: unknown) => {
-          if (loadState) loadState.pageLoading = null;
-          throw error;
-        });
-    if (loadState) loadState.pageLoading = loading;
-    await loading;
-  }
-  if (loadState?.notFound != null) intercept.notFound = loadState.notFound;
-  if (intercept.__loadNotFound && intercept.notFound == null) {
-    const loading =
-      loadState?.notFoundLoading ??
-      intercept
-        .__loadNotFound()
-        .then((notFound) => {
-          intercept.notFound = notFound;
-          if (loadState) {
-            loadState.notFound = notFound;
-            loadState.notFoundLoading = null;
-          }
-          return notFound;
-        })
-        .catch((error: unknown) => {
-          if (loadState) loadState.notFoundLoading = null;
-          throw error;
-        });
-    if (loadState) loadState.notFoundLoading = loading;
-    await loading;
-  }
+  await loadAppInterceptPage(intercept);
+  await loadAppInterceptNotFound(intercept);
   if (intercept.__loadInterceptLayouts || intercept.__loadInterceptLoadings) {
     await loadAppInterceptLayouts(intercept);
   }

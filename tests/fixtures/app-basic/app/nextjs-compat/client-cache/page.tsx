@@ -21,6 +21,13 @@ export default function ClientCacheHome() {
       <Link href="/nextjs-compat/client-cache/no-loading/1" id="client-cache-no-loading-auto">
         Auto prefetch without loading
       </Link>
+      <Link
+        href="/nextjs-compat/client-cache-late-dynamic"
+        prefetch={true}
+        id="client-cache-late-dynamic"
+      >
+        Full prefetch that becomes dynamic during streaming
+      </Link>
       <ClientCacheControls />
     </main>
   );

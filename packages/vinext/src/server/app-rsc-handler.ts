@@ -32,6 +32,7 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
@@ -112,6 +113,7 @@ type RunAppMiddlewareOptions = {
   context: AppRscMiddlewareContext;
   hadBasePath: boolean;
   isDataRequest: boolean;
+  middlewareRequest?: Request;
   request: Request;
 };
 
@@ -146,11 +148,14 @@ function applyMiddlewareContextToResponse(
   const headers = new Headers(response.headers);
   mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
 
-  return new Response(response.body, {
-    status: middlewareContext.status ?? response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      status: middlewareContext.status ?? response.status,
+      statusText: response.statusText,
+      headers,
+    }),
+  );
 }
 
 type DispatchMatchedPageOptions<TRoute> = {
@@ -486,12 +491,11 @@ function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
   if (!hasRscCacheBustingSearchParam(url)) return request;
 
   stripRscCacheBustingSearchParam(url);
-  // Clone when a body is present so the original request stays usable, then
-  // reconstruct via `cloneRequestWithUrl` rather than a bare `new Request` so
-  // the Workers `cf` metadata is preserved (user middleware reads it directly)
-  // and `duplex: "half"` is set for streaming bodies.
-  const source = request.body ? request.clone() : request;
-  return cloneRequestWithUrl(source, url.toString());
+  // URL normalization does not create a second body consumer. Reconstructing
+  // from the request shares/transfers its stream into the replacement request;
+  // App middleware creates the one explicit tee when it genuinely needs an
+  // isolated branch.
+  return cloneRequestWithUrl(request, url.toString());
 }
 
 function requestWithoutRscSuffix(request: Request): Request {
@@ -500,8 +504,7 @@ function requestWithoutRscSuffix(request: Request): Request {
   if (pathname === url.pathname) return request;
 
   url.pathname = pathname;
-  const source = request.body ? request.clone() : request;
-  return cloneRequestWithUrl(source, url.toString());
+  return cloneRequestWithUrl(request, url.toString());
 }
 
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
@@ -638,11 +641,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     : null;
   if (rscCacheBustingRedirect) return rscCacheBustingRedirect;
 
+  const runMiddleware = isOnDemandRevalidateRequest(
+    request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  )
+    ? undefined
+    : options.runMiddleware;
+  // Branch the exact downstream body owner before creating URL aliases. URL
+  // reconstruction shares a stream; cloning an alias would lock the body still
+  // referenced by `request` and break the subsequent action/route-handler read.
+  const isolatedMiddlewareSource =
+    runMiddleware && request.body && !request.bodyUsed ? request.clone() : null;
+
   // Keep cache-busting validation on the real request above, then hide the
   // internal `_rsc` transport query from userland middleware and post-middleware
   // has/missing matching. This mirrors Next.js' navigation middleware fixture.
   const normalizedUserlandRequest = requestWithoutRscSuffix(request);
   const userlandRequest = requestWithoutRscCacheBustingSearchParam(normalizedUserlandRequest);
+  const isolatedMiddlewareRequest = isolatedMiddlewareSource
+    ? requestWithoutRscCacheBustingSearchParam(requestWithoutRscSuffix(isolatedMiddlewareSource))
+    : undefined;
   const middlewareContext: AppRscMiddlewareContext = {
     headers: null,
     requestHeaders: null,
@@ -650,11 +667,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   };
   let didMiddlewareRewrite = false;
   let didMiddlewareRewritePathname = false;
-  const runMiddleware = isOnDemandRevalidateRequest(
-    request.headers.get(PRERENDER_REVALIDATE_HEADER),
-  )
-    ? undefined
-    : options.runMiddleware;
 
   if (runMiddleware) {
     const middlewareResult = await runMiddleware({
@@ -662,9 +674,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       context: middlewareContext,
       hadBasePath,
       isDataRequest: isMiddlewareDataRequest,
+      middlewareRequest: isolatedMiddlewareRequest,
       request: userlandRequest,
     });
     if (middlewareResult.kind === "response") {
+      if (request.body && !request.body.locked) {
+        void request.body.cancel().catch(() => {});
+      }
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
         basePathState,
         configHeaders: options.configHeaders,

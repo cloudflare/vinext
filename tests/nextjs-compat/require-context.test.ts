@@ -6,9 +6,9 @@
  * Webpack exposes `require.context(dir, recursive, regexp)` to build a module
  * map at compile time. Next.js apps still use it (often written as
  * `(require as any).context(...)` to satisfy TypeScript). vinext rewrites the
- * call at build time into a static map backed by Vite's `import.meta.glob`,
- * exposing the subset of the webpack context interface used in practice:
- * a callable context function with `.keys()`.
+ * call at build time into a statically imported module map, exposing the subset
+ * of the webpack context interface used in practice: a callable context
+ * function with `.keys()`.
  *
  * Fixture page lives in:
  * - fixtures/app-basic/app/nextjs-compat/require-context/
@@ -53,6 +53,12 @@ describe("Next.js compat: require-context", () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/require-context");
     // A stateful `g`-flagged `RegExp.test()` would silently drop "./parent/file2.js".
     expect(parseKeys(html, "require-context-keys-global")).toEqual(expectedKeys);
+  });
+
+  it("should not evaluate modules excluded by the filter regexp", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/require-context");
+    expect(parseKeys(html, "require-context-filtered-keys")).toEqual(["./included.safe.js"]);
+    expect(html).toContain('<pre id="require-context-excluded-evaluated">false</pre>');
   });
 
   it("should resolve a module namespace through the context callable", async () => {

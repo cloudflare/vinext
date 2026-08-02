@@ -128,15 +128,50 @@ const minimalAppRoutes: AppRoute[] = [
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
-  it("embeds client rewrite rules in the App browser entry", () => {
+  it("embeds only client-safe rewrite data in the App browser entry", () => {
     const code = generateBrowserEntry([], null, [], {
-      afterFiles: [],
-      beforeFiles: [{ source: "/legacy", destination: "/about" }],
-      fallback: [],
+      afterFiles: [
+        {
+          source: "/conditional",
+          destination: "/about",
+          has: [{ type: "query", key: "preview", value: "1" }],
+        },
+      ],
+      beforeFiles: [
+        {
+          source: "/external",
+          destination: "https://internal.example/proxy?token=external-destination-canary",
+        },
+        {
+          source: "/header",
+          destination: "/header-target-canary",
+          has: [{ type: "header", key: "x-origin-auth", value: "header-secret-canary" }],
+        },
+      ],
+      fallback: [
+        {
+          source: "/missing-cookie",
+          destination: "/about",
+          missing: [{ type: "cookie", key: "session", value: "missing-condition-canary" }],
+        },
+        {
+          source: "/cookie",
+          destination: "/cookie-target-canary",
+          has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
+        },
+      ],
     });
 
-    expect(code).toContain('window.__VINEXT_CLIENT_REWRITES__ = {"afterFiles":[],"beforeFiles"');
-    expect(code).toContain('"source":"/legacy","destination":"/about"');
+    expect(code).toContain('"source":"/conditional","destination":"/about"');
+    expect(code).toContain('"has":[{"type":"query","key":"preview","value":"1"}]');
+    expect(code).toContain('"requiresServerEvaluation":true');
+    expect(code).not.toContain("internal.example");
+    expect(code).not.toContain("external-destination-canary");
+    expect(code).not.toContain("missing-condition-canary");
+    expect(code).not.toContain("header-target-canary");
+    expect(code).not.toContain("header-secret-canary");
+    expect(code).not.toContain("cookie-target-canary");
+    expect(code).not.toContain("cookie-secret-canary");
   });
 
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
@@ -1148,6 +1183,7 @@ describe("App Router entry templates", () => {
     expect(withMiddleware).toContain("runMiddleware({ cleanPathname, context, hadBasePath");
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
     expect(withMiddleware).toContain("hadBasePath,");
+    expect(withMiddleware).toContain("middlewareRequest,");
   });
 
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
@@ -1344,6 +1380,98 @@ describe("App Router entry templates", () => {
 // ── Pages Router entry template runtime bootstrap ─────────────────────
 
 describe("Pages Router entry template", () => {
+  it("embeds only client-safe rewrite data in the Pages browser entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-rewrites-"));
+
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({
+          rewrites: async () => ({
+            afterFiles: [
+              {
+                source: "/conditional",
+                destination: "/about",
+                has: [{ type: "query", key: "preview", value: "1" }],
+              },
+            ],
+            beforeFiles: [
+              {
+                source: "/external",
+                destination: "https://internal.example/proxy?token=external-destination-canary",
+              },
+              {
+                source: "/header",
+                destination: "/header-target-canary",
+                has: [{ type: "header", key: "x-origin-auth", value: "header-secret-canary" }],
+              },
+            ],
+            fallback: [
+              {
+                source: "/missing-cookie",
+                destination: "/about",
+                missing: [{ type: "cookie", key: "session", value: "missing-condition-canary" }],
+              },
+              {
+                source: "/cookie",
+                destination: "/cookie-target-canary",
+                has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
+              },
+            ],
+          }),
+        }),
+        createValidFileMatcher(),
+      );
+
+      expect(code).toContain('"source":"/conditional","destination":"/about"');
+      expect(code).toContain('"has":[{"type":"query","key":"preview","value":"1"}]');
+      expect(code).toContain('"requiresServerEvaluation":true');
+      expect(code).not.toContain("internal.example");
+      expect(code).not.toContain("external-destination-canary");
+      expect(code).not.toContain("missing-condition-canary");
+      expect(code).not.toContain("header-target-canary");
+      expect(code).not.toContain("header-secret-canary");
+      expect(code).not.toContain("cookie-target-canary");
+      expect(code).not.toContain("cookie-secret-canary");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("embeds the build-time public-file inventory", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-public-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+        ["/static.txt"],
+      );
+
+      expect(code).toContain('export const publicFiles = new Set(["/static.txt"]);');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports trusted _next/data classification from URL normalization", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
     const pagesDir = path.join(tmpDir, "pages");

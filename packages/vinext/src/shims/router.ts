@@ -100,7 +100,7 @@ import { interpolateDynamicRouteHref } from "./internal/interpolate-as.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
 import type { RequestContext } from "../config/config-matchers.js";
-import type { NextRewrite } from "../config/next-config.js";
+import type { ClientRewrite } from "../client/client-rewrites.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -1597,6 +1597,13 @@ function resolveLocalRedirectUrl(location: string): string | null {
   }
 
   if (appPath === null) return null;
+  // Stripping an origin or basePath can expose a leading `//` that the browser
+  // would reinterpret as a different authority. Keep the original same-origin
+  // target instead; absolute and basePath-prefixed forms are both safe inputs
+  // to history navigation.
+  if (appPath.startsWith("//")) {
+    return normalizePathTrailingSlash(location, __trailingSlash);
+  }
   return normalizePathTrailingSlash(
     toBrowserNavigationHref(
       stripLocalePrefixForApiRedirect(appPath),
@@ -1686,21 +1693,21 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
 
 async function applyClientConfigRewrite(
   href: string,
-  rewrite: NextRewrite,
+  rewrite: ClientRewrite,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { matchRewrite } = await import("../config/config-matchers.js");
-  const rewritten = matchRewrite(
+  const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
+  const result = matchClientRewrite(
     routeContext.pathname,
-    [rewrite],
+    rewrite,
     routeContext.context,
     routeContext.basePathState,
   );
-  if (rewritten === null) return null;
-  if (isExternalUrl(rewritten)) return { kind: "document" };
-  return { href: mergeRewriteQuery(href, rewritten), kind: "rewrite" };
+  if (result === null) return null;
+  if (result.kind === "server") return { kind: "document" };
+  return { href: mergeRewriteQuery(href, result.destination), kind: "rewrite" };
 }
 
 type ClientConfigRewriteResolution =
@@ -1821,7 +1828,7 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     if (!simpleClientConfigSourceCouldMatch(routeContext.pathname, rewrite.source)) {
       continue;
     }
-    if (rewrite.has || rewrite.missing) return undefined;
+    if (rewrite.has || rewrite.requiresServerEvaluation) return undefined;
 
     const params = matchSimpleClientConfigPattern(routeContext.pathname, rewrite.source);
     if (params === undefined) return undefined;

@@ -81,6 +81,42 @@ describe("finalizeAppRscResponse — config header application", () => {
 
     expect(response.headers.get("x-added")).toBeNull();
   });
+
+  it("re-sanitizes static-file 405 headers after applying config headers", async () => {
+    const response = new Response("Method Not Allowed", {
+      status: 405,
+      headers: { Allow: "GET, HEAD", "Content-Type": "text/plain; charset=utf-8" },
+    });
+    const request = new Request("http://example.com/file.txt", { method: "POST" });
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/file.txt",
+          headers: [
+            { key: "content-encoding", value: "gzip" },
+            { key: "content-length", value: "999" },
+            { key: "content-range", value: "bytes 0-998/999" },
+            { key: "content-type", value: "application/octet-stream" },
+            { key: "transfer-encoding", value: "chunked" },
+            { key: "allow", value: "POST" },
+            { key: "x-config-header", value: "keep" },
+          ],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("allow")).toBe("GET, HEAD");
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("content-range")).toBeNull();
+    expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(response.headers.get("transfer-encoding")).toBeNull();
+    expect(response.headers.get("x-config-header")).toBe("keep");
+  });
 });
 
 // ── App Router RSC vary header ──────────────────────────────────────────

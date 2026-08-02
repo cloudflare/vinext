@@ -88,7 +88,7 @@ export type ImageConfig = {
  * config is provided. Matches Next.js defaults exactly.
  */
 export const DEFAULT_DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
-export const DEFAULT_IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
+export const DEFAULT_IMAGE_SIZES = [32, 48, 64, 96, 128, 256, 384];
 const DEV_BLUR_MAX_WIDTH = 8;
 const DEV_BLUR_QUALITY = 70;
 

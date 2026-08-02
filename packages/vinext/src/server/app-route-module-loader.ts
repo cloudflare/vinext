@@ -21,17 +21,36 @@
  * Callers must `await` it before any synchronous read of route modules
  * (segment config, fetch-cache mode, runtime resolution, dispatch branch,
  * element building, etc.).
+ *
+ * Every thunk is invoked via `runOutsideRequestScopes`. Hydration runs inside
+ * the matched request's scopes, and a dynamic `import()` propagates
+ * AsyncLocalStorage into the imported module's top-level evaluation — so
+ * without that guard, module-scope `headers()`/`cookies()`/`after()` would bind
+ * to whichever request happened to be first. Since a module evaluates once per
+ * isolate and its namespace is cached here, that first request's data would
+ * then be served to every later one. Matching Next.js, which loads components
+ * before entering the request store, module scope simply sees no request.
  */
+
+import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 
 type LazyModuleThunk = () => Promise<unknown>;
 type LazyModuleLoaderArray = readonly (LazyModuleThunk | null | undefined)[];
 
 type LazyLoadableIntercept = {
+  page?: unknown;
+  __pageLoader?: LazyModuleThunk | null;
+  notFound?: unknown;
+  __loadNotFound?: LazyModuleThunk | null;
   interceptLayouts?: readonly unknown[] | null;
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
   interceptLoadings?: readonly unknown[] | null;
   __loadInterceptLoadings?: LazyModuleLoaderArray | null;
   __loadState?: {
+    page?: unknown;
+    pageLoading?: Promise<unknown> | null;
+    notFound?: unknown;
+    notFoundLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
 };
@@ -106,7 +125,7 @@ function pushFieldLoad(
 ): void {
   if (!loader || target[field] != null) return;
   loads.push(
-    loader().then((module) => {
+    runOutsideRequestScopes(loader).then((module) => {
       target[field] = module;
     }),
   );
@@ -128,11 +147,64 @@ function pushArrayLoads(
   for (const [index, loader] of loaders.entries()) {
     if (index >= slots.length || !loader || slots[index] != null) continue;
     loads.push(
-      loader().then((module) => {
+      runOutsideRequestScopes(loader).then((module) => {
         slots[index] = module;
       }),
     );
   }
+}
+
+/**
+ * Hydrate one lazily-imported intercept module onto the intercept, dedup'd
+ * through `__loadState` so concurrent navigations share a single import.
+ *
+ * The intercept's page and not-found modules were loaded inline at their call
+ * sites, which meant they missed the isolation every other route module gets.
+ * They are user modules cached for the isolate's lifetime just like the rest,
+ * so they belong on this path.
+ */
+async function hydrateInterceptModule(
+  intercept: LazyLoadableIntercept,
+  loader: LazyModuleThunk | null | undefined,
+  field: "page" | "notFound",
+  loadingField: "pageLoading" | "notFoundLoading",
+): Promise<void> {
+  const loadState = intercept.__loadState;
+  const cached = loadState?.[field];
+  if (cached != null) intercept[field] = cached;
+  if (!loader || intercept[field] != null) return;
+
+  const loading =
+    loadState?.[loadingField] ??
+    runOutsideRequestScopes(loader)
+      .then((module) => {
+        intercept[field] = module;
+        if (loadState) {
+          loadState[field] = module;
+          loadState[loadingField] = null;
+        }
+        return module;
+      })
+      .catch((error: unknown) => {
+        if (loadState) loadState[loadingField] = null;
+        throw error;
+      });
+  if (loadState) loadState[loadingField] = loading;
+  // Each matched interception is a request-local clone that shares only
+  // `__loadState`. A concurrent caller can therefore observe the in-flight
+  // promise above without being the clone assigned by its `.then()` callback.
+  // Publish the resolved namespace onto every caller's clone before returning.
+  intercept[field] = await loading;
+}
+
+/** Hydrate an intercepting route's page module onto `intercept.page`. */
+export function loadAppInterceptPage(intercept: LazyLoadableIntercept): Promise<void> {
+  return hydrateInterceptModule(intercept, intercept.__pageLoader, "page", "pageLoading");
+}
+
+/** Hydrate an intercepting route's not-found boundary onto `intercept.notFound`. */
+export function loadAppInterceptNotFound(intercept: LazyLoadableIntercept): Promise<void> {
+  return hydrateInterceptModule(intercept, intercept.__loadNotFound, "notFound", "notFoundLoading");
 }
 
 export function loadAppInterceptLayouts(

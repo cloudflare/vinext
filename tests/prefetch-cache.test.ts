@@ -13,10 +13,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_RSC_COMPLETION_METADATA_HEADER,
+  VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
@@ -29,6 +33,7 @@ let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
 let DYNAMIC_NAVIGATION_CACHE_TTL: Navigation["DYNAMIC_NAVIGATION_CACHE_TTL"];
 let snapshotRscResponse: Navigation["snapshotRscResponse"];
 let restoreRscResponse: Navigation["restoreRscResponse"];
+let resolveCachedRscResponseTtlMs: Navigation["resolveCachedRscResponseTtlMs"];
 let prefetchRscResponse: Navigation["prefetchRscResponse"];
 let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
@@ -67,6 +72,7 @@ beforeEach(async () => {
   DYNAMIC_NAVIGATION_CACHE_TTL = nav.DYNAMIC_NAVIGATION_CACHE_TTL;
   snapshotRscResponse = nav.snapshotRscResponse;
   restoreRscResponse = nav.restoreRscResponse;
+  resolveCachedRscResponseTtlMs = nav.resolveCachedRscResponseTtlMs;
   prefetchRscResponse = nav.prefetchRscResponse;
   invalidatePrefetchCache = nav.invalidatePrefetchCache;
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
@@ -123,6 +129,10 @@ function createDeferredResponse(): {
   return { promise, resolve };
 }
 
+function toRscUrlString(input: RequestInfo | URL): string {
+  return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+}
+
 async function waitForPrefetchSetup(isReady: () => boolean = () => true): Promise<void> {
   const deadline = Date.now() + 1_000;
 
@@ -131,6 +141,13 @@ async function waitForPrefetchSetup(isReady: () => boolean = () => true): Promis
     if (isReady()) return;
     await new Promise((resolve) => setTimeout(resolve, 0));
   } while (Date.now() < deadline);
+}
+
+/** Drain enough macrotasks for a prefetch setup closure to run to completion. */
+async function settlePrefetchSetup(): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 describe("prefetch cache eviction", () => {
@@ -417,6 +434,118 @@ describe("prefetch cache eviction", () => {
     await expect(restored.text()).resolves.toBe("flight");
   });
 
+  it("carries the server-resolved cacheLife stale time through snapshot and replay", async () => {
+    const response = new Response("flight", {
+      headers: {
+        "content-type": "text/x-component",
+        [NEXT_ROUTER_STALE_TIME_HEADER]: "30",
+      },
+    });
+
+    const snapshot = await snapshotRscResponse(response);
+    const restored = restoreRscResponse(snapshot);
+
+    expect(snapshot.serverStaleTime).toEqual({ kind: "resolved", seconds: 30 });
+    expect(restored.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("30");
+  });
+
+  it("carries the pending-stale marker through snapshot and replay", async () => {
+    const response = new Response("flight", {
+      headers: {
+        "content-type": "text/x-component",
+        [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
+      },
+    });
+
+    const snapshot = await snapshotRscResponse(response);
+    const restored = restoreRscResponse(snapshot);
+
+    expect(snapshot.serverStaleTime).toEqual({ kind: "pending" });
+    expect(restored.headers.get(VINEXT_STALE_TIME_PENDING_HEADER)).toBe("1");
+  });
+
+  it("replaces a provisional pending bound with completed dynamic metadata", async () => {
+    const response = new Response(
+      appendRscCompletionMetadata(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight"));
+            controller.close();
+          },
+        }),
+        () => ({ dynamicStaleTimeSeconds: 60, serverStaleTimeSeconds: null }),
+      ),
+      {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_COMPLETION_METADATA_HEADER]: "1",
+          [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
+        },
+      },
+    );
+
+    const snapshot = await snapshotRscResponse(response);
+
+    expect(snapshot.completedDynamicStaleTimeSeconds).toBe(60);
+    expect(snapshot.serverStaleTime).toBeUndefined();
+    expect(resolveCachedRscResponseTtlMs(snapshot, 300_000)).toBe(60_000);
+    expect(restoreRscResponse(snapshot).headers.get(VINEXT_STALE_TIME_PENDING_HEADER)).toBeNull();
+  });
+
+  it("keeps the pending floor when completion metadata lacks a cacheLife result", async () => {
+    const response = new Response(
+      appendRscCompletionMetadata(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight"));
+            controller.close();
+          },
+        }),
+        () => ({ dynamicStaleTimeSeconds: 300 }),
+      ),
+      {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_COMPLETION_METADATA_HEADER]: "1",
+          [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
+        },
+      },
+    );
+
+    const snapshot = await snapshotRscResponse(response);
+
+    expect(snapshot.serverStaleTime).toEqual({ kind: "pending" });
+    expect(resolveCachedRscResponseTtlMs(snapshot, 300_000)).toBe(30_000);
+  });
+
+  it("replaces a provisional pending bound with the completed cacheLife minimum", async () => {
+    const response = new Response(
+      appendRscCompletionMetadata(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight"));
+            controller.close();
+          },
+        }),
+        () => ({ dynamicStaleTimeSeconds: 300, serverStaleTimeSeconds: 30 }),
+      ),
+      {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_COMPLETION_METADATA_HEADER]: "1",
+          [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
+        },
+      },
+    );
+
+    const snapshot = await snapshotRscResponse(response);
+
+    expect(snapshot.completedDynamicStaleTimeSeconds).toBe(300);
+    expect(snapshot.serverStaleTime).toEqual({ kind: "resolved", seconds: 30 });
+    expect(resolveCachedRscResponseTtlMs(snapshot, 300_000)).toBe(30_000);
+    expect(restoreRscResponse(snapshot).headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("30");
+  });
+
   it("releases queued App prefetch fetch slots after consuming the response body", async () => {
     let closeBody!: () => void;
     const body = new ReadableStream<Uint8Array>({
@@ -444,7 +573,7 @@ describe("prefetch cache eviction", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it("settles router.prefetch as a learning-only protocol response without visible navigation", async () => {
+  it("falls back to learning-only when no prefetch route manifest matches", async () => {
     let resolveResponse!: (response: Response) => void;
     const fetchPromise = new Promise<Response>((resolve) => {
       resolveResponse = resolve;
@@ -501,6 +630,528 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchCache().has(cacheKey)).toBe(true);
     expect(getPrefetchedUrls().has(cacheKey)).toBe(true);
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("caches router.prefetch for navigation reuse on static-eligible routes (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+    ];
+    let fetchedUrl: string | undefined;
+    let fetchedHeaders: Headers | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetchedUrl = toRscUrlString(input);
+      fetchedHeaders = init?.headers as Headers;
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/dashboard");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+
+    if (fetchedUrl === undefined) {
+      throw new Error("Expected router.prefetch to fetch an RSC URL");
+    }
+    expect(fetchedHeaders?.get("Next-Router-Prefetch")).toBe("1");
+    expect(fetchedHeaders?.get("Next-Router-Segment-Prefetch")).toBe("1");
+
+    const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+
+    // A second programmatic prefetch while the entry is fresh must not issue
+    // another request.
+    appRouterInstance.prefetch("/dashboard");
+    await waitForPrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const consumed = consumePrefetchResponse(fetchedUrl, null, null);
+    expect(consumed).not.toBeNull();
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
+  });
+
+  it("shares an in-flight router.prefetch with navigation instead of refetching (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+    ];
+    const deferred = createDeferredResponse();
+    let fetchedUrl: string | undefined;
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      fetchedUrl = toRscUrlString(input);
+      return deferred.promise;
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/dashboard");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    if (fetchedUrl === undefined) {
+      throw new Error("Expected router.prefetch to fetch an RSC URL");
+    }
+
+    let settled = false;
+    const consumedPromise = consumePrefetchResponseForNavigation(fetchedUrl, null, null).then(
+      (snapshot) => {
+        settled = true;
+        return snapshot;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    deferred.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+    const consumed = await consumedPromise;
+    expect(consumed).not.toBeNull();
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches onInvalidate when reuse matches an entry under a different _rsc variant (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+    ];
+    // Seed a reusable entry the way a <Link prefetch={true}> would, under a
+    // different `_rsc` cache-busting variant than router.prefetch computes.
+    const aliasRscUrl = "/dashboard?_rsc=linkvariant";
+    prefetchRscResponse(
+      aliasRscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: true },
+    );
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(aliasRscUrl)?.outcome === "cache-seeded",
+    );
+
+    const fetch = vi.fn();
+    const onInvalidate = vi.fn();
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/dashboard", { onInvalidate });
+    // The prefetch closure awaits module imports before it reaches the
+    // freshness gate; wait for the observable registration instead of a
+    // fixed microtask count.
+    await waitForPrefetchSetup(
+      () => (getPrefetchCache().get(aliasRscUrl)?.onInvalidateCallbacks?.size ?? 0) > 0,
+    );
+
+    // The alias entry satisfied the freshness gate: no new request, and the
+    // callback must be registered on the matched entry, not the absent exact
+    // cache key.
+    expect(fetch).not.toHaveBeenCalled();
+
+    invalidatePrefetchCache();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("notifies onInvalidate when a learning-only prefetch is superseded (#2707)", async () => {
+    // A loading-shell route: the default `kind` resolves to learning-only, and
+    // a later `kind: "full"` upgrades the same URL to a reusable entry.
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    let fetchedUrl: string | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      fetchedUrl = toRscUrlString(input);
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    const onInvalidate = vi.fn();
+    appRouterInstance.prefetch("/reports", { onInvalidate });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    if (fetchedUrl === undefined) {
+      throw new Error("Expected router.prefetch to fetch an RSC URL");
+    }
+    const learningKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(learningKey)?.outcome === "cache-seeded",
+    );
+
+    // The upgrade discards the learning-only entry. Its subscriber must be told
+    // the payload is gone rather than have the callback silently dropped.
+    appRouterInstance.prefetch("/reports", { kind: "full" });
+    await waitForPrefetchSetup(() => onInvalidate.mock.calls.length > 0);
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts an in-flight learning-only request when a full prefetch supersedes it (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    let firstSignal: AbortSignal | undefined;
+    const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (fetch.mock.calls.length === 1) {
+        firstSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          firstSignal?.addEventListener("abort", () => reject(firstSignal?.reason), { once: true });
+        });
+      }
+      return Promise.resolve(
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+      );
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/reports");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    appRouterInstance.prefetch("/reports", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+
+    expect(firstSignal?.aborted).toBe(true);
+    await waitForPrefetchSetup(() =>
+      [...getPrefetchCache().values()].some((entry) => entry.outcome === "cache-seeded"),
+    );
+  });
+
+  it("keeps an abort control while a superseded response body is streaming (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    let firstSignal: AbortSignal | undefined;
+    const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (fetch.mock.calls.length === 1) {
+        firstSignal = init?.signal ?? undefined;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            firstSignal?.addEventListener("abort", () => controller.error(firstSignal?.reason), {
+              once: true,
+            });
+          },
+        });
+        // Headers resolve immediately while arrayBuffer() remains pending.
+        return Promise.resolve(
+          new Response(body, { headers: { "content-type": "text/x-component" } }),
+        );
+      }
+      return Promise.resolve(
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+      );
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/reports");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    // Allow fetch()'s resolved Response to enter snapshotRscResponse(), where
+    // its body remains in flight and continues to own a queue slot.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    appRouterInstance.prefetch("/reports", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+
+    expect(firstSignal?.aborted).toBe(true);
+    await waitForPrefetchSetup(() =>
+      [...getPrefetchCache().values()].some((entry) => entry.outcome === "cache-seeded"),
+    );
+  });
+
+  it("resolves relative router.prefetch policy from the call-time URL (#2707)", async () => {
+    const window = (globalThis as any).window;
+    window.location.pathname = "/docs/current";
+    window.location.href = "http://localhost/docs/current";
+    window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["docs", "next"], isDynamic: false },
+    ];
+    let fetchedUrl: string | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      fetchedUrl = toRscUrlString(input);
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("next");
+    // Policy and ownership resolution run after dynamic imports. Moving the
+    // browser URL in the same task must not make the relative href resolve from
+    // this later location.
+    window.location.pathname = "/elsewhere";
+    window.location.href = "http://localhost/elsewhere";
+
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    if (fetchedUrl === undefined) throw new Error("Expected the relative prefetch to fetch");
+    expect(new URL(fetchedUrl, "http://localhost").pathname).toBe("/docs/next");
+    const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+    expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
+  });
+
+  it("does not repopulate the prefetch cache across an invalidation (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+    ];
+    const fetch = vi.fn(
+      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+
+    // router.refresh() reaches invalidatePrefetchCache() while this closure is
+    // still awaiting its policy import, i.e. before it registers anything.
+    appRouterInstance.prefetch("/dashboard");
+    invalidatePrefetchCache();
+
+    await settlePrefetchSetup();
+
+    // The entry would have been built from the pre-refresh cache generation.
+    expect(fetch).not.toHaveBeenCalled();
+    expect(getPrefetchCache().size).toBe(0);
+  });
+
+  // A navigation cancels prefetch setup only for the route it is about to
+  // fetch itself. These two cases differ only in where the navigation goes, so
+  // together they pin the scoping: a global "any navigation cancels everything"
+  // rule passes the first and fails the second.
+  it("cancels prefetch setup superseded by a navigation to the same route (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+    ];
+    const fetch = vi.fn(
+      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/dashboard");
+    appRouterInstance.push("/dashboard");
+
+    await settlePrefetchSetup();
+
+    // The navigation fetches /dashboard itself; a late prefetch would make it
+    // two requests for one route.
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("cancels prefetch setup when only the navigation hash differs (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+    ];
+    const fetch = vi.fn(
+      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/dashboard");
+    appRouterInstance.push("/dashboard#details");
+
+    await settlePrefetchSetup();
+
+    // Hash fragments never reach an RSC request, so these are the same data
+    // destination and the late prefetch would duplicate navigation's fetch.
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("leaves prefetch setup alone when the navigation goes elsewhere (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+      { canPrefetchLoadingShell: false, patternParts: ["settings"], isDynamic: false },
+    ];
+    let fetchedUrl: string | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      fetchedUrl = toRscUrlString(input);
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/dashboard");
+    appRouterInstance.push("/settings");
+
+    await settlePrefetchSetup();
+
+    // Nothing else is going to fetch /dashboard, so dropping it here would make
+    // an explicit prefetch depend on unrelated navigation timing.
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetchedUrl).toContain("/dashboard");
+  });
+
+  it("keeps onInvalidate alive after navigation consumes the prefetch (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
+    ];
+    let fetchedUrl: string | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      fetchedUrl = toRscUrlString(input);
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    const onInvalidate = vi.fn();
+    appRouterInstance.prefetch("/dashboard", { onInvalidate });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    if (fetchedUrl === undefined) {
+      throw new Error("Expected router.prefetch to fetch an RSC URL");
+    }
+    const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+
+    // Navigation takes the payload; the cache entry is gone but the
+    // subscription must outlive it.
+    expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
+    expect(getPrefetchCache().get(cacheKey)).toBeUndefined();
+    expect(onInvalidate).not.toHaveBeenCalled();
+
+    invalidatePrefetchCache();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    // Fires exactly once, matching Next.js's prefetch-task contract.
+    invalidatePrefetchCache();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches kind: "full" router.prefetch for navigation on loading-shell routes (#2707)', async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    let fetchedUrl: string | undefined;
+    let fetchedHeaders: Headers | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetchedUrl = toRscUrlString(input);
+      fetchedHeaders = init?.headers as Headers;
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/reports", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    if (fetchedUrl === undefined) {
+      throw new Error("Expected router.prefetch to fetch an RSC URL");
+    }
+    // A full prefetch requests the complete payload: the wire protocol
+    // suppresses Next-Router-Prefetch (matches Link's prefetch={true}).
+    expect(fetchedHeaders?.get("Next-Router-Prefetch")).toBeNull();
+    expect(fetchedHeaders?.get("Next-Router-Segment-Prefetch")).toBeNull();
+
+    const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+
+    expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
+  });
+
+  it("keeps default-kind router.prefetch learning-only on loading-shell routes (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    let fetchedUrl: string | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      fetchedUrl = toRscUrlString(input);
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/reports");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    if (fetchedUrl === undefined) {
+      throw new Error("Expected router.prefetch to fetch an RSC URL");
+    }
+
+    const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+    expect(consumePrefetchResponse(fetchedUrl, null, null)).toBeNull();
+  });
+
+  it("promotes a queued prefetch when navigation consumes it (#2722)", async () => {
+    // Every route is navigation-reusable, so the queued 5th prefetch is one a
+    // navigation will actually try to await.
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = Array.from(
+      { length: 5 },
+      (_unused, index) => ({
+        canPrefetchLoadingShell: false,
+        patternParts: [`dashboard-${index}`],
+        isDynamic: false,
+      }),
+    );
+    const requestedUrls: string[] = [];
+    const deferredResponses: Array<(response: Response) => void> = [];
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      requestedUrls.push(toRscUrlString(input));
+      return new Promise<Response>((resolve) => {
+        deferredResponses.push(resolve);
+      });
+    });
+    (globalThis as any).fetch = fetch;
+
+    for (let index = 0; index < 5; index++) {
+      appRouterInstance.prefetch(`/dashboard-${index}`);
+    }
+
+    // Four slots are occupied and none of their bodies have been read, so the
+    // fifth request has not been issued — but all five entries are registered.
+    await waitForPrefetchSetup(
+      () =>
+        fetch.mock.calls.length === 4 &&
+        [...getPrefetchCache().keys()].some((key) => key.includes("dashboard-4")),
+    );
+    expect(fetch).toHaveBeenCalledTimes(4);
+
+    const queuedCacheKey = [...getPrefetchCache().keys()].find((key) =>
+      key.includes("dashboard-4"),
+    );
+    if (queuedCacheKey === undefined) {
+      throw new Error("Expected the queued prefetch to hold a cache entry");
+    }
+    const queuedRscUrl = queuedCacheKey.split("\0")[0];
+
+    // Navigating to the queued route must start its request rather than wait
+    // for the four in-flight response bodies.
+    const consumed = consumePrefetchResponseForNavigation(queuedRscUrl, null, null);
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 5);
+    expect(fetch).toHaveBeenCalledTimes(5);
+    expect(requestedUrls[4]).toBe(queuedRscUrl);
+
+    // The occupying prefetches are still unresolved at this point.
+    deferredResponses[4](
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    const snapshot = await consumed;
+    expect(snapshot).not.toBeNull();
+
+    for (const resolve of deferredResponses.slice(0, 4)) {
+      resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+    }
+  });
+
+  it("removes a superseded learning-only request from the prefetch queue (#2707)", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      ...Array.from({ length: 4 }, (_unused, index) => ({
+        canPrefetchLoadingShell: false,
+        patternParts: [`occupy-${index}`],
+        isDynamic: false,
+      })),
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    const requestedPrefetchHeaders: Array<string | null> = [];
+    const deferredResponses: Array<(response: Response) => void> = [];
+    const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedPrefetchHeaders.push(new Headers(init?.headers).get("Next-Router-Prefetch"));
+      return new Promise<Response>((resolve) => deferredResponses.push(resolve));
+    });
+    (globalThis as any).fetch = fetch;
+
+    for (let index = 0; index < 4; index++) {
+      appRouterInstance.prefetch(`/occupy-${index}`);
+    }
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 4);
+
+    // The learning-only request is queued behind the four occupied slots.
+    appRouterInstance.prefetch("/reports");
+    await waitForPrefetchSetup(() =>
+      [...getPrefetchCache().keys()].some((key) => key.includes("reports")),
+    );
+    expect(fetch).toHaveBeenCalledTimes(4);
+
+    // Upgrading to a full prefetch must remove that queued runner rather than
+    // leave it ahead of the replacement request.
+    appRouterInstance.prefetch("/reports", { kind: "full" });
+    await settlePrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(4);
+
+    deferredResponses[0](
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 5);
+    expect(requestedPrefetchHeaders[4]).toBeNull();
+
+    for (const resolve of deferredResponses.slice(1)) {
+      resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+    }
   });
 
   it("limits low-priority router.prefetch requests until queued responses are snapshotted", async () => {
@@ -635,6 +1286,109 @@ describe("prefetch cache eviction", () => {
 
     const consumed = consumePrefetchResponse(rscUrl, null, null);
     expect(consumed?.expiresAt).toBe(now + 30_000);
+  });
+
+  it("uses completed cacheLife for prefetch expiry without changing the dynamic BFCache bound", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    // Runtime-prefetch freshness comes from cacheLife, while staleTimes.dynamic
+    // independently bounds visited/BFCache reuse.
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/cache-life-prefetch.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response(
+          appendRscCompletionMetadata(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("flight"));
+                controller.close();
+              },
+            }),
+            () => ({ dynamicStaleTimeSeconds: 30, serverStaleTimeSeconds: 240 }),
+          ),
+          {
+            headers: {
+              "content-type": "text/x-component",
+              [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "30",
+              [VINEXT_RSC_COMPLETION_METADATA_HEADER]: "1",
+            },
+          },
+        ),
+      ),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: 300_000 },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    const snapshot = getPrefetchCache().get(rscUrl)?.snapshot;
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 240_000);
+    expect(snapshot?.serverStaleTime).toEqual({ kind: "resolved", seconds: 240 });
+    expect(resolveCachedRscResponseTtlMs(snapshot!, 300_000)).toBe(30_000);
+  });
+
+  it("floors a shorter-than-minimum cacheLife stale time for prefetch entries", async () => {
+    // cacheLife({ stale: 1 }) is honored verbatim by the visited-response cache
+    // but floored here: Next.js's getStaleTimeMs clamps prefetch stale times to
+    // 30s so a too-short server value cannot prevent prefetching from ever
+    // paying off.
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/tiny-cache-life-prefetch.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [NEXT_ROUTER_STALE_TIME_HEADER]: "1",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: PREFETCH_CACHE_TTL },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+  });
+
+  it("bounds a pending-stale cold response at the floor instead of the fallback TTL", async () => {
+    // A cacheable render streamed before its cacheLife resolved (#961 keeps
+    // cold responses non-blocking) advertises no value, but the unresolved
+    // claim — once floored — can never license less than 30s. Holding the
+    // response for the 300s fallback would reproduce the headline bug on the
+    // first prefetch of every entry epoch.
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/pending-stale-prefetch.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: 300_000 },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
   });
 
   it("leaves a resolved in-flight prefetch for a newer navigation when the old navigation is stale", async () => {

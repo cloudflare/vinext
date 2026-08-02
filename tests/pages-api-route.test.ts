@@ -1,13 +1,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { PassThrough } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   handlePagesApiRoute,
   type PagesApiRouteMatch,
 } from "../packages/vinext/src/server/pages-api-route.js";
+import { isVinextStreamedApiResponse } from "../packages/vinext/src/server/pages-node-compat.js";
 
 type PagesApiRouteModule = PagesApiRouteMatch["route"]["module"];
 
@@ -938,6 +941,177 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe(body);
+  });
+
+  it("pauses a piped source until the response body is consumed", async () => {
+    // Availability: a fast source (e.g. a proxied upstream) piped into `res`
+    // must pause when the client is not reading, instead of queueing the
+    // entire stream in memory. The write callback is held while the body's
+    // queue is full, so `write()` returns false and `pipe()` pauses the source.
+    const totalChunks = 20;
+    const chunk = Buffer.alloc(64 * 1024, "x");
+    let produced = 0;
+    const source = Readable.from(
+      (function* () {
+        for (let i = 0; i < totalChunks; i++) {
+          produced++;
+          yield chunk;
+        }
+      })(),
+    );
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (_req, res) => {
+          source.pipe(res);
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      request: new Request("https://example.com/api/backpressure"),
+      url: "/api/backpressure",
+    });
+
+    // Let the pipe run as far as it can while nothing reads the body.
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    // Without backpressure the source drains completely here even though no
+    // consumer has read a single byte.
+    expect(produced).toBeLessThan(totalChunks);
+
+    const body = await response.arrayBuffer();
+    expect(body.byteLength).toBe(totalChunks * chunk.length);
+    expect(produced).toBe(totalChunks);
+  });
+
+  it("streams while an API handler awaits a backpressured pipeline", async () => {
+    // Ported from Next.js's awaited Pages API pipeline pattern:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/cancel-request/pages/api/node-api.ts
+    // The Node socket consumes `res` concurrently with the handler. The Fetch
+    // bridge must do the same or pipeline() waits for a pull that cannot begin
+    // until handlePagesApiRoute() returns.
+    const totalChunks = 20;
+    const chunk = Buffer.alloc(64 * 1024, "x");
+    let handlerSettled = false;
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(async (_req, res) => {
+        await pipeline(
+          Readable.from(
+            (function* () {
+              for (let i = 0; i < totalChunks; i++) yield chunk;
+            })(),
+          ),
+          res,
+        );
+        handlerSettled = true;
+      }),
+      request: new Request("https://example.com/api/awaited-pipeline"),
+      url: "/api/awaited-pipeline",
+    });
+
+    expect(handlerSettled).toBe(false);
+    const body = await response.arrayBuffer();
+    expect(body.byteLength).toBe(totalChunks * chunk.length);
+    await vi.waitFor(() => expect(handlerSettled).toBe(true));
+  });
+
+  it("streams while an API handler awaits drain", async () => {
+    const totalChunks = 20;
+    const chunk = Buffer.alloc(64 * 1024, "x");
+    let handlerSettled = false;
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(async (_req, res) => {
+        for (let i = 0; i < totalChunks; i++) {
+          if (!res.write(chunk)) await once(res, "drain");
+        }
+        res.end();
+        handlerSettled = true;
+      }),
+      request: new Request("https://example.com/api/awaited-drain"),
+      url: "/api/awaited-drain",
+    });
+
+    expect(handlerSettled).toBe(false);
+    const body = await response.arrayBuffer();
+    expect(body.byteLength).toBe(totalChunks * chunk.length);
+    await vi.waitFor(() => expect(handlerSettled).toBe(true));
+  });
+
+  it("unwinds a parked write when an active streaming handler rejects", async () => {
+    const reportRequestError = vi.fn();
+    const failure = new Error("handler failed after writing");
+    let writeError: Error | null | undefined;
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(async (_req, res) => {
+        res.write(Buffer.alloc(64 * 1024), (error: Error | null | undefined) => {
+          writeError = error;
+        });
+        throw failure;
+      }),
+      reportRequestError,
+      request: new Request("https://example.com/api/reject-after-write"),
+      url: "/api/reject-after-write",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).rejects.toThrow(failure.message);
+    await vi.waitFor(() => expect(writeError).toBe(failure));
+    expect(reportRequestError).toHaveBeenCalledWith(failure, "/api/test");
+  });
+
+  it("passes cancellation errors to a parked write callback", async () => {
+    const cancellation = new Error("client cancelled");
+    let writeError: Error | null | undefined;
+
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.write(Buffer.alloc(64 * 1024), (error: Error | null | undefined) => {
+          writeError = error;
+        });
+      }),
+      request: new Request("https://example.com/api/cancel-parked-write"),
+      url: "/api/cancel-parked-write",
+    });
+
+    await response.body!.cancel(cancellation);
+    await vi.waitFor(() => expect(writeError).toBe(cancellation));
+  });
+
+  it("marks a response as streamed only while its handler is still writing", async () => {
+    // Contract with Node adapters (prod-server): live streams must be
+    // forwarded as streams, while complete bodies stay on the buffered path
+    // that preserves Content-Length.
+    const upstream = new PassThrough();
+    upstream.write("data");
+    const streamed = await handlePagesApiRoute({
+      match: createMatch(
+        (_req, res) => {
+          // Proxy pattern: the upstream stays open past the handler's return.
+          upstream.pipe(res);
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      request: new Request("https://example.com/api/marker-streamed"),
+      url: "/api/marker-streamed",
+    });
+    expect(isVinextStreamedApiResponse(streamed)).toBe(true);
+    upstream.end("-more");
+    await expect(streamed.text()).resolves.toBe("data-more");
+
+    const buffered = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.json({ ok: true });
+      }),
+      request: new Request("https://example.com/api/marker-buffered"),
+      url: "/api/marker-buffered",
+    });
+    expect(isVinextStreamedApiResponse(buffered)).toBe(false);
+    await expect(buffered.json()).resolves.toEqual({ ok: true });
   });
 
   it("streams a piped request body through to the response", async () => {

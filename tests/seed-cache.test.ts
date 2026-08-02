@@ -385,6 +385,47 @@ describe("seedMemoryCacheFromPrerender", () => {
     ]);
   });
 
+  it("seeds the prerender's client stale time onto both artifacts", async () => {
+    // A prerendered page's `cacheLife` resolves before the artifact is written,
+    // so the seeded entry can carry the claim. Without it, a page served from
+    // the seed would be reusable for the configured staleTimes default while an
+    // identical runtime-rendered entry honored `cacheLife`.
+    const writes: { key: string; staleSeconds?: number }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "seed-stale-test",
+        routes: [
+          {
+            route: "/isr",
+            status: "rendered",
+            revalidate: 60,
+            expire: 300,
+            stale: 30,
+            router: "app",
+          },
+        ],
+      },
+      {
+        "isr.html": "<html>ISR</html>",
+        "isr.rsc": "RSC isr",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(key, _data, metadata): Promise<void> {
+        writes.push({ key, staleSeconds: metadata.staleSeconds });
+      },
+    });
+
+    const baseKey = isrCacheKey("app", "/isr", "seed-stale-test");
+    expect(writes).toEqual([
+      { key: baseKey + ":html", staleSeconds: 30 },
+      { key: baseKey + ":rsc", staleSeconds: 30 },
+    ]);
+  });
+
   it("can use injected runtime app page cache key builders", async () => {
     const keys: string[] = [];
 

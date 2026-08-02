@@ -10,6 +10,7 @@ import type { NextRequest } from "vinext/shims/server";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
@@ -56,9 +57,7 @@ export type AppRouteHandlerFunction = (
 export type RouteHandlerCacheSetter = (
   key: string,
   data: CachedRouteValue,
-  revalidateSeconds: number,
-  tags: string[],
-  expireSeconds?: number,
+  policy: IsrWritePolicy,
 ) => Promise<void>;
 type AppRouteErrorReporter = (
   error: Error,
@@ -278,13 +277,12 @@ export async function executeAppRouteHandler(
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);
-          await options.isrSet(
-            routeKey,
-            routeCacheValue,
-            revalidateSeconds,
-            routeTags,
-            options.expireSeconds,
-          );
+          await options.isrSet(routeKey, routeCacheValue, {
+            cacheControl: isrCacheControl(revalidateSeconds, {
+              expireSeconds: options.expireSeconds,
+            }),
+            tags: routeTags,
+          });
           options.isrDebug?.("route cache written", routeKey);
         } catch (cacheErr) {
           console.error("[vinext] ISR route cache write error:", cacheErr);
