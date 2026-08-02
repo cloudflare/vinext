@@ -1,6 +1,3 @@
-// Pure helpers for the dev overlay's console.error interception. Kept free of
-// DOM/store access so they can be unit-tested in a plain Node environment.
-//
 // Ported from Next.js's console interception + hydration recognition:
 //   packages/next/src/client/lib/console.ts (formatConsoleArgs)
 //   packages/next/src/next-devtools/shared/react-19-hydration-error.ts
@@ -11,20 +8,7 @@ function isError(value: unknown): value is Error {
   return value instanceof Error;
 }
 
-// Ported from Next.js's formatObject (client/lib/console.ts): a depth-limited
-// structural dump, matching so embedded Error objects (e.g. the one React
-// inlines via %o in a replayed server-log badge) keep their name — not just
-// their message — the same as real Next.js's overlay shows. Depth-limiting
-// (rather than JSON.stringify) also means a circular reference or a BigInt
-// property can't make this throw; deeper levels just collapse to "...".
-//
-// Diverges from upstream in two spots: upstream's object branch reads
-// `Object.getOwnPropertyDescriptor(arg, 'key')` (the literal string "key"
-// instead of the loop variable), which makes every plain-object property
-// silently vanish and renders as bare "{}" — that's a bug, not a format to
-// match, so it's fixed here with comma-separated keys. Function/bigint/symbol
-// keep vinext's clearer renderings instead of upstream's raw String(arg),
-// which for a function would otherwise dump its entire source text.
+// Ported from Next.js's formatObject (client/lib/console.ts)
 function formatObject(value: unknown, depth: number): string {
   if (value === null) return "null";
   if (Array.isArray(value)) {
@@ -41,12 +25,11 @@ function formatObject(value: unknown, depth: number): string {
     }
     return result + "]";
   }
-  // Render an Error the same way Next.js does (arg + ''): its name + message,
-  // e.g. "TypeError: ...". The stack still goes to the overlay's dedicated
-  // Call Stack section via the embedded-error path, not inline in the message.
+
   if (isError(value)) return String(value);
   if (typeof value === "bigint") return `${value.toString()}n`;
-  if (typeof value === "function") return value.name ? `[Function: ${value.name}]` : "[Function]";
+  if (typeof value === "function")
+    return value.name ? `[Function: ${value.name}]` : "[Function]";
   if (typeof value === "symbol") return value.toString();
   if (value === undefined) return "undefined";
   if (typeof value === "string") return JSON.stringify(value);
@@ -146,17 +129,17 @@ export function formatConsoleArgs(args: readonly unknown[]): string {
 const REACT_ERROR_STACK_BOTTOM_FRAME_REGEX =
   /\s+(at Object\.react_stack_bottom_frame.*)|(react_stack_bottom_frame@.*)|(at react-stack-bottom-frame.*)|(react-stack-bottom-frame@.*)/;
 
-export function getStackIgnoringStrictMode(stack: string | undefined): string | undefined {
+export function getStackIgnoringStrictMode(
+  stack: string | undefined,
+): string | undefined {
   return stack?.split(REACT_ERROR_STACK_BOTTOM_FRAME_REGEX)[0];
 }
 
 // Two reports count as the same failure only when message, stack, and owner
-// stack all match — mirrors Next.js's pushErrorFilterDuplicates. Comparing
+// stack all match, mirrors Next.js's pushErrorFilterDuplicates. Comparing
 // message text alone conflates two different call sites that happen to log
 // identical text; comparing stack alone would resurface the same failure as
-// "new" on every StrictMode double-invocation. No time window: a duplicate
-// stays a duplicate no matter how long ago the first occurrence was reported,
-// same as upstream (state.errors only clears on an explicit refresh).
+// "new" on every StrictMode double-invocation.
 export function isSameReportedError(
   a: {
     message: string;
@@ -179,14 +162,14 @@ export function isSameReportedError(
   return a.ownerStack === b.ownerStack;
 }
 
-// The attribute-only hydration mismatch, recognized by the same regex Next.js
-// uses (react-19-hydration-error.ts's isHydrationError). React logs it to
-// console.error and does NOT call onRecoverableError (it leaves the server
-// attribute in place) — this is the one hydration warning the overlay can
-// only learn about through the console.error interceptor.
+// The attribute-only hydration mismatch, regex ported from Next.js
+// (react-19-hydration-error.ts's isHydrationError). React logs it to
+// console.error and does NOT call onRecoverableError.
 const HYDRATION_ATTRIBUTE_MISMATCH =
   /A tree hydrated but some attributes of the server rendered HTML didn't match the client properties\./;
 
-export function isAttributeOnlyHydrationWarningMessage(message: string): boolean {
+export function isAttributeOnlyHydrationWarningMessage(
+  message: string,
+): boolean {
   return HYDRATION_ATTRIBUTE_MISMATCH.test(message);
 }
