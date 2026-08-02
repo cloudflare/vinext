@@ -69,7 +69,7 @@ function formatObject(value: unknown, depth: number): string {
     }
     return result + "}";
   }
-  return String(value);
+  return JSON.stringify(value);
 }
 
 // util.format-style substitution for the message the overlay displays. Handles
@@ -158,8 +158,16 @@ export function getStackIgnoringStrictMode(stack: string | undefined): string | 
 // stays a duplicate no matter how long ago the first occurrence was reported,
 // same as upstream (state.errors only clears on an explicit refresh).
 export function isSameReportedError(
-  a: { message: string; stack: string | undefined; ownerStack: string | null | undefined },
-  b: { message: string; stack: string | undefined; ownerStack: string | null | undefined },
+  a: {
+    message: string;
+    stack: string | undefined;
+    ownerStack: string | null | undefined;
+  },
+  b: {
+    message: string;
+    stack: string | undefined;
+    ownerStack: string | null | undefined;
+  },
 ): boolean {
   if (a.message !== b.message) return false;
   if (
