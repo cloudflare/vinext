@@ -209,7 +209,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     expect(observedPathnames).toEqual(["/api/admin/"]);
   });
 
-  it("matches a canonical API pathname when the matcher source has a trailing slash", async () => {
+  it("does not match a canonical API pathname when the matcher source requires a trailing slash", async () => {
     const result = await executeMiddleware({
       isProxy: false,
       module: {
@@ -219,8 +219,8 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
       request: new Request("http://localhost/api/admin"),
     });
 
-    expect(result.continue).toBe(false);
-    expect(result.response?.status).toBe(401);
+    expect(result.continue).toBe(true);
+    expect(result.response).toBeUndefined();
   });
 
   it("preserves an escaped terminal slash matcher", async () => {
