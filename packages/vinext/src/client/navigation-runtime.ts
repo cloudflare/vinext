@@ -35,7 +35,7 @@ type NavigationRuntimePrefetchRouterState = {
   routeId: string;
 };
 
-export type NavigationRuntimePrefetchRequestState = {
+type NavigationRuntimePrefetchRequestState = {
   interceptionContext: string | null;
   nextUrl: string;
 };
