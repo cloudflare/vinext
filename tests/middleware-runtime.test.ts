@@ -66,6 +66,13 @@ describe("middleware pathname matching", () => {
     ["locale:false /foo", { locale: false, source: "/foo" }, "/%66r/foo", false],
     ["locale:false /foo", { locale: false, source: "/foo" }, "/zz/foo", false],
     ["locale:false /foo", { locale: false, source: "/foo" }, "/fr/en/foo", false],
+    ["normal internal path", "/:path*", "/_next/static/chunk.js", false],
+    [
+      "locale:false internal path",
+      { locale: false, source: "/_next/:path*" },
+      "/_next/static/chunk.js",
+      true,
+    ],
   ] as const)(
     "matches Next.js i18n ordering for %s with %j at %s",
     async (_name, matcher, path, expected) => {
@@ -196,6 +203,27 @@ describe("middleware pathname matching", () => {
       });
 
       expect(result.continue).toBe(true);
+    },
+  );
+
+  it.each(["%2F", "%3F", "%23"])(
+    "does not overmatch a root matcher when decoded %s occupies its own segment",
+    async (encoded) => {
+      await expect(middlewareWasInvoked(`/${encoded}`, "/")).resolves.toBe(false);
+      await expect(
+        middlewareWasInvoked(`/docs/${encoded}`, "/", { basePath: "/docs" }),
+      ).resolves.toBe(false);
+    },
+  );
+
+  it.each([
+    ["/foo", "/foo%2F%2F"],
+    ["/foo", "/foo/%2F"],
+    ["/orders/:id(\\d+)", "/orders/42%2F%2F"],
+  ] as const)(
+    "does not collapse multiple decoded trailing slashes for %s",
+    async (matcher, path) => {
+      await expect(middlewareWasInvoked(path, matcher)).resolves.toBe(false);
     },
   );
 });

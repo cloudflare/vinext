@@ -15,7 +15,7 @@ export type MatcherConfig = string | Array<string | MiddlewareMatcherObject>;
 
 export type MiddlewareLocaleMatchContext =
   | { kind: "defaulted"; defaultLocale: string }
-  | { kind: "literal" | "none" };
+  | { kind: "internal" | "literal" };
 
 const EMPTY_MIDDLEWARE_REQUEST_CONTEXT: RequestContext = {
   headers: new Headers(),
@@ -85,6 +85,7 @@ function matchMatcherPattern(
   if (!i18nConfig) return matchPattern(pathname, pattern);
 
   if (localeContext) {
+    if (localeContext.kind === "internal") return false;
     return matchPattern(
       localeContext.kind === "literal" ? stripFirstPathSegment(pathname) : pathname,
       pattern,
@@ -135,6 +136,9 @@ function stripFirstPathSegment(pathname: string): string {
 export function matchPattern(pathname: string, pattern: string): boolean {
   const hasPatternSyntax = /[\\():*+?]/.test(pattern);
   const normalizedPattern = hasPatternSyntax ? pattern : removeTrailingSlash(pattern);
+  if (normalizedPattern === "/" && (pathname === "//" || pathname === "/?" || pathname === "/#")) {
+    return false;
+  }
   let cached = _mwPatternCache.get(normalizedPattern);
   if (cached === undefined) {
     cached = compileMatcherPattern(normalizedPattern);
@@ -142,7 +146,7 @@ export function matchPattern(pathname: string, pattern: string): boolean {
   }
   if (cached === UNSAFE_MATCHER_PATTERN) return true;
   if (cached.test(pathname)) return true;
-  return pathname.endsWith("/") && cached.test(removeTrailingSlash(pathname));
+  return pathname.endsWith("/") && !pathname.endsWith("//") && cached.test(pathname.slice(0, -1));
 }
 
 function compileMatcherPattern(pattern: string): CompiledMatcherPattern {

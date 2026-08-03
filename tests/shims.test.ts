@@ -8905,6 +8905,9 @@ describe("middleware matcher patterns", () => {
     // Next.js compiles middleware sources with an optional terminal delimiter.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
     expect(matchPattern("/api/admin/", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin//", "/api/admin")).toBe(false);
+    expect(matchPattern("/?", "/")).toBe(false);
+    expect(matchPattern("/#", "/")).toBe(false);
     expect(matchPattern("/api/admin/", "/api/admin\\/")).toBe(true);
     expect(matchPattern("/api/admin", "/api/admin\\/")).toBe(false);
     expect(matchPattern("/blog/post/", "/(.*)/")).toBe(true);

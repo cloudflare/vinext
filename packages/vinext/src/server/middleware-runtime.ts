@@ -366,7 +366,7 @@ export async function executeMiddleware(
       candidate.startsWith(options.basePath) &&
       (candidate.endsWith("?") || candidate.endsWith("#"))
     ) {
-      return `/${candidate.at(-1)}`;
+      return "/";
     }
     // App Router and Pages dev may pass a URL that the adapter already
     // stripped after recording that it crossed the configured basePath.
@@ -410,7 +410,7 @@ export async function executeMiddleware(
       );
       localeContext =
         localeDefaultedPathname === encodedMatchPathname
-          ? { kind: "none" }
+          ? { kind: "internal" }
           : {
               defaultLocale: normalizeDefaultLocalePathname("/", options.i18nConfig, {
                 hostname,
