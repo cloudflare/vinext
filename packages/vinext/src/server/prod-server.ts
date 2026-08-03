@@ -496,10 +496,19 @@ function cancelResponseBody(response: Response): void {
 
 type ResponseWithVinextStreamingMetadata = Response & {
   __vinextStreamedHtmlResponse?: boolean;
+  __vinextStreamedApiResponse?: boolean;
 };
 
 function isVinextStreamedHtmlResponse(response: Response): boolean {
   return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse === true;
+}
+
+// Set by the Pages API bridge (pages-node-compat.ts) when the Response was
+// resolved while the handler was still writing (streaming/piping). Buffering
+// such a body would defer delivery until the source closes and hold the whole
+// stream in memory.
+function isVinextStreamedApiResponse(response: Response): boolean {
+  return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedApiResponse === true;
 }
 
 function logProdServerStarted(host: string, port: number, purpose: ProdServerOptions["purpose"]) {
@@ -2285,12 +2294,23 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           res.end("Not Found");
           return;
         }
-        const shouldStream = isVinextStreamedHtmlResponse(response);
+        const streamedApi = isVinextStreamedApiResponse(response);
+        const shouldStream = isVinextStreamedHtmlResponse(response) || streamedApi;
         // Passthrough responses (middleware short-circuits, external proxies, redirects)
         // carry no defaultContentType — send them verbatim without injecting a
-        // Content-Type, matching the pre-refactor behavior. Only buffered render/api
-        // responses below apply a Content-Type fallback.
+        // Content-Type, matching the pre-refactor behavior. Buffered render/api
+        // responses below apply a Content-Type fallback; streamed API responses
+        // apply the same fallback here since they skip the buffered path. Live
+        // API bodies also cannot use the buffered path's size threshold without
+        // defeating streaming, so sendWebResponse chooses compression up front.
         if (shouldStream || !response.body || result.defaultContentType === undefined) {
+          if (
+            streamedApi &&
+            result.defaultContentType !== undefined &&
+            !response.headers.has("content-type")
+          ) {
+            response.headers.set("content-type", result.defaultContentType);
+          }
           await sendWebResponse(response, req, res, compress);
           return;
         }

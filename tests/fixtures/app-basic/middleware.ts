@@ -25,6 +25,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.rewrite(new URL("/about", request.url));
   }
 
+  // A concrete Pages route owns this destination even though the App Router's
+  // /docs/[...slug] catch-all also matches it. The Pages data response must run
+  // GSSP instead of being replaced by the App rewrite placeholder.
+  if (pathname === "/pages-data-rewrite-source") {
+    const response = NextResponse.rewrite(new URL("/docs/pages-data-rewrite-target", request.url));
+    response.cookies.set("pages-rewrite-session", "middleware", { path: "/" });
+    response.headers.set("cache-control", "public, max-age=3600");
+    return response;
+  }
+
   // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/app/middleware-node.js
   if (pathname === "/_next/static/middleware-rewrite.js") {
@@ -380,6 +390,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
   r.headers.set("x-mw-pathname", pathname);
   r.headers.set("x-mw-ran", "true");
+  if (pathname === "/about") {
+    r.headers.set(
+      "x-action-target-saw-source",
+      request.headers.get("x-action-source-only") ?? "missing",
+    );
+  }
   if (sessionToken) {
     r.headers.set("x-mw-has-session", "true");
   }
@@ -400,6 +416,7 @@ export const config = {
   matcher: [
     "/about",
     "/exists-but-not-routed",
+    "/pages-data-rewrite-source",
     "/middleware-redirect",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",

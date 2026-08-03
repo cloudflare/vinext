@@ -1597,6 +1597,13 @@ function resolveLocalRedirectUrl(location: string): string | null {
   }
 
   if (appPath === null) return null;
+  // Stripping an origin or basePath can expose a leading `//` that the browser
+  // would reinterpret as a different authority. Keep the original same-origin
+  // target instead; absolute and basePath-prefixed forms are both safe inputs
+  // to history navigation.
+  if (appPath.startsWith("//")) {
+    return normalizePathTrailingSlash(location, __trailingSlash);
+  }
   return normalizePathTrailingSlash(
     toBrowserNavigationHref(
       stripLocalePrefixForApiRedirect(appPath),

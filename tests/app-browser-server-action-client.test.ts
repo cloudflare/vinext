@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { createFromFetch } from "@vitejs/plugin-rsc/browser";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import { createServerActionInitiationSnapshot } from "../packages/vinext/src/server/app-browser-action-result.js";
 import { invokeClientServerAction } from "../packages/vinext/src/server/app-browser-server-action-client.js";
@@ -21,6 +22,83 @@ afterEach(() => {
 });
 
 describe("app browser server action client", () => {
+  it("commits a raw full-tree Flight payload from an internal action redirect", async () => {
+    const wireElements = AppElementsWire.createMetadataEntries({
+      interception: null,
+      interceptionContext: null,
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/target", null),
+      slotBindings: [],
+    });
+    const elements = normalizeAppElements(wireElements);
+    const routerState: AppRouterState = {
+      activeOperation: null,
+      bfcacheIds: {},
+      elements,
+      interception: null,
+      interceptionContext: null,
+      layoutFlags: {},
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/source", {}),
+      previousNextUrl: null,
+      renderId: 0,
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/source", null),
+      slotBindings: [],
+      visibleCommitVersion: 0,
+    };
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("flight", {
+          status: 303,
+          headers: {
+            [ACTION_REDIRECT_HEADER]: "/target",
+            "content-type": "text/x-component",
+          },
+        }),
+      ),
+    );
+    vi.mocked(createFromFetch).mockResolvedValueOnce(wireElements);
+    const renderRedirectPayload = vi.fn();
+    const performHardNavigation = vi.fn();
+
+    await expect(
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState,
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          performHardNavigation,
+          renderRedirectPayload,
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ handled: true });
+
+    expect(renderRedirectPayload).toHaveBeenCalledWith(
+      normalizeAppElements(wireElements),
+      expect.objectContaining({ href: "https://example.com/target" }),
+      expect.any(Object),
+      "none",
+    );
+    expect(performHardNavigation).not.toHaveBeenCalled();
+  });
+
   it("uses action state captured before the lazy client loads", async () => {
     const elements = normalizeAppElements(
       AppElementsWire.createMetadataEntries({

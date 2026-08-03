@@ -40,10 +40,8 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
-  cookies,
   getHeadersContext,
   headersContextFromRequest,
-  isDraftModeEnabled,
   setHeadersAccessPhase,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
@@ -58,6 +56,8 @@ type TestRoute = {
   routeHandler?: unknown;
   routeSegments?: readonly string[];
   runtime?: "edge" | "experimental-edge" | "nodejs" | null;
+  /** Manifest lazy-module thunk; set when the route's page is not yet hydrated. */
+  __loadPage?: unknown;
 };
 
 type TestInterceptOptions = {
@@ -240,13 +240,15 @@ function createRscOptions(
       params: {},
       route,
     }));
+  const buildPageElement =
+    overrides.buildPageElement ??
+    (({ route: matchedRoute, params, interceptOpts }) =>
+      `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`);
 
   return {
     actionId: "action-id",
     allowedOrigins: [],
-    buildPageElement({ route: matchedRoute, params, interceptOpts }) {
-      return `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`;
-    },
+    buildPageElement,
     clearRequestContext() {},
     contentType: "text/plain;charset=UTF-8",
     createNotFoundElement(routeId) {
@@ -265,6 +267,35 @@ function createRscOptions(
       return Promise.resolve([]);
     },
     draftModeSecret: "draft-secret",
+    async dispatchRedirectTargetRequest(request) {
+      const url = new URL(request.url);
+      const matched = matchRoute(url.pathname);
+      if (
+        !matched ||
+        matched.route.routeHandler ||
+        (!matched.route.page && !matched.route.__loadPage)
+      ) {
+        return new Response("not-rsc", {
+          status: 404,
+          headers: { "content-type": "text/plain" },
+        });
+      }
+      await overrides.ensureRouteLoaded?.(matched.route);
+      const root = buildPageElement({
+        cleanPathname: url.pathname,
+        interceptOpts: undefined,
+        isRscRequest: true,
+        mountedSlotsHeader: null,
+        params: matched.params,
+        request,
+        route: matched.route,
+        searchParams: url.searchParams,
+        renderMode: "navigation",
+      });
+      return new Response(JSON.stringify({ root, returnValue: { ok: true } }), {
+        headers: { "content-type": "text/x-component" },
+      });
+    },
     findIntercept() {
       return null;
     },
@@ -287,6 +318,7 @@ function createRscOptions(
     maxActionBodySize: 1024,
     maxActionBodySizeLabel: "1kb",
     middlewareHeaders: null,
+    middlewareRequestHeaders: null,
     middlewareStatus: null,
     mountedSlotsHeader: null,
     readBodyWithLimit() {
@@ -1575,121 +1607,89 @@ describe("app server action execution helpers", () => {
     });
   });
 
-  it.each(["rerender", "redirect"] as const)(
-    "passes empty request APIs to force-static action %s targets",
-    async (kind) => {
-      const buildInputs: Array<{ query: string; header: string | null }> = [];
-      const targetRoute: TestRoute = {
-        id: kind === "redirect" ? "redirect-target" : "dashboard",
-        page: {},
-        params: [],
-        pattern: kind === "redirect" ? "/redirect-target" : "/dashboard",
-      };
-      const response = await handleServerActionRscRequest(
-        createRscOptions({
-          buildPageElement({ searchParams }) {
-            buildInputs.push({
-              query: searchParams.toString(),
-              header: getHeadersContext()?.headers.get("x-request-value") ?? null,
-            });
-            return "force-static-target";
-          },
-          loadServerAction() {
-            return Promise.resolve(
-              kind === "redirect"
-                ? () => redirect("/redirect-target?user=alice")
-                : async () => {
-                    await Promise.resolve(revalidatePath("/dashboard"));
-                    return "revalidated";
-                  },
-            );
-          },
-          matchRoute(pathname) {
-            if (kind === "redirect" && pathname === "/redirect-target") {
-              return { params: {}, route: targetRoute };
-            }
-            return {
-              params: {},
-              route:
-                kind === "rerender"
-                  ? targetRoute
-                  : { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
-            };
-          },
-          request: createFetchActionRequest({ "x-request-value": "present" }),
-          resolveRouteDynamicConfig(route) {
-            return route === targetRoute ? "force-static" : undefined;
-          },
-          searchParams: new URLSearchParams("user=alice"),
-        }),
-      );
+  it("passes empty request APIs to force-static action rerender targets", async () => {
+    const buildInputs: Array<{ query: string; header: string | null }> = [];
+    const targetRoute: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement({ searchParams }) {
+          buildInputs.push({
+            query: searchParams.toString(),
+            header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+          });
+          return "force-static-target";
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/dashboard"));
+            return "revalidated";
+          });
+        },
+        matchRoute() {
+          return { params: {}, route: targetRoute };
+        },
+        request: createFetchActionRequest({ "x-request-value": "present" }),
+        resolveRouteDynamicConfig() {
+          return "force-static";
+        },
+        searchParams: new URLSearchParams("user=alice"),
+      }),
+    );
 
-      expect(response?.status).toBe(kind === "redirect" ? 303 : 200);
-      expect(buildInputs).toEqual([{ query: "", header: null }]);
-    },
-  );
+    expect(response?.status).toBe(200);
+    expect(buildInputs).toEqual([{ query: "", header: null }]);
+  });
 
-  it.each(["rerender", "redirect"] as const)(
-    "observes searchParams access for dynamic-error action %s targets",
-    async (kind) => {
-      const buildInputs: Array<{
-        metadata: boolean | undefined;
-        page: boolean | undefined;
-        query: string;
-      }> = [];
-      const targetRoute: TestRoute = {
-        id: kind === "redirect" ? "redirect-target" : "dashboard",
-        page: {},
-        params: [],
-        pattern: kind === "redirect" ? "/redirect-target" : "/dashboard",
-      };
-      const response = await handleServerActionRscRequest(
-        createRscOptions({
-          buildPageElement({
-            observeMetadataSearchParamsAccess,
-            observePageSearchParamsAccess,
-            searchParams,
-          }) {
-            buildInputs.push({
-              metadata: observeMetadataSearchParamsAccess,
-              page: observePageSearchParamsAccess,
-              query: searchParams.toString(),
-            });
-            return "dynamic-error-target";
-          },
-          loadServerAction() {
-            return Promise.resolve(
-              kind === "redirect"
-                ? () => redirect("/redirect-target?user=alice")
-                : async () => {
-                    await Promise.resolve(revalidatePath("/dashboard"));
-                    return "revalidated";
-                  },
-            );
-          },
-          matchRoute(pathname) {
-            if (kind === "redirect" && pathname === "/redirect-target") {
-              return { params: {}, route: targetRoute };
-            }
-            return {
-              params: {},
-              route:
-                kind === "rerender"
-                  ? targetRoute
-                  : { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
-            };
-          },
-          resolveRouteDynamicConfig(route) {
-            return route === targetRoute ? "error" : undefined;
-          },
-          searchParams: new URLSearchParams("user=alice"),
-        }),
-      );
+  it("observes searchParams access for dynamic-error action rerender targets", async () => {
+    const buildInputs: Array<{
+      metadata: boolean | undefined;
+      page: boolean | undefined;
+      query: string;
+    }> = [];
+    const targetRoute: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement({
+          observeMetadataSearchParamsAccess,
+          observePageSearchParamsAccess,
+          searchParams,
+        }) {
+          buildInputs.push({
+            metadata: observeMetadataSearchParamsAccess,
+            page: observePageSearchParamsAccess,
+            query: searchParams.toString(),
+          });
+          return "dynamic-error-target";
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/dashboard"));
+            return "revalidated";
+          });
+        },
+        matchRoute() {
+          return { params: {}, route: targetRoute };
+        },
+        resolveRouteDynamicConfig() {
+          return "error";
+        },
+        searchParams: new URLSearchParams("user=alice"),
+      }),
+    );
 
-      expect(response?.status).toBe(kind === "redirect" ? 303 : 200);
-      expect(buildInputs).toEqual([{ metadata: true, page: true, query: "user=alice" }]);
-    },
-  );
+    expect(response?.status).toBe(200);
+    expect(buildInputs).toEqual([{ metadata: true, page: true, query: "user=alice" }]);
+  });
 
   it("uses empty action request APIs for force-static targets in draft mode", async () => {
     const buildInputs: Array<{ query: string; header: string | null }> = [];
@@ -1738,17 +1738,25 @@ describe("app server action execution helpers", () => {
     }
   });
 
-  it("renders internal action redirects with a clean GET request and action cookies", async () => {
-    // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    const renderRequests: Request[] = [];
-    let redirectRenderDraftMode = false;
+  it("dispatches internal action redirects as full-tree RSC GET requests", async () => {
+    let targetRequest: Request | null = null;
+    const actionRequest = createFetchActionRequest({
+      cookie: "session=1; deleted=stale",
+      "next-action": "action-id",
+      "x-vinext-mw-ctx": "action-path-context",
+    });
+    Object.defineProperty(actionRequest, "cf", { value: { country: "AU" }, enumerable: true });
+
     const response = await handleServerActionRscRequest(
       createRscOptions({
-        buildPageElement({ request }) {
-          renderRequests.push(request);
-          redirectRenderDraftMode = isDraftModeEnabled();
-          return "redirect-target:{}:none";
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("target-flight", {
+            headers: {
+              "content-type": "text/x-component",
+              "x-target-pipeline": "1",
+            },
+          });
         },
         getAndClearPendingCookies() {
           return ["theme=dark; Path=/", "deleted=; Path=/; Max-Age=0"];
@@ -1756,136 +1764,174 @@ describe("app server action execution helpers", () => {
         loadServerAction() {
           return Promise.resolve(() => redirect("/redirect-target?from=action"));
         },
-        matchRoute(pathname) {
-          if (pathname === "/redirect-target") {
-            return {
-              params: {},
-              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
-            };
-          }
-          return {
-            params: {},
-            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
-          };
-        },
-        request: createFetchActionRequest({
-          accept: "text/x-component",
-          cookie: "session=1; deleted=stale; __prerender_bypass=draft-secret",
-          "next-action": "action-id",
-          rsc: "1",
-        }),
+        request: actionRequest,
       }),
     );
 
     expect(response?.status).toBe(303);
     expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target?from=action");
-    const renderRequest = renderRequests[0];
-    if (!renderRequest) throw new Error("Expected redirect render request");
-
-    expect(renderRequest.method).toBe("GET");
-    expect(renderRequest.url).toBe("https://example.com/redirect-target?from=action");
-    expect(renderRequest.headers.get("next-action")).toBeNull();
-    expect(renderRequest.headers.get("x-rsc-action")).toBeNull();
-    expect(renderRequest.headers.get("rsc")).toBeNull();
-    expect(renderRequest.headers.get("content-type")).toBeNull();
-    expect(renderRequest.headers.get("origin")).toBeNull();
-    expect(renderRequest.headers.get("cookie")).toBe(
-      "session=1; __prerender_bypass=draft-secret; theme=dark",
-    );
-    expect(redirectRenderDraftMode).toBe(true);
+    expect(response?.headers.get("x-target-pipeline")).toBe("1");
+    expect(await response?.text()).toBe("target-flight");
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.method).toBe("GET");
+    expect(new URL(targetRequest!.url).pathname).toBe("/redirect-target");
+    expect(new URL(targetRequest!.url).searchParams.get("from")).toBe("action");
+    expect(new URL(targetRequest!.url).searchParams.has("_rsc")).toBe(true);
+    expect(targetRequest!.headers.get("rsc")).toBe("1");
+    expect(targetRequest!.headers.get("next-action")).toBeNull();
+    expect(targetRequest!.headers.get("x-rsc-action")).toBeNull();
+    expect(targetRequest!.headers.get("next-router-state-tree")).toBeNull();
+    expect(targetRequest!.headers.get("x-vinext-mw-ctx")).toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("session=1; theme=dark");
+    expect(Reflect.get(targetRequest!, "cf")).toEqual({ country: "AU" });
   });
 
-  it("renders internal action redirects with the target route's root params", async () => {
-    let renderedRootParam: string | string[] | undefined;
-
-    await runWithRootParamsScope({ lang: "source" }, () =>
-      handleServerActionRscRequest(
-        createRscOptions({
-          async renderToReadableStream(model) {
-            renderedRootParam = await getRootParam("lang");
-            return new Response(JSON.stringify(model)).body;
-          },
-          loadServerAction() {
-            return Promise.resolve(() => redirect("/fr/target"));
-          },
-          matchRoute(pathname) {
-            if (pathname === "/fr/target") {
-              return {
-                params: { lang: "fr" },
-                route: {
-                  id: "redirect-target",
-                  page: {},
-                  params: ["lang"],
-                  pattern: "/[lang]/target",
-                  rootParamNames: ["lang"],
-                },
-              };
-            }
-            return {
-              params: { lang: "source" },
-              route: {
-                id: "dashboard",
-                page: {},
-                params: ["lang"],
-                pattern: "/[lang]/dashboard",
-                rootParamNames: ["lang"],
-              },
-            };
-          },
-        }),
-      ),
+  it("forwards source config headers before middleware and keeps target precedence", async () => {
+    let targetRequest: Request | null = null;
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("target-flight", {
+            headers: {
+              "content-type": "text/x-component",
+              "x-collision": "target",
+              "x-target-only": "yes",
+            },
+          });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        getAndClearPendingCookies() {
+          return ["source=action; Path=/", "action=1; Path=/"];
+        },
+        middlewareHeaders: new Headers({ accept: "application/custom" }),
+        sourceConfigHeaders: new Headers([
+          ["accept", "application/config"],
+          ["set-cookie", "config=1; Path=/"],
+          ["set-cookie", "source=config; Path=/"],
+          ["x-collision", "source"],
+          ["x-source-only", "yes"],
+        ]),
+      }),
     );
 
-    expect(renderedRootParam).toBe("fr");
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("accept")).toBe("application/custom");
+    expect(targetRequest!.headers.get("cookie")).toBe("config=1; source=action; action=1");
+    expect(targetRequest!.headers.get("x-source-only")).toBe("yes");
+    expect(response?.headers.get("x-source-only")).toBe("yes");
+    expect(response?.headers.get("x-target-only")).toBe("yes");
+    expect(response?.headers.get("x-collision")).toBe("target");
   });
 
-  it("keeps redirected action render context alive until the Flight body is consumed", async () => {
-    // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    const clearRequestContext = vi.fn(() => setHeadersContext(null));
+  it("falls back to a header-only redirect when internal target dispatch throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    errorSpy.mockClear();
+    const clearRequestContext = vi.fn();
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        clearRequestContext,
+        dispatchRedirectTargetRequest() {
+          return Promise.reject(new Error("target unavailable"));
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
 
-    try {
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+
+  it("falls back to a header-only redirect for a malformed followed Location", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    errorSpy.mockClear();
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        dispatchRedirectTargetRequest() {
+          return Promise.resolve(
+            new Response(null, { status: 307, headers: { location: "http://[" } }),
+          );
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(errorSpy).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+
+  it.each(["../../admin", "/base/%2e%2e/admin", "https://example.com/admin"])(
+    "does not internally dispatch basePath escape %s",
+    async (target) => {
+      const dispatchRedirectTargetRequest = vi.fn(() =>
+        Promise.resolve(
+          new Response("should-not-dispatch", {
+            headers: { "content-type": "text/x-component" },
+          }),
+        ),
+      );
       const response = await handleServerActionRscRequest(
         createRscOptions({
-          clearRequestContext,
-          getAndClearPendingCookies() {
-            return ["theme=dark; Path=/"];
-          },
+          basePath: "/base",
+          dispatchRedirectTargetRequest,
           loadServerAction() {
-            return Promise.resolve(() => redirect("/redirect-target"));
+            return Promise.resolve(() => redirect(target));
           },
-          matchRoute(pathname) {
-            if (pathname === "/redirect-target") {
-              return {
-                params: {},
-                route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
-              };
-            }
-            return {
-              params: {},
-              route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
-            };
-          },
-          renderToReadableStream() {
-            return new ReadableStream<Uint8Array>({
-              async pull(controller) {
-                const cookieStore = await cookies();
-                controller.enqueue(
-                  new TextEncoder().encode(cookieStore.get("theme")?.value ?? "missing"),
-                );
-                controller.close();
-              },
-            });
-          },
+          request: new Request("https://example.com/base/account", {
+            body: "encoded-flight-body",
+            method: "POST",
+            headers: createFetchActionRequest().headers,
+          }),
         }),
       );
 
-      expect(clearRequestContext).not.toHaveBeenCalled();
-      expect(await response?.text()).toBe("dark");
-      expect(clearRequestContext).toHaveBeenCalledTimes(1);
-    } finally {
-      setHeadersContext(null);
-    }
+      expect(response?.status).toBe(303);
+      expect(response?.headers.get("x-action-redirect")).toBe(target);
+      expect(await response?.text()).toBe("");
+      expect(dispatchRedirectTargetRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps both request contexts alive until the dispatched Flight body is consumed", async () => {
+    const clearRequestContext = vi.fn();
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        clearRequestContext,
+        async dispatchRedirectTargetRequest() {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.enqueue(new TextEncoder().encode("streamed-target"));
+                controller.close();
+              },
+            }),
+            { headers: { "content-type": "text/x-component" } },
+          );
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(clearRequestContext).not.toHaveBeenCalled();
+    expect(await response?.text()).toBe("streamed-target");
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to header-only redirects when the target is not an App route", async () => {
@@ -1981,6 +2027,266 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("vary")).toBeNull();
     expect(await response?.text()).toBe("");
     expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a header-only redirect when the target pipeline does not return Flight", async () => {
+    const buildPageElement = vi.fn(() => "should-not-render");
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        async dispatchRedirectTargetRequest() {
+          return new Response("unauthorized", {
+            status: 401,
+            headers: { "content-type": "text/plain" },
+          });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/protected"));
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/protected");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
+  it("forwards effective action headers and cookies to the target pipeline", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        middlewareHeaders: new Headers([
+          ["set-cookie", "session=; Max-Age=0"],
+          ["set-cookie", "csrf=rotated"],
+          ["set-cookie", "admin=1; Path=/account"],
+          ["set-cookie", "encoded=%2520; Path=/"],
+          ["x-action-auth-context", "member"],
+        ]),
+        middlewareRequestHeaders: new Headers({
+          "x-middleware-override-headers": "x-auth-context",
+          "x-middleware-request-x-auth-context": "sanitized",
+        }),
+        request: createFetchActionRequest({
+          cookie: "session=live; csrf=old; theme=dark",
+          "x-attacker-controlled": "forged",
+          "x-auth-context": "untrusted",
+        }),
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("csrf=rotated; admin=1; encoded=%20");
+    expect(targetRequest!.headers.get("x-auth-context")).toBe("sanitized");
+    expect(targetRequest!.headers.get("x-attacker-controlled")).toBeNull();
+    expect(targetRequest!.headers.get("x-action-auth-context")).toBe("member");
+  });
+
+  it("forwards an empty Cookie header to the target pipeline", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.has("cookie")).toBe(true);
+    expect(targetRequest!.headers.get("cookie")).toBe("");
+  });
+
+  it("collapses repeated response cookies before forwarding the target request", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        getAndClearPendingCookies() {
+          return ["foo=new; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        middlewareHeaders: new Headers({ "set-cookie": "foo=; Max-Age=0" }),
+        request: createFetchActionRequest({ cookie: "a=1; foo=old; b=2" }),
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("a=1; foo=new; b=2");
+  });
+
+  it("does not retain a stale cookie when the second response-cookie decode fails", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        middlewareHeaders: new Headers([
+          ["set-cookie", "session=%25bad; Path=/"],
+          ["set-cookie", "raw=%; Path=/"],
+        ]),
+        request: createFetchActionRequest({ cookie: "session=old; raw=old" }),
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("session=%25bad; raw=%25");
+  });
+
+  // Next.js follows same-origin redirects from its internal target fetch. The
+  // in-process dispatcher must do the same so config and middleware redirects
+  // can still produce a single action response containing the final Flight.
+  it("follows same-origin target redirects through the internal dispatcher", async () => {
+    const paths: string[] = [];
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          const url = new URL(request.url);
+          paths.push(url.pathname);
+          if (url.pathname === "/redirect-source") {
+            return new Response(null, { status: 307, headers: { location: "/redirect-target" } });
+          }
+          return new Response("redirect-target-flight", {
+            headers: { "content-type": "text/x-component", "x-final-target": "1" },
+          });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-source"));
+        },
+      }),
+    );
+
+    expect(paths).toEqual(["/redirect-source", "/redirect-target"]);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-source");
+    expect(response?.headers.get("x-final-target")).toBe("1");
+    expect(await response?.text()).toBe("redirect-target-flight");
+  });
+
+  it("keeps action protocol headers when merging target pipeline headers", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/redirect-target") {
+            return {
+              params: {},
+              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
+            };
+          }
+          return {
+            params: {},
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+          };
+        },
+        middlewareHeaders: new Headers({
+          "content-encoding": "br",
+          location: "/mw-location",
+          "content-type": "text/html",
+          "set-cookie": "source=1; Path=/",
+          vary: "x-source",
+          "x-action-redirect": "/mw-hijack",
+          "x-action-mw": "1",
+        }),
+        async dispatchRedirectTargetRequest() {
+          return new Response("flight", {
+            headers: {
+              "accept-encoding": "gzip",
+              connection: "close",
+              "content-encoding": "gzip",
+              "content-type": "text/x-component",
+              "content-length": "0",
+              "set-cookie": "target=1; Path=/",
+              "transfer-encoding": "chunked",
+              vary: "x-target",
+              "x-action-redirect": "/target-hijack",
+              "x-target-mw": "1",
+            },
+          });
+        },
+      }),
+    );
+
+    // The wrapper's protocol headers steer the action client: a Location on the
+    // 303 would make fetch follow it before the client reads x-action-redirect,
+    // a foreign Content-Type flips the client to a hard navigation, a stale
+    // Content-Length misframes the generated Flight stream, and
+    // x-action-redirect is the destination itself. Ordinary middleware headers
+    // must still come through.
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
+    expect(response?.headers.get("location")).toBeNull();
+    expect(response?.headers.get("content-type")).toContain("text/x-component");
+    expect(response?.headers.get("accept-encoding")).toBeNull();
+    expect(response?.headers.get("connection")).toBeNull();
+    expect(response?.headers.get("content-encoding")).toBeNull();
+    expect(response?.headers.get("content-length")).toBeNull();
+    expect(response?.headers.getSetCookie()).toEqual(["source=1; Path=/"]);
+    expect(response?.headers.get("transfer-encoding")).toBeNull();
+    expect(response?.headers.get("vary")).toBe("x-target");
+    expect(response?.headers.get("x-action-mw")).toBe("1");
+    expect(response?.headers.get("x-target-mw")).toBe("1");
+  });
+
+  it("replaces a redirect-supplied _rsc value before target dispatch", async () => {
+    let targetRequest: Request | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target?_rsc=abc123&tab=x"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/redirect-target") {
+            return {
+              params: {},
+              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
+            };
+          }
+          return {
+            params: {},
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+          };
+        },
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+      }),
+    );
+
+    // The real pipeline strips `_rsc` before middleware, so matchers keyed on
+    // it would branch differently for the synthetic request than for the
+    // navigation it stands in for. The client-facing redirect header keeps the
+    // verbatim URL — a diverted re-request goes through real validation.
+    expect(targetRequest).not.toBeNull();
+    const targetUrl = new URL(targetRequest!.url);
+    expect(targetUrl.searchParams.get("_rsc")).not.toBe("abc123");
+    expect(targetUrl.searchParams.get("tab")).toBe("x");
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target?_rsc=abc123&tab=x");
   });
 
   it("does not emit x-action-revalidated when a fetch action revalidates a tag with a profile", async () => {
@@ -2420,7 +2726,7 @@ describe("app server action execution helpers", () => {
       returnValue: { ok: true },
     });
     expect(clearContext).toHaveBeenCalledTimes(1);
-    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).not.toHaveBeenCalled();
   });
 
   it("emits x-action-revalidated when a redirecting fetch action revalidates a tag", async () => {
@@ -2874,49 +3180,6 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-edge-runtime")).toBe("1");
-  });
-
-  it("resolves the redirect target route's dynamic config and fetch cache mode for force-dynamic fetch defaults", async () => {
-    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
-    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
-    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
-
-    const targetRoute: TestRoute = {
-      id: "redirect-target",
-      page: {},
-      params: [],
-      pattern: "/redirect-target",
-    };
-
-    const response = await handleServerActionRscRequest(
-      createRscOptions({
-        loadServerAction() {
-          return Promise.resolve(() => redirect("/redirect-target"));
-        },
-        matchRoute(pathname) {
-          if (pathname === "/redirect-target") {
-            return { params: {}, route: targetRoute };
-          }
-          return {
-            params: {},
-            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
-          };
-        },
-        resolveRouteFetchCacheMode(route) {
-          return route === targetRoute ? "force-cache" : null;
-        },
-        resolveRouteDynamicConfig(route) {
-          return route === targetRoute ? "force-dynamic" : null;
-        },
-      }),
-    );
-
-    expect(response?.status).toBe(303);
-    expect(modeSpy).toHaveBeenCalledWith("force-cache");
-    expect(forceDynamicSpy).toHaveBeenCalledWith(true);
-
-    modeSpy.mockRestore();
-    forceDynamicSpy.mockRestore();
   });
 
   it("resolves the re-render target route's dynamic config and fetch cache mode for force-dynamic fetch defaults", async () => {
