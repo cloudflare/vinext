@@ -277,9 +277,37 @@ function createNextRequest(
       }
     : undefined;
 
-  return mwRequest instanceof NextRequest
-    ? mwRequest
-    : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+  const nextRequest =
+    mwRequest instanceof NextRequest && (!mwRequest.body || mwRequest.bodyUsed)
+      ? mwRequest
+      : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+  if (mwRequest !== request && mwRequest.body && !mwRequest.bodyUsed && !mwRequest.body.locked) {
+    void mwRequest.body.cancel().catch(() => {});
+  }
+  return nextRequest;
+}
+
+function releaseMiddlewareRequestBody(
+  request: NextRequest,
+  waitUntilPromises: Promise<unknown>[],
+  retainedByResponse = false,
+): void {
+  const body = request.body;
+  if (!body || retainedByResponse) return;
+
+  const cancel = () => {
+    if (!body.locked) {
+      void body.cancel().catch(() => {});
+    }
+  };
+  if (waitUntilPromises.length === 0) {
+    cancel();
+    return;
+  }
+
+  // waitUntil work is allowed to keep reading the middleware request after
+  // the handler returns. Release the branch only once that work has settled.
+  void Promise.allSettled(waitUntilPromises).then(cancel);
 }
 
 export async function executeMiddleware(
@@ -349,6 +377,7 @@ export async function executeMiddleware(
   } catch (e) {
     console.error("[vinext] Middleware error:", e);
     const waitUntilPromises = drainFetchEvent(fetchEvent);
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     const message = options.includeErrorDetails
       ? "Middleware Error: " + (e instanceof Error ? e.message : String(e))
       : "Internal Server Error";
@@ -357,22 +386,17 @@ export async function executeMiddleware(
       response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
-  } finally {
-    // Middleware may transfer its request stream directly into the response.
-    // In that case the response owns consumption; cancelling here would
-    // disturb the body before the server can send it.
-    if (nextRequest.body && response?.body !== nextRequest.body) {
-      void nextRequest.body.cancel().catch(() => {});
-    }
   }
 
   const waitUntilPromises = drainFetchEvent(fetchEvent);
 
   if (!response) {
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return { continue: true, waitUntilPromises };
   }
 
   if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return {
       continue: true,
       responseHeaders: collectMiddlewareHeaders(response),
@@ -425,6 +449,7 @@ export async function executeMiddleware(
       // Internal data headers are stripped before middleware runs, so this
       // protocol is gated on trusted classification threaded by the caller.
       if (options.isDataRequest) {
+        releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
         return {
           continue: false,
           response: dataRedirectResponse(normalizedLocation, response),
@@ -445,6 +470,11 @@ export async function executeMiddleware(
         statusText: response.statusText,
         headers: relativizedResponseHeaders,
       });
+      releaseMiddlewareRequestBody(
+        nextRequest,
+        waitUntilPromises,
+        response.body === nextRequest.body,
+      );
       return {
         continue: false,
         redirectUrl: normalizedLocation,
@@ -493,6 +523,7 @@ export async function executeMiddleware(
     } catch {
       rewritePath = rewriteUrl;
     }
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return {
       continue: true,
       rewriteUrl: rewritePath,
@@ -503,6 +534,7 @@ export async function executeMiddleware(
     };
   }
 
+  releaseMiddlewareRequestBody(nextRequest, waitUntilPromises, response.body === nextRequest.body);
   return {
     continue: false,
     response: stripMiddlewareHeadersFromResponse(response),

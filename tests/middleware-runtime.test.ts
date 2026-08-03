@@ -12,6 +12,136 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
 
 describe("middleware redirect protocol", () => {
+  it("releases an unread middleware body branch in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    let resolveCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      resolveCancelled = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("streaming"));
+      },
+      cancel() {
+        resolveCancelled();
+      },
+    });
+    const init: RequestInit = { body, method: "POST" };
+    Object.defineProperty(init, "duplex", { value: "half" });
+    const request = new Request("http://localhost:3000/action", init);
+
+    try {
+      await executeMiddleware({
+        isProxy: false,
+        module: { default: () => undefined },
+        request,
+      });
+      void request.body?.cancel().catch(() => {});
+
+      await expect(
+        Promise.race([
+          cancelled.then(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+        ]),
+      ).resolves.toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("releases the unread tail of a partially consumed middleware body", async () => {
+    let resolveCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      resolveCancelled = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("first"));
+      },
+      cancel() {
+        resolveCancelled();
+      },
+    });
+    const init: RequestInit = { body, method: "POST" };
+    Object.defineProperty(init, "duplex", { value: "half" });
+    const request = new Request("http://localhost:3000/action", init);
+
+    await executeMiddleware({
+      isProxy: false,
+      module: {
+        async default(middlewareRequest: NextRequest) {
+          const reader = middlewareRequest.body!.getReader();
+          await reader.read();
+          reader.releaseLock();
+        },
+      },
+      request,
+    });
+    void request.body?.cancel().catch(() => {});
+
+    await expect(
+      Promise.race([
+        cancelled.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps the middleware body readable until waitUntil work settles", async () => {
+    let continueWaitUntil!: () => void;
+    const waitUntilGate = new Promise<void>((resolve) => {
+      continueWaitUntil = resolve;
+    });
+    let bodyText: string | undefined;
+    const request = new Request("http://localhost:3000/action", {
+      body: "action-body",
+      method: "POST",
+    });
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default(
+          middlewareRequest: NextRequest,
+          event: { waitUntil(promise: Promise<void>): void },
+        ) {
+          event.waitUntil(
+            waitUntilGate.then(async () => {
+              bodyText = await middlewareRequest.text();
+            }),
+          );
+        },
+      },
+      request,
+    });
+
+    continueWaitUntil();
+    await Promise.all(result.waitUntilPromises ?? []);
+
+    expect(bodyText).toBe("action-body");
+    await expect(request.text()).resolves.toBe("action-body");
+  });
+
+  it("preserves a terminal middleware response backed by the request body", async () => {
+    const request = new Request("http://localhost:3000/action", {
+      body: "action-body",
+      method: "POST",
+    });
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default(middlewareRequest: NextRequest) {
+          return new Response(middlewareRequest.body);
+        },
+      },
+      request,
+    });
+
+    expect(result.continue).toBe(false);
+    await expect(result.response?.text()).resolves.toBe("action-body");
+    await expect(request.text()).resolves.toBe("action-body");
+  });
   it.each(["development", "production"])(
     "preserves a request body transferred into the middleware response in %s",
     async (nodeEnv) => {
@@ -359,6 +489,25 @@ describe("middleware nextUrl basePath", () => {
     // req.url mirrors the un-stripped URL Next.js middleware receives.
     expect(new URL(captured.request!.url).pathname).toBe("/app/dashboard");
     expect(new URL(captured.request!.url).search).toBe("?q=1");
+  });
+
+  it("preserves the downstream request body when restoring basePath", async () => {
+    const { module } = captureModule();
+    const request = new Request("http://localhost:3000/action", {
+      body: "action-body",
+      method: "POST",
+    });
+
+    await executeMiddleware({
+      basePath: "/app",
+      hadBasePath: true,
+      isProxy: false,
+      module,
+      normalizedPathname: "/action",
+      request,
+    });
+
+    await expect(request.text()).resolves.toBe("action-body");
   });
 
   it("keeps basePath active for Pages flow requests whose URL carries the prefix", async () => {
