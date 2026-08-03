@@ -795,23 +795,25 @@ export async function deployWithCdnWarmup(
     );
   } else if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, wranglerOptions, "stage");
-    const targetUrls = resolveCdnWarmupTargetUrls(
+    const warmupTargets = resolveCdnWarmupTargets(
       root,
       staged.deployedUrl,
+      paths,
+      options.rscPaths ?? [],
       targetResolutionOptions,
     );
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, wranglerOptions);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
-    if (targetUrls.length > 0 && headers) {
-      const probePath = paths[0] ?? options.rscPaths?.[0];
+    if (warmupTargets.length > 0 && headers) {
       let failedProbe: Exclude<
         Awaited<ReturnType<typeof probeWorkerVersion>>,
         { verified: true }
       > | null = null;
-      for (const targetUrl of targetUrls) {
+      for (const target of warmupTargets) {
+        const probePath = target.paths[0] ?? target.rscPaths[0];
         const probe = probePath
           ? await probeWorkerVersion({
-              targetUrl,
+              targetUrl: target.targetUrl,
               pathname: probePath,
               versionId: upload.versionId,
               headers,
@@ -825,17 +827,17 @@ export async function deployWithCdnWarmup(
       }
       if (failedProbe === null) {
         try {
-          for (const targetUrl of targetUrls) {
+          for (const target of warmupTargets) {
             await warmCdnCache({
-              targetUrl,
-              paths,
+              targetUrl: target.targetUrl,
+              paths: target.paths,
               headers,
               deploymentId: options.deploymentId,
               concurrency: options.warmCdnConcurrency,
               timeoutMs: options.warmCdnTimeout,
               retries: options.warmCdnRetries,
               rscCacheKeyMode: options.rscCacheKeyMode,
-              rscPaths: options.rscPaths,
+              rscPaths: target.rscPaths,
               strict: options.warmCdnStrict,
             });
           }
@@ -896,17 +898,19 @@ export async function deployWithCdnWarmup(
     throw withPromotedVersionTriggerNote(error);
   }
   if (!warmedBeforePromotion && !crossVersionCache) {
-    const targetUrls = resolveCdnWarmupTargetUrls(
+    const warmupTargets = resolveCdnWarmupTargets(
       root,
       deployed.deployedUrl ?? triggersDeployedUrl,
+      paths,
+      options.rscPaths ?? [],
       targetResolutionOptions,
     );
-    if (targetUrls.length > 0) {
-      const probePath = paths[0] ?? options.rscPaths?.[0];
-      for (const targetUrl of targetUrls) {
+    if (warmupTargets.length > 0) {
+      for (const target of warmupTargets) {
+        const probePath = target.paths[0] ?? target.rscPaths[0];
         const probe = probePath
           ? await probeWorkerVersion({
-              targetUrl,
+              targetUrl: target.targetUrl,
               pathname: probePath,
               versionId: upload.versionId,
               timeoutMs: options.warmCdnTimeout,
@@ -915,14 +919,14 @@ export async function deployWithCdnWarmup(
         if (probe.verified) {
           try {
             await warmCdnCache({
-              targetUrl,
-              paths,
+              targetUrl: target.targetUrl,
+              paths: target.paths,
               deploymentId: options.deploymentId,
               concurrency: options.warmCdnConcurrency,
               timeoutMs: options.warmCdnTimeout,
               retries: options.warmCdnRetries,
               rscCacheKeyMode: options.rscCacheKeyMode,
-              rscPaths: options.rscPaths,
+              rscPaths: target.rscPaths,
               strict: options.warmCdnStrict,
             });
           } catch (error) {
@@ -934,7 +938,7 @@ export async function deployWithCdnWarmup(
               ? "VINEXT_VERSION_METADATA is unavailable"
               : "the promoted version did not become verifiable in time";
           const message =
-            `CDN warmup skipped for ${targetUrl} after Worker version ${upload.versionId} was promoted to 100%: ${reason}. ` +
+            `CDN warmup skipped for ${target.targetUrl} after Worker version ${upload.versionId} was promoted to 100%: ${reason}. ` +
             "No cacheable requests were sent to this target.";
           if (options.warmCdnStrict) throw new Error(message);
           console.warn(`  ${message}`);
@@ -982,15 +986,111 @@ export function resolveCdnWarmupTargetUrls(
   deployedUrl: string | null,
   options?: Pick<DeployOptions, "preview" | "env" | "config">,
 ): string[] {
+  return resolveCdnWarmupTargetDefinitions(root, deployedUrl, options).map(
+    (target) => target.targetUrl,
+  );
+}
+
+type ResolvedCdnWarmupTargetDefinition = {
+  targetUrl: string;
+  pathPatterns: string[];
+};
+
+type ResolvedCdnWarmupTarget = {
+  targetUrl: string;
+  paths: readonly string[];
+  rscPaths: readonly string[];
+};
+
+function normalizeCdnWarmupTargetUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function resolveCdnWarmupTargetDefinitions(
+  root: string,
+  deployedUrl: string | null,
+  options?: Pick<DeployOptions, "preview" | "env" | "config">,
+): ResolvedCdnWarmupTargetDefinition[] {
   const config = parseWranglerConfig(root, options?.config);
   const env = getWranglerTargetEnv(options ?? {});
-  const selectedConfig = env && config?.targetEnvironment !== env ? config?.env?.[env] : config;
-  const customDomains =
-    selectedConfig?.customDomains ??
-    (selectedConfig?.customDomain ? [selectedConfig.customDomain] : []);
-  const targets = customDomains.map((customDomain) => `https://${customDomain}`);
-  if (targets.length === 0 && deployedUrl) targets.push(deployedUrl);
-  return [...new Set(targets)];
+  const flattened = env !== undefined && config?.targetEnvironment === env;
+  const selectedConfig = env && !flattened ? config?.env?.[env] : config;
+  const workersDev =
+    selectedConfig?.workersDev ?? (!flattened && env ? config?.workersDev : undefined) ?? true;
+  const configuredTargets =
+    selectedConfig?.warmupTargets ??
+    (
+      selectedConfig?.customDomains ??
+      (selectedConfig?.customDomain ? [selectedConfig.customDomain] : [])
+    ).map((hostname) => ({
+      hostname,
+      pathPatterns: [],
+    }));
+  const targets: ResolvedCdnWarmupTargetDefinition[] = [];
+
+  function addTarget(targetUrl: string, pathPatterns: readonly string[]): void {
+    const normalizedUrl = normalizeCdnWarmupTargetUrl(targetUrl);
+    if (!normalizedUrl) return;
+    const existing = targets.find(
+      (target) => target.targetUrl.toLowerCase() === normalizedUrl.toLowerCase(),
+    );
+    if (!existing) {
+      targets.push({ targetUrl: normalizedUrl, pathPatterns: [...pathPatterns] });
+      return;
+    }
+    if (existing.pathPatterns.length === 0 || pathPatterns.length === 0) {
+      existing.pathPatterns = [];
+      return;
+    }
+    existing.pathPatterns = [...new Set([...existing.pathPatterns, ...pathPatterns])];
+  }
+
+  for (const target of configuredTargets) {
+    addTarget(`https://${target.hostname}`, target.pathPatterns);
+  }
+  if (workersDev && deployedUrl) addTarget(deployedUrl, []);
+  return targets;
+}
+
+function matchesCdnRoutePath(pathAndSearch: string, pathPatterns: readonly string[]): boolean {
+  if (pathPatterns.length === 0) return true;
+  const pathname = new URL(pathAndSearch, "https://vinext.invalid").pathname;
+  return pathPatterns.some((pattern) => {
+    const expression = pattern
+      .split("*")
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join(".*");
+    return new RegExp(`^${expression}$`).test(pathname);
+  });
+}
+
+export function resolveCdnWarmupTargets(
+  root: string,
+  deployedUrl: string | null,
+  paths: readonly string[],
+  rscPaths: readonly string[],
+  options?: Pick<DeployOptions, "preview" | "env" | "config">,
+): ResolvedCdnWarmupTarget[] {
+  return resolveCdnWarmupTargetDefinitions(root, deployedUrl, options).flatMap((target) => {
+    const targetPaths = paths.filter((pathname) =>
+      matchesCdnRoutePath(pathname, target.pathPatterns),
+    );
+    const targetRscPaths = rscPaths.filter((pathname) =>
+      matchesCdnRoutePath(pathname, target.pathPatterns),
+    );
+    return targetPaths.length > 0 || targetRscPaths.length > 0
+      ? [{ targetUrl: target.targetUrl, paths: targetPaths, rscPaths: targetRscPaths }]
+      : [];
+  });
 }
 
 function readWranglerDeploymentStatus(

@@ -14,6 +14,7 @@ import {
   buildWranglerInvocation,
   buildWranglerDeployArgs,
   parseDeployArgs,
+  resolveCdnWarmupTargets,
   resolveCdnWarmupTargetUrl,
   resolveWranglerCommandConfig,
   resolveWranglerBin,
@@ -3551,6 +3552,7 @@ describe("parseWranglerConfig — custom domain extraction", () => {
       `{
         // Wrangler accepts JSONC comments and trailing commas.
         "name": "my-worker",
+        "workers_dev": false,
         "custom_domains": ["app.example.com",],
         "kv_namespaces": [
           { "binding": "VINEXT_KV_CACHE", "id": "abc123", },
@@ -3566,11 +3568,13 @@ describe("parseWranglerConfig — custom domain extraction", () => {
 
     const config = parseWranglerConfig(tmpDir);
     expect(config?.name).toBe("my-worker");
+    expect(config?.workersDev).toBe(false);
     expect(config?.customDomain).toBe("app.example.com");
     expect(config?.kvNamespaceId).toBe("abc123");
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
+      warmupTargets: [{ hostname: "staging.example.com", pathPatterns: [] }],
     });
   });
 
@@ -3644,6 +3648,40 @@ describe("parseWranglerConfig — custom domain extraction", () => {
       cache: { enabled: true, crossVersionCache: false },
       versionMetadataBinding: "VINEXT_VERSION_METADATA",
     });
+  });
+
+  it("uses flattened environment routes and workers_dev for warmup targets", () => {
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "my-worker-staging",
+        targetEnvironment: "staging",
+        workers_dev: false,
+        routes: ["staging.example.com/*", { pattern: "api.staging.example.com/v1/*" }],
+      }),
+    );
+
+    expect(
+      resolveCdnWarmupTargets(
+        tmpDir,
+        "https://my-worker-staging.example.workers.dev",
+        ["/about", "/v1/users"],
+        ["/about", "/v1/users"],
+        { config: "dist/server/wrangler.json", env: "staging" },
+      ),
+    ).toEqual([
+      {
+        targetUrl: "https://staging.example.com",
+        paths: ["/about", "/v1/users"],
+        rscPaths: ["/about", "/v1/users"],
+      },
+      {
+        targetUrl: "https://api.staging.example.com",
+        paths: ["/v1/users"],
+        rscPaths: ["/v1/users"],
+      },
+    ]);
   });
 
   it("parses TOML cross-version cache settings and environment overrides", () => {
@@ -3724,6 +3762,7 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
     expect(parseWranglerConfig(tmpDir)?.env?.["staging.eu"]).toEqual({
       name: "custom-worker",
       customDomain: "staging.example.com",
+      warmupTargets: [{ hostname: "staging.example.com", pathPatterns: [] }],
       cache: { enabled: true, crossVersionCache: true },
       versionMetadataBinding: "CUSTOM_VERSION",
     });
@@ -3740,6 +3779,7 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
     expect(parseWranglerConfig(tmpDir)?.env?.staging).toEqual({
       name: "custom-worker",
       customDomain: "staging.example.com",
+      warmupTargets: [{ hostname: "staging.example.com", pathPatterns: [] }],
       cache: { enabled: true, crossVersionCache: false },
       versionMetadataBinding: "VINEXT_VERSION_METADATA",
     });
@@ -4010,6 +4050,10 @@ version_metadata.binding = 'STAGING_VERSION'
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBe("shop.example.com");
     expect(config?.customDomains).toEqual(["shop.example.com", "api.example.com"]);
+    expect(config?.warmupTargets).toEqual([
+      { hostname: "shop.example.com", pathPatterns: [] },
+      { hostname: "api.example.com", pathPatterns: ["/v1/*"] },
+    ]);
   });
 
   it("extracts every concrete TOML route host", () => {
@@ -4022,6 +4066,156 @@ version_metadata.binding = 'STAGING_VERSION'
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBe("shop.example.com");
     expect(config?.customDomains).toEqual(["shop.example.com", "api.example.com"]);
+    expect(config?.warmupTargets).toEqual([
+      { hostname: "shop.example.com", pathPatterns: [] },
+      { hostname: "api.example.com", pathPatterns: ["/v1/*"] },
+    ]);
+  });
+
+  it("partitions HTML and RSC paths by route host and includes workers.dev by default", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: [
+          "shop.example.com/*",
+          { pattern: "api.example.com/v1/*", zone_name: "example.com" },
+          { pattern: "app.example.com", custom_domain: true },
+        ],
+      }),
+    );
+
+    expect(
+      resolveCdnWarmupTargets(
+        tmpDir,
+        "https://my-worker.example.workers.dev/",
+        ["/about", "/v1/users"],
+        ["/about", "/v1/users"],
+      ),
+    ).toEqual([
+      {
+        targetUrl: "https://shop.example.com",
+        paths: ["/about", "/v1/users"],
+        rscPaths: ["/about", "/v1/users"],
+      },
+      {
+        targetUrl: "https://api.example.com",
+        paths: ["/v1/users"],
+        rscPaths: ["/v1/users"],
+      },
+      {
+        targetUrl: "https://app.example.com",
+        paths: ["/about", "/v1/users"],
+        rscPaths: ["/about", "/v1/users"],
+      },
+      {
+        targetUrl: "https://my-worker.example.workers.dev",
+        paths: ["/about", "/v1/users"],
+        rscPaths: ["/about", "/v1/users"],
+      },
+    ]);
+  });
+
+  it("excludes scoped routes that cannot match query-bearing probes and RSC requests", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        workers_dev: false,
+        routes: [
+          "exact.example.com/about",
+          "upper.example.com/About*",
+          "lower.example.com/about*",
+          { pattern: "custom.example.com", custom_domain: true },
+        ],
+      }),
+    );
+
+    expect(
+      resolveCdnWarmupTargets(
+        tmpDir,
+        "https://my-worker.example.workers.dev",
+        ["/about", "/About"],
+        ["/about", "/About"],
+      ),
+    ).toEqual([
+      {
+        targetUrl: "https://upper.example.com",
+        paths: ["/About"],
+        rscPaths: ["/About"],
+      },
+      {
+        targetUrl: "https://lower.example.com",
+        paths: ["/about"],
+        rscPaths: ["/about"],
+      },
+      {
+        targetUrl: "https://custom.example.com",
+        paths: ["/about", "/About"],
+        rscPaths: ["/about", "/About"],
+      },
+    ]);
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "exact.example.com",
+      customDomains: [
+        "exact.example.com",
+        "upper.example.com",
+        "lower.example.com",
+        "custom.example.com",
+      ],
+      warmupTargets: [
+        { hostname: "upper.example.com", pathPatterns: ["/About*"] },
+        { hostname: "lower.example.com", pathPatterns: ["/about*"] },
+        { hostname: "custom.example.com", pathPatterns: [] },
+      ],
+    });
+  });
+
+  it("honors workers_dev false and dotted TOML routes in a named environment", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "my-worker"
+workers_dev = true
+
+[env]
+staging.name = "custom-staging"
+staging.workers_dev = false
+staging.routes = ["staging.example.com/*", { pattern = "api.staging.example.com/v1/*" }]
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.workersDev).toBe(true);
+    expect(config?.env?.staging).toMatchObject({
+      name: "custom-staging",
+      workersDev: false,
+      customDomains: ["staging.example.com", "api.staging.example.com"],
+      warmupTargets: [
+        { hostname: "staging.example.com", pathPatterns: [] },
+        { hostname: "api.staging.example.com", pathPatterns: ["/v1/*"] },
+      ],
+    });
+    expect(
+      resolveCdnWarmupTargets(
+        tmpDir,
+        "https://my-worker-staging.example.workers.dev",
+        ["/about", "/v1/users"],
+        ["/about", "/v1/users"],
+        { env: "staging" },
+      ),
+    ).toEqual([
+      {
+        targetUrl: "https://staging.example.com",
+        paths: ["/about", "/v1/users"],
+        rscPaths: ["/about", "/v1/users"],
+      },
+      {
+        targetUrl: "https://api.staging.example.com",
+        paths: ["/v1/users"],
+        rscPaths: ["/v1/users"],
+      },
+    ]);
   });
 
   it("ignores workers.dev domains", () => {
@@ -4061,6 +4255,7 @@ version_metadata.binding = 'STAGING_VERSION'
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging-custom",
       customDomain: "staging.example.com",
+      warmupTargets: [{ hostname: "staging.example.com", pathPatterns: [] }],
     });
   });
 
@@ -4099,6 +4294,7 @@ pattern = "staging.example.com/*"
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
+      warmupTargets: [{ hostname: "staging.example.com", pathPatterns: [] }],
     });
   });
 });

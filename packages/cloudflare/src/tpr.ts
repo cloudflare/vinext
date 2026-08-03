@@ -83,11 +83,13 @@ type WranglerConfig = {
   customDomain?: string;
   /** All concrete route/custom-domain hosts when more than one is configured. */
   customDomains?: string[];
+  warmupTargets?: WranglerWarmupTarget[];
   name?: string;
   legacyEnv?: boolean;
   targetEnvironment?: string;
   userConfigPath?: string;
   versionMetadataBinding?: string;
+  workersDev?: boolean;
   env?: Record<string, WranglerEnvironmentConfig>;
 };
 
@@ -96,8 +98,16 @@ export type WranglerEnvironmentConfig = {
   customDomain?: string;
   /** All concrete route/custom-domain hosts when more than one is configured. */
   customDomains?: string[];
+  warmupTargets?: WranglerWarmupTarget[];
   name?: string;
   versionMetadataBinding?: string;
+  workersDev?: boolean;
+};
+
+export type WranglerWarmupTarget = {
+  hostname: string;
+  /** Empty for custom domains and host-wide `/*` routes. */
+  pathPatterns: string[];
 };
 
 export type WranglerCacheConfig = {
@@ -274,6 +284,10 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     result.legacyEnv = config.legacy_env;
   }
 
+  if (typeof config.workers_dev === "boolean") {
+    result.workersDev = config.workers_dev;
+  }
+
   if (typeof config.targetEnvironment === "string" && config.targetEnvironment.length > 0) {
     result.targetEnvironment = config.targetEnvironment;
   }
@@ -305,8 +319,10 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     }
   }
 
-  // Custom domains — check singular route, routes[], and custom_domains[].
-  mergeCustomDomains(result, extractDomainsFromConfig(config));
+  // Keep the legacy domain fields broad for TPR zone discovery, while the
+  // warmup targets below retain only query-safe route patterns.
+  mergeCustomDomains(result, extractConcreteDomainsFromConfig(config));
+  mergeWarmupTargets(result, extractWarmupTargetsFromConfig(config));
 
   const env = extractEnvConfigs(config.env);
   if (env) result.env = env;
@@ -325,7 +341,8 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
       envConfig.name ||
       envConfig.customDomain ||
       envConfig.cache ||
-      envConfig.versionMetadataBinding
+      envConfig.versionMetadataBinding ||
+      envConfig.workersDev !== undefined
     ) {
       result[envName] = envConfig;
     }
@@ -338,7 +355,9 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
   }
-  mergeCustomDomains(result, extractDomainsFromConfig(config));
+  if (typeof config.workers_dev === "boolean") result.workersDev = config.workers_dev;
+  mergeCustomDomains(result, extractConcreteDomainsFromConfig(config));
+  mergeWarmupTargets(result, extractWarmupTargetsFromConfig(config));
   const cache = extractCacheConfig(config.cache);
   if (cache) result.cache = cache;
   const versionMetadataBinding = extractVersionMetadataBinding(config.version_metadata);
@@ -385,61 +404,158 @@ function mergeCustomDomains(
   else delete target.customDomains;
 }
 
-function extractDomainsFromConfig(config: Record<string, unknown>): string[] {
-  const singularDomain = extractDomainFromRoute(config.route);
-  return dedupeDomains([
-    ...(singularDomain ? [singularDomain] : []),
-    ...extractDomainsFromRoutes(config.routes),
-    ...extractDomainsFromCustomDomains(config),
-  ]);
-}
-
-function extractDomainsFromRoutes(routes: unknown): string[] {
-  if (!Array.isArray(routes)) return [];
-  const domains: string[] = [];
-  for (const route of routes) {
-    const domain = extractDomainFromRoute(route);
-    if (domain) domains.push(domain);
+function mergeWarmupTargets(
+  target: {
+    customDomain?: string;
+    customDomains?: string[];
+    warmupTargets?: WranglerWarmupTarget[];
+  },
+  incoming: readonly WranglerWarmupTarget[],
+): void {
+  target.warmupTargets ??= [];
+  if (incoming.length === 0) return;
+  const merged = [...(target.warmupTargets ?? [])].map((entry) => ({
+    hostname: entry.hostname,
+    pathPatterns: [...entry.pathPatterns],
+  }));
+  for (const candidate of incoming) {
+    const existing = merged.find(
+      (entry) => entry.hostname.toLowerCase() === candidate.hostname.toLowerCase(),
+    );
+    if (!existing) {
+      merged.push({ hostname: candidate.hostname, pathPatterns: [...candidate.pathPatterns] });
+      continue;
+    }
+    if (existing.pathPatterns.length === 0 || candidate.pathPatterns.length === 0) {
+      existing.pathPatterns = [];
+      continue;
+    }
+    existing.pathPatterns = [...new Set([...existing.pathPatterns, ...candidate.pathPatterns])];
   }
-  return dedupeDomains(domains);
+  target.warmupTargets = merged;
+  mergeCustomDomains(
+    target,
+    merged.map((entry) => entry.hostname),
+  );
 }
 
-function extractDomainFromRoute(route: unknown): string | null {
-  const pattern =
-    typeof route === "string"
-      ? route
-      : route &&
-          typeof route === "object" &&
-          typeof (route as Record<string, unknown>).pattern === "string"
-        ? ((route as Record<string, unknown>).pattern as string)
-        : null;
-  if (!pattern) return null;
-  const domain = cleanDomain(pattern);
-  return domain && !domain.includes("workers.dev") ? domain : null;
-}
-
-function extractDomainsFromCustomDomains(config: Record<string, unknown>): string[] {
-  // Workers Custom Domains: "custom_domains": ["example.com"]
-  const domains: string[] = [];
+function extractConcreteDomainsFromConfig(config: Record<string, unknown>): string[] {
+  const routes = [config.route, ...(Array.isArray(config.routes) ? config.routes : [])];
+  const domains = routes.flatMap((route) => {
+    const record = route && typeof route === "object" ? (route as Record<string, unknown>) : null;
+    const pattern =
+      typeof route === "string"
+        ? route
+        : record && typeof record.pattern === "string"
+          ? record.pattern
+          : null;
+    const hostname = pattern ? extractConcreteRouteHostname(pattern) : null;
+    return hostname ? [hostname] : [];
+  });
   if (Array.isArray(config.custom_domains)) {
-    for (const d of config.custom_domains) {
-      if (typeof d === "string" && !d.includes("workers.dev")) {
-        const domain = cleanDomain(d);
-        if (domain) domains.push(domain);
-      }
+    for (const value of config.custom_domains) {
+      if (typeof value !== "string") continue;
+      const hostname = extractConcreteRouteHostname(value);
+      if (hostname) domains.push(hostname);
     }
   }
   return dedupeDomains(domains);
 }
 
+function extractWarmupTargetsFromConfig(config: Record<string, unknown>): WranglerWarmupTarget[] {
+  return mergeWarmupTargetLists([
+    ...(config.route === undefined ? [] : [extractWarmupTargetFromRoute(config.route)]),
+    ...extractWarmupTargetsFromRoutes(config.routes),
+    ...extractWarmupTargetsFromCustomDomains(config),
+  ]);
+}
+
+function mergeWarmupTargetLists(
+  targets: readonly (WranglerWarmupTarget | null)[],
+): WranglerWarmupTarget[] {
+  const holder: { warmupTargets?: WranglerWarmupTarget[] } = {};
+  mergeWarmupTargets(
+    holder,
+    targets.filter((target): target is WranglerWarmupTarget => target !== null),
+  );
+  return holder.warmupTargets ?? [];
+}
+
+function extractWarmupTargetsFromRoutes(routes: unknown): WranglerWarmupTarget[] {
+  if (!Array.isArray(routes)) return [];
+  return mergeWarmupTargetLists(routes.map(extractWarmupTargetFromRoute));
+}
+
+function extractWarmupTargetFromRoute(route: unknown): WranglerWarmupTarget | null {
+  const record = route && typeof route === "object" ? (route as Record<string, unknown>) : null;
+  const pattern =
+    typeof route === "string"
+      ? route
+      : record && typeof record.pattern === "string"
+        ? record.pattern
+        : null;
+  if (!pattern) return null;
+  return parseWarmupRoutePattern(pattern, record?.custom_domain === true);
+}
+
+function extractWarmupTargetsFromCustomDomains(
+  config: Record<string, unknown>,
+): WranglerWarmupTarget[] {
+  // Workers Custom Domains: "custom_domains": ["example.com"]
+  const targets: WranglerWarmupTarget[] = [];
+  if (Array.isArray(config.custom_domains)) {
+    for (const d of config.custom_domains) {
+      if (typeof d === "string" && !d.toLowerCase().includes("workers.dev")) {
+        const domain = cleanDomain(d);
+        if (domain) targets.push({ hostname: domain, pathPatterns: [] });
+      }
+    }
+  }
+  return mergeWarmupTargetLists(targets);
+}
+
+function parseWarmupRoutePattern(raw: string, customDomain: boolean): WranglerWarmupTarget | null {
+  const withoutProtocol = raw.replace(/^https?:\/\//i, "");
+  const slash = withoutProtocol.indexOf("/");
+  const hostname = extractConcreteRouteHostname(raw);
+  if (!hostname) return null;
+  const pathPattern = slash === -1 ? "/" : withoutProtocol.slice(slash) || "/";
+  // Route matching includes the query string. Both the version probe and the
+  // canonical RSC request add one, so a non-custom route must end in `*` to
+  // remain matchable by deploy-time warming requests.
+  if (!customDomain && !withoutProtocol.endsWith("*")) return null;
+  return {
+    hostname: hostname.toLowerCase(),
+    pathPatterns: customDomain || pathPattern === "/*" ? [] : [pathPattern],
+  };
+}
+
+function extractConcreteRouteHostname(raw: string): string | null {
+  const withoutProtocol = raw.replace(/^https?:\/\//i, "");
+  const slash = withoutProtocol.indexOf("/");
+  const hostname = (slash === -1 ? withoutProtocol : withoutProtocol.slice(0, slash)).replace(
+    /\.+$/,
+    "",
+  );
+  if (
+    !hostname ||
+    hostname.includes("*") ||
+    hostname.toLowerCase().endsWith(".workers.dev") ||
+    hostname.toLowerCase() === "workers.dev"
+  ) {
+    return null;
+  }
+  return hostname.toLowerCase();
+}
+
 /** Strip protocol and trailing wildcards from a route pattern to get a bare domain. */
 function cleanDomain(raw: string): string | null {
   const cleaned = raw
-    .replace(/^https?:\/\//, "")
+    .replace(/^https?:\/\//i, "")
     .replace(/\/\*$/, "")
     .replace(/\/+$/, "")
     .split("/")[0]; // Take only the host part
-  return cleaned && !cleaned.includes("*") ? cleaned : null;
+  return cleaned && !cleaned.includes("*") ? cleaned.toLowerCase() : null;
 }
 
 /**
@@ -458,6 +574,12 @@ function extractFromTOML(content: string): WranglerConfig {
   );
   if (legacyEnvAssignment && /^(?:true|false)$/.test(legacyEnvAssignment.value.trim())) {
     result.legacyEnv = legacyEnvAssignment.value.trim() === "true";
+  }
+  const workersDevAssignment = parseTomlAssignments(rootBody).find(
+    (assignment) => assignment.keyPath.length === 1 && assignment.keyPath[0] === "workers_dev",
+  );
+  if (workersDevAssignment && /^(?:true|false)$/.test(workersDevAssignment.value.trim())) {
+    result.workersDev = workersDevAssignment.value.trim() === "true";
   }
 
   // account_id = "..."
@@ -486,11 +608,16 @@ function extractFromTOML(content: string): WranglerConfig {
     ...extractTomlRouteDomains(rootBody),
     ...extractTomlRoutesArrayDomains(rootBody),
   ]);
+  mergeWarmupTargets(result, [
+    ...extractTomlRouteTargets(rootBody),
+    ...extractTomlRoutesArrayTargets(rootBody),
+  ]);
 
   // [route] / [[routes]] blocks
   for (const section of getTomlSections(content)) {
     if (section.header !== "route" && section.header !== "routes") continue;
     mergeCustomDomains(result, extractTomlRouteBlockDomains(section.body));
+    mergeWarmupTargets(result, extractTomlRouteBlockTargets(section.body));
   }
 
   const env = extractEnvConfigsFromTOML(content);
@@ -542,10 +669,15 @@ function applyTomlEnvironmentAssignment(
     const inlineEnv = unwrapTomlInlineTable(value);
     if (inlineEnv) {
       const name = findTomlStringAssignment(inlineEnv, "name");
+      const warmupTargets = [
+        ...extractTomlRouteTargets(inlineEnv),
+        ...extractTomlRoutesArrayTargets(inlineEnv),
+      ];
       const customDomains = [
         ...extractTomlRouteDomains(inlineEnv),
         ...extractTomlRoutesArrayDomains(inlineEnv),
       ];
+      const workersDev = findTomlBooleanAssignment(inlineEnv, "workers_dev");
       const inlineCache = extractTomlInlineTable(inlineEnv, "cache");
       const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
       const inlineVersionMetadata = extractTomlInlineTable(inlineEnv, "version_metadata");
@@ -554,9 +686,17 @@ function applyTomlEnvironmentAssignment(
         : undefined;
       if (name) envConfig.name = name;
       mergeCustomDomains(envConfig, customDomains);
+      mergeWarmupTargets(envConfig, warmupTargets);
+      if (workersDev !== undefined) envConfig.workersDev = workersDev;
       if (cache) envConfig.cache = { ...envConfig.cache, ...cache };
       if (versionMetadataBinding) envConfig.versionMetadataBinding = versionMetadataBinding;
-      changed = Boolean(name || customDomains.length > 0 || cache || versionMetadataBinding);
+      changed = Boolean(
+        name ||
+        customDomains.length > 0 ||
+        cache ||
+        versionMetadataBinding ||
+        workersDev !== undefined,
+      );
     }
   } else if (fieldPath.length === 1 && fieldPath[0] === "name") {
     const name = parseTomlString(value);
@@ -565,12 +705,23 @@ function applyTomlEnvironmentAssignment(
       changed = true;
     }
   } else if (fieldPath.length === 1 && (fieldPath[0] === "route" || fieldPath[0] === "routes")) {
+    const warmupTargets =
+      fieldPath[0] === "route"
+        ? extractTomlRouteTargets(`route = ${value}`)
+        : extractTomlRoutesArrayTargets(`routes = ${value}`);
     const customDomains =
       fieldPath[0] === "route"
         ? extractTomlRouteDomains(`route = ${value}`)
         : extractTomlRoutesArrayDomains(`routes = ${value}`);
     if (customDomains.length > 0) {
       mergeCustomDomains(envConfig, customDomains);
+      mergeWarmupTargets(envConfig, warmupTargets);
+      changed = true;
+    }
+  } else if (fieldPath.length === 1 && fieldPath[0] === "workers_dev") {
+    const workersDev = parseTomlBoolean(value);
+    if (workersDev !== undefined) {
+      envConfig.workersDev = workersDev;
       changed = true;
     }
   } else if (fieldPath.length === 1 && fieldPath[0] === "cache") {
@@ -645,20 +796,28 @@ function extractEnvConfigsFromTOML(
         ...extractTomlRouteDomains(section.body),
         ...extractTomlRoutesArrayDomains(section.body),
       ]);
+      mergeWarmupTargets(envConfig, [
+        ...extractTomlRouteTargets(section.body),
+        ...extractTomlRoutesArrayTargets(section.body),
+      ]);
+      const workersDev = findTomlBooleanAssignment(section.body, "workers_dev");
+      if (workersDev !== undefined) envConfig.workersDev = workersDev;
       const inlineCache = extractTomlInlineTable(section.body, "cache");
       const cache = inlineCache
         ? extractTomlCacheConfig(inlineCache)
         : extractTomlDottedCacheConfig(section.body);
       if (cache) envConfig.cache = cache;
       const inlineVersionMetadata = extractTomlInlineTable(section.body, "version_metadata");
-      envConfig.versionMetadataBinding = inlineVersionMetadata
+      const versionMetadataBinding = inlineVersionMetadata
         ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
         : extractTomlDottedVersionMetadataBinding(section.body);
+      if (versionMetadataBinding) envConfig.versionMetadataBinding = versionMetadataBinding;
       if (
         envConfig.name ||
         envConfig.customDomain ||
         envConfig.cache ||
-        envConfig.versionMetadataBinding
+        envConfig.versionMetadataBinding ||
+        envConfig.workersDev !== undefined
       ) {
         result[envName] = envConfig;
       }
@@ -674,6 +833,7 @@ function extractEnvConfigsFromTOML(
     if (routesEnvName) {
       const envConfig = result[routesEnvName] ?? {};
       mergeCustomDomains(envConfig, extractTomlRouteBlockDomains(section.body));
+      mergeWarmupTargets(envConfig, extractTomlRouteBlockTargets(section.body));
       if (envConfig.name || envConfig.customDomain) {
         result[routesEnvName] = envConfig;
       }
@@ -705,6 +865,41 @@ function extractEnvConfigsFromTOML(
     if (headerPath.length === 1 && headerPath[0] === "env") {
       for (const assignment of parseTomlAssignments(section.body)) {
         const assignmentPath = assignment.keyPath;
+        if (assignmentPath.length === 2 && assignmentPath[1] === "name") {
+          const name = parseTomlString(assignment.value);
+          if (name) {
+            const envName = assignmentPath[0]!;
+            result[envName] = { ...result[envName], name };
+          }
+          continue;
+        }
+        if (
+          assignmentPath.length === 2 &&
+          (assignmentPath[1] === "route" || assignmentPath[1] === "routes")
+        ) {
+          const envName = assignmentPath[0]!;
+          const envConfig = result[envName] ?? {};
+          const warmupTargets =
+            assignmentPath[1] === "route"
+              ? extractTomlRouteTargets(`route = ${assignment.value}`)
+              : extractTomlRoutesArrayTargets(`routes = ${assignment.value}`);
+          const customDomains =
+            assignmentPath[1] === "route"
+              ? extractTomlRouteDomains(`route = ${assignment.value}`)
+              : extractTomlRoutesArrayDomains(`routes = ${assignment.value}`);
+          mergeCustomDomains(envConfig, customDomains);
+          mergeWarmupTargets(envConfig, warmupTargets);
+          if (customDomains.length > 0) result[envName] = envConfig;
+          continue;
+        }
+        if (assignmentPath.length === 2 && assignmentPath[1] === "workers_dev") {
+          const workersDev = parseTomlBoolean(assignment.value);
+          if (workersDev !== undefined) {
+            const envName = assignmentPath[0]!;
+            result[envName] = { ...result[envName], workersDev };
+          }
+          continue;
+        }
         if (
           assignmentPath.length === 3 &&
           assignmentPath[1] === "cache" &&
@@ -752,19 +947,33 @@ function extractEnvConfigsFromTOML(
           (candidate) => candidate.key === "name",
         );
         const name = nameAssignment ? parseTomlString(nameAssignment.value) : null;
+        const warmupTargets = [
+          ...extractTomlRouteTargets(inlineEnv),
+          ...extractTomlRoutesArrayTargets(inlineEnv),
+        ];
         const customDomains = [
           ...extractTomlRouteDomains(inlineEnv),
           ...extractTomlRoutesArrayDomains(inlineEnv),
         ];
-        if (!name && customDomains.length === 0 && !cache && !versionMetadataBinding) continue;
+        const workersDev = findTomlBooleanAssignment(inlineEnv, "workers_dev");
+        if (
+          !name &&
+          customDomains.length === 0 &&
+          !cache &&
+          !versionMetadataBinding &&
+          workersDev === undefined
+        )
+          continue;
         const envName = assignmentPath[0]!;
         result[envName] = {
           ...result[envName],
           ...(name ? { name } : {}),
           ...(cache ? { cache } : {}),
           ...(versionMetadataBinding ? { versionMetadataBinding } : {}),
+          ...(workersDev !== undefined ? { workersDev } : {}),
         };
         mergeCustomDomains(result[envName], customDomains);
+        mergeWarmupTargets(result[envName], warmupTargets);
       }
     }
   }
@@ -949,6 +1158,18 @@ function parseTomlString(value: string): string | null {
   }
 }
 
+function parseTomlBoolean(value: string): boolean | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  return undefined;
+}
+
+function findTomlBooleanAssignment(source: string, key: string): boolean | undefined {
+  const assignment = parseTomlAssignments(source).find((candidate) => candidate.key === key);
+  return assignment ? parseTomlBoolean(assignment.value) : undefined;
+}
+
 function findTomlStringAssignment(source: string, key: string): string | null {
   const assignment = parseTomlAssignments(source).find((candidate) => candidate.key === key);
   return assignment ? parseTomlString(assignment.value) : null;
@@ -996,15 +1217,50 @@ function parseTomlSectionHeader(line: string): string | null {
   return header.length > 0 ? header : null;
 }
 
-function extractTomlRouteDomains(section: string): string[] {
+function extractTomlRouteTargets(section: string): WranglerWarmupTarget[] {
   const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "route");
   if (!assignment) return [];
   const scalar = parseTomlString(assignment.value);
   const inline = unwrapTomlInlineTable(assignment.value);
   const pattern = scalar ?? (inline ? findTomlStringAssignment(inline, "pattern") : null);
   if (!pattern) return [];
-  const domain = cleanDomain(pattern);
-  return domain && !domain.includes("workers.dev") ? [domain] : [];
+  const target = parseWarmupRoutePattern(
+    pattern,
+    inline ? findTomlBooleanAssignment(inline, "custom_domain") === true : false,
+  );
+  return target ? [target] : [];
+}
+
+function extractTomlRouteDomains(section: string): string[] {
+  const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "route");
+  if (!assignment) return [];
+  const scalar = parseTomlString(assignment.value);
+  const inline = unwrapTomlInlineTable(assignment.value);
+  const pattern = scalar ?? (inline ? findTomlStringAssignment(inline, "pattern") : null);
+  const hostname = pattern ? extractConcreteRouteHostname(pattern) : null;
+  return hostname ? [hostname] : [];
+}
+
+function extractTomlRoutesArrayTargets(section: string): WranglerWarmupTarget[] {
+  const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "routes");
+  if (!assignment) return [];
+  const value = assignment.value.trim();
+  if (!value.startsWith("[") || !value.endsWith("]")) return [];
+  const targets: WranglerWarmupTarget[] = [];
+  for (const item of splitTomlTopLevelItems(value.slice(1, -1))) {
+    const inline = unwrapTomlInlineTable(item);
+    const pattern = inline
+      ? (findTomlStringAssignment(inline, "pattern") ??
+        findTomlStringAssignment(inline, "zone_name"))
+      : parseTomlString(item);
+    if (!pattern) continue;
+    const target = parseWarmupRoutePattern(
+      pattern,
+      inline ? findTomlBooleanAssignment(inline, "custom_domain") === true : false,
+    );
+    if (target) targets.push(target);
+  }
+  return mergeWarmupTargetLists(targets);
 }
 
 function extractTomlRoutesArrayDomains(section: string): string[] {
@@ -1019,19 +1275,28 @@ function extractTomlRoutesArrayDomains(section: string): string[] {
       ? (findTomlStringAssignment(inline, "pattern") ??
         findTomlStringAssignment(inline, "zone_name"))
       : parseTomlString(item);
-    if (!pattern) continue;
-    const domain = cleanDomain(pattern);
-    if (domain && !domain.includes("workers.dev")) domains.push(domain);
+    const hostname = pattern ? extractConcreteRouteHostname(pattern) : null;
+    if (hostname) domains.push(hostname);
   }
   return dedupeDomains(domains);
+}
+
+function extractTomlRouteBlockTargets(section: string): WranglerWarmupTarget[] {
+  const pattern =
+    findTomlStringAssignment(section, "pattern") ?? findTomlStringAssignment(section, "zone_name");
+  if (!pattern) return [];
+  const target = parseWarmupRoutePattern(
+    pattern,
+    findTomlBooleanAssignment(section, "custom_domain") === true,
+  );
+  return target ? [target] : [];
 }
 
 function extractTomlRouteBlockDomains(section: string): string[] {
   const pattern =
     findTomlStringAssignment(section, "pattern") ?? findTomlStringAssignment(section, "zone_name");
-  if (!pattern) return [];
-  const domain = cleanDomain(pattern);
-  return domain && !domain.includes("workers.dev") ? [domain] : [];
+  const hostname = pattern ? extractConcreteRouteHostname(pattern) : null;
+  return hostname ? [hostname] : [];
 }
 
 function splitTomlTopLevelItems(source: string): string[] {

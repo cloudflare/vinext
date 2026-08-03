@@ -72,7 +72,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       vi.fn(
         async (url, init) =>
           versionProbeResponse(url, init) ??
-          new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } }),
+          new Response("ok", {
+            status: 200,
+            headers: {
+              "CF-Cache-Status": "MISS",
+              Vary: "Cookie, Authorization, Host",
+            },
+          }),
       ),
     );
   });
@@ -181,6 +187,7 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
+        workers_dev: false,
         custom_domains: ["app.example.com"],
       }),
     );
@@ -429,10 +436,13 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
       "stage",
       "probe:app.example.com",
       "probe:www.example.com",
+      "probe:stable.example.workers.dev",
       "html:app.example.com/about",
       "rsc:app.example.com/about",
       "html:www.example.com/about",
       "rsc:www.example.com/about",
+      "html:stable.example.workers.dev/about",
+      "rsc:stable.example.workers.dev/about",
       "promote",
       "triggers",
     ]);
@@ -502,6 +512,84 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
     ]);
   });
 
+  it("probes and warms only the paths routed to each host", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        workers_dev: false,
+        routes: ["app.example.com/*", { pattern: "api.example.com/v1/*" }],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const requestUrl = new URL(formatFetchUrl(url));
+      const probe = versionProbeResponse(url, init);
+      if (probe) {
+        events.push(`probe:${requestUrl.host}${requestUrl.pathname}`);
+        return probe;
+      }
+      const isRsc = new Headers(init?.headers).get("RSC") === "1";
+      events.push(`${isRsc ? "rsc" : "html"}:${requestUrl.host}${requestUrl.pathname}`);
+      return new Response(isRsc ? "flight" : "html", {
+        status: 200,
+        headers: {
+          "CF-Cache-Status": "MISS",
+          "Content-Type": isRsc ? "text/x-component" : "text/html",
+          Vary: isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host",
+        },
+      });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/about", "/v1/users"], {
+      rscCacheKeyMode: "response-vary",
+      rscPaths: ["/about", "/v1/users"],
+      warmCdnConcurrency: 1,
+    });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "probe:app.example.com/about",
+      "probe:api.example.com/v1/users",
+      "html:app.example.com/about",
+      "html:app.example.com/v1/users",
+      "rsc:app.example.com/about",
+      "rsc:app.example.com/v1/users",
+      "html:api.example.com/v1/users",
+      "rsc:api.example.com/v1/users",
+      "promote",
+      "triggers",
+    ]);
+  });
+
   it("does not claim to warm shared entries that may belong to the previous version", async () => {
     const events: string[] = [];
     writeFile(
@@ -547,7 +635,11 @@ name = "my-worker-staging"
     const events: string[] = [];
     writeFile(
       "wrangler.jsonc",
-      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+      JSON.stringify({
+        name: "my-worker",
+        workers_dev: false,
+        custom_domains: ["app.example.com"],
+      }),
     );
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       if (
@@ -561,7 +653,10 @@ name = "my-worker-staging"
         });
       }
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+      return new Response("ok", {
+        status: 200,
+        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+      });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -662,6 +757,7 @@ name = "my-worker-staging"
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
+        workers_dev: false,
         custom_domains: ["app.example.com"],
         cache: { enabled: true, cross_version_cache: true },
       }),
@@ -1039,6 +1135,7 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
+        workers_dev: false,
         custom_domains: ["app.example.com"],
       }),
     );
@@ -1046,7 +1143,10 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       const probe = versionProbeResponse(url, init);
       if (probe) return probe;
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+      return new Response("ok", {
+        status: 200,
+        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+      });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -1099,7 +1199,10 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       const probe = versionProbeResponse(url, init);
       if (probe) return probe;
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+      return new Response("ok", {
+        status: 200,
+        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+      });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -1151,6 +1254,7 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
+        workers_dev: false,
         custom_domains: ["app.example.com"],
       }),
     );
@@ -1330,6 +1434,7 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
+        workers_dev: false,
         custom_domains: ["app.example.com"],
       }),
     );
@@ -1337,7 +1442,13 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       const probe = versionProbeResponse(url, init);
       if (probe) return probe;
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("html", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+      return new Response("html", {
+        status: 200,
+        headers: {
+          "CF-Cache-Status": "MISS",
+          Vary: "Cookie, Authorization, Host",
+        },
+      });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -1382,6 +1493,7 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
+        workers_dev: false,
         custom_domains: ["app.example.com"],
       }),
     );

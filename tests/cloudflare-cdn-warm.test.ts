@@ -727,7 +727,13 @@ describe("Cloudflare CDN warmup", () => {
               Vary: CANONICAL_RSC_VARY,
             },
           })
-        : new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } }),
+        : new Response("ok", {
+            status: 200,
+            headers: {
+              "CF-Cache-Status": "MISS",
+              Vary: "Cookie, Authorization, Host",
+            },
+          }),
     );
 
     const result = await warmCdnCacheFromPrerender({
@@ -753,7 +759,10 @@ describe("Cloudflare CDN warmup", () => {
   it("warms an already resolved path list without rereading the manifest", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response("ok", { status: 200, headers: { "CF-Cache-Status": "HIT" } }),
+        new Response("ok", {
+          status: 200,
+          headers: { "CF-Cache-Status": "HIT", Vary: "Cookie, Authorization, Host" },
+        }),
     );
 
     const result = await warmCdnCache({
@@ -781,7 +790,11 @@ describe("Cloudflare CDN warmup", () => {
           })
         : new Response("html", {
             status: 200,
-            headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/html" },
+            headers: {
+              "CF-Cache-Status": "MISS",
+              "Content-Type": "text/html",
+              Vary: "Cookie, Authorization, Host",
+            },
           });
     });
 
@@ -919,7 +932,11 @@ describe("Cloudflare CDN warmup", () => {
     const result = await warmCdnCache({
       targetUrl: "https://app.example.com",
       paths: ["/app"],
-      fetchImpl: async () => new Response("html", { status: 200 }),
+      fetchImpl: async () =>
+        new Response("html", {
+          status: 200,
+          headers: { Vary: "Cookie, Authorization, Host" },
+        }),
     });
 
     expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
@@ -939,6 +956,42 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
     expect(result.failures[0]?.error).toBe("unsupported Vary field: User-Agent");
+  });
+
+  it.each([
+    ["Authorization, Host", "cookie"],
+    ["Cookie, Host", "authorization"],
+    ["Cookie, Authorization", "host"],
+  ])("rejects HTML entries without required Vary isolation (%s)", async (vary, missing) => {
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: ["/app"],
+      fetchImpl: async () =>
+        new Response("html", {
+          status: 200,
+          headers: { "CF-Cache-Status": "MISS", Vary: vary },
+        }),
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
+    expect(result.failures[0]?.error).toBe(`missing required Vary field: ${missing}`);
+  });
+
+  it("accepts HTML entries isolated by Cookie, Authorization, and Host", async () => {
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: ["/app"],
+      fetchImpl: async () =>
+        new Response("html", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": "MISS",
+            Vary: "Cookie, Authorization, Host",
+          },
+        }),
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 1, failed: 0 });
   });
 
   it("accepts adapter-controlled identity variance for reusable RSC entries", async () => {

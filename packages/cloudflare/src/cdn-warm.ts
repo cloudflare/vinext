@@ -386,6 +386,9 @@ const REQUIRED_CANONICAL_RSC_VARY_FIELDS = new Set(
     (field) => field.trim().toLowerCase(),
   ),
 );
+const REQUIRED_HTML_VARY_FIELDS = new Set(
+  ["Cookie", "Authorization", "Host"].map((field) => field.toLowerCase()),
+);
 
 function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"): string | null {
   const vary = response.headers.get("Vary");
@@ -405,14 +408,14 @@ function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"):
 }
 
 function findMissingWarmVaryField(response: Response, kind: "html" | "rsc"): string | null {
-  if (kind !== "rsc") return null;
   const present = new Set(
     (response.headers.get("Vary") ?? "")
       .split(",")
       .map((field) => field.trim().toLowerCase())
       .filter(Boolean),
   );
-  for (const field of REQUIRED_CANONICAL_RSC_VARY_FIELDS) {
+  const required = kind === "rsc" ? REQUIRED_CANONICAL_RSC_VARY_FIELDS : REQUIRED_HTML_VARY_FIELDS;
+  for (const field of required) {
     if (!present.has(field)) return field;
   }
   return null;
