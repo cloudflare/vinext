@@ -44,24 +44,42 @@ test.describe("hydration boundaries", () => {
     expect(await stamp()).toBe(first);
   });
 
-  test("flyouts open and close client-side", async ({ page }) => {
+  test("flyouts open and close client-side", async ({ page, request }) => {
+    const html = await (await request.get("/diagnostics")).text();
+    expect(html).toContain('href="/diagnostics#"');
+
+    await page.goto("/diagnostics");
+    await expect(page.getByText("Primary flyout", { exact: true })).toHaveAttribute(
+      "href",
+      "/diagnostics#",
+    );
+    await page.evaluate(() => {
+      Object.assign(window, { __atlasFlyoutReloadMarker: true });
+    });
+    await expect(page.locator('[data-testid="primary-flyout"]')).toHaveCount(0);
+    await page.getByText("Primary flyout", { exact: true }).click();
+    await expect(page.locator('[data-testid="primary-flyout"]')).toBeVisible();
+    await expect(page).toHaveURL(/\/diagnostics#$/);
+    expect(await page.evaluate(() => "__atlasFlyoutReloadMarker" in window)).toBe(true);
+    await page.locator('[data-testid="primary-flyout"] button').click();
+    await expect(page.locator('[data-testid="primary-flyout"]')).toHaveCount(0);
+  });
+
+  test("client handlers are installed before the document load event", async ({ page }) => {
     await page.addInitScript(() => {
       window.addEventListener(
         "load",
-        () => {
-          const trigger = [...document.querySelectorAll("a")].find(
-            (link) => link.textContent === "Primary flyout",
-          );
-          trigger?.addEventListener("click", (event) => event.preventDefault(), { once: true });
-          trigger?.click();
-        },
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('[data-testid="hydration-readiness-probe"]')
+            ?.click(),
         { once: true },
       );
     });
     await page.goto("/diagnostics");
-    await expect(page.locator('[data-testid="primary-flyout"]')).toBeVisible();
-    await page.locator('[data-testid="primary-flyout"] button').click();
-    await expect(page.locator('[data-testid="primary-flyout"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="hydration-readiness-probe"]')).toHaveText(
+      "Hydration readiness: 1",
+    );
   });
 
   test("the launch-timer trial arm renders its knob value", async ({ page }) => {

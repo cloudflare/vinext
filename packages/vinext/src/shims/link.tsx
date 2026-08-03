@@ -69,6 +69,7 @@ import {
   type PendingLinkSetter,
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
+import { getPagesRouterSSRContext } from "./internal/pages-router-ssr-context.js";
 import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
 
 type NavigateEvent = {
@@ -220,25 +221,40 @@ function resolveHref(href: LinkProps["href"]): string {
   return url;
 }
 
-function resolvePagesQueryOnlyHref(href: string): string {
+function resolvePagesQueryOnlyHref(
+  href: string,
+  context?: { asPath?: string; locales?: readonly string[] },
+): string {
   if (!HAS_PAGES_ROUTER) return href;
-  if ((!href.startsWith("?") && !href.startsWith("#")) || typeof window === "undefined") {
+  if (!href.startsWith("?") && !href.startsWith("#")) {
     return href;
   }
 
-  const pagesRouter = window.next?.appDir === true ? undefined : window.next?.router;
+  const pagesRouter =
+    typeof window === "undefined" || window.next?.appDir === true ? undefined : window.next?.router;
+  const ssrContext = getPagesRouterSSRContext();
   const visibleHref =
-    pagesRouter &&
+    context?.asPath ??
+    ssrContext?.asPath ??
+    (pagesRouter &&
     "reload" in pagesRouter &&
     "asPath" in pagesRouter &&
     typeof pagesRouter.asPath === "string"
       ? pagesRouter.asPath
-      : undefined;
+      : undefined);
+  if (visibleHref === undefined && typeof window === "undefined") return href;
+
   return resolvePagesRouterQueryOnlyHref(href, {
     asPath: visibleHref,
     basePath: __basePath,
-    fallbackHref: window.location.href,
-    locales: window.__VINEXT_LOCALES__,
+    fallbackHref:
+      typeof window === "undefined"
+        ? `http://vinext.local${visibleHref ?? "/"}`
+        : window.location.href,
+    locales:
+      context?.locales ??
+      ssrContext?.locales ??
+      (typeof window === "undefined" ? getI18nContext()?.locales : window.__VINEXT_LOCALES__),
   });
 }
 
@@ -1150,7 +1166,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     typeof unresolvedHref === "string" &&
     unresolvedHref.startsWith("#") &&
     !getNavigationRuntime()?.functions.navigate
-      ? resolvePagesQueryOnlyHref(unresolvedHref)
+      ? resolvePagesQueryOnlyHref(unresolvedHref, {
+          asPath: pagesRouter?.asPath,
+          locales: pagesRouter?.locales,
+        })
       : unresolvedHref;
   const concreteRouteHref = HAS_PAGES_ROUTER
     ? resolveConcreteRouteHref(
@@ -1489,11 +1508,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       // Next.js only consumes onRouterTransitionStart in the App Router.
       // Pages Router still executes instrumentation-client side effects
       // during startup, but it does not invoke the named export on navigation.
-      // Pages Router: use the Router singleton
-      const Router = window.next?.appDir === true ? undefined : window.next?.router;
-      const pagesRouter = Router && "reload" in Router ? Router : undefined;
+      // Pages Router: prefer the mounted context, matching Next.js Link. The
+      // window singleton and lazy import are compatibility fallbacks for split
+      // client chunks that render outside the provider.
+      const Router =
+        pagesRouter ?? (window.next?.appDir === true ? undefined : window.next?.router);
+      const pagesRouterRuntime = Router && "reload" in Router ? Router : undefined;
       await navigatePagesRouterLinkWithFallback({
-        router: pagesRouter,
+        router: pagesRouterRuntime,
         loadRouter: async () => (await import("next/router")).default,
         navigation: {
           href: pagesHrefForLink,
