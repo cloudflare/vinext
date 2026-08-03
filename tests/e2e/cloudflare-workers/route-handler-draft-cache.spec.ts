@@ -351,7 +351,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       const vary = headers.vary?.split(",").map((token) => token.trim());
       expect(vary).toContain("Cookie");
       expect(vary).toContain("Authorization");
-      expect(vary).toContain("Host");
+      expect(vary).not.toContain("Host");
     }
 
     const cookieResponse = await page.request.get(`${BASE_URL}/about?_rsc`, {

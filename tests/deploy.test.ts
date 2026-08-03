@@ -3410,7 +3410,7 @@ describe("resolveWranglerCommandConfig", () => {
     await withCloudflareEnv("qa", async () => {
       expect(resolveWranglerCommandConfig(tmpDir, { config: "wrangler.jsonc" })).toEqual({
         commandOptions: {
-          config: "dist/server/wrangler.json",
+          config: undefined,
           env: "staging",
           name: "source-worker-staging",
         },
@@ -3458,6 +3458,25 @@ describe("resolveWranglerCommandConfig", () => {
         env: "staging",
       }),
     ).toThrow("built for env preview, but deploy selected env staging");
+  });
+
+  it("rejects a flattened generated environment when its deploy redirect is missing", () => {
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "staging-worker",
+        targetEnvironment: "staging",
+        userConfigPath: path.join(tmpDir, "wrangler.jsonc"),
+      }),
+    );
+
+    expect(() =>
+      resolveWranglerCommandConfig(tmpDir, {
+        config: "dist/server/wrangler.json",
+        env: "staging",
+      }),
+    ).toThrow(".wrangler/deploy/config.json redirect is missing");
   });
 });
 

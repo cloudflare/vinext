@@ -17,6 +17,9 @@ import {
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
   NEXT_ACTION_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
@@ -146,6 +149,25 @@ function configRuleMayVaryAcrossCanonicalRscRequests(
     }
     return condition.type === "query" && condition.key === VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM;
   });
+}
+
+const CANONICALIZED_RSC_REQUEST_HEADERS = new Set(
+  [
+    NEXT_ROUTER_PREFETCH_HEADER,
+    NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+    NEXT_ROUTER_STATE_TREE_HEADER,
+    NEXT_URL_HEADER,
+  ].map((name) => name.toLowerCase()),
+);
+
+function configHeaderDeclaresCanonicalizedRscVary(rule: NextHeader): boolean {
+  return rule.headers.some(
+    ({ key, value }) =>
+      key.toLowerCase() === "vary" &&
+      value
+        .split(",")
+        .some((token) => CANONICALIZED_RSC_REQUEST_HEADERS.has(token.trim().toLowerCase())),
+  );
 }
 
 function haveSameRequestCookies(
@@ -503,7 +525,9 @@ async function applyRewrite(
     const validationResponse = await options.validateExternalRewriteRequest();
     if (validationResponse) return validationResponse;
     options.clearRequestContext();
-    return configMatchers.proxyExternalRequest(options.request, rewritten);
+    return markAppUserlandResponseVaryProvenance(
+      await configMatchers.proxyExternalRequest(options.request, rewritten),
+    );
   }
 
   return rewritten;
@@ -739,7 +763,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (observeConditionalConfig && configMatchers) {
     middlewareObservation.conditionalConfigPathMatched ||= options.configHeaders.some(
       (rule) =>
-        configRuleMayVaryAcrossCanonicalRscRequests(rule) &&
+        (configRuleMayVaryAcrossCanonicalRscRequests(rule) ||
+          configHeaderDeclaresCanonicalizedRscVary(rule)) &&
         configMatchers.matchesHeaderSource(redirectPathname, rule, basePathState),
     );
     middlewareObservation.conditionalConfigPathMatched ||= options.configRedirects.some(

@@ -582,11 +582,12 @@ function readGeneratedWranglerConfigPath(root: string): string | null {
  * Resolve the config that Wrangler will actually execute after the Cloudflare
  * Vite plugin has emitted its deploy redirect.
  *
- * Passing a source config through `--config` disables Wrangler's redirect. If
- * that source produced the generated config, invoke the generated config
- * directly instead. Pin the generated config's environment and final Worker
- * name on the CLI so ambient environment state cannot retarget it and Wrangler
- * cannot append the environment suffix to an already-flattened name.
+ * Passing any config through `--config` disables Wrangler's deploy redirect.
+ * If the explicit config selected the generated build, omit `--config` so
+ * Wrangler discovers `.wrangler/deploy/config.json` and retains redirected
+ * config semantics (target-environment validation and service/environment
+ * grouping metadata). Pin the generated environment and final Worker name on
+ * the CLI so ambient state cannot retarget it.
  */
 export function resolveWranglerCommandConfig(
   root: string,
@@ -598,6 +599,11 @@ export function resolveWranglerCommandConfig(
   if (!generatedPath) {
     const explicitConfig = options.config ? parseWranglerConfig(root, options.config) : null;
     const flattenedEnv = explicitConfig?.targetEnvironment;
+    if (flattenedEnv && explicitConfig?.userConfigPath) {
+      throw new Error(
+        `Generated Wrangler config ${options.config} was built for env ${flattenedEnv}, but its .wrangler/deploy/config.json redirect is missing. Rebuild and deploy from the project root so Wrangler can preserve generated-config environment semantics.`,
+      );
+    }
     if (flattenedEnv && selectedEnv && flattenedEnv !== selectedEnv) {
       throw new Error(
         `Wrangler config was built for env ${flattenedEnv}, but deploy selected env ${selectedEnv}. Rebuild for the selected environment before deploying.`,
@@ -663,10 +669,12 @@ export function resolveWranglerCommandConfig(
       `Generated Wrangler config was built for env ${flattenedEnv}, but deploy selected env ${selectedEnv}. Rebuild for the selected environment before deploying.`,
     );
   }
+  const commandOptions = { ...options };
+  delete commandOptions.config;
   return {
     commandOptions: {
-      ...options,
-      config: generatedRelativePath,
+      ...commandOptions,
+      config: undefined,
       env: selectedEnv ?? flattenedEnv,
       ...(flattenedEnv && !options.name && generatedConfig?.name
         ? { name: generatedConfig.name }

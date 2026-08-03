@@ -941,7 +941,7 @@ describe("Cloudflare CDN warmup", () => {
           headers: {
             "CF-Cache-Status": "MISS",
             "Content-Type": "text/x-component",
-            Vary: "RSC, Cookie, Authorization, Host",
+            Vary: "RSC, Cookie, Authorization",
           },
         });
       },

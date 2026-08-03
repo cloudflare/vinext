@@ -135,6 +135,11 @@ function hasRequestAuthorization(): boolean {
   return headers?.has("Authorization") === true;
 }
 
+function isRscWorkersCacheRequest(): boolean {
+  const { headers } = getCacheRequestMetadata();
+  return headers?.get(RSC_HEADER) === "1";
+}
+
 /**
  * Browser-facing policy for cacheable responses. `public` allows shared caches
  * to participate, but `max-age=0, must-revalidate` forces every reuse to
@@ -251,11 +256,8 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     }
 
     // Workers Caching excludes Cookie, Authorization, and the request host from
-    // its base key. Cached HTML or Flight must therefore vary on all three so a
-    // credential-bearing request reaches vinext and one custom domain cannot
-    // consume another domain's response. Do not store credential-bearing
-    // variants: the framework cannot prove arbitrary application credentials
-    // are shareable.
+    // its base key. Credential-bearing requests must reach vinext and are never
+    // stored because the framework cannot prove arbitrary credentials shareable.
     if (hasRequestCookies() || hasRequestAuthorization()) {
       return {
         "Cache-Control": NO_STORE,
@@ -279,7 +281,12 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
-      Vary: "Cookie, Authorization, Host",
+      // HTML may be rewritten by host-dependent middleware/config, so keep host
+      // isolation there. A canonical RSC request is admitted only after the
+      // prerender proof excludes those dependencies; omitting Host lets the one
+      // warmed Flight entry serve every ingress hostname without adding an
+      // unbounded raw-host variant family.
+      Vary: isRscWorkersCacheRequest() ? "Cookie, Authorization" : "Cookie, Authorization, Host",
     };
 
     if (input.tags && input.tags.length > 0) {

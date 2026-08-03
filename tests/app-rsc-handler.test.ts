@@ -290,6 +290,27 @@ describe("createAppRscHandler", () => {
     expect(queryResponse.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
 
+  it.each([
+    "Next-Url",
+    "Next-Router-State-Tree",
+    "Next-Router-Prefetch",
+    "Next-Router-Segment-Prefetch",
+  ])("does not certify config Vary on canonicalized RSC header %s", async (varyHeader) => {
+    const response = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [
+          {
+            source: "/about",
+            headers: [{ key: "Vary", value: varyHeader }],
+          },
+        ],
+      }),
+    );
+
+    expect(response.headers.get("Vary")).toContain(varyHeader);
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
   it("ignores request-conditional config rules that cannot reach the prerendered route", async () => {
     const response = await runRscPrewarmProbe(
       createHandler({
@@ -2957,6 +2978,48 @@ describe("createAppRscHandler", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "preserves upstream Vary: Next-Url from %s external rewrite proxies",
+    async (phase) => {
+      const server = createServer((_req, res) => {
+        res.writeHead(200, {
+          "content-type": "text/plain",
+          vary: "Next-Url, Accept-Encoding",
+        });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      const upstreamBase = `http://127.0.0.1:${address.port}`;
+
+      try {
+        const headers = createRscRequestHeaders();
+        const rscUrl = await createRscRequestUrl("/docs/proxy", headers);
+        const rewrite = { source: "/proxy", destination: `${upstreamBase}/proxy` };
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            beforeFiles: phase === "beforeFiles" ? [rewrite] : [],
+            afterFiles: phase === "afterFiles" ? [rewrite] : [],
+            fallback: phase === "fallback" ? [rewrite] : [],
+          },
+          matchRoute: () => null,
+        });
+
+        const response = await handler(
+          new Request(`https://example.test${rscUrl}`, { headers }),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Vary")).toContain("Next-Url");
+        expect(response.headers.get("Vary")).toContain("Accept-Encoding");
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
 
   it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
     "validates out-of-basePath RSC requests before %s external rewrite proxies",

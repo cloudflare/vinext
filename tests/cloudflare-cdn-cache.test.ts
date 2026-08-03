@@ -263,7 +263,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      Vary: "Cookie, Authorization, Host",
+      Vary: "Cookie, Authorization",
     });
     await expect(
       buildFor({
@@ -291,7 +291,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
   });
 
-  it("partitions cacheable entries by request host", () => {
+  it("partitions cacheable HTML entries by request host", () => {
     const buildForHost = (host: string) =>
       runWithHeadersContext(
         headersContextFromRequest(
