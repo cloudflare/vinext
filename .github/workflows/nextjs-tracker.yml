@@ -133,6 +133,7 @@ jobs:
           model: "cloudflare-ai-gateway/anthropic/claude-opus-4-7"
           permissions: write
           opencode_dev: false
+          opencode_version: 1.15.13
           agent: nextjs-tracker
           prompt: ${{ steps.build_prompt.outputs.prompt }}
 
