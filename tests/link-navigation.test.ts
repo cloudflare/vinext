@@ -1644,6 +1644,74 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("uses one warmed full request for automatic loading-boundary prefetches", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      prewarmablePaths: ["/blog/hello"],
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const [input, init] = result.fetch.mock.calls[0] ?? [];
+      expect(input).toBe("/blog/hello?_rsc");
+      const requestHeaders = new Headers(init?.headers);
+      expect(requestHeaders.get("rsc")).toBe("1");
+      expect(requestHeaders.get("next-router-prefetch")).toBeNull();
+      expect(requestHeaders.get("next-router-segment-prefetch")).toBeNull();
+      expect(requestHeaders.get("next-router-state-tree")).toBeNull();
+      expect(requestHeaders.get("next-url")).toBeNull();
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      expect(Array.from(getPrefetchCache().values())).toEqual([
+        expect.objectContaining({
+          cacheForNavigation: true,
+          optimisticRouteShell: false,
+          prefetchKind: "navigation",
+        }),
+      ]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("uses the warmed full request for automatic router.prefetch loading routes", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      prewarmablePaths: ["/blog/hello"],
+    });
+
+    try {
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      navigation.appRouterInstance.prefetch("/blog/hello");
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const [input, init] = result.fetch.mock.calls[0] ?? [];
+      expect(input).toBe("/blog/hello?_rsc");
+      const requestHeaders = new Headers(init?.headers);
+      expect(requestHeaders.get("rsc")).toBe("1");
+      expect(requestHeaders.get("next-router-prefetch")).toBeNull();
+      expect(requestHeaders.get("next-router-segment-prefetch")).toBeNull();
+      expect(requestHeaders.get("next-router-state-tree")).toBeNull();
+      expect(requestHeaders.get("next-url")).toBeNull();
+      expect(Array.from(navigation.getPrefetchCache().values())).toEqual([
+        expect.objectContaining({ cacheForNavigation: true, prefetchKind: "navigation" }),
+      ]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("does not resume a canonical prefetch after navigation starts during manifest loading", async () => {
     vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
     const observer = stubIntersectionObserver();
@@ -2752,7 +2820,6 @@ describe("Link prefetch scheduling", () => {
     const result = await renderIsolatedLink({
       href: "/viewport-prefetch-target",
       nodeEnv: "production",
-      prewarmablePaths: ["/viewport-prefetch-target"],
     });
 
     try {
@@ -2790,10 +2857,10 @@ describe("Link prefetch scheduling", () => {
       const fullFetchInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
       const fullHeaders = fullFetchInit?.headers as Headers | undefined;
       expect(fullHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
-      expect(fullHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBeNull();
-      expect(fullHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBeNull();
-      expect(fullHeaders?.get("next-router-state-tree")).toBeNull();
-      expect(fullHeaders?.get("next-url")).toBeNull();
+      expect(fullHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(fullHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
+      expect(fullHeaders?.get("next-router-state-tree")).toBeTruthy();
+      expect(fullHeaders?.get("next-url")).toBe("/current");
       expect(Array.from(getPrefetchCache().values())).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ cacheForNavigation: false, prefetchKind: "route-tree" }),

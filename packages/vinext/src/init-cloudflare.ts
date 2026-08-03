@@ -428,10 +428,27 @@ export function updateWranglerConfigForCloudflare(
     );
   }
   const versionMetadata = config.version_metadata as { binding?: unknown } | undefined;
-  if (
-    options.warmCdnCache &&
-    (!versionMetadata || versionMetadata.binding === "VINEXT_VERSION_METADATA")
-  ) {
+  if (options.warmCdnCache) {
+    const incompatibleBindings: string[] = [];
+    if (versionMetadata && versionMetadata.binding !== "VINEXT_VERSION_METADATA") {
+      incompatibleBindings.push("version_metadata");
+    }
+    if (config.env && typeof config.env === "object" && !Array.isArray(config.env)) {
+      for (const [envName, rawEnv] of Object.entries(config.env)) {
+        if (!rawEnv || typeof rawEnv !== "object" || Array.isArray(rawEnv)) continue;
+        const envVersionMetadata = (rawEnv as Record<string, unknown>).version_metadata as
+          | { binding?: unknown }
+          | undefined;
+        if (envVersionMetadata && envVersionMetadata.binding !== "VINEXT_VERSION_METADATA") {
+          incompatibleBindings.push(`env.${envName}.version_metadata`);
+        }
+      }
+    }
+    if (incompatibleBindings.length > 0) {
+      throw new Error(
+        `CDN warming requires the version metadata binding to be named "VINEXT_VERSION_METADATA". Update ${incompatibleBindings.join(", ")} and rerun vinext init.`,
+      );
+    }
     if (!versionMetadata) {
       output = appendTopLevelJsonProperty(
         output,

@@ -10,6 +10,9 @@ export default function Home() {
       <Link id="cdn-navigation-link" href="/blog/hello-world" prefetch={false}>
         Blog
       </Link>
+      <Link id="cdn-loading-prefetch-link" href="/blog/getting-started">
+        Blog with loading boundary
+      </Link>
     </main>
   );
 }

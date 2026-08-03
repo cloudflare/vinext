@@ -1,4 +1,5 @@
 import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/cdn-cache";
+import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
@@ -49,6 +50,10 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
     // origin-managed adapter), in which case the header should stay absent
     // rather than being emitted as a blank value.
     if (value === "") continue;
+    if (name.toLowerCase() === "vary") {
+      mergeVaryHeader(headers, value);
+      continue;
+    }
     headers.set(name, value);
   }
 }

@@ -62,7 +62,8 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(forged.status()).toBe(200);
     expect(await forged.json()).toMatchObject({ draftMode: false });
-    expect(forged.headers()["cache-control"]).not.toContain("no-store");
+    expect(forged.headers()["cache-control"]).toContain("no-store");
+    expect(forged.headers()["cdn-cache-control"]).toBeUndefined();
 
     await setDraftMode(request, true);
     const draftFirstScenario = `draft-first-${Date.now()}`;
@@ -177,6 +178,10 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       const url = new URL(response.url());
       return url.pathname === "/about" && url.searchParams.has("_rsc");
     });
+    const loadingPrefetchResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/blog/getting-started" && url.searchParams.has("_rsc");
+    });
     const eligibilityManifestResponsePromise = page.waitForResponse((response) =>
       /\/vinext-rsc-prewarm-[a-f0-9]{16}\.json$/.test(new URL(response.url()).pathname),
     );
@@ -206,7 +211,9 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(eligibilityManifest.paths).not.toContain("/force-dynamic/navigation");
 
     const prefetchResponse = await prefetchResponsePromise;
+    const loadingPrefetchResponse = await loadingPrefetchResponsePromise;
     await prefetchResponse.finished();
+    await loadingPrefetchResponse.finished();
     await page.evaluate(
       () =>
         new Promise<void>((resolve) =>
@@ -289,12 +296,29 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(requestShape(navigationResponse)).toEqual(requestShape(prefetchResponse));
     expect(requestShape(alternatePrefetchResponse)).toEqual(requestShape(prefetchResponse));
+    expect(requestShape(loadingPrefetchResponse)).toEqual(requestShape(prefetchResponse));
 
-    for (const response of [prefetchResponse, alternatePrefetchResponse, navigationResponse]) {
+    for (const response of [
+      prefetchResponse,
+      loadingPrefetchResponse,
+      alternatePrefetchResponse,
+      navigationResponse,
+    ]) {
       const headers = response.headers();
       expect(headers["cache-control"]).not.toContain("no-store");
       expect(headers["cdn-cache-control"]).toContain("max-age=");
+      expect(headers.vary?.split(",").map((token) => token.trim())).toContain("Cookie");
     }
+
+    const cookieResponse = await page.request.get(`${BASE_URL}/about?_rsc`, {
+      headers: {
+        Accept: "text/x-component",
+        Cookie: "__prerender_bypass=forged",
+        RSC: "1",
+      },
+    });
+    expect(cookieResponse.headers()["cache-control"]).toContain("no-store");
+    expect(cookieResponse.headers()["cdn-cache-control"]).toBeUndefined();
   });
 
   test("keeps source-specific headers and hashed URLs for force-dynamic RSC requests", async ({
@@ -348,6 +372,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(prefetch.headers["next-router-segment-prefetch"]).toBe("1");
     expect(navigation.headers["next-router-prefetch"]).toBeUndefined();
     expect(navigation.headers["next-router-segment-prefetch"]).toBeUndefined();
+    expect(navigation.headers["x-vinext-client-reuse-manifest"]).toBeTruthy();
 
     for (const response of [prefetchResponse, navigationResponse]) {
       const headers = response.headers();

@@ -14,6 +14,7 @@ import {
   buildWranglerInvocation,
   buildWranglerDeployArgs,
   parseDeployArgs,
+  resolveCdnWarmupTargetUrl,
   resolveWranglerBin,
   runWranglerKVBulkPut,
   runWranglerDeploy,
@@ -3479,6 +3480,22 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     });
   });
 
+  it("parses JSON version metadata bindings for deploy verification", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        version_metadata: { binding: "VINEXT_VERSION_METADATA" },
+        env: {
+          staging: { version_metadata: { binding: "STAGING_VERSION" } },
+        },
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.versionMetadataBinding).toBe("VINEXT_VERSION_METADATA");
+    expect(config?.env?.staging?.versionMetadataBinding).toBe("STAGING_VERSION");
+  });
+
   it("parses TOML cross-version cache settings and environment overrides", () => {
     writeFile(
       tmpDir,
@@ -3528,6 +3545,21 @@ cache = { enabled = true, cross_version_cache = true } # shared preview cache
     });
   });
 
+  it("parses TOML version metadata bindings at root and environment scope", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `version_metadata = { binding = "VINEXT_VERSION_METADATA" }
+
+[env.staging.version_metadata]
+binding = "STAGING_VERSION"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.versionMetadataBinding).toBe("VINEXT_VERSION_METADATA");
+    expect(config?.env?.staging?.versionMetadataBinding).toBe("STAGING_VERSION");
+  });
+
   it("parses environment inline tables from TOML", () => {
     writeFile(
       tmpDir,
@@ -3547,6 +3579,41 @@ staging = { cache = { enabled = true, cross_version_cache = true } }
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["example.co.uk/*"] }));
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBe("example.co.uk");
+  });
+
+  it("extracts the routed hostname from route objects instead of the zone name", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: [{ pattern: "app.example.com/*", zone_name: "example.com" }],
+      }),
+    );
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBe("app.example.com");
+  });
+
+  it("extracts singular JSON routes for top-level and named environments", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        route: { pattern: "app.example.com/*", zone_name: "example.com" },
+        env: {
+          staging: { route: "staging.example.com/*" },
+        },
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("app.example.com");
+    expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
+  });
+
+  it("does not treat wildcard route hosts as deployable warmup origins", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ route: "*.example.com/*" }));
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBeUndefined();
+    expect(resolveCdnWarmupTargetUrl(tmpDir, "https://worker.example.workers.dev")).toBe(
+      "https://worker.example.workers.dev",
+    );
   });
 
   it("extracts custom domain from custom_domains array", () => {

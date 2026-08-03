@@ -489,9 +489,19 @@ function prefetchUrl(
             : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
+        const isPrewarmEligible =
+          getRscCacheKeyMode() === "response-vary" &&
+          (await isRscPrewarmEligibleHref(fullHref, __basePath));
+        // A prerender-certified route has a complete source-independent Flight
+        // payload. Prefer that one navigation-reusable request over a loading
+        // or route-tree shell so deploy warming, automatic prefetch, and the
+        // eventual click all address the same Workers Cache entry.
+        const cacheForNavigation = autoPrefetch.cacheForNavigation || isPrewarmEligible;
+        const prefetchShellFirst = autoPrefetch.prefetchShellFirst && !isPrewarmEligible;
+
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const isOptimisticRouteShellPrefetch = !cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
@@ -518,23 +528,19 @@ function prefetchUrl(
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        if (__prefetchInlining && mode === "auto" && autoPrefetch.cacheForNavigation) {
+        if (__prefetchInlining && mode === "auto" && cacheForNavigation) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
-        const isPrewarmEligible =
-          autoPrefetch.cacheForNavigation &&
-          getRscCacheKeyMode() === "response-vary" &&
-          (await isRscPrewarmEligibleHref(fullHref, __basePath));
         // Navigation may have started while the eligibility asset was pending.
         // In that case the click owns the request and this stale prefetch setup
         // must not resume with a second (canonical) fetch.
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const usesCanonicalSharedRequest =
-          isPrewarmEligible && canonicalizeFullRscRequestHeaders(headers);
+          cacheForNavigation && isPrewarmEligible && canonicalizeFullRscRequestHeaders(headers);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
@@ -546,11 +552,11 @@ function prefetchUrl(
             : [];
         const cacheKey = AppElementsWire.encodeCacheKey(rscCacheKeyUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
-        if (autoPrefetch.cacheForNavigation) {
+        if (cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
         if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
+          if (!cacheForNavigation) {
             return;
           }
         }
@@ -637,11 +643,11 @@ function prefetchUrl(
           });
         };
         const hasExactNavigationCacheEntry =
-          autoPrefetch.cacheForNavigation &&
+          cacheForNavigation &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {});
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
-          (autoPrefetch.cacheForNavigation &&
+          (cacheForNavigation &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
             }));
@@ -653,7 +659,7 @@ function prefetchUrl(
             !hasExactNavigationCacheEntry &&
             !prefetched.has(cacheKey) &&
             additionalRscUrls.length > 0 &&
-            autoPrefetch.prefetchShellFirst &&
+            prefetchShellFirst &&
             mountedSlotsHeader === null
           ) {
             prefetched.add(cacheKey);
@@ -669,18 +675,13 @@ function prefetchUrl(
         // route payload for navigation, but keeps the same two-stage request
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
-        const gateViaRouteTree =
-          __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
+        const gateViaRouteTree = __prefetchInlining && mode === "auto" && prefetchShellFirst;
         const gateViaExplicitSearchShell =
-          mode === "full" &&
-          hasSearchParams &&
-          autoPrefetch.prefetchShellFirst &&
-          mountedSlotsHeader === null;
+          mode === "full" && hasSearchParams && prefetchShellFirst && mountedSlotsHeader === null;
         const gateViaLoadingShell =
-          (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
-          autoPrefetch.prefetchShellFirst;
+          (mode === "full-after-shell" || gateViaExplicitSearchShell) && prefetchShellFirst;
         const fetchPromise =
-          autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
+          cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
                 if (gateViaLoadingShell) {
                   await fetchLoadingShellForReuse();
@@ -765,8 +766,8 @@ function prefetchUrl(
         if (
           !__prefetchInlining &&
           mode === "full" &&
-          autoPrefetch.cacheForNavigation &&
-          autoPrefetch.prefetchShellFirst &&
+          cacheForNavigation &&
+          prefetchShellFirst &&
           mountedSlotsHeader === null &&
           !gateViaExplicitSearchShell
         ) {
@@ -779,7 +780,7 @@ function prefetchUrl(
           mountedSlotsHeader,
           undefined,
           {
-            cacheForNavigation: autoPrefetch.cacheForNavigation,
+            cacheForNavigation,
             fallbackTtlMs:
               autoPrefetch.fallbackTtl === "dynamic"
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
@@ -787,9 +788,7 @@ function prefetchUrl(
             minimumTtlMs: autoPrefetch.minimumTtlMs,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
-            prepareSnapshot: autoPrefetch.cacheForNavigation
-              ? prepareNavigationPrefetchSnapshot
-              : undefined,
+            prepareSnapshot: cacheForNavigation ? prepareNavigationPrefetchSnapshot : undefined,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
           },
         );

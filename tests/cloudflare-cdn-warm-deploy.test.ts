@@ -58,6 +58,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("rejects an incompatible version metadata binding before uploading", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ version_metadata: { binding: "CUSTOM_VERSION" } }),
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deployWithCdnWarmup(tmpDir, ["/"], { warmCdnConcurrency: 1 })).rejects.toThrow(
+      'CDN warming requires the version metadata binding to be named "VINEXT_VERSION_METADATA", but Wrangler config uses "CUSTOM_VERSION".',
+    );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("warms HTML and RSC entries through a 0% staged version override", async () => {
     const events: string[] = [];
     writeFile(

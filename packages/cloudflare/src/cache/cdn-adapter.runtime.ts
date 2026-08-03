@@ -99,11 +99,17 @@ function hasNonCanonicalWorkersCacheVariant(): boolean {
   const originalPathname = context?.originalRequestUrl
     ? new URL(context.originalRequestUrl).pathname
     : null;
-  if (rsc === null && originalPathname && stripRscSuffix(originalPathname) !== originalPathname) {
+  if (originalPathname && stripRscSuffix(originalPathname) !== originalPathname) {
     return true;
   }
   if (rsc !== null && rsc !== "1") return true;
   return RSC_VARIANT_HEADERS.some((header) => headers.has(header));
+}
+
+function hasRequestCookies(): boolean {
+  const context = getHeadersContext();
+  const headers = context?.originalRequestHeaders ?? context?.headers;
+  return headers?.has("Cookie") === true;
 }
 
 /**
@@ -221,6 +227,20 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       };
     }
 
+    // Workers Caching excludes Cookie from its base key. Cached anonymous HTML
+    // or Flight must therefore vary on Cookie so a cookie-bearing request
+    // reaches vinext, where draft mode and other request-specific behavior can
+    // make the response no-store. Do not store cookie-bearing variants: the
+    // framework cannot prove arbitrary application cookies are shareable.
+    if (hasRequestCookies()) {
+      return {
+        "Cache-Control": NO_STORE,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      };
+    }
+
     if (hasNonCanonicalWorkersCacheVariant()) {
       return {
         "Cache-Control": NO_STORE,
@@ -235,6 +255,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
+      Vary: "Cookie",
     };
 
     if (input.tags && input.tags.length > 0) {

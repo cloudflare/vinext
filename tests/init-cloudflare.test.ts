@@ -613,16 +613,21 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
   });
 
-  it("preserves a custom version metadata binding", () => {
-    const input = `{ "version_metadata": { "binding": "CUSTOM_VERSION" } }\n`;
-    const output = updateWranglerConfigForCloudflare(input, {
-      dataCache: "none",
-      cdnCache: "workers-cache",
-      imageOptimization: "none",
-      warmCdnCache: true,
-    });
-
-    expect(JSON.parse(output).version_metadata).toEqual({ binding: "CUSTOM_VERSION" });
+  it("rejects custom version metadata bindings when CDN warming is enabled", () => {
+    const input = `{
+      "version_metadata": { "binding": "CUSTOM_VERSION" },
+      "env": { "staging": { "version_metadata": { "binding": "STAGING_VERSION" } } }
+    }\n`;
+    expect(() =>
+      updateWranglerConfigForCloudflare(input, {
+        dataCache: "none",
+        cdnCache: "workers-cache",
+        imageOptimization: "none",
+        warmCdnCache: true,
+      }),
+    ).toThrow(
+      'CDN warming requires the version metadata binding to be named "VINEXT_VERSION_METADATA". Update version_metadata, env.staging.version_metadata and rerun vinext init.',
+    );
   });
 
   it("preserves an existing Worker entry and assets", () => {

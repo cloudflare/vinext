@@ -2700,7 +2700,10 @@ const _appRouter: AppRouterInstance = {
         kind === "full"
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
-      const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
+      const isPrewarmEligible =
+        getRscCacheKeyMode() === "response-vary" &&
+        (await isRscPrewarmEligibleHref(fullHref, __basePath));
+      const reusable = policy.shouldPrefetch && (policy.cacheForNavigation || isPrewarmEligible);
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.
       if (reusable && kind === "full") {
@@ -2711,10 +2714,7 @@ const _appRouter: AppRouterInstance = {
         headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, __prefetchInlining ? "/__PAGE__" : "1");
       }
       const usesCanonicalSharedRequest =
-        reusable &&
-        getRscCacheKeyMode() === "response-vary" &&
-        (await isRscPrewarmEligibleHref(fullHref, __basePath)) &&
-        canonicalizeFullRscRequestHeaders(headers);
+        reusable && isPrewarmEligible && canonicalizeFullRscRequestHeaders(headers);
       const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.

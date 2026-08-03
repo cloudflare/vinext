@@ -575,15 +575,23 @@ export async function deployWithCdnWarmup(
   > &
     Pick<CdnWarmOptions, "deploymentId" | "rscCacheKeyMode" | "rscPaths">,
 ): Promise<string> {
-  const upload = runWranglerVersionUpload(root, options);
   const wranglerConfig = parseWranglerConfig(root, options.config);
+  const targetEnv = getWranglerTargetEnv(options);
+  const versionMetadataBinding =
+    (targetEnv ? wranglerConfig?.env?.[targetEnv]?.versionMetadataBinding : undefined) ??
+    wranglerConfig?.versionMetadataBinding;
+  if (versionMetadataBinding && versionMetadataBinding !== "VINEXT_VERSION_METADATA") {
+    throw new Error(
+      `CDN warming requires the version metadata binding to be named "VINEXT_VERSION_METADATA", but Wrangler config uses "${versionMetadataBinding}"${targetEnv ? ` for env ${targetEnv}` : ""}. Run vinext init and update the binding before deploying.`,
+    );
+  }
+  const upload = runWranglerVersionUpload(root, options);
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
   let warmedBeforePromotion = false;
   let triggersApplied = false;
-  const targetEnv = getWranglerTargetEnv(options);
   const effectiveCache =
     (targetEnv ? wranglerConfig?.env?.[targetEnv]?.cache : undefined) ?? wranglerConfig?.cache;
   const crossVersionCache = effectiveCache?.crossVersionCache === true;

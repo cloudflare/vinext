@@ -928,6 +928,28 @@ describe("Cloudflare CDN warmup", () => {
     expect(result.failures[0]?.error).toBe("unsupported Vary field: User-Agent");
   });
 
+  it("accepts the adapter-controlled Cookie variance for reusable RSC entries", async () => {
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: [],
+      rscPaths: ["/app"],
+      rscCacheKeyMode: "response-vary",
+      fetchImpl: async (_input, init) => {
+        expect(new Headers(init?.headers).get("Cookie")).toBeNull();
+        return new Response("flight", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": "MISS",
+            "Content-Type": "text/x-component",
+            Vary: "RSC, Cookie",
+          },
+        });
+      },
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 1, failed: 0 });
+  });
+
   it("reports warmup failures and throws in strict mode", async () => {
     writeFile(
       "dist/server/vinext-prerender.json",

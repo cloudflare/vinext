@@ -59,6 +59,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     ).toEqual({
       "Cache-Control": "public, max-age=0, must-revalidate",
       "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
+      Vary: "Cookie",
     });
   });
 
@@ -138,6 +139,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     const baseResponse = await buildFor({ RSC: "1" });
     expect(baseResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
     expect(baseResponse.headers.get("Cache-Tag")).toBe("/blog,posts");
+    expect(baseResponse.headers.get("Vary")).toContain("RSC");
+    expect(baseResponse.headers.get("Vary")).toContain("Cookie");
 
     const sourceVariantResponse = await buildFor({
       RSC: "1",
@@ -210,6 +213,50 @@ describe("CloudflareCdnCacheAdapter", () => {
       adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog", "posts"] }),
     );
     expect(responseHeaders).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
+  });
+
+  it("does not edge-cache headerful .rsc compatibility transports", async () => {
+    const context = createStaticGenerationHeadersContext({
+      dynamicConfig: "force-static",
+      originalRequestHeaders: new Headers({ RSC: "1", Accept: "text/x-component" }),
+      originalRequestUrl: "https://example.com/blog.rsc?_rsc",
+      routeKind: "page",
+    });
+
+    const responseHeaders = await runWithHeadersContext(context, () =>
+      adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog", "posts"] }),
+    );
+    expect(responseHeaders).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
+  });
+
+  it("varies anonymous entries on Cookie and never stores cookie-bearing requests", async () => {
+    const buildFor = async (headers: HeadersInit) =>
+      runWithHeadersContext(
+        headersContextFromRequest(new Request("https://example.com/blog?_rsc", { headers })),
+        () =>
+          adapter.buildResponseHeaders({
+            cacheControl: "s-maxage=60",
+            tags: ["/blog", "posts"],
+          }),
+      );
+
+    await expect(buildFor({ RSC: "1" })).resolves.toMatchObject({
+      "CDN-Cache-Control": "public, max-age=60",
+      Vary: "Cookie",
+    });
+    await expect(
+      buildFor({ RSC: "1", Cookie: "__prerender_bypass=draft-secret" }),
+    ).resolves.toEqual({
       "Cache-Control": "no-store",
       "CDN-Cache-Control": null,
       "Cloudflare-CDN-Cache-Control": null,

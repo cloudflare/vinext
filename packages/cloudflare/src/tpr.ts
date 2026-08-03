@@ -83,6 +83,7 @@ type WranglerConfig = {
   customDomain?: string;
   name?: string;
   legacyEnv?: boolean;
+  versionMetadataBinding?: string;
   env?: Record<string, WranglerEnvironmentConfig>;
 };
 
@@ -90,6 +91,7 @@ export type WranglerEnvironmentConfig = {
   cache?: WranglerCacheConfig;
   customDomain?: string;
   name?: string;
+  versionMetadataBinding?: string;
 };
 
 export type WranglerCacheConfig = {
@@ -270,6 +272,8 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
 
   const cache = extractCacheConfig(config.cache);
   if (cache) result.cache = cache;
+  const versionMetadataBinding = extractVersionMetadataBinding(config.version_metadata);
+  if (versionMetadataBinding) result.versionMetadataBinding = versionMetadataBinding;
 
   // KV namespace ID for VINEXT_KV_CACHE
   if (Array.isArray(config.kv_namespaces)) {
@@ -284,8 +288,11 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     }
   }
 
-  // Custom domain — check routes[] and custom_domains[]
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  // Custom domain — check singular route, routes[], and custom_domains[].
+  const domain =
+    extractDomainFromRoute(config.route) ??
+    extractDomainFromRoutes(config.routes) ??
+    extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
 
   const env = extractEnvConfigs(config.env);
@@ -301,7 +308,12 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
     const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (envConfig.name || envConfig.customDomain || envConfig.cache) {
+    if (
+      envConfig.name ||
+      envConfig.customDomain ||
+      envConfig.cache ||
+      envConfig.versionMetadataBinding
+    ) {
       result[envName] = envConfig;
     }
   }
@@ -313,11 +325,22 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
   }
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  const domain =
+    extractDomainFromRoute(config.route) ??
+    extractDomainFromRoutes(config.routes) ??
+    extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
   const cache = extractCacheConfig(config.cache);
   if (cache) result.cache = cache;
+  const versionMetadataBinding = extractVersionMetadataBinding(config.version_metadata);
+  if (versionMetadataBinding) result.versionMetadataBinding = versionMetadataBinding;
   return result;
+}
+
+function extractVersionMetadataBinding(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const binding = (value as Record<string, unknown>).binding;
+  return typeof binding === "string" && binding.length > 0 ? binding : undefined;
 }
 
 function extractCacheConfig(value: unknown): WranglerCacheConfig | undefined {
@@ -335,24 +358,24 @@ function extractDomainFromRoutes(routes: unknown): string | null {
   if (!Array.isArray(routes)) return null;
 
   for (const route of routes) {
-    if (typeof route === "string") {
-      const domain = cleanDomain(route);
-      if (domain && !domain.includes("workers.dev")) return domain;
-    } else if (route && typeof route === "object") {
-      const r = route as Record<string, unknown>;
-      const pattern =
-        typeof r.zone_name === "string"
-          ? r.zone_name
-          : typeof r.pattern === "string"
-            ? r.pattern
-            : null;
-      if (pattern) {
-        const domain = cleanDomain(pattern);
-        if (domain && !domain.includes("workers.dev")) return domain;
-      }
-    }
+    const domain = extractDomainFromRoute(route);
+    if (domain) return domain;
   }
   return null;
+}
+
+function extractDomainFromRoute(route: unknown): string | null {
+  const pattern =
+    typeof route === "string"
+      ? route
+      : route &&
+          typeof route === "object" &&
+          typeof (route as Record<string, unknown>).pattern === "string"
+        ? ((route as Record<string, unknown>).pattern as string)
+        : null;
+  if (!pattern) return null;
+  const domain = cleanDomain(pattern);
+  return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
 function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
@@ -374,7 +397,7 @@ function cleanDomain(raw: string): string | null {
     .replace(/\/\*$/, "")
     .replace(/\/+$/, "")
     .split("/")[0]; // Take only the host part
-  return cleaned || null;
+  return cleaned && !cleaned.includes("*") ? cleaned : null;
 }
 
 /**
@@ -439,6 +462,18 @@ function extractFromTOML(content: string): WranglerConfig {
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;
 
+  const versionMetadataSection = getTomlSections(content).find(
+    (section) => section.header === "version_metadata",
+  );
+  const inlineVersionMetadata = extractTomlInlineTable(
+    getTomlRootBody(content),
+    "version_metadata",
+  );
+  const versionMetadataBinding = extractTomlVersionMetadataBinding(
+    versionMetadataSection?.body ?? inlineVersionMetadata ?? "",
+  );
+  if (versionMetadataBinding) result.versionMetadataBinding = versionMetadataBinding;
+
   const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
   const inlineCache = extractTomlInlineTable(getTomlRootBody(content), "cache");
   const cache = cacheSection
@@ -477,7 +512,16 @@ function extractEnvConfigsFromTOML(
       const inlineCache = extractTomlInlineTable(section.body, "cache");
       const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
       if (cache) envConfig.cache = cache;
-      if (envConfig.name || envConfig.customDomain || envConfig.cache) {
+      const inlineVersionMetadata = extractTomlInlineTable(section.body, "version_metadata");
+      if (inlineVersionMetadata) {
+        envConfig.versionMetadataBinding = extractTomlVersionMetadataBinding(inlineVersionMetadata);
+      }
+      if (
+        envConfig.name ||
+        envConfig.customDomain ||
+        envConfig.cache ||
+        envConfig.versionMetadataBinding
+      ) {
         result[envName] = envConfig;
       }
       continue;
@@ -509,19 +553,46 @@ function extractEnvConfigsFromTOML(
       }
     }
 
+    const versionMetadataEnvName =
+      headerPath.length === 3 && headerPath[0] === "env" && headerPath[2] === "version_metadata"
+        ? headerPath[1]
+        : undefined;
+    if (versionMetadataEnvName) {
+      const envConfig = result[versionMetadataEnvName] ?? {};
+      envConfig.versionMetadataBinding = extractTomlVersionMetadataBinding(section.body);
+      if (envConfig.versionMetadataBinding) result[versionMetadataEnvName] = envConfig;
+    }
+
     if (headerPath.length === 1 && headerPath[0] === "env") {
       for (const assignment of parseTomlAssignments(section.body)) {
         const inlineEnv = unwrapTomlInlineTable(assignment.value);
         if (!inlineEnv) continue;
         const inlineCache = extractTomlInlineTable(inlineEnv, "cache");
         const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
-        if (!cache) continue;
-        result[assignment.key] = { ...result[assignment.key], cache };
+        const inlineVersionMetadata = extractTomlInlineTable(inlineEnv, "version_metadata");
+        const versionMetadataBinding = inlineVersionMetadata
+          ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
+          : undefined;
+        if (!cache && !versionMetadataBinding) continue;
+        result[assignment.key] = {
+          ...result[assignment.key],
+          ...(cache ? { cache } : {}),
+          ...(versionMetadataBinding ? { versionMetadataBinding } : {}),
+        };
       }
     }
   }
 
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function extractTomlVersionMetadataBinding(section: string): string | undefined {
+  for (const assignment of parseTomlAssignments(section)) {
+    if (assignment.key !== "binding") continue;
+    const match = assignment.value.trim().match(/^"([^"]+)"$/);
+    if (match) return match[1];
+  }
+  return undefined;
 }
 
 function extractTomlCacheConfig(section: string): WranglerCacheConfig | undefined {
