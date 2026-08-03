@@ -588,10 +588,14 @@ export async function deployWithCdnWarmup(
       `CDN warming requires the version metadata binding to be named "VINEXT_VERSION_METADATA", but Wrangler config uses "${versionMetadataBinding}"${targetEnv ? ` for env ${targetEnv}` : ""}. Run vinext init and update the binding before deploying.`,
     );
   }
-  const effectiveCache = targetEnv
-    ? wranglerConfig?.env?.[targetEnv]?.cache
-    : wranglerConfig?.cache;
-  const crossVersionCache = effectiveCache?.crossVersionCache === true;
+  // Workers cache settings are inherited by named environments field by
+  // field, unlike version_metadata. Preserve a root cross-version setting
+  // unless the selected environment explicitly overrides it.
+  const crossVersionCache =
+    (targetEnv
+      ? (wranglerConfig?.env?.[targetEnv]?.cache?.crossVersionCache ??
+        wranglerConfig?.cache?.crossVersionCache)
+      : wranglerConfig?.cache?.crossVersionCache) === true;
   if (crossVersionCache && options.warmCdnStrict) {
     throw new Error(
       "CDN warmup cannot safely refresh cache.cross_version_cache entries without purging the previous version. Disable cross-version caching or rerun without --warm-cdn-strict.",

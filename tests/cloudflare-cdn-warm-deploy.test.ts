@@ -223,6 +223,10 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       `name = "my-worker"
 route = "app.example.com/*"
 cache = { enabled = true, cross_version_cache = true }
+
+[env.staging]
+name = "my-worker-staging"
+cache = { enabled = true }
 `,
     );
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -248,7 +252,7 @@ cache = { enabled = true, cross_version_cache = true }
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deployWithCdnWarmup(tmpDir, ["/"], { warmCdnConcurrency: 1 });
+    await deployWithCdnWarmup(tmpDir, ["/"], { env: "staging", warmCdnConcurrency: 1 });
 
     expect(events).toEqual(["upload", "status", "promote", "triggers"]);
     expect(fetch).not.toHaveBeenCalled();
