@@ -41,6 +41,12 @@ export type UnifiedRequestContext = {
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
 
+  // ── CDN adapter request metadata ──────────────────────────────────
+  /** Original request headers for cache-policy adapters; not exposed through next/headers. */
+  cdnCacheRequestHeaders: Headers | null;
+  /** Original request URL for cache-policy adapters; not exposed through next/headers. */
+  cdnCacheRequestUrl: string | null;
+
   // ── cache-for-request.ts ──────────────────────────────────────────
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -98,6 +104,8 @@ function _getInheritedExecutionContext(): ExecutionContextLike | null {
 export function createRequestContext(opts?: Partial<UnifiedRequestContext>): UnifiedRequestContext {
   return {
     headersContext: null,
+    cdnCacheRequestHeaders: null,
+    cdnCacheRequestUrl: null,
     actionRevalidationKind: 0,
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),

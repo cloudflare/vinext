@@ -122,6 +122,7 @@ first_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_he
 second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${rsc_request[@]}" || echo "000")
 second_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
 second_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
+second_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
 
 cookie_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
   -H "Accept: text/x-component" \
@@ -143,6 +144,10 @@ elif [[ -z "$first_cache_status" || "$first_cache_status" == "BYPASS" || "$first
 elif [[ "$second_status" != "200" || "$second_cache_status" != "HIT" ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (second HTTP ${second_status}, CF-Cache-Status: ${second_cache_status:-missing})"
   errors+=("canonical RSC response did not reuse the warmed Workers Cache entry")
+  failed=$((failed + 1))
+elif [[ "$second_content_type" != *"text/x-component"* ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (HIT Content-Type: ${second_content_type:-missing})"
+  errors+=("warmed Workers Cache entry was not an RSC payload")
   failed=$((failed + 1))
 elif ! grep -qiE '(^|,)[[:space:]]*Cookie([[:space:]]*,|$)' <<< "$second_vary"; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (Vary is missing Cookie)"

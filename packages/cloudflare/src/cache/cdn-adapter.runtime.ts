@@ -42,6 +42,7 @@ import type {
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getHeadersContext } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { getRequestContext, isInsideUnifiedScope } from "vinext/shims/unified-request-context";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -82,6 +83,23 @@ const RSC_VARIANT_HEADERS = [
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 ] as const;
 
+function getCacheRequestMetadata(): { headers: Headers | null; url: string | null } {
+  if (isInsideUnifiedScope()) {
+    const requestContext = getRequestContext();
+    if (requestContext.cdnCacheRequestHeaders) {
+      return {
+        headers: requestContext.cdnCacheRequestHeaders,
+        url: requestContext.cdnCacheRequestUrl,
+      };
+    }
+  }
+  const headersContext = getHeadersContext();
+  return {
+    headers: headersContext?.originalRequestHeaders ?? headersContext?.headers ?? null,
+    url: headersContext?.originalRequestUrl ?? null,
+  };
+}
+
 /**
  * Workers Caching purges every Vary variant of one URL together and requires
  * every stored variant to carry the same Cache-Tag values. Render-specific RSC
@@ -91,14 +109,11 @@ const RSC_VARIANT_HEADERS = [
  * Other RSC variants still render normally but bypass the shared cache.
  */
 function hasNonCanonicalWorkersCacheVariant(): boolean {
-  const context = getHeadersContext();
-  const headers = context?.originalRequestHeaders ?? context?.headers;
+  const { headers, url } = getCacheRequestMetadata();
   if (!headers) return false;
 
   const rsc = headers.get(RSC_HEADER);
-  const originalPathname = context?.originalRequestUrl
-    ? new URL(context.originalRequestUrl).pathname
-    : null;
+  const originalPathname = url ? new URL(url).pathname : null;
   if (originalPathname && stripRscSuffix(originalPathname) !== originalPathname) {
     return true;
   }
@@ -107,8 +122,7 @@ function hasNonCanonicalWorkersCacheVariant(): boolean {
 }
 
 function hasRequestCookies(): boolean {
-  const context = getHeadersContext();
-  const headers = context?.originalRequestHeaders ?? context?.headers;
+  const { headers } = getCacheRequestMetadata();
   return headers?.has("Cookie") === true;
 }
 

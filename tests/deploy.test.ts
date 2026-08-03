@@ -3641,6 +3641,55 @@ route = { pattern = "staging.example.com/*", custom_domain = true }
     expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
   });
 
+  it("parses dotted cache keys inside a named TOML environment", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `[env.staging]
+cache.enabled = true
+cache.cross_version_cache = true
+`,
+    );
+    expect(parseWranglerConfig(tmpDir)?.env?.staging?.cache).toEqual({
+      enabled: true,
+      crossVersionCache: true,
+    });
+  });
+
+  it("prefers TOML route patterns over zone names", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `[[routes]]
+zone_name = "example.com"
+pattern = "app.example.com/*"
+`,
+    );
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBe("app.example.com");
+
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `routes = [{ zone_name = "example.com", pattern = "api.example.com/*" }]
+`,
+    );
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBe("api.example.com");
+  });
+
+  it("parses Worker names and routes from inline TOML environment tables", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `[env]
+staging = { name = "custom-staging", route = { pattern = "staging.example.com/*", custom_domain = true } }
+`,
+    );
+    expect(parseWranglerConfig(tmpDir)?.env?.staging).toMatchObject({
+      name: "custom-staging",
+      customDomain: "staging.example.com",
+    });
+  });
+
   it("does not treat wildcard route hosts as deployable warmup origins", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ route: "*.example.com/*" }));
     expect(parseWranglerConfig(tmpDir)?.customDomain).toBeUndefined();

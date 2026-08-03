@@ -226,7 +226,6 @@ cache = { enabled = true, cross_version_cache = true }
 
 [env.staging]
 name = "my-worker-staging"
-cache = { enabled = true }
 `,
     );
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {

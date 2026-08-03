@@ -62,7 +62,6 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { headersContextFromRequest } from "vinext/shims/headers";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import {
@@ -596,7 +595,8 @@ export function createPagesPageHandler(
       : routerAsPathSource;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
-      headersContext: headersContextFromRequest(request),
+      cdnCacheRequestHeaders: request.headers,
+      cdnCacheRequestUrl: request.url,
     });
 
     const response = await runWithRequestContext(uCtx, async () => {

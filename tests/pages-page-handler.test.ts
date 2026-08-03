@@ -26,6 +26,7 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { getHeadersContext } from "../packages/vinext/src/shims/headers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -280,7 +281,12 @@ describe("createPagesPageHandler — route miss", () => {
     try {
       const route = makeRoute(
         "/cached",
-        makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+        makePageModule({
+          getStaticProps: async () => {
+            expect(getHeadersContext()).toBeNull();
+            return { props: {}, revalidate: 60 };
+          },
+        }),
       );
       const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
       const request = new Request("http://localhost/cached", {

@@ -499,7 +499,9 @@ function extractEnvConfigsFromTOML(
         extractTomlRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
       const inlineCache = extractTomlInlineTable(section.body, "cache");
-      const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
+      const cache = inlineCache
+        ? extractTomlCacheConfig(inlineCache)
+        : extractTomlDottedCacheConfig(section.body);
       if (cache) envConfig.cache = cache;
       const inlineVersionMetadata = extractTomlInlineTable(section.body, "version_metadata");
       if (inlineVersionMetadata) {
@@ -562,9 +564,17 @@ function extractEnvConfigsFromTOML(
         const versionMetadataBinding = inlineVersionMetadata
           ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
           : undefined;
-        if (!cache && !versionMetadataBinding) continue;
+        const nameAssignment = parseTomlAssignments(inlineEnv).find(
+          (candidate) => candidate.key === "name",
+        );
+        const name = nameAssignment?.value.match(/^"([^"]+)"$/)?.[1];
+        const customDomain =
+          extractTomlRouteDomain(inlineEnv) ?? extractTomlRoutesArrayDomain(inlineEnv) ?? undefined;
+        if (!name && !customDomain && !cache && !versionMetadataBinding) continue;
         result[assignment.key] = {
           ...result[assignment.key],
+          ...(name ? { name } : {}),
+          ...(customDomain ? { customDomain } : {}),
           ...(cache ? { cache } : {}),
           ...(versionMetadataBinding ? { versionMetadataBinding } : {}),
         };
@@ -592,6 +602,20 @@ function extractTomlCacheConfig(section: string): WranglerCacheConfig | undefine
       result.enabled = value === "true";
     }
     if (assignment.key === "cross_version_cache" && /^(?:true|false)$/.test(value)) {
+      result.crossVersionCache = value === "true";
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function extractTomlDottedCacheConfig(section: string): WranglerCacheConfig | undefined {
+  const result: WranglerCacheConfig = {};
+  for (const assignment of parseTomlAssignments(section)) {
+    const value = assignment.value.trim();
+    if (assignment.key === "cache.enabled" && /^(?:true|false)$/.test(value)) {
+      result.enabled = value === "true";
+    }
+    if (assignment.key === "cache.cross_version_cache" && /^(?:true|false)$/.test(value)) {
       result.crossVersionCache = value === "true";
     }
   }
@@ -698,7 +722,7 @@ function parseTomlAssignments(source: string): Array<{ key: string; value: strin
     const equals = statement.indexOf("=");
     if (equals === -1) return [];
     const keyPath = parseTomlDottedKey(statement.slice(0, equals));
-    const key = keyPath.length === 1 ? keyPath[0] : null;
+    const key = keyPath.length > 0 ? keyPath.join(".") : null;
     const value = statement.slice(equals + 1).trim();
     return key && value ? [{ key, value }] : [];
   });
@@ -766,14 +790,16 @@ function extractTomlRouteDomain(section: string): string | null {
 function extractTomlRoutesArrayDomain(section: string): string | null {
   const routesMatch = section.match(/^routes\s*=\s*\[([\s\S]*?)\]/m);
   if (!routesMatch) return null;
-  const patternMatch = (routesMatch[1] ?? "").match(/(?:pattern\s*=\s*)?"([^"]+)"/);
+  const routes = routesMatch[1] ?? "";
+  const patternMatch = routes.match(/\bpattern\s*=\s*"([^"]+)"/) ?? routes.match(/"([^"]+)"/);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
 function extractTomlRouteBlockDomain(section: string): string | null {
-  const patternMatch = section.match(/^(?:pattern|zone_name)\s*=\s*"([^"]+)"/m);
+  const patternMatch =
+    section.match(/^pattern\s*=\s*"([^"]+)"/m) ?? section.match(/^zone_name\s*=\s*"([^"]+)"/m);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;

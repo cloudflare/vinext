@@ -1769,6 +1769,8 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     });
     const requestContext = createRequestContext({
       headersContext,
+      cdnCacheRequestHeaders: request.headers,
+      cdnCacheRequestUrl: request.url,
       executionContext,
       unstableCacheRevalidation: "background",
     });
