@@ -7,12 +7,8 @@ type VisitedResponseCacheNavigationKind = "navigate" | "refresh" | "traverse";
 export type VisitedResponseCacheEntry = {
   createdAt: number;
   elements?: AppElements;
-  /** Require an exact `_rsc` URL match for source-tree-pruned payloads. */
-  exactVariant?: boolean;
   expiresAt: number;
   mountedSlotsHeader: string | null;
-  /** Source-dependent request identity required for normalized path aliasing. */
-  navigationVariant?: string;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
 };
@@ -22,27 +18,21 @@ export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 
 export function createVisitedResponseCacheEntry(options: {
   elements?: AppElements;
-  exactVariant?: boolean;
   fallbackTtlMs?: number;
   now: number;
   mountedSlotsHeader?: string | null;
-  navigationVariant?: string;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
 }): VisitedResponseCacheEntry {
   return {
     createdAt: options.now,
     ...(options.elements ? { elements: options.elements } : {}),
-    ...(options.exactVariant ? { exactVariant: true } : {}),
     expiresAt: resolveCachedRscResponseExpiresAt(
       options.now,
       options.response,
       options.fallbackTtlMs ?? VISITED_RESPONSE_CACHE_TTL,
     ),
     mountedSlotsHeader: options.mountedSlotsHeader ?? null,
-    ...(options.navigationVariant === undefined
-      ? {}
-      : { navigationVariant: options.navigationVariant }),
     params: options.params,
     response: options.response,
   };
@@ -94,7 +84,6 @@ export function findVisitedResponseCacheEntry(
   cache: Map<string, VisitedResponseCacheEntry>,
   rscUrl: string,
   interceptionContext: string | null,
-  navigationVariant?: string,
 ): { cacheKey: string; entry: VisitedResponseCacheEntry } | null {
   const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const exactEntry = cache.get(exactCacheKey);
@@ -106,10 +95,6 @@ export function findVisitedResponseCacheEntry(
   if (normalizedTarget === null) return null;
 
   for (const [cacheKey, entry] of cache) {
-    if (entry.exactVariant) continue;
-    if (navigationVariant !== undefined && entry.navigationVariant !== navigationVariant) {
-      continue;
-    }
     const source = parseVisitedResponseCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeVisitedResponseCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
@@ -123,14 +108,8 @@ export function deleteVisitedResponseCacheEntry(
   cache: Map<string, VisitedResponseCacheEntry>,
   rscUrl: string,
   interceptionContext: string | null,
-  navigationVariant?: string,
 ): boolean {
-  const match = findVisitedResponseCacheEntry(
-    cache,
-    rscUrl,
-    interceptionContext,
-    navigationVariant,
-  );
+  const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
   if (!match) return false;
   return cache.delete(match.cacheKey);
 }

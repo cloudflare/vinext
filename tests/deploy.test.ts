@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
+import { describe, it, expect, expectTypeOf, beforeEach, afterEach, vi } from "vite-plus/test";
+import type appRouterWorker from "../packages/vinext/src/server/app-router-entry.js";
+import type pagesRouterWorker from "../packages/vinext/src/server/pages-router-entry.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -58,6 +60,7 @@ import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-
 import {
   createStaticAssetRequest,
   finalizeMissingStaticAssetResponse,
+  handleWorkerVersionProbe,
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
@@ -1004,6 +1007,21 @@ describe("generateWranglerConfig", () => {
     expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
   });
 
+  it("includes version metadata when staged CDN warming is enabled", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info, {
+      dataCache: "none",
+      cdnCache: "workers-cache",
+      imageOptimization: "none",
+      warmCdnCache: true,
+    });
+
+    expect(JSON.parse(config).version_metadata).toEqual({
+      binding: "VINEXT_VERSION_METADATA",
+    });
+  });
+
   it("omits KV namespace when KV caches are disabled", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "app/page.tsx", "export default function() { return <div/> }");
@@ -1507,6 +1525,57 @@ describe("readPagesRouterEntrySource", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
     expect(content).toContain("finalizeMissingStaticAssetResponse(result.response");
+  });
+
+  it("handles Cloudflare Worker version probes before cacheable request routing", () => {
+    const request = new Request(
+      "https://app.example.com/about?__vinext_version_probe=version-new",
+      {
+        method: "POST",
+        headers: { "X-Vinext-Version-Probe": "1" },
+      },
+    );
+    const response = handleWorkerVersionProbe(request, {
+      VINEXT_VERSION_METADATA: { id: "version-new" },
+    });
+
+    expect(response?.status).toBe(204);
+    expect(response?.headers.get("X-Vinext-Worker-Version")).toBe("version-new");
+    expect(response?.headers.get("Cache-Control")).toBe("no-store");
+    expect(response?.headers.get("CDN-Cache-Control")).toBe("no-store");
+    expect(
+      handleWorkerVersionProbe(new Request("https://app.example.com/about"), {
+        VINEXT_VERSION_METADATA: { id: "version-new" },
+      }),
+    ).toBeNull();
+  });
+
+  it("marks Worker version probes unavailable when the binding is absent", () => {
+    const response = handleWorkerVersionProbe(
+      new Request("https://app.example.com/?__vinext_version_probe=version-new", {
+        method: "POST",
+        headers: { "X-Vinext-Version-Probe": "1" },
+      }),
+      {},
+    );
+
+    expect(response?.status).toBe(503);
+    expect(response?.headers.get("X-Vinext-Worker-Version")).toBe("unavailable");
+  });
+
+  it("accepts custom Worker env interfaces without an index signature", () => {
+    // oxlint-disable-next-line typescript/consistent-type-definitions -- the regression is specific to interface assignability without an index signature
+    interface CustomWorkerEnv {
+      ASSETS: { fetch(request: Request): Response };
+      DB: { prepare(query: string): unknown };
+    }
+
+    expectTypeOf<CustomWorkerEnv>().toExtend<
+      NonNullable<Parameters<typeof appRouterWorker.fetch>[1]>
+    >();
+    expectTypeOf<CustomWorkerEnv>().toExtend<
+      NonNullable<Parameters<typeof pagesRouterWorker.fetch>[1]>
+    >();
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
@@ -3387,6 +3456,90 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
+    });
+  });
+
+  it("parses top-level and environment-specific cross-version cache settings", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        cache: { enabled: true, cross_version_cache: true },
+        env: {
+          staging: { cache: { enabled: true, cross_version_cache: false } },
+        },
+      }),
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.cache).toEqual({ enabled: true, crossVersionCache: true });
+    expect(config?.env?.staging?.cache).toEqual({
+      enabled: true,
+      crossVersionCache: false,
+    });
+  });
+
+  it("parses TOML cross-version cache settings and environment overrides", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+[cache]
+enabled = true
+cross_version_cache = true
+
+[env.staging.cache]
+enabled = true
+cross_version_cache = false
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.cache).toEqual({ enabled: true, crossVersionCache: true });
+    expect(config?.env?.staging?.cache).toEqual({
+      enabled: true,
+      crossVersionCache: false,
+    });
+  });
+
+  it("parses inline and commented TOML cross-version cache settings", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `cache = { enabled = true, cross_version_cache = true }
+
+[env.staging] # deployment environment
+cache = { enabled = true, cross_version_cache = false }
+
+[env.preview]
+cache = { enabled = true, cross_version_cache = true } # shared preview cache
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.cache).toEqual({ enabled: true, crossVersionCache: true });
+    expect(config?.env?.staging?.cache).toEqual({
+      enabled: true,
+      crossVersionCache: false,
+    });
+    expect(config?.env?.preview?.cache).toEqual({
+      enabled: true,
+      crossVersionCache: true,
+    });
+  });
+
+  it("parses environment inline tables from TOML", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `[env]
+staging = { cache = { enabled = true, cross_version_cache = true } }
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)?.env?.staging?.cache).toEqual({
+      enabled: true,
+      crossVersionCache: true,
     });
   });
 

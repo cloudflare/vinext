@@ -27,6 +27,7 @@ import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
+  VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
 
@@ -870,6 +871,7 @@ describe("filterInternalHeaders", () => {
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
       [VINEXT_REVALIDATE_HOST_HEADER]: "example.fr",
+      [VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER]: "forged",
       "user-agent": "test",
     });
 
@@ -882,6 +884,7 @@ describe("filterInternalHeaders", () => {
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+      VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
       VINEXT_REVALIDATE_HOST_HEADER,
     ]);
     for (const name of VINEXT_INTERNAL_HEADERS) {
@@ -890,6 +893,7 @@ describe("filterInternalHeaders", () => {
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
     expect(result.get("user-agent")).toBe("test");
   });

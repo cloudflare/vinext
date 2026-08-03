@@ -200,6 +200,10 @@ export function generateWranglerConfig(
 
   if (options.cdnCache === "workers-cache") config.cache = { enabled: true };
 
+  if (options.warmCdnCache) {
+    config.version_metadata = { binding: "VINEXT_VERSION_METADATA" };
+  }
+
   if (options.imageOptimization === "cloudflare-images") {
     config.images = { binding: "IMAGES" };
   }
@@ -371,6 +375,27 @@ function appendTopLevelJsonProperty(code: string, property: string): string {
   return `${before}${needsComma ? "," : ""}\n${property}\n${code.slice(closing)}`;
 }
 
+function addVersionMetadataBindingToNamedEnvironments(
+  code: string,
+  envNames: readonly string[],
+): string {
+  const envProperty = findTopLevelJsonProperty(code, "env");
+  if (!envProperty) return code;
+  let envCode = code.slice(envProperty.valueStart, envProperty.valueEnd);
+  for (const envName of envNames) {
+    const namedEnvProperty = findTopLevelJsonProperty(envCode, envName);
+    if (!namedEnvProperty) continue;
+    const namedEnvCode = envCode.slice(namedEnvProperty.valueStart, namedEnvProperty.valueEnd);
+    if (findTopLevelJsonProperty(namedEnvCode, "version_metadata")) continue;
+    const updatedNamedEnv = appendTopLevelJsonProperty(
+      namedEnvCode,
+      '      "version_metadata": { "binding": "VINEXT_VERSION_METADATA" }',
+    );
+    envCode = `${envCode.slice(0, namedEnvProperty.valueStart)}${updatedNamedEnv}${envCode.slice(namedEnvProperty.valueEnd)}`;
+  }
+  return `${code.slice(0, envProperty.valueStart)}${envCode}${code.slice(envProperty.valueEnd)}`;
+}
+
 export function updateWranglerConfigForCloudflare(
   code: string,
   options: CloudflareInitOptions,
@@ -401,6 +426,23 @@ export function updateWranglerConfigForCloudflare(
       output,
       '  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS" }',
     );
+  }
+  const versionMetadata = config.version_metadata as { binding?: unknown } | undefined;
+  if (
+    options.warmCdnCache &&
+    (!versionMetadata || versionMetadata.binding === "VINEXT_VERSION_METADATA")
+  ) {
+    if (!versionMetadata) {
+      output = appendTopLevelJsonProperty(
+        output,
+        '  "version_metadata": { "binding": "VINEXT_VERSION_METADATA" }',
+      );
+    }
+    const envNames =
+      config.env && typeof config.env === "object" && !Array.isArray(config.env)
+        ? Object.keys(config.env)
+        : [];
+    output = addVersionMetadataBindingToNamedEnvironments(output, envNames);
   }
   if (options.cdnCache === "workers-cache") {
     const cacheProperty = findTopLevelJsonProperty(output, "cache");

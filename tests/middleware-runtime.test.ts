@@ -12,6 +12,39 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
 
 describe("middleware redirect protocol", () => {
+  // Next.js evaluates matcher source paths before request-dependent has/missing
+  // conditions. A miss on the current request therefore does not prove the
+  // pathname is middleware-independent.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
+  it("reports conditional pathname matches when request conditions miss", async () => {
+    const middleware = vi.fn(() => undefined);
+    const onMatcherEvaluation = vi.fn();
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        config: {
+          matcher: [
+            {
+              source: "/about",
+              has: [{ type: "header", key: "Next-Url", value: "/source" }],
+            },
+          ],
+        },
+        default: middleware,
+      },
+      normalizedPathname: "/about",
+      onMatcherEvaluation,
+      request: new Request("https://example.test/about"),
+    });
+
+    expect(result).toEqual({ continue: true });
+    expect(onMatcherEvaluation).toHaveBeenCalledWith({
+      matched: false,
+      conditionalPathMatched: true,
+    });
+    expect(middleware).not.toHaveBeenCalled();
+  });
+
   it("releases an unread middleware body branch in development", async () => {
     vi.stubEnv("NODE_ENV", "development");
     let resolveCancelled!: () => void;

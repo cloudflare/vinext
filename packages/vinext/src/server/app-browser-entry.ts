@@ -163,7 +163,6 @@ import {
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
   canonicalizeFullRscRequestHeaders,
-  createRscNavigationCacheVariant,
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
@@ -706,15 +705,9 @@ function readVisitedResponseCacheCandidate(
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   navigationKind: NavigationKind,
-  navigationVariant?: string,
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  const match = findVisitedResponseCacheEntry(
-    visitedResponseCache,
-    rscUrl,
-    interceptionContext,
-    navigationVariant,
-  );
+  const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
   if (!match) {
     return {
       cacheKey,
@@ -766,17 +759,8 @@ function applyVisitedResponseCacheCandidateDecision(
   return null;
 }
 
-function deleteVisitedResponse(
-  rscUrl: string,
-  interceptionContext: string | null,
-  navigationVariant?: string,
-): void {
-  deleteVisitedResponseCacheEntry(
-    visitedResponseCache,
-    rscUrl,
-    interceptionContext,
-    navigationVariant,
-  );
+function deleteVisitedResponse(rscUrl: string, interceptionContext: string | null): void {
+  deleteVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
 }
 
 function storeVisitedResponseSnapshot(
@@ -789,8 +773,6 @@ function storeVisitedResponseSnapshot(
   elements?: AppElements,
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
-  prefetchExactVariant: boolean = false,
-  navigationVariant?: string,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
@@ -799,10 +781,8 @@ function storeVisitedResponseSnapshot(
   const entry = createVisitedResponseCacheEntry({
     fallbackTtlMs: prefetchFallbackTtlMs,
     elements,
-    exactVariant: prefetchExactVariant,
     now,
     mountedSlotsHeader: requestMountedSlotsHeader,
-    navigationVariant,
     params,
     response: snapshot,
   });
@@ -814,7 +794,6 @@ function storeVisitedResponseSnapshot(
       interceptionContext,
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
-      { exactVariant: prefetchExactVariant, navigationVariant },
     );
   }
   return () => {
@@ -1816,27 +1795,10 @@ function bootstrapHydration(
           nextUrl: sourceUrl.pathname + sourceUrl.search,
           prefetchRouterState: getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null,
         });
-        const sourceNavigationVariant = createRscNavigationCacheVariant(requestHeaders);
         const usesCanonicalSharedRequest =
           getRscCacheKeyMode() === "response-vary" &&
           isLoadedRscPrewarmEligibleHref(currentHref, __basePath) &&
           canonicalizeFullRscRequestHeaders(requestHeaders);
-        // The client reuse manifest changes which layout segments the server
-        // may omit, so it is part of both the response Vary contract and the
-        // digest URL. Produce it before computing the URL and visited-response
-        // key; doing this only on a live-fetch miss would let responses for
-        // different visible layout states alias in both caches.
-        if (navigationKind === "navigate" && !usesCanonicalSharedRequest) {
-          const clientReuseManifestHeader =
-            createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
-          if (clientReuseManifestHeader !== null) {
-            requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
-          }
-        }
-        const navigationVariant =
-          navigationKind === "navigate" && !usesCanonicalSharedRequest
-            ? sourceNavigationVariant
-            : undefined;
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
@@ -1856,7 +1818,6 @@ function bootstrapHydration(
           bypassNavigationCache: shouldBypassNavigationCache,
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
-          navigationVariant,
           navigationKind,
           targetPathAndSearch,
         });
@@ -1898,7 +1859,6 @@ function bootstrapHydration(
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
-              navigationVariant,
             );
         const visitedResponseDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
           visitedResponseCandidate.facts,
@@ -1924,7 +1884,6 @@ function bootstrapHydration(
               mountedSlotsHeader,
               {
                 additionalRscUrls: additionalPrefetchRscUrls,
-                navigationVariant,
                 notifyInvalidation: false,
               },
             ));
@@ -2023,7 +1982,7 @@ function bootstrapHydration(
           });
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
-            deleteVisitedResponse(activeRscUrl, requestInterceptionContext, navigationVariant);
+            deleteVisitedResponse(activeRscUrl, requestInterceptionContext);
             continue;
           }
           return;
@@ -2046,7 +2005,6 @@ function bootstrapHydration(
                 mountedSlotsHeader,
                 {
                   additionalRscUrls: additionalPrefetchPathAndSearch,
-                  navigationVariant,
                 },
               )
             : await consumePrefetchResponseForNavigation(
@@ -2055,7 +2013,6 @@ function bootstrapHydration(
                 mountedSlotsHeader,
                 {
                   additionalRscUrls: additionalPrefetchRscUrls,
-                  navigationVariant,
                   shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
                 },
               );
@@ -2157,6 +2114,17 @@ function bootstrapHydration(
         }
 
         if (!navResponse) {
+          // Preserve the normal source-tree optimization for contextual and
+          // non-cacheable routes, but only after browser-local reuse misses.
+          // Cacheable routes use a complete source-independent payload so Link
+          // prefetches, soft navigations, and deploy warming share one request.
+          if (navigationKind === "navigate" && !usesCanonicalSharedRequest) {
+            const clientReuseManifestHeader =
+              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
+            if (clientReuseManifestHeader !== null) {
+              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+            }
+          }
           activeRscUrl = await getLiveRscUrl();
           navResponse = await fetch(activeRscUrl, {
             headers: requestHeaders,
@@ -2371,10 +2339,6 @@ function bootstrapHydration(
             requestInterceptionContext,
             metadata.interceptionContext,
           );
-          // A client-reuse response may omit layouts based on the source tree.
-          // Its raw response may remain reusable for the exact digest, but must
-          // not participate in the generic prefetch cache's path-only aliasing.
-          const prefetchExactVariant = requestHeaders.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
           if (cacheRestorable) {
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
@@ -2387,8 +2351,6 @@ function bootstrapHydration(
               undefined,
               true,
               prefetchSnapshot,
-              prefetchExactVariant,
-              navigationVariant,
             );
           } else {
             const state = committedState;
@@ -2413,8 +2375,6 @@ function bootstrapHydration(
               committedElements,
               true,
               prefetchSnapshot,
-              prefetchExactVariant,
-              navigationVariant,
             );
           }
         } catch {

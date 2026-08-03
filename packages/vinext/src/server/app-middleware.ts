@@ -14,6 +14,7 @@ import { cloneRequestWithHeaders, processMiddlewareHeaders } from "./request-pip
 import { internalServerErrorResponse } from "./http-error-responses.js";
 
 export type AppMiddlewareContext = {
+  conditionalPathMatched?: boolean;
   headers: Headers | null;
   matched?: boolean;
   requestHeaders: Headers | null;
@@ -270,6 +271,10 @@ export async function applyAppMiddleware(
         isProxy: options.isProxy,
         module: options.module,
         normalizedPathname: cleanPathname,
+        onMatcherEvaluation(observation) {
+          options.context.matched = observation.matched;
+          options.context.conditionalPathMatched = observation.conditionalPathMatched;
+        },
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,
         trailingSlash: options.trailingSlash,
@@ -280,8 +285,6 @@ export async function applyAppMiddleware(
       // so this is a no-op and executeMiddleware owns the cancellation instead.
       cancelRequestBody(middlewareRequest);
     }
-    options.context.matched = result.matched !== false;
-
     if (!result.continue) {
       cancelRequestBody(options.request);
       if (result.redirectUrl) {

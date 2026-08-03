@@ -14,7 +14,11 @@ import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
-import { matchesMiddleware, type MatcherConfig } from "./middleware-matcher.js";
+import {
+  hasConditionalMiddlewarePathMatch,
+  matchesMiddleware,
+  type MatcherConfig,
+} from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
@@ -30,8 +34,6 @@ export type MiddlewareModule = Record<string, unknown>;
 
 export type MiddlewareResult = {
   continue: boolean;
-  /** False only when the configured matcher skipped middleware execution. */
-  matched?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -78,6 +80,10 @@ type ExecuteMiddlewareOptions = {
   isProxy: boolean;
   module: MiddlewareModule;
   normalizedPathname?: string;
+  onMatcherEvaluation?: (observation: {
+    conditionalPathMatched: boolean;
+    matched: boolean;
+  }) => void;
   /**
    * The caller already created an isolated body branch for middleware. This
    * lets App Router normalize that branch's URL and headers without adding a
@@ -344,16 +350,19 @@ export async function executeMiddleware(
     : normalizedPathname;
   const matchPathname = basePathStrippedPathname;
 
-  if (
-    !matchesMiddleware(
-      matchPathname,
-      middlewareMatcher(options.module),
-      options.request,
-      options.i18nConfig,
-    )
-  ) {
-    return { continue: true, matched: false };
+  const matcher = middlewareMatcher(options.module);
+  if (!matchesMiddleware(matchPathname, matcher, options.request, options.i18nConfig)) {
+    options.onMatcherEvaluation?.({
+      matched: false,
+      conditionalPathMatched: hasConditionalMiddlewarePathMatch(
+        matchPathname,
+        matcher,
+        options.i18nConfig,
+      ),
+    });
+    return { continue: true };
   }
+  options.onMatcherEvaluation?.({ matched: true, conditionalPathMatched: false });
 
   const nextRequest = createNextRequest(
     options.request,

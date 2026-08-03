@@ -27,6 +27,18 @@ function formatFetchUrl(url: Parameters<typeof fetch>[0]): string {
   return url.url;
 }
 
+function versionProbeResponse(
+  url: Parameters<typeof fetch>[0],
+  init?: RequestInit,
+): Response | null {
+  if (init?.method !== "POST") return null;
+  const versionId = new URL(formatFetchUrl(url)).searchParams.get("__vinext_version_probe");
+  return new Response(null, {
+    status: 204,
+    headers: { "X-Vinext-Worker-Version": versionId ?? "unavailable" },
+  });
+}
+
 describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
@@ -34,7 +46,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
-        async () => new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } }),
+        async (url, init) =>
+          versionProbeResponse(url, init) ??
+          new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } }),
       ),
     );
   });
@@ -54,6 +68,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }),
     );
     vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) return probe;
       events.push(`fetch:${formatFetchUrl(url)}`);
       return new Headers(init?.headers).get("RSC") === "1"
         ? new Response("flight", {
@@ -124,24 +140,34 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       ]),
       expect.any(Object),
     );
-    expect(fetch).toHaveBeenCalledTimes(3);
-    const firstInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
-    const rscInit = vi.mocked(fetch).mock.calls[2]![1] as RequestInit;
+    expect(fetch).toHaveBeenCalledTimes(4);
+    const probeInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
+    const firstInit = vi.mocked(fetch).mock.calls[1]![1] as RequestInit;
+    const rscInit = vi.mocked(fetch).mock.calls[3]![1] as RequestInit;
     expect(fetch).toHaveBeenNthCalledWith(
       1,
-      new URL("https://app.example.com/"),
+      new URL(
+        "https://app.example.com/?__vinext_version_probe=22222222-2222-4222-8222-222222222222",
+      ),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      new URL("https://app.example.com/about"),
+      new URL("https://app.example.com/"),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
+      new URL("https://app.example.com/about"),
+      expect.any(Object),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
       new URL("https://app.example.com/?_rsc"),
       expect.any(Object),
     );
+    expect(probeInit.method).toBe("POST");
+    expect(new Headers(probeInit.headers).get("X-Vinext-Version-Probe")).toBe("1");
     expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker="22222222-2222-4222-8222-222222222222"',
     );
@@ -176,16 +202,174 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
   });
 
+  it("promotes before warming when cross-version caching shares cache entries", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.toml",
+      `name = "my-worker"
+route = "app.example.com/*"
+cache = { enabled = true, cross_version_cache = true }
+`,
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) {
+        events.push(`probe:${formatFetchUrl(url)}`);
+        return probe;
+      }
+      events.push(`fetch:${init?.method ?? "GET"}:${formatFetchUrl(url)}`);
+      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/"], { warmCdnConcurrency: 1 });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "promote",
+      "triggers",
+      "probe:https://app.example.com/?__vinext_version_probe=22222222-2222-4222-8222-222222222222",
+      "fetch:GET:https://app.example.com/",
+    ]);
+    const probeHeaders = new Headers(vi.mocked(fetch).mock.calls[0]![1]?.headers);
+    const headers = new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers);
+    expect(probeHeaders.has("Cloudflare-Workers-Version-Overrides")).toBe(false);
+    expect(headers.has("Cloudflare-Workers-Version-Overrides")).toBe(false);
+  });
+
+  it("does not send cacheable requests when version metadata is unavailable", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method === "POST") {
+        events.push("probe-unavailable");
+        return new Response(null, {
+          status: 503,
+          headers: { "X-Vinext-Worker-Version": "unavailable" },
+        });
+      }
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/"], { warmCdnConcurrency: 1 });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "triggers",
+      "probe-unavailable",
+      "promote",
+      "probe-unavailable",
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails strict warming after promotion when the active version cannot be verified", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+        cache: { enabled: true, cross_version_cache: true },
+      }),
+    );
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(null, {
+        status: 503,
+        headers: { "X-Vinext-Worker-Version": "unavailable" },
+      }),
+    );
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) return "Triggers deployed\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow("was promoted to 100%: VINEXT_VERSION_METADATA is unavailable");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the env Worker name and env custom domain for version override warmup", async () => {
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
         custom_domains: ["app.example.com"],
+        cache: { enabled: true, cross_version_cache: true },
         env: {
           staging: {
             name: "my-worker-staging-custom",
             custom_domains: ["staging.example.com"],
+            cache: { enabled: true, cross_version_cache: false },
           },
         },
       }),
@@ -236,7 +420,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         custom_domains: ["app.example.com"],
       }),
     );
-    vi.mocked(fetch).mockImplementation(async (url) => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) return probe;
       events.push(`fetch:${formatFetchUrl(url)}`);
       return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
     });
@@ -287,7 +473,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         name: "workers-cache",
       }),
     );
-    vi.mocked(fetch).mockImplementation(async (url) => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) return probe;
       events.push(`fetch:${formatFetchUrl(url)}`);
       return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
     });
@@ -387,7 +575,10 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         custom_domains: ["app.example.com"],
       }),
     );
-    vi.mocked(fetch).mockResolvedValue(new Response("nope", { status: 500 }));
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      return probe ?? new Response("nope", { status: 500 });
+    });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         return "Uploaded version 22222222-2222-4222-8222-222222222222\n";

@@ -7,6 +7,7 @@ import {
   DEFAULT_CDN_WARM_TIMEOUT_MS,
   warmCdnCache,
   getWarmPathsFromPrerenderManifest,
+  probeWorkerVersion,
   readPrerenderWarmPlan,
   readPrerenderWarmPaths,
   warmCdnCacheFromPrerender,
@@ -32,6 +33,62 @@ afterEach(() => {
 describe("Cloudflare CDN warmup", () => {
   it("uses a 5 second default request timeout", () => {
     expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it("retries until a staged Worker version override is observable", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 204,
+          headers: { "X-Vinext-Worker-Version": "version-old" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 204,
+          headers: { "X-Vinext-Worker-Version": "version-new" },
+        }),
+      );
+
+    await expect(
+      probeWorkerVersion({
+        targetUrl: "https://app.example.com",
+        pathname: "/about",
+        versionId: "version-new",
+        headers: { "Cloudflare-Workers-Version-Overrides": 'app="version-new"' },
+        retries: 1,
+        retryDelayMs: 0,
+        fetchImpl: fetchMock,
+      }),
+    ).resolves.toEqual({ verified: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toEqual(
+      new URL("https://app.example.com/about?__vinext_version_probe=version-new"),
+    );
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("X-Vinext-Version-Probe")).toBe("1");
+    expect(new Headers(init?.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
+      'app="version-new"',
+    );
+  });
+
+  it("reports a missing version metadata binding without warming optimistically", async () => {
+    await expect(
+      probeWorkerVersion({
+        targetUrl: "https://app.example.com",
+        pathname: "/about",
+        versionId: "version-new",
+        retryDelayMs: 0,
+        fetchImpl: async () =>
+          new Response(null, {
+            status: 503,
+            headers: { "X-Vinext-Worker-Version": "unavailable" },
+          }),
+      }),
+    ).resolves.toEqual({ verified: false, reason: "binding-unavailable" });
   });
 
   it("reads warmable paths from the prerender manifest", () => {

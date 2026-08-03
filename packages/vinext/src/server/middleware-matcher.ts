@@ -71,6 +71,31 @@ export function matchesMiddleware(
   return false;
 }
 
+/**
+ * Whether a matcher object covers this pathname but can still accept or reject
+ * the request based on `has` / `missing` conditions. A request that misses such
+ * a matcher does not prove that middleware is irrelevant to other requests for
+ * the same URL.
+ */
+export function hasConditionalMiddlewarePathMatch(
+  pathname: string,
+  matcher: MatcherConfig | undefined,
+  i18nConfig?: NextI18nConfig | null,
+): boolean {
+  if (!Array.isArray(matcher)) return false;
+
+  return matcher.some((candidate) => {
+    if (
+      typeof candidate === "string" ||
+      !isValidMiddlewareMatcherObjectConfig(candidate) ||
+      (!candidate.has?.length && !candidate.missing?.length)
+    ) {
+      return false;
+    }
+    return matchObjectMatcher(pathname, candidate, i18nConfig);
+  });
+}
+
 function matchMatcherPattern(
   pathname: string,
   pattern: string,

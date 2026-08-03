@@ -48,7 +48,6 @@ export const VINEXT_RSC_VARY_HEADER = [
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 ].join(", ");
 
 const SHARED_RSC_VARIANT_HEADERS = [
@@ -59,7 +58,6 @@ const SHARED_RSC_VARIANT_HEADERS = [
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 ] as const;
 
 const CACHE_BUSTING_DIGEST_BYTES = 12;
@@ -212,7 +210,6 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 }
 
 type CreateCacheBustingInputOptions = {
-  includeClientReuseManifestHeader?: boolean;
   includePrefetchHeaders?: boolean;
   includeRenderModeHeader?: boolean;
 };
@@ -237,10 +234,6 @@ function createCacheBustingInput(
     ...(options.includeRenderModeHeader === false
       ? []
       : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
-    ...(options.includeClientReuseManifestHeader === false ||
-    !headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)
-      ? []
-      : [headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)]),
   ];
 
   if (values.every((value) => value === null)) {
@@ -248,20 +241,6 @@ function createCacheBustingInput(
   }
 
   return values.map(normalizeHeaderValue).join(",");
-}
-
-/**
- * Exact source identity used only for browser-local path aliasing. Prefetch
- * marker headers differ between a speculative fetch and its click navigation,
- * while the remaining fields determine the source-dependent payload.
- */
-export function createRscNavigationCacheVariant(headers: Headers): string {
-  return (
-    createCacheBustingInput(headers, {
-      includeClientReuseManifestHeader: false,
-      includePrefetchHeaders: false,
-    }) ?? ""
-  );
 }
 
 async function sha256CacheBustingHash(input: string): Promise<string> {
@@ -601,18 +580,6 @@ export async function resolveInvalidRscCacheBustingRequest(
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
-    if (options.request.headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)) {
-      acceptedHashes.add(
-        await computeRscCacheBustingSearchParamWithOptions(options.request.headers, {
-          includeClientReuseManifestHeader: false,
-        }),
-      );
-      acceptedHashes.add(
-        computeLegacyRscCacheBustingSearchParam(options.request.headers, {
-          includeClientReuseManifestHeader: false,
-        }),
-      );
-    }
     if (
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
       null
@@ -623,20 +590,6 @@ export async function resolveInvalidRscCacheBustingRequest(
       );
       if (previousHash !== null) acceptedHashes.add(previousHash);
       if (previousLegacyHash !== null) acceptedHashes.add(previousLegacyHash);
-      if (options.request.headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)) {
-        acceptedHashes.add(
-          await computeRscCacheBustingSearchParamWithOptions(options.request.headers, {
-            includeClientReuseManifestHeader: false,
-            includeRenderModeHeader: false,
-          }),
-        );
-        acceptedHashes.add(
-          computeLegacyRscCacheBustingSearchParam(options.request.headers, {
-            includeClientReuseManifestHeader: false,
-            includeRenderModeHeader: false,
-          }),
-        );
-      }
     }
   }
 

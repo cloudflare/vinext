@@ -954,6 +954,18 @@ export function matchRedirect(
   return localeMatch;
 }
 
+/** Check whether a redirect source can match without evaluating has/missing conditions. */
+export function matchesRedirectSource(
+  pathname: string,
+  redirect: NextRedirect,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  return (
+    shouldEvaluateRule(redirect.basePath, basePathState) &&
+    matchConfigPattern(pathname, redirect.source) !== null
+  );
+}
+
 /**
  * Apply rewrite rules from next.config.js.
  * Returns the rewritten URL or null if no rewrite matched.
@@ -1390,16 +1402,7 @@ export function matchHeaders(
 
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
-    if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
-    // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
-    // pure functions of rule.source and the result never changes between requests.
-    const source = pathnameHadTrailingSlash
-      ? stripTrailingSlashForConfigMatch(rule.source)
-      : rule.source;
-    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
-      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
-    );
-    if (sourceRegex && sourceRegex.test(pathname)) {
+    if (matchesHeaderSource(pathname, rule, basePathState, pathnameHadTrailingSlash)) {
       if (rule.has || rule.missing) {
         if (!checkHasConditions(rule.has, rule.missing, ctx)) {
           continue;
@@ -1409,6 +1412,27 @@ export function matchHeaders(
     }
   }
   return result;
+}
+
+/** Check whether a header-rule source can match without evaluating has/missing conditions. */
+export function matchesHeaderSource(
+  pathname: string,
+  rule: NextHeader,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+  pathnameHadTrailingSlash: boolean = pathname.length > 1 && pathname.endsWith("/"),
+): boolean {
+  if (!shouldEvaluateRule(rule.basePath, basePathState)) return false;
+
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+  // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
+  // pure functions of rule.source and the result never changes between requests.
+  const source = pathnameHadTrailingSlash
+    ? stripTrailingSlashForConfigMatch(rule.source)
+    : rule.source;
+  const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
+    safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
+  );
+  return sourceRegex?.test(pathname) === true;
 }
 
 /**

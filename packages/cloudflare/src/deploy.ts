@@ -47,7 +47,12 @@ import {
   type ProjectInfo,
 } from "vinext/internal/utils/project";
 import { parseWranglerConfig, runTPR } from "./tpr.js";
-import { readPrerenderWarmPlan, warmCdnCache, type CdnWarmOptions } from "./cdn-warm.js";
+import {
+  probeWorkerVersion,
+  readPrerenderWarmPlan,
+  warmCdnCache,
+  type CdnWarmOptions,
+} from "./cdn-warm.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
@@ -578,6 +583,10 @@ export async function deployWithCdnWarmup(
   let triggersDeployedUrl: string | null = null;
   let warmedBeforePromotion = false;
   let triggersApplied = false;
+  const targetEnv = getWranglerTargetEnv(options);
+  const effectiveCache =
+    (targetEnv ? wranglerConfig?.env?.[targetEnv]?.cache : undefined) ?? wranglerConfig?.cache;
+  const crossVersionCache = effectiveCache?.crossVersionCache === true;
 
   function applyTriggers(): void {
     if (triggersApplied) return;
@@ -585,7 +594,11 @@ export async function deployWithCdnWarmup(
     triggersApplied = true;
   }
 
-  if (stagingTraffic) {
+  if (crossVersionCache) {
+    console.warn(
+      "  CDN warmup: pre-traffic warmup skipped because cache.cross_version_cache shares entries across Worker versions; promoting before warming.",
+    );
+  } else if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
     try {
       applyTriggers();
@@ -600,28 +613,46 @@ export async function deployWithCdnWarmup(
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
-      try {
-        await warmCdnCache({
-          targetUrl,
-          paths,
-          headers,
-          deploymentId: options.deploymentId,
-          concurrency: options.warmCdnConcurrency,
-          timeoutMs: options.warmCdnTimeout,
-          retries: options.warmCdnRetries,
-          rscCacheKeyMode: options.rscCacheKeyMode,
-          rscPaths: options.rscPaths,
-          strict: options.warmCdnStrict,
-        });
-      } catch (error) {
-        throw withStagedVersionCleanupNote(error);
+      const probePath = paths[0] ?? options.rscPaths?.[0];
+      const probe = probePath
+        ? await probeWorkerVersion({
+            targetUrl,
+            pathname: probePath,
+            versionId: upload.versionId,
+            headers,
+            timeoutMs: options.warmCdnTimeout,
+          })
+        : { verified: false as const, reason: "not-ready" as const };
+      if (probe.verified) {
+        try {
+          await warmCdnCache({
+            targetUrl,
+            paths,
+            headers,
+            deploymentId: options.deploymentId,
+            concurrency: options.warmCdnConcurrency,
+            timeoutMs: options.warmCdnTimeout,
+            retries: options.warmCdnRetries,
+            rscCacheKeyMode: options.rscCacheKeyMode,
+            rscPaths: options.rscPaths,
+            strict: options.warmCdnStrict,
+          });
+        } catch (error) {
+          throw withStagedVersionCleanupNote(error);
+        }
+        warmedBeforePromotion = true;
+      } else if (probe.reason === "binding-unavailable") {
+        console.warn(
+          "  CDN warmup: staged version could not be verified because VINEXT_VERSION_METADATA is unavailable; promoting before warming.",
+        );
+      } else {
+        console.warn(
+          "  CDN warmup: staged version override did not become verifiable in time; promoting before warming.",
+        );
       }
-      warmedBeforePromotion = true;
-    } else if (options.warmCdnStrict) {
-      throw new Error(
-        "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
-          "Configure a route/custom domain and Worker name, or rerun without --warm-cdn-strict. " +
-          getStagedVersionCleanupNote(),
+    } else {
+      console.warn(
+        "  CDN warmup: pre-traffic warmup needs a production URL and Worker name for version overrides; promoting before warming.",
       );
     }
   } else {
@@ -648,17 +679,38 @@ export async function deployWithCdnWarmup(
       options,
     );
     if (targetUrl) {
-      await warmCdnCache({
-        targetUrl,
-        paths,
-        deploymentId: options.deploymentId,
-        concurrency: options.warmCdnConcurrency,
-        timeoutMs: options.warmCdnTimeout,
-        retries: options.warmCdnRetries,
-        rscCacheKeyMode: options.rscCacheKeyMode,
-        rscPaths: options.rscPaths,
-        strict: options.warmCdnStrict,
-      });
+      const probePath = paths[0] ?? options.rscPaths?.[0];
+      const probe = probePath
+        ? await probeWorkerVersion({
+            targetUrl,
+            pathname: probePath,
+            versionId: upload.versionId,
+            timeoutMs: options.warmCdnTimeout,
+          })
+        : { verified: true as const };
+      if (probe.verified) {
+        await warmCdnCache({
+          targetUrl,
+          paths,
+          deploymentId: options.deploymentId,
+          concurrency: options.warmCdnConcurrency,
+          timeoutMs: options.warmCdnTimeout,
+          retries: options.warmCdnRetries,
+          rscCacheKeyMode: options.rscCacheKeyMode,
+          rscPaths: options.rscPaths,
+          strict: options.warmCdnStrict,
+        });
+      } else {
+        const reason =
+          probe.reason === "binding-unavailable"
+            ? "VINEXT_VERSION_METADATA is unavailable"
+            : "the promoted version did not become verifiable in time";
+        const message =
+          `CDN warmup skipped after Worker version ${upload.versionId} was promoted to 100%: ${reason}. ` +
+          "No cacheable requests were sent.";
+        if (options.warmCdnStrict) throw new Error(message);
+        console.warn(`  ${message}`);
+      }
     } else if (options.warmCdnStrict) {
       throw new Error(
         "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +

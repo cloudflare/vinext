@@ -33,7 +33,11 @@ import {
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
+import {
+  finalizeMissingStaticAssetResponse,
+  handleWorkerVersionProbe,
+  type WorkerVersionProbeEnv,
+} from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
@@ -54,7 +58,7 @@ type AssetFetcher = {
 
 type PagesWorkerEnv = {
   ASSETS?: AssetFetcher;
-} & Record<string, unknown>;
+} & WorkerVersionProbeEnv;
 
 type PagesWorkerExecutionContext = {
   waitUntil?(promise: Promise<unknown>): void;
@@ -110,6 +114,9 @@ async function handleRequest(
   env: PagesWorkerEnv | undefined,
   platformCtx: PagesWorkerExecutionContext | ExecutionContextLike | undefined,
 ): Promise<Response> {
+  const versionProbe = handleWorkerVersionProbe(request, env);
+  if (versionProbe) return versionProbe;
+
   const ctx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
     handleRequest(internalRequest, env, internalCtx),
   );

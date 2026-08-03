@@ -20,7 +20,10 @@ import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
@@ -158,7 +161,149 @@ function prerenderRouteParamsHeader(payload: unknown): string {
   return encodeURIComponent(JSON.stringify(payload));
 }
 
+async function runRscPrewarmProbe(handler: ReturnType<typeof createHandler>): Promise<Response> {
+  const previousPrerender = process.env.VINEXT_PRERENDER;
+  process.env.VINEXT_PRERENDER = "1";
+  try {
+    return await handler(
+      new Request("https://example.test/docs/about?_rsc", {
+        headers: {
+          Accept: "text/x-component",
+          RSC: "1",
+          [VINEXT_PRERENDER_SECRET_HEADER]: "test-secret",
+        },
+      }),
+      null,
+    );
+  } finally {
+    if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+    else process.env.VINEXT_PRERENDER = previousPrerender;
+  }
+}
+
 describe("createAppRscHandler", () => {
+  it("certifies an unconditional cacheable RSC prerender as source-independent", async () => {
+    const response = await runRscPrewarmProbe(createHandler({ configHeaders: [] }));
+
+    expect(response.headers.get(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe("1");
+  });
+
+  // Next.js matcher conditions can distinguish a normal client RSC navigation
+  // from the bare prerender probe. A condition miss must therefore fail closed.
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-matcher/index.test.ts
+  it("does not certify a path covered by request-conditional middleware", async () => {
+    const middleware = vi.fn(() => undefined);
+    const response = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [],
+        middlewareModule: {
+          config: {
+            matcher: [
+              {
+                source: "/about",
+                has: [{ type: "header", key: "Next-Url", value: "/source" }],
+              },
+            ],
+          },
+          default: middleware,
+        },
+      }),
+    );
+
+    expect(middleware).not.toHaveBeenCalled();
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
+  // Next's cache-busting helper explicitly emits bare `?_rsc` when the hash is
+  // empty, so both valueless and valued `_rsc` config conditions are variants.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/set-cache-busting-search-param.ts
+  it("does not certify routes when config rules depend on client-only headers or _rsc", async () => {
+    const headerResponse = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [
+          {
+            source: "/about",
+            has: [{ type: "header", key: VINEXT_CLIENT_REUSE_MANIFEST_HEADER }],
+            headers: [{ key: "x-variant", value: "client-reuse" }],
+          },
+        ],
+      }),
+    );
+    const queryResponse = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [],
+        configRedirects: [
+          {
+            source: "/about",
+            destination: "/variant",
+            permanent: false,
+            has: [{ type: "query", key: "_rsc" }],
+          },
+        ],
+      }),
+    );
+
+    expect(headerResponse.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+    expect(queryResponse.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
+  it("ignores request-conditional config rules that cannot reach the prerendered route", async () => {
+    const response = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [
+          {
+            source: "/api/:path*",
+            has: [{ type: "cookie", key: "admin" }],
+            headers: [{ key: "x-admin", value: "1" }],
+          },
+        ],
+        configRedirects: [
+          {
+            source: "/private/:path*",
+            destination: "/login",
+            permanent: false,
+            has: [{ type: "header", key: "authorization" }],
+          },
+        ],
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/legacy/:path*",
+              destination: "/about",
+              has: [{ type: "query", key: "_rsc" }],
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+      }),
+    );
+
+    expect(response.headers.get(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe("1");
+  });
+
+  it("does not certify request-conditional rewrites reached after an earlier rewrite", async () => {
+    const response = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            { source: "/about", destination: "/intermediate" },
+            {
+              source: "/intermediate",
+              destination: "/about",
+              has: [{ type: "header", key: "next-url" }],
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+      }),
+    );
+
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
   it("applies basePath: false rewrites outside the App Router basePath", async () => {

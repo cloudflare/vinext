@@ -58,4 +58,7 @@
   "cache": {
     "enabled": true,
   },
+  "version_metadata": {
+    "binding": "VINEXT_VERSION_METADATA",
+  },
 }

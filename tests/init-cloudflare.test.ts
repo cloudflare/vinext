@@ -590,6 +590,41 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
   });
 
+  it("adds version metadata to warm-enabled configs and each named environment", () => {
+    const input = `{
+  "name": "existing",
+  "env": {
+    "staging": { "name": "existing-staging" },
+    "preview": { "name": "existing-preview" }
+  }
+}\n`;
+    const options = {
+      dataCache: "none" as const,
+      cdnCache: "workers-cache" as const,
+      imageOptimization: "none" as const,
+      warmCdnCache: true,
+    };
+    const output = updateWranglerConfigForCloudflare(input, options);
+    const parsed = JSON.parse(output);
+
+    expect(parsed.version_metadata).toEqual({ binding: "VINEXT_VERSION_METADATA" });
+    expect(parsed.env.staging.version_metadata).toEqual({ binding: "VINEXT_VERSION_METADATA" });
+    expect(parsed.env.preview.version_metadata).toEqual({ binding: "VINEXT_VERSION_METADATA" });
+    expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
+  });
+
+  it("preserves a custom version metadata binding", () => {
+    const input = `{ "version_metadata": { "binding": "CUSTOM_VERSION" } }\n`;
+    const output = updateWranglerConfigForCloudflare(input, {
+      dataCache: "none",
+      cdnCache: "workers-cache",
+      imageOptimization: "none",
+      warmCdnCache: true,
+    });
+
+    expect(JSON.parse(output).version_metadata).toEqual({ binding: "CUSTOM_VERSION" });
+  });
+
   it("preserves an existing Worker entry and assets", () => {
     const input = `{
   "main": "./worker/index.ts",

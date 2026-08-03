@@ -20,6 +20,11 @@ import {
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
+// Keep these deploy-probe protocol names in sync with vinext/server/worker-utils.
+const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
+const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
+const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
+
 export type CdnWarmOptions = {
   targetUrl: string;
   paths: readonly string[];
@@ -38,6 +43,23 @@ export type CdnWarmOptions = {
 };
 
 export const DEFAULT_CDN_WARM_TIMEOUT_MS = 5_000;
+export const DEFAULT_VERSION_PROBE_RETRIES = 8;
+export const DEFAULT_VERSION_PROBE_RETRY_DELAY_MS = 250;
+
+export type WorkerVersionProbeResult =
+  | { verified: true }
+  | { verified: false; reason: "binding-unavailable" | "not-ready" };
+
+export type WorkerVersionProbeOptions = {
+  targetUrl: string;
+  pathname: string;
+  versionId: string;
+  headers?: HeadersInit;
+  timeoutMs?: number;
+  retries?: number;
+  retryDelayMs?: number;
+  fetchImpl?: typeof fetch;
+};
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
@@ -395,6 +417,56 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function waitForRetry(delayMs: number): Promise<void> {
+  if (delayMs <= 0) return;
+  await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+}
+
+/** Verify that a staged-version override has propagated before warming it. */
+export async function probeWorkerVersion(
+  options: WorkerVersionProbeOptions,
+): Promise<WorkerVersionProbeResult> {
+  const url = buildWarmupUrl(options.targetUrl, options.pathname);
+  url.searchParams.set(VINEXT_VERSION_PROBE_QUERY, options.versionId);
+  const headers = new Headers(options.headers);
+  headers.set(VINEXT_VERSION_PROBE_HEADER, "1");
+  headers.set("Cache-Control", "no-cache");
+  headers.set("User-Agent", "vinext-cloudflare-version-probe");
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
+  const retries = Math.max(0, options.retries ?? DEFAULT_VERSION_PROBE_RETRIES);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? DEFAULT_VERSION_PROBE_RETRY_DELAY_MS);
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(url, {
+        method: "POST",
+        redirect: "manual",
+        headers,
+        signal: controller.signal,
+      });
+      await response.arrayBuffer();
+      const observedVersion = response.headers.get(VINEXT_WORKER_VERSION_HEADER);
+      if (response.status === 204 && observedVersion === options.versionId) {
+        return { verified: true };
+      }
+      if (observedVersion === "unavailable") {
+        return { verified: false, reason: "binding-unavailable" };
+      }
+    } catch {
+      // A failed override may reach the old version or a not-yet-propagated
+      // route. Retry the exact staged-version probe within the bounded window.
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt < retries) await waitForRetry(retryDelayMs);
+  }
+
+  return { verified: false, reason: "not-ready" };
 }
 
 async function warmOnePath(

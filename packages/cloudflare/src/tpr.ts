@@ -78,6 +78,7 @@ type PrerenderResult = {
 
 type WranglerConfig = {
   accountId?: string;
+  cache?: WranglerCacheConfig;
   kvNamespaceId?: string;
   customDomain?: string;
   name?: string;
@@ -86,8 +87,14 @@ type WranglerConfig = {
 };
 
 export type WranglerEnvironmentConfig = {
+  cache?: WranglerCacheConfig;
   customDomain?: string;
   name?: string;
+};
+
+export type WranglerCacheConfig = {
+  crossVersionCache?: boolean;
+  enabled?: boolean;
 };
 
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
@@ -261,6 +268,9 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     result.accountId = config.account_id;
   }
 
+  const cache = extractCacheConfig(config.cache);
+  if (cache) result.cache = cache;
+
   // KV namespace ID for VINEXT_KV_CACHE
   if (Array.isArray(config.kv_namespaces)) {
     const vinextKV = config.kv_namespaces.find(
@@ -291,7 +301,7 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
     const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (envConfig.name || envConfig.customDomain) {
+    if (envConfig.name || envConfig.customDomain || envConfig.cache) {
       result[envName] = envConfig;
     }
   }
@@ -305,7 +315,20 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   }
   const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
+  const cache = extractCacheConfig(config.cache);
+  if (cache) result.cache = cache;
   return result;
+}
+
+function extractCacheConfig(value: unknown): WranglerCacheConfig | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const result: WranglerCacheConfig = {};
+  if (typeof raw.enabled === "boolean") result.enabled = raw.enabled;
+  if (typeof raw.cross_version_cache === "boolean") {
+    result.crossVersionCache = raw.cross_version_cache;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function extractDomainFromRoutes(routes: unknown): string | null {
@@ -416,6 +439,23 @@ function extractFromTOML(content: string): WranglerConfig {
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;
 
+  const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
+  const inlineCache = extractTomlInlineTable(getTomlRootBody(content), "cache");
+  const cache = cacheSection
+    ? extractTomlCacheConfig(cacheSection.body)
+    : inlineCache
+      ? extractTomlCacheConfig(inlineCache)
+      : undefined;
+  if (cache) result.cache = cache;
+
+  // This reader intentionally extracts only the small Wrangler subset used by
+  // deploy. If a valid TOML shape is newer or more exotic than the forms above,
+  // fail closed: a false positive merely postpones warming until promotion,
+  // while a false negative can write old content into a cross-version cache.
+  if (!result.cache?.crossVersionCache && /\bcross_version_cache\s*=\s*true\b/.test(content)) {
+    result.cache = { ...result.cache, crossVersionCache: true };
+  }
+
   return result;
 }
 
@@ -425,7 +465,8 @@ function extractEnvConfigsFromTOML(
   const result: Record<string, WranglerEnvironmentConfig> = {};
 
   for (const section of getTomlSections(content)) {
-    const envName = section.header.match(/^env\.([^.]+)$/)?.[1];
+    const headerPath = parseTomlDottedKey(section.header);
+    const envName = headerPath.length === 2 && headerPath[0] === "env" ? headerPath[1] : undefined;
     if (envName) {
       const envConfig = result[envName] ?? {};
       const nameMatch = section.body.match(/^name\s*=\s*"([^"]+)"/m);
@@ -433,13 +474,19 @@ function extractEnvConfigsFromTOML(
       const domain =
         extractTomlScalarRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      if (envConfig.name || envConfig.customDomain) {
+      const inlineCache = extractTomlInlineTable(section.body, "cache");
+      const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
+      if (cache) envConfig.cache = cache;
+      if (envConfig.name || envConfig.customDomain || envConfig.cache) {
         result[envName] = envConfig;
       }
       continue;
     }
 
-    const routesEnvName = section.header.match(/^env\.([^.]+)\.routes$/)?.[1];
+    const routesEnvName =
+      headerPath.length === 3 && headerPath[0] === "env" && headerPath[2] === "routes"
+        ? headerPath[1]
+        : undefined;
     if (routesEnvName) {
       const envConfig = result[routesEnvName] ?? {};
       const domain = extractTomlRouteBlockDomain(section.body);
@@ -448,9 +495,163 @@ function extractEnvConfigsFromTOML(
         result[routesEnvName] = envConfig;
       }
     }
+
+    const cacheEnvName =
+      headerPath.length === 3 && headerPath[0] === "env" && headerPath[2] === "cache"
+        ? headerPath[1]
+        : undefined;
+    if (cacheEnvName) {
+      const envConfig = result[cacheEnvName] ?? {};
+      const cache = extractTomlCacheConfig(section.body);
+      if (cache) envConfig.cache = cache;
+      if (envConfig.name || envConfig.customDomain || envConfig.cache) {
+        result[cacheEnvName] = envConfig;
+      }
+    }
+
+    if (headerPath.length === 1 && headerPath[0] === "env") {
+      for (const assignment of parseTomlAssignments(section.body)) {
+        const inlineEnv = unwrapTomlInlineTable(assignment.value);
+        if (!inlineEnv) continue;
+        const inlineCache = extractTomlInlineTable(inlineEnv, "cache");
+        const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
+        if (!cache) continue;
+        result[assignment.key] = { ...result[assignment.key], cache };
+      }
+    }
   }
 
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function extractTomlCacheConfig(section: string): WranglerCacheConfig | undefined {
+  const result: WranglerCacheConfig = {};
+  for (const assignment of parseTomlAssignments(section)) {
+    const value = assignment.value.trim();
+    if (assignment.key === "enabled" && /^(?:true|false)$/.test(value)) {
+      result.enabled = value === "true";
+    }
+    if (assignment.key === "cross_version_cache" && /^(?:true|false)$/.test(value)) {
+      result.crossVersionCache = value === "true";
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function getTomlRootBody(content: string): string {
+  const rootLines: string[] = [];
+  for (const line of content.split("\n")) {
+    if (parseTomlSectionHeader(line)) break;
+    rootLines.push(line);
+  }
+  return rootLines.join("\n");
+}
+
+function parseTomlDottedKey(value: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (const character of value.trim()) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ".") {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  result.push(current.trim());
+  return result.filter(Boolean);
+}
+
+function parseTomlAssignments(source: string): Array<{ key: string; value: string }> {
+  const statements: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let comment = false;
+  let depth = 0;
+
+  for (const character of source) {
+    if (comment) {
+      if (character === "\n") {
+        comment = false;
+        if (depth === 0 && current.trim()) {
+          statements.push(current.trim());
+          current = "";
+        }
+      }
+      continue;
+    }
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === "#") {
+      comment = true;
+      continue;
+    }
+    if (character === "{" || character === "[") depth++;
+    if (character === "}" || character === "]") depth = Math.max(0, depth - 1);
+    if ((character === "\n" || character === ",") && depth === 0) {
+      if (current.trim()) statements.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) statements.push(current.trim());
+
+  return statements.flatMap((statement) => {
+    const equals = statement.indexOf("=");
+    if (equals === -1) return [];
+    const keyPath = parseTomlDottedKey(statement.slice(0, equals));
+    const key = keyPath.length === 1 ? keyPath[0] : null;
+    const value = statement.slice(equals + 1).trim();
+    return key && value ? [{ key, value }] : [];
+  });
+}
+
+function unwrapTomlInlineTable(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.startsWith("{") && trimmed.endsWith("}") ? trimmed.slice(1, -1) : null;
+}
+
+function extractTomlInlineTable(source: string, key: string): string | null {
+  const assignment = parseTomlAssignments(source).find((candidate) => candidate.key === key);
+  return assignment ? unwrapTomlInlineTable(assignment.value) : null;
 }
 
 function getTomlSections(content: string): Array<{ header: string; body: string }> {
@@ -480,10 +681,12 @@ function getTomlSections(content: string): Array<{ header: string; body: string 
 
 function parseTomlSectionHeader(line: string): string | null {
   const trimmed = line.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
-  const isArrayHeader = trimmed.startsWith("[[") && trimmed.endsWith("]]");
+  if (!trimmed.startsWith("[")) return null;
+  const isArrayHeader = trimmed.startsWith("[[");
   const start = isArrayHeader ? 2 : 1;
-  const end = isArrayHeader ? trimmed.length - 2 : trimmed.length - 1;
+  const closing = isArrayHeader ? "]]" : "]";
+  const end = trimmed.indexOf(closing, start);
+  if (end === -1 || !/^\s*(?:#.*)?$/.test(trimmed.slice(end + closing.length))) return null;
   const header = trimmed.slice(start, end).trim();
   return header.length > 0 ? header : null;
 }

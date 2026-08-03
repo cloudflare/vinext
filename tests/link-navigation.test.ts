@@ -2498,10 +2498,8 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
       windowOverrides: { requestIdleCallback },
     });
-    const { createRscNavigationCacheVariant, createRscRequestHeaders, createRscRequestUrl } =
+    const { createRscRequestHeaders, createRscRequestUrl } =
       await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
-    const { createAppPrefetchRequestHeaders } =
-      await import("../packages/vinext/src/shims/navigation.js");
     const { consumePrefetchResponse, getPrefetchCache, getPrefetchedUrls } =
       await import("../packages/vinext/src/shims/navigation.js");
     const rscUrl = await createRscRequestUrl("/intent-prefetch-target", createRscRequestHeaders());
@@ -2515,12 +2513,8 @@ describe("Link prefetch scheduling", () => {
     };
 
     try {
-      const navigationVariant = createRscNavigationCacheVariant(
-        createAppPrefetchRequestHeaders({ fetchPriority: "high", prefetchKind: "auto" }),
-      );
       getPrefetchCache().set(rscUrl, {
         cacheForNavigation: true,
-        navigationVariant,
         outcome: "cache-seeded",
         snapshot,
         timestamp: Date.now(),
