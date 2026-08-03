@@ -108,18 +108,28 @@ else
   rsc_url="https://workers-cache.${DOMAIN}/cached/intro?_rsc"
 fi
 
-rsc_request=(
+warm_rsc_request=(
   -H "Accept: text/x-component"
   -H "RSC: 1"
+  -H "User-Agent: vinext-cloudflare-cdn-warm"
   --max-time 10
   "$rsc_url"
 )
 
-first_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${rsc_request[@]}" || echo "000")
+browser_rsc_request=(
+  -H "Accept: text/x-component"
+  -H "Accept-Language: en-GB,en-US;q=0.9,en;q=0.8"
+  -H "RSC: 1"
+  -H "User-Agent: Mozilla/5.0 AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36"
+  --max-time 10
+  "$rsc_url"
+)
+
+first_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${warm_rsc_request[@]}" || echo "000")
 first_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
 first_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_headers" | tr -d '\r' | tail -1)
 
-second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${rsc_request[@]}" || echo "000")
+second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${browser_rsc_request[@]}" || echo "000")
 second_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
 second_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
 second_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
