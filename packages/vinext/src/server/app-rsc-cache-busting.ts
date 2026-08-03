@@ -20,6 +20,7 @@ import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 import { isServerRscPrewarmEligiblePathname } from "../client/rsc-prewarm-eligibility.js";
 export {
+  getLoadedRscPrewarmEligibility,
   isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
   preloadRscPrewarmManifest,

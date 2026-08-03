@@ -98,11 +98,21 @@ export async function isRscPrewarmEligibleHref(href: string, basePath = ""): Pro
   return paths?.has(pathname) ?? false;
 }
 
-/** Synchronous check for callers that cannot await the manifest preload. */
-export function isLoadedRscPrewarmEligibleHref(href: string, basePath = ""): boolean {
-  if (loadedManifestPaths === null) return false;
+/**
+ * Synchronous eligibility check once the manifest has loaded. `null` means the
+ * manifest is still pending, while `false` means it loaded and did not list the
+ * href. Callers that preserve same-task navigation commits need that distinction
+ * so an already-settled negative result does not introduce an unnecessary await.
+ */
+export function getLoadedRscPrewarmEligibility(href: string, basePath = ""): boolean | null {
+  if (loadedManifestPaths === null) return null;
   const pathname = resolveEligibleHrefPathname(href, basePath);
   return pathname !== null && loadedManifestPaths.has(pathname);
+}
+
+/** Synchronous boolean check retained for callers that only need a positive hit. */
+export function isLoadedRscPrewarmEligibleHref(href: string, basePath = ""): boolean {
+  return getLoadedRscPrewarmEligibility(href, basePath) === true;
 }
 
 /** Server-side enforcement for the browser eligibility manifest. */

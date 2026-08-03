@@ -45,10 +45,12 @@ async function writeFixture(
   const appDir = path.join(fixtureRoot, "app");
   const targetDir = path.join(appDir, "target");
   const settledTargetDir = path.join(appDir, "settled-target");
+  const unlistedSettledTargetDir = path.join(appDir, "unlisted-settled-target");
   const noPrefetchTargetDir = path.join(appDir, "no-prefetch-target");
   await Promise.all([
     fs.mkdir(targetDir, { recursive: true }),
     fs.mkdir(settledTargetDir, { recursive: true }),
+    fs.mkdir(unlistedSettledTargetDir, { recursive: true }),
     fs.mkdir(noPrefetchTargetDir, { recursive: true }),
     ...(options.responseVary
       ? [fs.mkdir(path.join(fixtureRoot, "public"), { recursive: true })]
@@ -98,6 +100,7 @@ export default function HomePage() {
   return <>
     <Link href="/target" id="full-prefetch-link" prefetch={true}>Target</Link>
     <Link href="/settled-target" id="settled-prefetch-link" prefetch={true}>Settled target</Link>
+    <Link href="/unlisted-settled-target" id="unlisted-settled-prefetch-link" prefetch={true}>Unlisted settled target</Link>
     <Link href="/no-prefetch-target" id="no-prefetch-link" prefetch={false}>No prefetch target</Link>
   </>;
 }
@@ -121,6 +124,13 @@ export default function HomePage() {
     path.join(settledTargetDir, "page.tsx"),
     `export default function SettledTargetPage() {
   return <h1 id="settled-target-content">Settled prefetch page content</h1>;
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(unlistedSettledTargetDir, "page.tsx"),
+    `export default function UnlistedSettledTargetPage() {
+  return <h1 id="unlisted-settled-target-content">Unlisted settled prefetch page content</h1>;
 }
 `,
   );
@@ -336,6 +346,29 @@ test("only a settled prepared prefetch commits in the initiating click task", as
         return document.querySelector("#settled-target-content")?.textContent ?? null;
       }),
     ).toBe("Settled prefetch page content");
+
+    const unlistedFullResponsePromise = page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return (
+        url.pathname === "/unlisted-settled-target" &&
+        url.searchParams.has("_rsc") &&
+        candidate.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    const unlistedFullResponse = await unlistedFullResponsePromise;
+    await unlistedFullResponse.finished();
+    expect(new URL(unlistedFullResponse.url()).searchParams.get("_rsc")).toMatch(
+      /^[A-Za-z0-9_-]{16}$/,
+    );
+    await page.waitForTimeout(50);
+    expect(
+      await page.evaluate(() => {
+        document.querySelector<HTMLElement>("#unlisted-settled-prefetch-link")?.click();
+        return document.querySelector("#unlisted-settled-target-content")?.textContent ?? null;
+      }),
+    ).toBe("Unlisted settled prefetch page content");
 
     await page.goto(baseUrl);
     await waitForAppRouterHydration(page);

@@ -167,8 +167,8 @@ import {
   createRscClientCacheVariantKey,
   createRscRequestHeaders,
   createRscRequestUrl,
+  getLoadedRscPrewarmEligibility,
   getRscCacheKeyMode,
-  isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
   preloadRscPrewarmManifest,
   getVinextRscCompatibilityId,
@@ -708,9 +708,15 @@ function readVisitedResponseCacheCandidate(
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   navigationKind: NavigationKind,
+  requestVariantKey?: string | null,
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
+  const match = findVisitedResponseCacheEntry(
+    visitedResponseCache,
+    rscUrl,
+    interceptionContext,
+    requestVariantKey,
+  );
   if (!match) {
     return {
       cacheKey,
@@ -762,8 +768,17 @@ function applyVisitedResponseCacheCandidateDecision(
   return null;
 }
 
-function deleteVisitedResponse(rscUrl: string, interceptionContext: string | null): void {
-  deleteVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
+function deleteVisitedResponse(
+  rscUrl: string,
+  interceptionContext: string | null,
+  requestVariantKey?: string | null,
+): void {
+  deleteVisitedResponseCacheEntry(
+    visitedResponseCache,
+    rscUrl,
+    interceptionContext,
+    requestVariantKey,
+  );
 }
 
 function storeVisitedResponseSnapshot(
@@ -776,6 +791,7 @@ function storeVisitedResponseSnapshot(
   elements?: AppElements,
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
+  requestVariantKey?: string | null,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
@@ -787,6 +803,7 @@ function storeVisitedResponseSnapshot(
     now,
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
+    requestVariantKey,
     response: snapshot,
   });
   visitedResponseCache.set(cacheKey, entry);
@@ -797,6 +814,7 @@ function storeVisitedResponseSnapshot(
       interceptionContext,
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
+      requestVariantKey,
     );
   }
   return () => {
@@ -1803,13 +1821,14 @@ function bootstrapHydration(
           nextUrl: requestNextUrl,
           prefetchRouterState: getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null,
         });
-        const usesCanonicalSharedRequest =
+        const loadedPrewarmEligibility = getLoadedRscPrewarmEligibility(currentHref, __basePath);
+        const isPrewarmEligible =
           getRscCacheKeyMode() === "response-vary" &&
-          (isLoadedRscPrewarmEligibleHref(currentHref, __basePath) ||
-            (await isRscPrewarmEligibleHref(currentHref, __basePath))) &&
-          canonicalizeFullRscRequestHeaders(requestHeaders);
+          (loadedPrewarmEligibility ?? (await isRscPrewarmEligibleHref(currentHref, __basePath)));
+        const usesCanonicalSharedRequest =
+          isPrewarmEligible && canonicalizeFullRscRequestHeaders(requestHeaders);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
-        const requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
+        let requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
@@ -1870,6 +1889,7 @@ function bootstrapHydration(
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
+              requestVariantKey,
             );
         const visitedResponseDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
           visitedResponseCandidate.facts,
@@ -1994,7 +2014,7 @@ function bootstrapHydration(
           });
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
-            deleteVisitedResponse(activeRscUrl, requestInterceptionContext);
+            deleteVisitedResponse(activeRscUrl, requestInterceptionContext, requestVariantKey);
             continue;
           }
           return;
@@ -2137,6 +2157,7 @@ function bootstrapHydration(
               createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
             if (clientReuseManifestHeader !== null) {
               requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+              requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
               // The contextual reuse header is part of the request digest.
               // Discard any URL computed during cache probing before the header
               // was added so the live request cannot alias another payload.
@@ -2157,6 +2178,7 @@ function bootstrapHydration(
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
+              requestVariantKey,
             );
             const contextualDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
               contextualCandidate.facts,
@@ -2395,6 +2417,7 @@ function bootstrapHydration(
               undefined,
               true,
               prefetchSnapshot,
+              requestVariantKey,
             );
           } else {
             const state = committedState;
@@ -2419,6 +2442,7 @@ function bootstrapHydration(
               committedElements,
               true,
               prefetchSnapshot,
+              requestVariantKey,
             );
           }
         } catch {

@@ -33,6 +33,7 @@ let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
 let getCurrentInterceptionContext: Navigation["getCurrentInterceptionContext"];
+let getCurrentNextUrl: Navigation["getCurrentNextUrl"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
 let DYNAMIC_NAVIGATION_CACHE_TTL: Navigation["DYNAMIC_NAVIGATION_CACHE_TTL"];
@@ -72,6 +73,7 @@ beforeEach(async () => {
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
   getCurrentInterceptionContext = nav.getCurrentInterceptionContext;
+  getCurrentNextUrl = nav.getCurrentNextUrl;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
   DYNAMIC_NAVIGATION_CACHE_TTL = nav.DYNAMIC_NAVIGATION_CACHE_TTL;
@@ -801,13 +803,13 @@ describe("prefetch cache eviction", () => {
 
   it("reuses a basePath contextual prefetch when the intercepted Link is clicked", async () => {
     const routerState = {
-      pathAndSearch: "/feed?view=photo%20grid",
+      pathAndSearch: "/feed?view=photo+grid",
       routeId: "route:/feed",
     };
     const prefetchHeaders = createRscRequestHeaders({
       includePrefetchHeader: false,
       interceptionContext: "/feed",
-      nextUrl: "/feed?view=photo%20grid",
+      nextUrl: "/feed?view=photo+grid",
       prefetchRouterState: routerState,
     });
     const clickNextUrl = resolveNavigationRequestNextUrl({
@@ -825,7 +827,7 @@ describe("prefetch cache eviction", () => {
     const clickVariantKey = createRscClientCacheVariantKey(clickHeaders);
     const prefetchedUrl = "/docs/photos/42?_rsc=prefetch";
 
-    expect(clickNextUrl).toBe("/feed?view=photo%20grid");
+    expect(clickNextUrl).toBe("/feed?view=photo+grid");
     expect(clickVariantKey).toBe(prefetchVariantKey);
 
     prefetchRscResponse(
@@ -861,7 +863,7 @@ describe("prefetch cache eviction", () => {
     await expect(restoreRscResponse(consumed).text()).resolves.toBe("intercepted flight");
   });
 
-  it("aliases settled legacy variants only when the response is source-independent", () => {
+  it("does not normalize keyless seeded entries across semantic request variants", () => {
     const sourceIndependentUrl = "/legacy-shared?_rsc=prefetch";
     const contextualUrl = "/legacy-contextual?_rsc=prefetch";
     const createSnapshot = (url: string, variesOnNextUrl = false) => ({
@@ -889,12 +891,59 @@ describe("prefetch cache eviction", () => {
       hasPrefetchCacheEntryForNavigation("/legacy-shared?_rsc=navigate", null, null, {
         requestVariantKey: "current-request",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       hasPrefetchCacheEntryForNavigation("/legacy-contextual?_rsc=navigate", null, null, {
         requestVariantKey: "different-source",
       }),
     ).toBe(false);
+  });
+
+  it("normalizes source query encoding identically for prefetch and navigation", () => {
+    (globalThis as any).window.location.pathname = "/feed";
+    (globalThis as any).window.location.search = "?view=photo%20grid&filter=~recent";
+    const prefetchNextUrl = getCurrentNextUrl();
+    const snapshotSourceUrl = new URL(
+      `/feed?${new URLSearchParams("?view=photo%20grid&filter=~recent")}`,
+      "https://example.test",
+    );
+    const navigationNextUrl = resolveNavigationRequestNextUrl({
+      basePath: "",
+      previousNextUrl: null,
+      sourceUrl: snapshotSourceUrl,
+    });
+
+    expect(prefetchNextUrl).toBe("/feed?view=photo+grid&filter=%7Erecent");
+    expect(navigationNextUrl).toBe(prefetchNextUrl);
+  });
+
+  it("keeps navigation-seeded snapshots isolated by the final request variant", () => {
+    const snapshot = {
+      buffer: new TextEncoder().encode("skip-pruned flight").buffer,
+      contentType: "text/x-component",
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: "/target?_rsc=source-a",
+    };
+    seedPrefetchResponseSnapshot(
+      "/target?_rsc=source-a",
+      snapshot,
+      null,
+      null,
+      DYNAMIC_NAVIGATION_CACHE_TTL,
+      "reuse-manifest-a",
+    );
+
+    expect(
+      hasPrefetchCacheEntryForNavigation("/target?_rsc=source-b", null, null, {
+        requestVariantKey: "reuse-manifest-b",
+      }),
+    ).toBe(false);
+    expect(
+      hasPrefetchCacheEntryForNavigation("/target?_rsc=navigate-a", null, null, {
+        requestVariantKey: "reuse-manifest-a",
+      }),
+    ).toBe(true);
   });
 
   it("notifies onInvalidate when a learning-only prefetch is superseded (#2707)", async () => {

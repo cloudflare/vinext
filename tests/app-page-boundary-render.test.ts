@@ -7,7 +7,10 @@ import {
 } from "../packages/vinext/src/server/app-page-boundary-render.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
-import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  VINEXT_APP_VARY_HEADER,
+  VINEXT_RSC_VARY_HEADER,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
@@ -588,7 +591,7 @@ describe("app page boundary render helpers", () => {
 
     expect(response?.status).toBe(404);
     expect(response?.headers.get("x-middleware-security")).toBe("present");
-    expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
+    expect(response?.headers.get("vary")).toBe(`${VINEXT_APP_VARY_HEADER}, x-auth-state`);
     expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
   });
 
@@ -842,7 +845,7 @@ describe("app page boundary render helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-middleware-security")).toBe("present");
-    expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
+    expect(response?.headers.get("vary")).toBe(`${VINEXT_APP_VARY_HEADER}, x-auth-state`);
     expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
   });
 

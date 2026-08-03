@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  getLoadedRscPrewarmEligibility,
   isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
   isServerRscPrewarmEligiblePathname,
@@ -115,10 +116,13 @@ describe("RSC prewarm browser eligibility", () => {
     );
 
     const pending = preloadRscPrewarmManifest();
+    expect(getLoadedRscPrewarmEligibility("/dashboard")).toBeNull();
     expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(false);
 
     resolveManifest?.(Response.json({ version: 1, paths: ["/dashboard"] }));
     await pending;
+    expect(getLoadedRscPrewarmEligibility("/dashboard")).toBe(true);
+    expect(getLoadedRscPrewarmEligibility("/unlisted")).toBe(false);
     expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(true);
   });
 

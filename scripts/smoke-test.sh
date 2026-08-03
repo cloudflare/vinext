@@ -156,39 +156,61 @@ first_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_he
 first_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
 first_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
 
-second_status="000"
-second_cache_status=""
-second_vary=""
-second_content_type=""
-canonical_failure=""
-hit_attempt=""
+warm_status="$first_status"
+warm_cache_status="$first_cache_status"
+warm_location="$first_location"
+warm_vary="$first_vary"
+warm_content_type="$first_content_type"
+warm_failure=""
+warm_hit_attempt=""
 for attempt in {1..8}; do
-  second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${browser_rsc_request[@]}" || echo "000")
-  second_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
-  second_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_headers" | tr -d '\r' | tail -1)
-  second_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
-  second_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+  if [[ "$attempt" -gt 1 ]]; then
+    warm_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${warm_rsc_request[@]}" || echo "000")
+    warm_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+    warm_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_headers" | tr -d '\r' | tail -1)
+    warm_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
+    warm_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+  fi
 
-  if [[ "$second_status" != "200" || -n "$second_location" ]]; then
-    canonical_failure="HTTP ${second_status}${second_location:+, location ${second_location}}"
+  if [[ "$warm_status" != "200" || -n "$warm_location" ]]; then
+    warm_failure="HTTP ${warm_status}${warm_location:+, location ${warm_location}}"
     break
   fi
-  if [[ "$second_content_type" != *"text/x-component"* ]]; then
-    canonical_failure="Content-Type ${second_content_type:-missing}"
+  if [[ "$warm_content_type" != *"text/x-component"* ]]; then
+    warm_failure="Content-Type ${warm_content_type:-missing}"
     break
   fi
-  if [[ "$(normalize_vary "$second_vary")" != "$expected_rsc_vary" ]]; then
-    canonical_failure="Vary ${second_vary:-missing}"
+  if [[ "$(normalize_vary "$warm_vary")" != "$expected_rsc_vary" ]]; then
+    warm_failure="Vary ${warm_vary:-missing}"
     break
   fi
-  if [[ "$second_cache_status" == "HIT" ]]; then
-    hit_attempt="$attempt"
+  if [[ "$warm_cache_status" == "HIT" ]]; then
+    warm_hit_attempt="$attempt"
     break
   fi
   if [[ "$attempt" -lt 8 ]]; then
     sleep 1
   fi
 done
+
+# Only after the warm-shaped variant is definitely present, make one
+# browser-shaped request. A MISS here means the Vary identities do not align;
+# retrying it would merely let the browser probe populate its own variant.
+second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${browser_rsc_request[@]}" || echo "000")
+second_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+second_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_headers" | tr -d '\r' | tail -1)
+second_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
+second_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+canonical_failure=""
+if [[ "$second_status" != "200" || -n "$second_location" ]]; then
+  canonical_failure="HTTP ${second_status}${second_location:+, location ${second_location}}"
+elif [[ "$second_content_type" != *"text/x-component"* ]]; then
+  canonical_failure="Content-Type ${second_content_type:-missing}"
+elif [[ "$(normalize_vary "$second_vary")" != "$expected_rsc_vary" ]]; then
+  canonical_failure="Vary ${second_vary:-missing}"
+elif [[ "$second_cache_status" != "HIT" ]]; then
+  canonical_failure="CF-Cache-Status ${second_cache_status:-missing}"
+fi
 
 cookie_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
   -H "Accept: text/x-component" \
@@ -239,13 +261,17 @@ elif [[ -z "$first_cache_status" || "$first_cache_status" == "BYPASS" || "$first
   echo "FAIL  workers-cache/cached/intro?_rsc  (first CF-Cache-Status: ${first_cache_status:-missing})"
   errors+=("canonical RSC response was not admitted to Workers Cache")
   failed=$((failed + 1))
+elif [[ -n "$warm_failure" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (warm request returned ${warm_failure})"
+  errors+=("canonical warm request did not retain the required cache variant")
+  failed=$((failed + 1))
+elif [[ -z "$warm_hit_attempt" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (warm variant never reached HIT; last HTTP ${warm_status}, CF-Cache-Status: ${warm_cache_status:-missing})"
+  errors+=("canonical warm variant was not present in Workers Cache")
+  failed=$((failed + 1))
 elif [[ -n "$canonical_failure" ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (canonical browser request returned ${canonical_failure})"
   errors+=("canonical browser RSC request did not match the warmed cache variant")
-  failed=$((failed + 1))
-elif [[ -z "$hit_attempt" ]]; then
-  echo "FAIL  workers-cache/cached/intro?_rsc  (last HTTP ${second_status}, CF-Cache-Status: ${second_cache_status:-missing}; no HIT after 8 attempts)"
-  errors+=("canonical RSC response did not reuse the warmed Workers Cache entry")
   failed=$((failed + 1))
 elif [[ -n "$invalid_accept_failure" ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (${invalid_accept_failure})"
@@ -260,7 +286,7 @@ elif [[ "$authorization_status" != "200" || "$authorization_cache_status" == "HI
   errors+=("authorization-bearing RSC request reused or populated the anonymous cache entry")
   failed=$((failed + 1))
 else
-  echo "  OK  workers-cache/cached/intro?_rsc  (warm ${first_cache_status} -> reuse HIT on attempt ${hit_attempt}; invalid Accept, cookie, and authorization isolated)"
+  echo "  OK  workers-cache/cached/intro?_rsc  (warm ${first_cache_status} -> warm HIT on attempt ${warm_hit_attempt} -> first browser request HIT; invalid Accept, cookie, and authorization isolated)"
   passed=$((passed + 1))
 fi
 

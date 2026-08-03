@@ -10,6 +10,7 @@ export type VisitedResponseCacheEntry = {
   expiresAt: number;
   mountedSlotsHeader: string | null;
   params: Record<string, string | string[]>;
+  requestVariantKey?: string | null;
   response: CachedRscResponse;
 };
 
@@ -22,6 +23,7 @@ export function createVisitedResponseCacheEntry(options: {
   now: number;
   mountedSlotsHeader?: string | null;
   params: Record<string, string | string[]>;
+  requestVariantKey?: string | null;
   response: CachedRscResponse;
 }): VisitedResponseCacheEntry {
   return {
@@ -34,6 +36,7 @@ export function createVisitedResponseCacheEntry(options: {
     ),
     mountedSlotsHeader: options.mountedSlotsHeader ?? null,
     params: options.params,
+    requestVariantKey: options.requestVariantKey,
     response: options.response,
   };
 }
@@ -84,6 +87,7 @@ export function findVisitedResponseCacheEntry(
   cache: Map<string, VisitedResponseCacheEntry>,
   rscUrl: string,
   interceptionContext: string | null,
+  requestVariantKey?: string | null,
 ): { cacheKey: string; entry: VisitedResponseCacheEntry } | null {
   const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const exactEntry = cache.get(exactCacheKey);
@@ -95,6 +99,9 @@ export function findVisitedResponseCacheEntry(
   if (normalizedTarget === null) return null;
 
   for (const [cacheKey, entry] of cache) {
+    if (requestVariantKey !== undefined && entry.requestVariantKey !== requestVariantKey) {
+      continue;
+    }
     if (entry.response.variesOnNextUrl === true) continue;
     const source = parseVisitedResponseCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
@@ -109,8 +116,14 @@ export function deleteVisitedResponseCacheEntry(
   cache: Map<string, VisitedResponseCacheEntry>,
   rscUrl: string,
   interceptionContext: string | null,
+  requestVariantKey?: string | null,
 ): boolean {
-  const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
+  const match = findVisitedResponseCacheEntry(
+    cache,
+    rscUrl,
+    interceptionContext,
+    requestVariantKey,
+  );
   if (!match) return false;
   return cache.delete(match.cacheKey);
 }

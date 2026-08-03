@@ -389,7 +389,9 @@ export function getCurrentNextUrl(): string {
     return "/";
   }
 
-  return stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  const pathname = stripBasePath(window.location.pathname, __basePath);
+  const query = new URLSearchParams(window.location.search).toString();
+  return query === "" ? pathname : `${pathname}?${query}`;
 }
 
 export function createAppPrefetchRequestHeaders(options: {
@@ -602,10 +604,11 @@ function isPrefetchCacheEntryCompatibleWithRequestVariant(
   if (requestVariantKey === undefined) return true;
   if (entry.requestVariantKey === undefined) {
     if (!requireStoredKey) return true;
-    // Legacy/cache-seeded entries predate the request-side semantic key. A
-    // completed response still tells us whether normalized source reuse is
-    // safe; pending entries have no such proof and must not alias.
-    return entry.outcome === "cache-seeded" && entry.snapshot?.variesOnNextUrl !== true;
+    // An exact digest still proves identity for a legacy entry, but a
+    // normalized lookup does not. Current navigation-seeded entries may hold
+    // a skip-pruned client-reuse payload, and absence of Next-Url from Vary is
+    // not proof that the client-reuse manifest was irrelevant.
+    return false;
   }
   return entry.requestVariantKey === requestVariantKey;
 }
@@ -1092,6 +1095,7 @@ export function seedPrefetchResponseSnapshot(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
+  requestVariantKey?: string | null,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1106,6 +1110,7 @@ export function seedPrefetchResponseSnapshot(
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    requestVariantKey,
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,

@@ -327,4 +327,23 @@ describe("visited response cache freshness", () => {
     ).toBe(false);
     expect(cache.has(storedKey)).toBe(true);
   });
+
+  it("does not normalize visited responses across client-reuse variants", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      requestVariantKey: "reuse-manifest-a",
+      response: createCachedResponse(),
+    });
+    const storedKey = AppElementsWire.encodeCacheKey("/target?_rsc=source-a", null);
+    cache.set(storedKey, entry);
+
+    expect(
+      findVisitedResponseCacheEntry(cache, "/target?_rsc=source-b", null, "reuse-manifest-b"),
+    ).toBeNull();
+    expect(
+      findVisitedResponseCacheEntry(cache, "/target?_rsc=navigate-a", null, "reuse-manifest-a"),
+    ).toEqual({ cacheKey: storedKey, entry });
+  });
 });

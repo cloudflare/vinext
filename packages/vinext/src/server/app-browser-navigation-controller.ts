@@ -267,7 +267,7 @@ export function resolveNavigationRequestNextUrl(options: {
     options.previousNextUrl === null
       ? options.sourceUrl
       : new URL(options.previousNextUrl, options.sourceUrl);
-  return stripBasePath(sourceIdentity.pathname, options.basePath) + sourceIdentity.search;
+  return createBasePathStrippedPathAndSearch(sourceIdentity, options.basePath);
 }
 
 function isSnapshotTargetHref(
