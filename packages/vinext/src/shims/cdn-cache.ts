@@ -17,7 +17,7 @@
  * | ------------------ | --------------------------------------- | ------------------------------------------- |
  * | Serve from store?  | Yes — reads the data cache              | No — origin renders fresh, edge caches      |
  * | Background regen   | In-process via `waitUntil`              | Edge re-requests origin                     |
- * | Response headers   | `Cache-Control` (SWR)                   | `Cache-Control: no-store` + `CDN-Cache-Control: <SWR>` |
+ * | Response headers   | Framework cache policy                  | Provider-specific cache policy                         |
  * | Invalidation       | (data cache handles tag invalidation)   | purge / revalidate via request context      |
  *
  * The default adapter is a thin shim over the data cache + the framework's
@@ -48,14 +48,14 @@ export type CdnCacheableHeaderInput = {
    *
    * The default adapter forces `no-store` for the browser in this case — the
    * page is instead served from the origin store on subsequent requests. Edge
-   * adapters may instead emit edge-only cache headers (e.g. `CDN-Cache-Control`)
-   * so the CDN performs SWR while the browser still sees `no-store`.
+   * adapters may instead emit edge-only cache headers so the CDN performs SWR
+   * while the browser receives a separate policy.
    */
   pendingDynamicCheck?: boolean;
   /**
    * The cache tags associated with this page/route, already canonicalised
    * (e.g. via `encodeCacheTag`). Edge adapters use these to emit a tag header
-   * (e.g. a `Cache-Tag` header) so tag-based purging can target the response.
+   * so tag-based purging can target the response.
    * The default adapter ignores them.
    */
   tags?: readonly string[];
@@ -93,8 +93,8 @@ export type CdnCacheAdapter = {
 
   /**
    * Build the response cache headers for a given policy. Returns a map so an
-   * adapter can emit more than one header (e.g. `Cache-Control` +
-   * `CDN-Cache-Control`) and remove stale adapter-owned headers with `null`.
+   * adapter can emit more than one header and remove stale adapter-owned
+   * headers with `null`.
    */
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
 
@@ -141,6 +141,8 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // This adapter itself owns only Cache-Control. The framework-level header
+    // utility clears conflicting shared-cache overrides before invoking it.
     if (input.pendingDynamicCheck) {
       // Until the stream proves the render was non-dynamic, browsers and shared
       // caches must not store it. The origin serves subsequent requests from the

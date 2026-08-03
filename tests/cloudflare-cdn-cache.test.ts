@@ -52,6 +52,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     ).toEqual({
       "Cache-Control": "public, max-age=0, must-revalidate",
       "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
     });
   });
 
@@ -84,9 +86,12 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["Cache-Tag"]).toBe("ok");
   });
 
-  it("returns only no-store (no CDN-Cache-Control) when there is no cacheable policy", () => {
+  it("returns no-store and clears owned headers when there is no cacheable policy", () => {
     expect(adapter.buildResponseHeaders({ cacheControl: "" })).toEqual({
       "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
     });
   });
 
@@ -152,7 +157,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     },
   );
 
-  it("clears middleware CDN overrides for mounted slots with the default adapter", async () => {
+  it("clears shared-cache overrides for mounted slots with the default adapter", async () => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
 
     const response = finalizeAppPageRscCacheResponse(
@@ -232,7 +237,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(response.text()).resolves.toBe("dynamic-slot-flight");
   });
 
-  it("clears middleware CDN overrides for pending dynamic misses", async () => {
+  it("clears shared-cache overrides for pending dynamic misses", async () => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
 
     const response = finalizeAppPageRscCacheResponse(

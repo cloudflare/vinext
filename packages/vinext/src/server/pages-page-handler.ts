@@ -33,8 +33,9 @@ import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
-  shouldUseNextDeployCacheControl,
   applyCdnResponseHeaders,
+  hasExplicitNonCacheableResponsePolicy,
+  shouldUseNextDeployCacheControl,
 } from "./cache-control.js";
 import {
   buildNextDataPropsJsonResponse,
@@ -81,10 +82,7 @@ function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewS
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
   if (preview.data !== false) {
-    headers.set("Cache-Control", PAGES_PREVIEW_CACHE_CONTROL);
-    headers.delete("CDN-Cache-Control");
-    headers.delete("Cloudflare-CDN-Cache-Control");
-    headers.delete("Cache-Tag");
+    applyCdnResponseHeaders(headers, { cacheControl: PAGES_PREVIEW_CACHE_CONTROL });
   }
   if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
   return new Response(response.body, {
@@ -133,28 +131,12 @@ function applyPagesErrorCachePolicy(
   cacheTagPathname: string,
 ): Response {
   const headers = new Headers(response.headers);
-  const browserPolicy = headers.get("Cache-Control");
-  const sharedPolicies = [
-    headers.get("CDN-Cache-Control"),
-    headers.get("Cloudflare-CDN-Cache-Control"),
-  ];
-  const hasCacheableSharedPolicy = sharedPolicies.some(
-    (value) => value && /(?:^|,)\s*s-maxage\s*=/i.test(value),
-  );
-  const hasExplicitSharedNoStore = sharedPolicies.some(
-    (value) => value && /(?:private|no-store|no-cache)/i.test(value),
-  );
-  if (
-    hasExplicitSharedNoStore ||
-    (!hasCacheableSharedPolicy &&
-      browserPolicy &&
-      /(?:private|no-store|no-cache)/i.test(browserPolicy))
-  ) {
-    return response;
-  }
-  headers.delete("CDN-Cache-Control");
-  headers.delete("Cloudflare-CDN-Cache-Control");
-  headers.delete("Cache-Tag");
+  if (hasExplicitNonCacheableResponsePolicy(headers)) return response;
+  // The source route's notFound lifetime controls the outgoing response, not
+  // the inner error page's lifetime. Preview and nonce-bearing responses are
+  // excluded by the caller, and explicit no-store responses stay untouched.
+  // Reapply the source policy through the adapter so this replacement does not
+  // need to inspect adapter-owned header names.
   if (revalidateSeconds === undefined) {
     applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
   } else {

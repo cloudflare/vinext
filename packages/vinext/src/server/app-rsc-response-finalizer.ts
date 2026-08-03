@@ -99,8 +99,7 @@ export async function finalizeAppRscResponse(
   // unspecified response is never accidentally edge-cached), while the default
   // origin-managed adapter leaves it absent (unchanged behavior). This runs only
   // when Cache-Control is absent, so it never clobbers a policy a renderer
-  // already applied — including a real `CDN-Cache-Control`. Redirects are
-  // already skipped above.
+  // already applied. Redirects are already skipped above.
   if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }

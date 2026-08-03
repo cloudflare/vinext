@@ -145,7 +145,12 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
-      return { "Cache-Control": NO_STORE };
+      return {
+        "Cache-Control": NO_STORE,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      };
     }
 
     // A non-cacheable policy (no-store / no-cache / private) must never be
@@ -165,12 +170,9 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": input.tags ? formatCacheTag(input.tags) : null,
     };
-
-    if (input.tags && input.tags.length > 0) {
-      const cacheTag = formatCacheTag(input.tags);
-      if (cacheTag) headers["Cache-Tag"] = cacheTag;
-    }
 
     return headers;
   }

@@ -274,6 +274,25 @@ describe("createPagesPageHandler — route miss", () => {
     }
   });
 
+  it("preserves an explicit no-store policy from a dynamic error page", async () => {
+    const sourceRoute = makeRoute(
+      "/source",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    );
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getServerSideProps: async () => ({ props: {} }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [sourceRoute, notFoundRoute] }));
+
+    const response = await handler(makeRequest("/source"), "/source", null, null, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Cache-Control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
   // Ported from Next.js: test/e2e/no-page-props/no-page-props.test.ts
   // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/no-page-props/no-page-props.test.ts
   it("preserves a custom App initial-props envelope without pageProps on _error", async () => {

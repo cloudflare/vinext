@@ -114,7 +114,7 @@ export function applyRouteHandlerRevalidateHeader(
   tags?: readonly string[],
 ): void {
   // Fresh (MISS) response: route through the CDN adapter so edge adapters emit
-  // CDN-Cache-Control + Cache-Tag while the default emits a single Cache-Control.
+  // their provider-specific policy while the default emits Cache-Control.
   // Uses buildAppRouteMissIsrCacheControl so the revalidate=0→NEVER and
   // Infinity→STATIC gates apply, and expireSeconds is used as the direct route
   // config ceiling (not a per-entry metadata fallback).
