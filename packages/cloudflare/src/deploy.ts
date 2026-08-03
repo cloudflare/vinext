@@ -780,8 +780,12 @@ export async function deployWithCdnWarmup(
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
-  let warmedBeforePromotion = false;
+  const fullyWarmedOrigins = new Set<string>();
   let triggersApplied = false;
+
+  function normalizedOrigin(targetUrl: string): string {
+    return normalizeCdnWarmupTargetUrl(targetUrl)?.toLowerCase() ?? targetUrl.toLowerCase();
+  }
 
   function applyTriggers(): void {
     if (triggersApplied) return;
@@ -828,7 +832,7 @@ export async function deployWithCdnWarmup(
       if (failedProbe === null) {
         try {
           for (const target of warmupTargets) {
-            await warmCdnCache({
+            const result = await warmCdnCache({
               targetUrl: target.targetUrl,
               paths: target.paths,
               headers,
@@ -840,11 +844,13 @@ export async function deployWithCdnWarmup(
               rscPaths: target.rscPaths,
               strict: options.warmCdnStrict,
             });
+            if (result.failed === 0) {
+              fullyWarmedOrigins.add(normalizedOrigin(target.targetUrl));
+            }
           }
         } catch (error) {
           throw withStagedVersionCleanupNote(error);
         }
-        warmedBeforePromotion = true;
       } else if (failedProbe.reason === "binding-unavailable") {
         if (options.warmCdnStrict) {
           throw withStagedVersionCleanupNote(
@@ -878,7 +884,7 @@ export async function deployWithCdnWarmup(
       root,
       [{ versionId: upload.versionId, percentage: 100 }],
       wranglerOptions,
-      warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
+      fullyWarmedOrigins.size > 0 ? "promote-warmed" : "promote-uploaded",
     );
   } catch (error) {
     // A successful staging deploy remains active if promotion fails. Explain
@@ -897,13 +903,30 @@ export async function deployWithCdnWarmup(
   } catch (error) {
     throw withPromotedVersionTriggerNote(error);
   }
-  if (!warmedBeforePromotion && !crossVersionCache) {
-    const warmupTargets = resolveCdnWarmupTargets(
-      root,
-      deployed.deployedUrl ?? triggersDeployedUrl,
-      paths,
-      options.rscPaths ?? [],
-      targetResolutionOptions,
+  if (!crossVersionCache) {
+    const discoveredUrls = [deployed.deployedUrl, triggersDeployedUrl].filter(
+      (value): value is string => value !== null,
+    );
+    const resolvedWarmupTargets = mergeCdnWarmupTargets([
+      ...resolveCdnWarmupTargets(
+        root,
+        null,
+        paths,
+        options.rscPaths ?? [],
+        targetResolutionOptions,
+      ),
+      ...discoveredUrls.flatMap((deployedUrl) =>
+        resolveCdnWarmupTargets(
+          root,
+          deployedUrl,
+          paths,
+          options.rscPaths ?? [],
+          targetResolutionOptions,
+        ),
+      ),
+    ]);
+    const warmupTargets = resolvedWarmupTargets.filter(
+      (target) => !fullyWarmedOrigins.has(normalizedOrigin(target.targetUrl)),
     );
     if (warmupTargets.length > 0) {
       for (const target of warmupTargets) {
@@ -944,7 +967,11 @@ export async function deployWithCdnWarmup(
           console.warn(`  ${message}`);
         }
       }
-    } else if (options.warmCdnStrict) {
+    } else if (
+      resolvedWarmupTargets.length === 0 &&
+      fullyWarmedOrigins.size === 0 &&
+      options.warmCdnStrict
+    ) {
       throw withLiveVersionWarmupNote(
         new Error(
           "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
@@ -952,7 +979,7 @@ export async function deployWithCdnWarmup(
         ),
         upload.versionId,
       );
-    } else {
+    } else if (resolvedWarmupTargets.length === 0 && fullyWarmedOrigins.size === 0) {
       console.warn(
         "  CDN warmup skipped: no production URL could be inferred from wrangler config or output.",
       );
@@ -1001,6 +1028,29 @@ type ResolvedCdnWarmupTarget = {
   paths: readonly string[];
   rscPaths: readonly string[];
 };
+
+function mergeCdnWarmupTargets(
+  targets: readonly ResolvedCdnWarmupTarget[],
+): ResolvedCdnWarmupTarget[] {
+  const merged = new Map<string, { targetUrl: string; paths: string[]; rscPaths: string[] }>();
+  for (const target of targets) {
+    const targetUrl = normalizeCdnWarmupTargetUrl(target.targetUrl);
+    if (!targetUrl) continue;
+    const key = targetUrl.toLowerCase();
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, {
+        targetUrl,
+        paths: [...new Set(target.paths)],
+        rscPaths: [...new Set(target.rscPaths)],
+      });
+      continue;
+    }
+    existing.paths = [...new Set([...existing.paths, ...target.paths])];
+    existing.rscPaths = [...new Set([...existing.rscPaths, ...target.rscPaths])];
+  }
+  return [...merged.values()];
+}
 
 function normalizeCdnWarmupTargetUrl(value: string): string | null {
   try {
@@ -1057,7 +1107,18 @@ function resolveCdnWarmupTargetDefinitions(
   for (const target of configuredTargets) {
     addTarget(`https://${target.hostname}`, target.pathPatterns);
   }
-  if (workersDev && deployedUrl) addTarget(deployedUrl, []);
+  if (workersDev && deployedUrl) {
+    const normalizedUrl = normalizeCdnWarmupTargetUrl(deployedUrl);
+    const hostname = normalizedUrl ? new URL(normalizedUrl).hostname.toLowerCase() : null;
+    if (
+      normalizedUrl &&
+      hostname &&
+      (hostname === "workers.dev" || hostname.endsWith(".workers.dev")) &&
+      !targets.some((target) => target.targetUrl.toLowerCase() === normalizedUrl.toLowerCase())
+    ) {
+      targets.push({ targetUrl: normalizedUrl, pathPatterns: [] });
+    }
+  }
   return targets;
 }
 

@@ -515,6 +515,10 @@ function extractWarmupTargetsFromCustomDomains(
 }
 
 function parseWarmupRoutePattern(raw: string, customDomain: boolean): WranglerWarmupTarget | null {
+  // Route schemes are part of Cloudflare's match contract. Warmup requests are
+  // deliberately HTTPS-only, so do not reinterpret an explicit HTTP-only route
+  // as an HTTPS origin. Keep it in customDomain(s) for legacy TPR discovery.
+  if (/^http:\/\//i.test(raw)) return null;
   const withoutProtocol = raw.replace(/^https?:\/\//i, "");
   const slash = withoutProtocol.indexOf("/");
   const hostname = extractConcreteRouteHostname(raw);

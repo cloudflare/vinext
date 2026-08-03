@@ -1248,6 +1248,136 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
     ]);
   });
 
+  it("warms a workers.dev origin discovered after other origins were prewarmed", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "workers-cache",
+        workers_dev: true,
+        routes: ["app.example.com/cached/*"],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) return probe;
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return new Response("ok", {
+        status: 200,
+        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+      });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.some((arg) => arg.endsWith("@0%"))) {
+        events.push("stage");
+        return "Staged version\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Promoted version\napp.example.com (custom domain)\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\nhttps://workers-cache.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/cached/intro", "/outside"], {
+      warmCdnConcurrency: 1,
+    });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "fetch:https://app.example.com/cached/intro",
+      "promote",
+      "triggers",
+      "fetch:https://workers-cache.example.workers.dev/cached/intro",
+      "fetch:https://workers-cache.example.workers.dev/outside",
+    ]);
+  });
+
+  it("retries a partially failed origin after promotion in non-strict mode", async () => {
+    const events: string[] = [];
+    let warmAttempts = 0;
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "workers-cache",
+        workers_dev: false,
+        custom_domains: ["app.example.com"],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) return probe;
+      warmAttempts++;
+      events.push(`fetch:${warmAttempts}`);
+      return new Response("ok", {
+        status: warmAttempts === 1 ? 500 : 200,
+        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+      });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) return "Version 22222222-2222-4222-8222-222222222222\n";
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy")) return "Deployed version\n";
+      if (args.includes("triggers")) return "Triggers deployed\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/cached/intro"], {
+      warmCdnConcurrency: 1,
+      warmCdnRetries: 0,
+    });
+
+    expect(events).toEqual(["fetch:1", "fetch:2"]);
+  });
+
+  it("accepts a fully prewarmed origin when later Wrangler output omits its URL", async () => {
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "workers-cache" }));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) return "Version 22222222-2222-4222-8222-222222222222\n";
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.some((arg) => arg.endsWith("@0%"))) {
+        return "Staged\nhttps://workers-cache.example.workers.dev\n";
+      }
+      if (args.includes("deploy") || args.includes("triggers")) return "Deployed\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/cached/intro"], {
+        warmCdnConcurrency: 1,
+        warmCdnStrict: true,
+      }),
+    ).resolves.toBe("https://workers-cache.example.workers.dev");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("explains that the version is already live when strict fallback warming fails", async () => {
     const events: string[] = [];
     writeFile(

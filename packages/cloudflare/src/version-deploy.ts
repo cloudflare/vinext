@@ -5,6 +5,7 @@ import {
   validateWranglerEnvName,
   type WranglerCommandOptions,
 } from "./deploy.js";
+import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
 export { parseWorkersDevUrl } from "./workers-dev-url.js";
@@ -293,7 +294,7 @@ export function runWranglerVersionDeploy(
     console.log(`\n  Promoting uploaded Worker version to ${target}...`);
   }
   const output = runWranglerCommand(root, args, execute);
-  return { deployedUrl: parseWorkersDevUrl(output), output };
+  return { deployedUrl: parseWorkerDeploymentUrl(output), output };
 }
 
 export function runWranglerDeploymentStatus(
@@ -322,5 +323,5 @@ export function runWranglerTriggersDeploy(
     console.log("\n  Applying Worker triggers...");
   }
   const output = runWranglerCommand(root, args, execute);
-  return { deployedUrl: parseWorkersDevUrl(output), output };
+  return { deployedUrl: parseWorkerDeploymentUrl(output), output };
 }

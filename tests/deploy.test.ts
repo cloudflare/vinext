@@ -4028,6 +4028,13 @@ version_metadata.binding = 'STAGING_VERSION'
     );
   });
 
+  it("does not admit an unconfigured custom-domain output as a host-wide target", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    expect(
+      resolveCdnWarmupTargets(tmpDir, "https://unconfigured.example.com", ["/about"], ["/about"]),
+    ).toEqual([]);
+  });
+
   it("extracts custom domain from custom_domains array", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
     const config = parseWranglerConfig(tmpDir);
@@ -4069,6 +4076,28 @@ version_metadata.binding = 'STAGING_VERSION'
     expect(config?.warmupTargets).toEqual([
       { hostname: "shop.example.com", pathPatterns: [] },
       { hostname: "api.example.com", pathPatterns: ["/v1/*"] },
+    ]);
+  });
+
+  it("does not reinterpret explicit HTTP routes as HTTPS warmup origins", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        workers_dev: false,
+        routes: ["http://plain.example.com/*", "https://secure.example.com/*"],
+      }),
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomains).toEqual(["plain.example.com", "secure.example.com"]);
+    expect(config?.warmupTargets).toEqual([{ hostname: "secure.example.com", pathPatterns: [] }]);
+    expect(resolveCdnWarmupTargets(tmpDir, null, ["/about"], ["/about"])).toEqual([
+      {
+        targetUrl: "https://secure.example.com",
+        paths: ["/about"],
+        rscPaths: ["/about"],
+      },
     ]);
   });
 
