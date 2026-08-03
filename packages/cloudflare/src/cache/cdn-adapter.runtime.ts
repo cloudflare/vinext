@@ -74,6 +74,14 @@ function getWorkersCache(): WorkersCacheLike | null {
 
 /** Non-cacheable responses: nobody (edge or browser) stores them. */
 const NO_STORE = "no-store";
+const HTML_CACHE_TAG = "__vinext_html";
+const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
+const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
+const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
+
+type CloudflareCdnCacheAdapterEnv = {
+  VINEXT_VERSION_METADATA?: { id?: unknown };
+};
 
 const RSC_VARIANT_HEADERS = [
   NEXT_ROUTER_STATE_TREE_HEADER,
@@ -135,9 +143,10 @@ function hasRequestAuthorization(): boolean {
   return headers?.has("Authorization") === true;
 }
 
-function isRscWorkersCacheRequest(): boolean {
+function getWorkersCacheRequestKind(): "html" | "rsc" | null {
   const { headers } = getCacheRequestMetadata();
-  return headers?.get(RSC_HEADER) === "1";
+  if (!headers) return null;
+  return headers.get(RSC_HEADER) === "1" ? "rsc" : "html";
 }
 
 /**
@@ -203,9 +212,32 @@ function formatCacheTag(tags: readonly string[]): string | null {
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
+  constructor(private readonly env?: CloudflareCdnCacheAdapterEnv) {}
+
   // The Cloudflare edge revalidates by re-requesting the origin (UPDATING),
   // so the origin must not also run in-process background regeneration.
   readonly ownsBackgroundRevalidation = false;
+
+  /** Handle the deploy-time staged-version probe owned by this adapter. */
+  handleRequest(request: Request): Response | null {
+    if (
+      request.method !== "POST" ||
+      request.headers.get(VINEXT_VERSION_PROBE_HEADER) !== "1" ||
+      !new URL(request.url).searchParams.has(VINEXT_VERSION_PROBE_QUERY)
+    ) {
+      return null;
+    }
+
+    const metadata = this.env?.VINEXT_VERSION_METADATA;
+    const versionId = typeof metadata?.id === "string" ? metadata.id : null;
+    return new Response(null, {
+      status: versionId ? 204 : 503,
+      headers: {
+        "Cache-Control": NO_STORE,
+        [VINEXT_WORKER_VERSION_HEADER]: versionId ?? "unavailable",
+      },
+    });
+  }
 
   /**
    * The origin keeps no page store — return null so the request renders fresh.
@@ -278,6 +310,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
 
     // SWR policy on CDN-Cache-Control (edge caches + revalidates); the browser
     // is told to revalidate every reuse so it never serves a stale stored copy.
+    const requestKind = getWorkersCacheRequestKind();
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
@@ -286,11 +319,17 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       // prerender proof excludes those dependencies; omitting Host lets the one
       // warmed Flight entry serve every ingress hostname without adding an
       // unbounded raw-host variant family.
-      Vary: isRscWorkersCacheRequest() ? "Cookie, Authorization" : "Cookie, Authorization, Host",
+      Vary: requestKind === "rsc" ? "Accept, Cookie, Authorization" : "Cookie, Authorization, Host",
     };
 
-    if (input.tags && input.tags.length > 0) {
-      const cacheTag = formatCacheTag(input.tags);
+    // Workers Caching requires every Vary variant of one URL to carry the same
+    // Cache-Tag set. HTML can legitimately vary by host and resolve to different
+    // routes/data, so give every HTML variant one stable family tag. Any tag/path
+    // invalidation purges that family below. Canonical RSC has only one stored
+    // request shape and can retain its precise render-derived tags.
+    const responseTags = requestKind === "html" ? [HTML_CACHE_TAG] : input.tags;
+    if (responseTags && responseTags.length > 0) {
+      const cacheTag = formatCacheTag(responseTags);
       if (cacheTag) headers["Cache-Tag"] = cacheTag;
     }
 
@@ -302,16 +341,21 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const cache = getWorkersCache();
     if (!cache) return; // no host cache in the request context (e.g. Node dev)
 
-    const tagList = (Array.isArray(tags) ? tags : [tags]).filter(
+    const tagList = (Array.isArray(tags) ? [...tags] : [tags]).filter(
       (t): t is string => typeof t === "string" && t.length > 0,
     );
     if (tagList.length === 0) return;
+    if (!tagList.includes(HTML_CACHE_TAG)) tagList.push(HTML_CACHE_TAG);
 
     await cache.purge({ tags: tagList });
   }
 }
 
 // Config-driven adapter factory (default export).
-const createCloudflareCdnCacheAdapter = (): CdnCacheAdapter => new CloudflareCdnCacheAdapter();
+const createCloudflareCdnCacheAdapter = ({
+  env,
+}: {
+  env?: CloudflareCdnCacheAdapterEnv;
+} = {}): CdnCacheAdapter => new CloudflareCdnCacheAdapter(env);
 
 export default createCloudflareCdnCacheAdapter;

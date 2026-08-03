@@ -62,7 +62,6 @@ import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-
 import {
   createStaticAssetRequest,
   finalizeMissingStaticAssetResponse,
-  handleWorkerVersionProbe,
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
@@ -1527,42 +1526,6 @@ describe("readPagesRouterEntrySource", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
     expect(content).toContain("finalizeMissingStaticAssetResponse(result.response");
-  });
-
-  it("handles Cloudflare Worker version probes before cacheable request routing", () => {
-    const request = new Request(
-      "https://app.example.com/about?__vinext_version_probe=version-new",
-      {
-        method: "POST",
-        headers: { "X-Vinext-Version-Probe": "1" },
-      },
-    );
-    const response = handleWorkerVersionProbe(request, {
-      VINEXT_VERSION_METADATA: { id: "version-new" },
-    });
-
-    expect(response?.status).toBe(204);
-    expect(response?.headers.get("X-Vinext-Worker-Version")).toBe("version-new");
-    expect(response?.headers.get("Cache-Control")).toBe("no-store");
-    expect(response?.headers.get("CDN-Cache-Control")).toBe("no-store");
-    expect(
-      handleWorkerVersionProbe(new Request("https://app.example.com/about"), {
-        VINEXT_VERSION_METADATA: { id: "version-new" },
-      }),
-    ).toBeNull();
-  });
-
-  it("marks Worker version probes unavailable when the binding is absent", () => {
-    const response = handleWorkerVersionProbe(
-      new Request("https://app.example.com/?__vinext_version_probe=version-new", {
-        method: "POST",
-        headers: { "X-Vinext-Version-Probe": "1" },
-      }),
-      {},
-    );
-
-    expect(response?.status).toBe(503);
-    expect(response?.headers.get("X-Vinext-Worker-Version")).toBe("unavailable");
   });
 
   it("accepts custom Worker env interfaces without an index signature", () => {
@@ -3411,6 +3374,11 @@ describe("resolveWranglerCommandConfig", () => {
       expect(resolveWranglerCommandConfig(tmpDir, { config: "wrangler.jsonc" })).toEqual({
         commandOptions: {
           config: undefined,
+          env: "staging",
+          name: "source-worker-staging",
+        },
+        controlPlaneCommandOptions: {
+          config: "wrangler.jsonc",
           env: "staging",
           name: "source-worker-staging",
         },

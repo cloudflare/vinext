@@ -71,6 +71,14 @@ export type CdnCacheableHeaderInput = {
 // equivalent and stay CDN-specific.
 export type CdnCacheAdapter = {
   /**
+   * Optionally handle an incoming platform request before framework routing.
+   * This keeps provider-owned control-plane protocols behind the configured
+   * adapter instead of teaching vinext core about a particular CDN. Returning
+   * `null` delegates to the normal request pipeline.
+   */
+  handleRequest?(request: Request): Response | null | Promise<Response | null>;
+
+  /**
    * Read a page-level artifact. Returning a value lets the origin serve it
    * (HIT/STALE); returning `null` makes the origin render fresh.
    *

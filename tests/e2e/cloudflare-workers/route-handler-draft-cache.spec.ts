@@ -349,9 +349,19 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       expect(headers["cache-control"]).not.toContain("no-store");
       expect(headers["cdn-cache-control"]).toContain("max-age=");
       const vary = headers.vary?.split(",").map((token) => token.trim());
+      expect(vary).toContain("Accept");
       expect(vary).toContain("Cookie");
       expect(vary).toContain("Authorization");
       expect(vary).not.toContain("Host");
+    }
+
+    for (const accept of ["application/json", "text/x-component, */*", "TEXT/X-COMPONENT"]) {
+      const nonCanonicalResponse = await page.request.get(`${BASE_URL}/about?_rsc`, {
+        headers: { Accept: accept, RSC: "1" },
+        maxRedirects: 0,
+      });
+      expect(nonCanonicalResponse.status()).toBe(307);
+      expect(nonCanonicalResponse.headers()["cf-cache-status"]).not.toBe("HIT");
     }
 
     const cookieResponse = await page.request.get(`${BASE_URL}/about?_rsc`, {

@@ -20,7 +20,7 @@ import {
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
-// Keep these deploy-probe protocol names in sync with vinext/server/worker-utils.
+// Keep these deploy-probe protocol names in sync with the Cloudflare CDN adapter.
 const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
 const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
 const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
@@ -390,6 +390,7 @@ function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"):
     if (
       field === "*" ||
       (kind === "html" && field === "accept") ||
+      (kind === "rsc" && field === "host") ||
       !CANONICAL_RSC_VARY_FIELDS.has(field)
     ) {
       return token.trim() || "*";

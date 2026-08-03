@@ -822,8 +822,12 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
     });
 
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
-      expect(args).not.toContain("--config");
-      expect(args).not.toContain("wrangler.jsonc");
+      if (args.includes("status") || args.includes("triggers")) {
+        expect(args).toEqual(expect.arrayContaining(["--config", "wrangler.jsonc"]));
+      } else {
+        expect(args).not.toContain("--config");
+        expect(args).not.toContain("wrangler.jsonc");
+      }
       expect(args).toEqual(expect.arrayContaining(["--env", "staging"]));
       expect(args).toEqual(expect.arrayContaining(["--name", "my-worker-staging"]));
     }

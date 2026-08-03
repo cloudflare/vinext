@@ -9,7 +9,7 @@ describe("getPrewarmableAppPaths", () => {
   it("accepts adapter-owned request identity Vary fields", () => {
     expect(
       hasNonCacheablePrewarmHeaders({
-        Vary: "RSC, Cookie, Authorization, Host",
+        Vary: "RSC, Accept, Cookie, Authorization, Host",
       }),
     ).toBe(false);
   });

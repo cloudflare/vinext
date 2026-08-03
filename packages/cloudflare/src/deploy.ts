@@ -561,6 +561,8 @@ export async function runWranglerDeploy(
 
 type ResolvedWranglerCommandConfig = {
   commandOptions: WranglerCommandOptions;
+  /** Source config for Wrangler commands that do not opt into deploy redirects. */
+  controlPlaneCommandOptions?: WranglerCommandOptions;
   inspectionConfig?: string;
 };
 
@@ -671,10 +673,19 @@ export function resolveWranglerCommandConfig(
   }
   const commandOptions = { ...options };
   delete commandOptions.config;
+  const controlPlaneConfig = generatedUserPath ? path.relative(root, generatedUserPath) : undefined;
   return {
     commandOptions: {
       ...commandOptions,
       config: undefined,
+      env: selectedEnv ?? flattenedEnv,
+      ...(flattenedEnv && !options.name && generatedConfig?.name
+        ? { name: generatedConfig.name }
+        : {}),
+    },
+    controlPlaneCommandOptions: {
+      ...options,
+      config: controlPlaneConfig,
       env: selectedEnv ?? flattenedEnv,
       ...(flattenedEnv && !options.name && generatedConfig?.name
         ? { name: generatedConfig.name }
@@ -702,6 +713,10 @@ export async function deployWithCdnWarmup(
 ): Promise<string> {
   const resolvedWrangler = resolveWranglerCommandConfig(root, options);
   const wranglerOptions = { ...options, ...resolvedWrangler.commandOptions };
+  const controlPlaneWranglerOptions = {
+    ...options,
+    ...(resolvedWrangler.controlPlaneCommandOptions ?? resolvedWrangler.commandOptions),
+  };
   const targetResolutionOptions = {
     ...wranglerOptions,
     config: resolvedWrangler.inspectionConfig,
@@ -750,7 +765,7 @@ export async function deployWithCdnWarmup(
   }
 
   const upload = runWranglerVersionUpload(root, wranglerOptions);
-  const deploymentStatus = readWranglerDeploymentStatus(root, wranglerOptions);
+  const deploymentStatus = readWranglerDeploymentStatus(root, controlPlaneWranglerOptions);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
@@ -759,7 +774,7 @@ export async function deployWithCdnWarmup(
 
   function applyTriggers(): void {
     if (triggersApplied) return;
-    triggersDeployedUrl = runWranglerTriggersDeploy(root, wranglerOptions).deployedUrl;
+    triggersDeployedUrl = runWranglerTriggersDeploy(root, controlPlaneWranglerOptions).deployedUrl;
     triggersApplied = true;
   }
 

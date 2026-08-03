@@ -162,11 +162,16 @@ const CANONICALIZED_RSC_REQUEST_HEADERS = new Set(
 
 function configHeaderDeclaresCanonicalizedRscVary(rule: NextHeader): boolean {
   return rule.headers.some(
-    ({ key, value }) =>
-      key.toLowerCase() === "vary" &&
-      value
-        .split(",")
-        .some((token) => CANONICALIZED_RSC_REQUEST_HEADERS.has(token.trim().toLowerCase())),
+    ({ key, value }) => key.toLowerCase() === "vary" && varyDeclaresCanonicalizedRscHeader(value),
+  );
+}
+
+function varyDeclaresCanonicalizedRscHeader(vary: string | null): boolean {
+  return (
+    vary !== null &&
+    vary
+      .split(",")
+      .some((token) => CANONICALIZED_RSC_REQUEST_HEADERS.has(token.trim().toLowerCase()))
   );
 }
 
@@ -253,6 +258,34 @@ function applyMiddlewareContextToResponse(
       headers,
     }),
   );
+}
+
+/** Apply a framework-owned header even when userland returned immutable headers. */
+function applyFrameworkResponseHeader(
+  response: Response,
+  name: string,
+  value: string | null,
+): Response {
+  const apply = (headers: Headers): void => {
+    if (value === null) headers.delete(name);
+    else headers.set(name, value);
+  };
+
+  try {
+    apply(response.headers);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    apply(headers);
+    return preserveFullyBufferedBodyMetadata(
+      response,
+      new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      }),
+    );
+  }
 }
 
 type DispatchMatchedPageOptions<TRoute> = {
@@ -504,6 +537,7 @@ async function applyRewrite(
     rewrites: NextRewrite[];
     /** Raw pathname identity used for config source matching and capture substitution. */
     paramsPathname?: string;
+    observeExternalResponse: (response: Response) => void;
     validateExternalRewriteRequest: () => Promise<Response | null>;
   },
   cleanPathname: string,
@@ -525,9 +559,9 @@ async function applyRewrite(
     const validationResponse = await options.validateExternalRewriteRequest();
     if (validationResponse) return validationResponse;
     options.clearRequestContext();
-    return markAppUserlandResponseVaryProvenance(
-      await configMatchers.proxyExternalRequest(options.request, rewritten),
-    );
+    const response = await configMatchers.proxyExternalRequest(options.request, rewritten);
+    options.observeExternalResponse(response);
+    return markAppUserlandResponseVaryProvenance(response);
   }
 
   return rewritten;
@@ -737,6 +771,24 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // request-scoped constants from this point on.
   const matchPathname = (p: string): string =>
     normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
+  const domainLocaleMatchPathnames = (pathname: string): string[] => {
+    const pathnames = new Set([matchPathname(pathname)]);
+    for (const domain of options.i18nConfig?.domains ?? []) {
+      pathnames.add(
+        normalizeDefaultLocalePathname(pathname, options.i18nConfig, {
+          hostname: domain.domain,
+        }),
+      );
+    }
+    return [...pathnames];
+  };
+  const configSourceVariesAcrossDomainLocales = (
+    pathname: string,
+    matches: (matchPathname: string) => boolean,
+  ): boolean => {
+    const outcomes = new Set(domainLocaleMatchPathnames(pathname).map(matches));
+    return outcomes.size > 1;
+  };
 
   const observeConditionalConfig =
     process.env.VINEXT_PRERENDER === "1" &&
@@ -761,24 +813,43 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ? await import("../config/config-matchers.js")
       : null;
   if (observeConditionalConfig && configMatchers) {
-    middlewareObservation.conditionalConfigPathMatched ||= options.configHeaders.some(
-      (rule) =>
-        (configRuleMayVaryAcrossCanonicalRscRequests(rule) ||
+    middlewareObservation.conditionalConfigPathMatched ||= options.configHeaders.some((rule) => {
+      const matches = (pathname: string) =>
+        configMatchers.matchesHeaderSource(pathname, rule, basePathState);
+      return (
+        ((configRuleMayVaryAcrossCanonicalRscRequests(rule) ||
           configHeaderDeclaresCanonicalizedRscVary(rule)) &&
-        configMatchers.matchesHeaderSource(redirectPathname, rule, basePathState),
-    );
-    middlewareObservation.conditionalConfigPathMatched ||= options.configRedirects.some(
-      (rule) =>
-        configRuleMayVaryAcrossCanonicalRscRequests(rule) &&
-        configMatchers.matchesRedirectSource(redirectPathname, rule, basePathState),
-    );
+          matches(redirectPathname)) ||
+        configSourceVariesAcrossDomainLocales(requestCleanPathname, matches)
+      );
+    });
+    middlewareObservation.conditionalConfigPathMatched ||= options.configRedirects.some((rule) => {
+      const matches = (pathname: string) =>
+        configMatchers.matchesRedirectSource(pathname, rule, basePathState);
+      return (
+        (configRuleMayVaryAcrossCanonicalRscRequests(rule) && matches(redirectPathname)) ||
+        configSourceVariesAcrossDomainLocales(requestCleanPathname, matches)
+      );
+    });
   }
-  const observeRewrite = (rewrite: NextRewrite, rewritePathname: string): void => {
+  const observeRewrite = (rewrite: NextRewrite, pathname: string): void => {
+    const rewritePathname = matchPathname(pathname);
     if (
       observeConditionalConfig &&
       configMatchers &&
-      configRuleMayVaryAcrossCanonicalRscRequests(rewrite) &&
-      configMatchers.matchesRewriteSource(rewritePathname, rewrite, basePathState)
+      ((configRuleMayVaryAcrossCanonicalRscRequests(rewrite) &&
+        configMatchers.matchesRewriteSource(rewritePathname, rewrite, basePathState)) ||
+        configSourceVariesAcrossDomainLocales(pathname, (candidate) =>
+          configMatchers.matchesRewriteSource(candidate, rewrite, basePathState),
+        ))
+    ) {
+      middlewareObservation.conditionalConfigPathMatched = true;
+    }
+  };
+  const observeExternalResponse = (response: Response): void => {
+    if (
+      observeConditionalConfig &&
+      varyDeclaresCanonicalizedRscHeader(response.headers.get("Vary"))
     ) {
       middlewareObservation.conditionalConfigPathMatched = true;
     }
@@ -921,7 +992,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Router files live under `app/...` with no locale segment. See issue
   // #1336 item 4 / pages-i18n.normalizeDefaultLocalePathname.
   for (const rewrite of options.configRewrites.beforeFiles) {
-    observeRewrite(rewrite, matchPathname(cleanPathname));
+    observeRewrite(rewrite, cleanPathname);
     const beforeFilesRewrite = await applyRewrite(
       {
         basePathState,
@@ -937,6 +1008,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         paramsPathname: matchPathname(
           cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         ),
+        observeExternalResponse,
         rewrites: [rewrite],
         validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
       },
@@ -964,7 +1036,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (!filesystemRouteEligible && (actionId || isProgressiveActionRequest)) {
     let actionMatch: ReturnType<typeof options.matchRoute> = null;
     for (const rewrite of options.configRewrites.afterFiles) {
-      observeRewrite(rewrite, matchPathname(cleanPathname));
+      observeRewrite(rewrite, cleanPathname);
       const rewritten = await applyRewrite(
         {
           basePathState,
@@ -978,6 +1050,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           paramsPathname: matchPathname(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
+          observeExternalResponse,
           rewrites: [rewrite],
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
@@ -994,7 +1067,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     if (!actionMatch) {
       for (const rewrite of options.configRewrites.fallback) {
-        observeRewrite(rewrite, matchPathname(cleanPathname));
+        observeRewrite(rewrite, cleanPathname);
         const rewritten = await applyRewrite(
           {
             basePathState,
@@ -1008,6 +1081,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             paramsPathname: matchPathname(
               cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
             ),
+            observeExternalResponse,
             rewrites: [rewrite],
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           },
@@ -1462,7 +1536,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   if (!isInterceptionMatch && !resolvedLateRewritesForAction && (!match || match.route.isDynamic)) {
     for (const rewrite of options.configRewrites.afterFiles) {
-      observeRewrite(rewrite, matchPathname(cleanPathname));
+      observeRewrite(rewrite, cleanPathname);
       const afterFilesRewrite = await applyRewrite(
         {
           basePathState,
@@ -1477,6 +1551,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           paramsPathname: matchPathname(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
+          observeExternalResponse,
           rewrites: [rewrite],
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
@@ -1513,7 +1588,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (!resolvedLateRewritesForAction && !match) {
     for (const rewrite of options.configRewrites.fallback) {
-      observeRewrite(rewrite, matchPathname(cleanPathname));
+      observeRewrite(rewrite, cleanPathname);
       const fallbackRewrite = await applyRewrite(
         {
           basePathState,
@@ -1528,6 +1603,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           paramsPathname: matchPathname(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
+          observeExternalResponse,
           rewrites: [rewrite],
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
@@ -1947,7 +2023,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             throw error;
           }
 
-          const finalized = await finalizeAppRscResponse(response, request, {
+          let finalized = await finalizeAppRscResponse(response, request, {
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
@@ -1955,6 +2031,14 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             preserveNextUrlVary: middlewareObservation.explicitNextUrlVary,
             requestContext: preMiddlewareRequestContext,
           });
+          // This marker is framework-owned proof, not a user-configurable
+          // response header. Remove any forged/userland copy before deciding
+          // whether the observed request was actually source-independent.
+          finalized = applyFrameworkResponseHeader(
+            finalized,
+            VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
+            null,
+          );
           if (
             process.env.VINEXT_PRERENDER === "1" &&
             request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) &&
@@ -1963,7 +2047,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             !middlewareObservation.matched &&
             !middlewareObservation.conditionalPathMatched
           ) {
-            finalized.headers.set(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
+            finalized = applyFrameworkResponseHeader(
+              finalized,
+              VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
+              "1",
+            );
           }
           return finalized;
         },

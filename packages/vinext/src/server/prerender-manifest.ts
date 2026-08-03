@@ -81,6 +81,7 @@ const CONTROLLED_PREWARM_VARY_HEADERS = new Set(
     VINEXT_MOUNTED_SLOTS_HEADER,
     VINEXT_RSC_RENDER_MODE_HEADER,
     VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+    "Accept",
     "Cookie",
     "Authorization",
     "Host",

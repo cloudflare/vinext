@@ -56,6 +56,36 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(adapter.set("k", null)).resolves.toBeUndefined();
   });
 
+  it("handles staged Worker version probes using the captured Cloudflare env", () => {
+    const configured = new CloudflareCdnCacheAdapter({
+      VINEXT_VERSION_METADATA: { id: "version-new" },
+    });
+    const response = configured.handleRequest(
+      new Request("https://app.example.com/about?__vinext_version_probe=version-new", {
+        method: "POST",
+        headers: { "X-Vinext-Version-Probe": "1" },
+      }),
+    );
+
+    expect(response?.status).toBe(204);
+    expect(response?.headers.get("X-Vinext-Worker-Version")).toBe("version-new");
+    expect(response?.headers.get("Cache-Control")).toBe("no-store");
+    expect(response?.headers.has("CDN-Cache-Control")).toBe(false);
+    expect(configured.handleRequest(new Request("https://app.example.com/about"))).toBeNull();
+  });
+
+  it("marks staged Worker version probes unavailable when the binding is absent", () => {
+    const response = adapter.handleRequest(
+      new Request("https://app.example.com/?__vinext_version_probe=version-new", {
+        method: "POST",
+        headers: { "X-Vinext-Version-Probe": "1" },
+      }),
+    );
+
+    expect(response?.status).toBe(503);
+    expect(response?.headers.get("X-Vinext-Worker-Version")).toBe("unavailable");
+  });
+
   it("carries SWR on CDN-Cache-Control (public + max-age) and revalidates the browser", () => {
     // A value-less `stale-while-revalidate` is normalized to an explicit window
     // (Cloudflare ignores the bare directive — RFC 5861 requires a value).
@@ -97,10 +127,14 @@ describe("CloudflareCdnCacheAdapter", () => {
         () => adapter.buildResponseHeaders(input),
       );
 
-    expect((await buildFor({}))["CDN-Cache-Control"]).toBe("public, max-age=60");
-    expect((await buildFor({ RSC: "1", Accept: "text/x-component" }))["CDN-Cache-Control"]).toBe(
-      "public, max-age=60",
-    );
+    await expect(buildFor({})).resolves.toMatchObject({
+      "CDN-Cache-Control": "public, max-age=60",
+      "Cache-Tag": "__vinext_html",
+    });
+    await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
+      "CDN-Cache-Control": "public, max-age=60",
+      "Cache-Tag": "/blog,posts",
+    });
 
     const variantHeaders: HeadersInit[] = [
       { RSC: "unexpected" },
@@ -263,7 +297,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      Vary: "Cookie, Authorization",
+      Vary: "Accept, Cookie, Authorization",
     });
     await expect(
       buildFor({
@@ -623,7 +657,9 @@ describe("CloudflareCdnCacheAdapter", () => {
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag(["posts", "_N_T_/blog"]);
     });
-    expect(purge).toHaveBeenCalledWith({ tags: ["posts", "_N_T_/blog"] });
+    expect(purge).toHaveBeenCalledWith({
+      tags: ["posts", "_N_T_/blog", "__vinext_html"],
+    });
   });
 
   it("revalidateTag normalizes a single tag to an array", async () => {
@@ -631,7 +667,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag("posts");
     });
-    expect(purge).toHaveBeenCalledWith({ tags: ["posts"] });
+    expect(purge).toHaveBeenCalledWith({ tags: ["posts", "__vinext_html"] });
   });
 
   it("revalidateTag is a no-op when the Workers Cache is absent (e.g. Node dev)", async () => {

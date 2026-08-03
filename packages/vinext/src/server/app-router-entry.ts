@@ -30,6 +30,7 @@ import rscHandler, {
   __imageConfig as __rscImageConfig,
 } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -42,9 +43,7 @@ import {
 import {
   createStaticAssetRequest,
   finalizeMissingStaticAssetResponse,
-  handleWorkerVersionProbe,
   resolveStaticAssetSignal,
-  type WorkerVersionProbeEnv,
 } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
@@ -76,7 +75,7 @@ type WorkerAssetEnv = {
   ASSETS?: {
     fetch(request: Request): Promise<Response> | Response;
   };
-} & WorkerVersionProbeEnv;
+};
 
 export default {
   async fetch(
@@ -93,8 +92,11 @@ async function handleRequest(
   env: WorkerAssetEnv | undefined,
   platformCtx: ExecutionContextLike | undefined,
 ): Promise<Response> {
-  const versionProbe = handleWorkerVersionProbe(request, env);
-  if (versionProbe) return versionProbe;
+  // Register first so provider-specific control-plane requests can be handled
+  // by the configured adapter without leaking their protocol into vinext core.
+  registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
+  const adapterResponse = await getCdnCacheAdapter().handleRequest?.(request);
+  if (adapterResponse) return adapterResponse;
 
   // The Node production server calls this Worker-style entry with a
   // server-owned loopback origin and must retain its HTTP revalidation path.
@@ -106,8 +108,6 @@ async function handleRequest(
         handleRequest(internalRequest, env, internalCtx),
       );
 
-  // Register config-driven cache adapters before any rendering touches the cache.
-  registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
 
   const url = new URL(request.url);

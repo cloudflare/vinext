@@ -7,46 +7,6 @@
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 
-export const VINEXT_VERSION_METADATA_BINDING = "VINEXT_VERSION_METADATA";
-export const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
-export const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
-export const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
-
-export type WorkerVersionMetadata = {
-  id?: unknown;
-};
-
-export type WorkerVersionProbeEnv = {
-  VINEXT_VERSION_METADATA?: WorkerVersionMetadata;
-};
-
-/**
- * Verify which staged Cloudflare Worker version handled a deploy-time probe.
- * The probe uses POST so Workers Cache cannot satisfy it without invoking the
- * selected Worker version.
- */
-export function handleWorkerVersionProbe(
-  request: Request,
-  env: WorkerVersionProbeEnv | undefined,
-): Response | null {
-  if (
-    request.method !== "POST" ||
-    request.headers.get(VINEXT_VERSION_PROBE_HEADER) !== "1" ||
-    !new URL(request.url).searchParams.has(VINEXT_VERSION_PROBE_QUERY)
-  ) {
-    return null;
-  }
-
-  const metadata = env?.VINEXT_VERSION_METADATA;
-  const versionId = typeof metadata?.id === "string" ? metadata.id : null;
-  const headers = new Headers({
-    "Cache-Control": "no-store",
-    "CDN-Cache-Control": "no-store",
-    [VINEXT_WORKER_VERSION_HEADER]: versionId ?? "unavailable",
-  });
-  return new Response(null, { status: versionId ? 204 : 503, headers });
-}
-
 /**
  * Merge middleware/config headers into a response.
  * Response headers take precedence over middleware headers for all headers

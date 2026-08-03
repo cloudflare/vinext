@@ -257,6 +257,25 @@ describe("createAppRscHandler", () => {
     expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
 
+  it("removes a userland-forged source-independence proof header", async () => {
+    const response = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [],
+        middlewareModule: {
+          default: () =>
+            new Response("flight", {
+              headers: {
+                "Content-Type": "text/x-component",
+                [VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER]: "1",
+              },
+            }),
+        },
+      }),
+    );
+
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
   // Next's cache-busting helper explicitly emits bare `?_rsc` when the hash is
   // empty, so both valueless and valued `_rsc` config conditions are variants.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/set-cache-busting-search-param.ts
@@ -310,6 +329,41 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Vary")).toContain(varyHeader);
     expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
+
+  it.each(["header", "redirect", "rewrite"] as const)(
+    "does not certify domain-locale-dependent config %s matching",
+    async (kind) => {
+      const source = "/fr/about";
+      const response = await runRscPrewarmProbe(
+        createHandler({
+          configHeaders:
+            kind === "header"
+              ? [{ source, locale: false, headers: [{ key: "x-domain-locale", value: "fr" }] }]
+              : [],
+          configRedirects:
+            kind === "redirect"
+              ? [{ source, locale: false, destination: "/other", permanent: false }]
+              : [],
+          configRewrites: {
+            beforeFiles:
+              kind === "rewrite" ? [{ source, locale: false, destination: "/about" }] : [],
+            afterFiles: [],
+            fallback: [],
+          },
+          i18nConfig: {
+            locales: ["en", "fr"],
+            defaultLocale: "en",
+            domains: [
+              { domain: "example.test", defaultLocale: "en" },
+              { domain: "example.fr", defaultLocale: "fr" },
+            ],
+          },
+        }),
+      );
+
+      expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+    },
+  );
 
   it("ignores request-conditional config rules that cannot reach the prerendered route", async () => {
     const response = await runRscPrewarmProbe(
@@ -2984,7 +3038,7 @@ describe("createAppRscHandler", () => {
     async (phase) => {
       const server = createServer((_req, res) => {
         res.writeHead(200, {
-          "content-type": "text/plain",
+          "content-type": "text/x-component",
           vary: "Next-Url, Accept-Encoding",
         });
         res.end("upstream");
@@ -2994,9 +3048,7 @@ describe("createAppRscHandler", () => {
       const upstreamBase = `http://127.0.0.1:${address.port}`;
 
       try {
-        const headers = createRscRequestHeaders();
-        const rscUrl = await createRscRequestUrl("/docs/proxy", headers);
-        const rewrite = { source: "/proxy", destination: `${upstreamBase}/proxy` };
+        const rewrite = { source: "/about", destination: `${upstreamBase}/proxy` };
         const handler = createHandler({
           configHeaders: [],
           configRewrites: {
@@ -3007,14 +3059,12 @@ describe("createAppRscHandler", () => {
           matchRoute: () => null,
         });
 
-        const response = await handler(
-          new Request(`https://example.test${rscUrl}`, { headers }),
-          null,
-        );
+        const response = await runRscPrewarmProbe(handler);
 
         expect(response.status).toBe(200);
         expect(response.headers.get("Vary")).toContain("Next-Url");
         expect(response.headers.get("Vary")).toContain("Accept-Encoding");
+        expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }

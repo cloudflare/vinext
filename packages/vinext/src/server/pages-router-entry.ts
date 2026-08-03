@@ -33,16 +33,13 @@ import {
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import {
-  finalizeMissingStaticAssetResponse,
-  handleWorkerVersionProbe,
-  type WorkerVersionProbeEnv,
-} from "./worker-utils.js";
+import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -58,7 +55,7 @@ type AssetFetcher = {
 
 type PagesWorkerEnv = {
   ASSETS?: AssetFetcher;
-} & WorkerVersionProbeEnv;
+};
 
 type PagesWorkerExecutionContext = {
   waitUntil?(promise: Promise<unknown>): void;
@@ -114,8 +111,11 @@ async function handleRequest(
   env: PagesWorkerEnv | undefined,
   platformCtx: PagesWorkerExecutionContext | ExecutionContextLike | undefined,
 ): Promise<Response> {
-  const versionProbe = handleWorkerVersionProbe(request, env);
-  if (versionProbe) return versionProbe;
+  // Register first so provider-specific control-plane requests can be handled
+  // by the configured adapter without leaking their protocol into vinext core.
+  registerConfiguredCacheAdapters(env);
+  const adapterResponse = await getCdnCacheAdapter().handleRequest?.(request);
+  if (adapterResponse) return adapterResponse;
 
   const ctx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
     handleRequest(internalRequest, env, internalCtx),
@@ -123,7 +123,6 @@ async function handleRequest(
 
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
-  registerConfiguredCacheAdapters(env);
   registerConfiguredImageOptimizer(env);
 
   try {

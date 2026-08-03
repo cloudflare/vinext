@@ -941,13 +941,34 @@ describe("Cloudflare CDN warmup", () => {
           headers: {
             "CF-Cache-Status": "MISS",
             "Content-Type": "text/x-component",
-            Vary: "RSC, Cookie, Authorization",
+            Vary: "RSC, Accept, Cookie, Authorization",
           },
         });
       },
     });
 
     expect(result).toMatchObject({ total: 1, warmed: 1, failed: 0 });
+  });
+
+  it("rejects host-partitioned RSC entries as not reusable across ingress hosts", async () => {
+    const result = await warmCdnCache({
+      targetUrl: "https://warm.example.com",
+      paths: [],
+      rscPaths: ["/app"],
+      rscCacheKeyMode: "response-vary",
+      fetchImpl: async () =>
+        new Response("flight", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": "MISS",
+            "Content-Type": "text/x-component",
+            Vary: "RSC, Host",
+          },
+        }),
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
+    expect(result.failures[0]?.error).toBe("unsupported Vary field: Host");
   });
 
   it("reports warmup failures and throws in strict mode", async () => {
