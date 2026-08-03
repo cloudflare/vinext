@@ -158,6 +158,10 @@ export type PagesPipelineDeps = {
         opts: { isDataRequest: boolean },
       ) => Promise<MiddlewareResult>)
     | null;
+  /** Original URL presented to middleware when URL normalization is disabled. */
+  middlewareRequest?: Request;
+  /** Stale/malformed data response emitted only if middleware does not handle the request. */
+  dataNotFoundResponse?: Response | null;
   renderPage?:
     | ((
         request: Request,
@@ -394,7 +398,9 @@ export async function runPagesRequest(
   // parity, this keeps the internal credential out of user middleware and any
   // external destination it may choose.
   if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
-    const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
+    const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
+      isDataRequest,
+    });
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -472,6 +478,13 @@ export async function runPagesRequest(
 
     // Reconciled superset: result.status takes priority over result.rewriteStatus
     middlewareStatus = result.status ?? result.rewriteStatus;
+  }
+
+  if (deps.dataNotFoundResponse && resolvedUrl === originalResolvedUrl) {
+    return {
+      type: "response",
+      response: mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
+    };
   }
 
   // Step 6: Unpack middleware request headers

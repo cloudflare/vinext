@@ -118,6 +118,23 @@ describe("deprecated config warnings", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("resolves both URL-normalization option names", async () => {
+    await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
+      skipProxyUrlNormalize: true,
+    });
+    await expect(resolveNextConfig({ skipMiddlewareUrlNormalize: true })).resolves.toMatchObject({
+      skipProxyUrlNormalize: true,
+    });
+  });
+
+  it("rejects both URL-normalization option names together", async () => {
+    await expect(
+      resolveNextConfig({ skipProxyUrlNormalize: true, skipMiddlewareUrlNormalize: true }),
+    ).rejects.toThrow(
+      "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time.",
+    );
+  });
 });
 
 describe("loadNextConfig with CJS next.config.js under type:module", () => {
@@ -2054,6 +2071,7 @@ describe("detectNextIntlConfig", () => {
       assetPrefix: "",
       basePath: "",
       trailingSlash: false,
+      skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],

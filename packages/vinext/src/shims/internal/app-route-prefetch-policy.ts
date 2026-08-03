@@ -35,7 +35,14 @@ const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>
 export type AppRoutePrefetchPolicy = {
   cacheForNavigation: boolean;
   fallbackTtl: "dynamic" | "static";
-  minimumTtlMs: number | undefined;
+  /**
+   * Whether a dynamic render's stale-time bound applies verbatim, including
+   * below the 30s prefetch floor. Automatic prefetches take it verbatim, so a
+   * dynamic `0` is never reused. `prefetch={true}` opts into caching dynamic
+   * content and keeps the floored static window, mirroring Next's split
+   * between `auto` and `full` in `getPrefetchEntryCacheStatus`.
+   */
+  honorDynamicStaleTime: boolean;
   prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 };
@@ -59,7 +66,7 @@ function toSameOriginRouteHref(href: string): string | null {
 const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
   cacheForNavigation: false,
   fallbackTtl: "static",
-  minimumTtlMs: undefined,
+  honorDynamicStaleTime: true,
   prefetchShellFirst: false,
   shouldPrefetch: false,
 };
@@ -95,7 +102,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
       !route.canPrefetchLoadingShell &&
       route.requiresDynamicNavigationRequest !== true,
     fallbackTtl: "static",
-    minimumTtlMs: route.isDynamic ? 0 : undefined,
+    honorDynamicStaleTime: true,
     prefetchShellFirst: hasSearchParams || !route.isDynamic,
     shouldPrefetch: true,
   };
@@ -105,7 +112,7 @@ export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
   return {
     cacheForNavigation: true,
     fallbackTtl: "static",
-    minimumTtlMs: undefined,
+    honorDynamicStaleTime: false,
     prefetchShellFirst: true,
     shouldPrefetch: true,
   };

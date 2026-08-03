@@ -1180,10 +1180,14 @@ describe("App Router entry templates", () => {
     expect(withoutMiddleware).not.toContain("app-middleware.js");
     expect(withoutMiddleware).not.toContain("runMiddleware(");
     expect(withMiddleware).toContain("app-middleware.js");
-    expect(withMiddleware).toContain("runMiddleware({ cleanPathname, context, hadBasePath");
+    expect(withMiddleware).toContain(
+      "runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath",
+    );
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
     expect(withMiddleware).toContain("hadBasePath,");
+    expect(withMiddleware).toContain("externalRewriteRequest,");
     expect(withMiddleware).toContain("middlewareRequest,");
+    expect(withMiddleware).toContain("validateExternalRewriteRequest,");
   });
 
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
@@ -1493,6 +1497,7 @@ describe("Pages Router entry template", () => {
         await resolveNextConfig({
           basePath: "/root",
           generateBuildId: () => "test-build-id",
+          skipProxyUrlNormalize: true,
         }),
         createValidFileMatcher(),
         middlewarePath,
@@ -1501,9 +1506,10 @@ describe("Pages Router entry template", () => {
 
       expect(code).toContain("export function normalizeDataRequest(request)");
       expect(code).toContain(
-        "vinextConfig.basePath,\n    hasMiddleware && vinextConfig.trailingSlash",
+        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
       );
       expect(code).toContain("export const hasMiddleware = true");
+      expect(code).toContain('"skipProxyUrlNormalize":true');
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
