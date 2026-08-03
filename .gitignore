@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 !packages/types/next/upstream/dist/
 !packages/types/next/upstream/dist/**

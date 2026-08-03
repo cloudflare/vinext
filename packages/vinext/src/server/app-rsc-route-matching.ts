@@ -284,17 +284,41 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         if (params === null) continue;
         canonicalizeAppPageParams(params);
 
-        const concreteSourceRouteIndex =
-          matchedSourceRoute && entry.sourceMatchPatternParts !== null
-            ? (routeIndexes.get(matchedSourceRoute.route) ?? entry.sourceRouteIndex)
-            : entry.sourceRouteIndex;
+        // Resolving the claimed source pathname to its concrete descendant
+        // route (#2042) keeps dynamic source params intact, but the source
+        // pathname is an unauthenticated client header and the resolved route
+        // becomes the route that renders or dispatches. A Route Handler has no
+        // page, layouts, or parallel slots, so it can never own or sit inside
+        // an interception source tree; promoting one only lets a crafted
+        // interception context execute a `route.ts` that happens to live under
+        // the intercepting route. Fall back to the slot owner instead, which is
+        // the fixed destination Next.js' generated interception rewrite uses.
+        const concreteSourceRoute =
+          matchedSourceRoute &&
+          entry.sourceMatchPatternParts !== null &&
+          !isAppRouteHandlerRoute(matchedSourceRoute.route)
+            ? matchedSourceRoute
+            : null;
+        const concreteSourceRouteIndex = concreteSourceRoute
+          ? (routeIndexes.get(concreteSourceRoute.route) ?? entry.sourceRouteIndex)
+          : entry.sourceRouteIndex;
         const sourceRoute = routes[concreteSourceRouteIndex];
-        const matchedSourceParams =
-          matchedSourceRoute && entry.sourceMatchPatternParts !== null
-            ? matchedSourceRoute.params
-            : sourceRoute
-              ? matchRoutePatternRaw(sourceParts, sourceRoute.patternParts)
-              : null;
+        // The fallback owner can itself be a Route Handler. The route graph
+        // retains slots discovered beside `route.ts`, so rejecting only a
+        // concrete descendant handler is insufficient: promoting that owner
+        // would reach the same handler dispatch branch. A handler cannot be a
+        // renderable interception source, so let another matching intercept
+        // win or reject this interception entirely.
+        if (sourceRoute && isAppRouteHandlerRoute(sourceRoute)) continue;
+        const matchedSourceParams = concreteSourceRoute
+          ? concreteSourceRoute.params
+          : sourceRoute
+            ? matchSlotOwnerSourceParams(
+                sourceParts,
+                sourceRoute.patternParts,
+                entry.sourceMatchPatternParts !== null,
+              )
+            : null;
 
         // Secondary gate (from #1249): when the entry has no
         // `sourceMatchPatternParts` declared (older manifest shapes), reject
@@ -323,6 +347,28 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       return null;
     },
   };
+}
+
+/**
+ * Params for the slot owner when interception falls back to it instead of a
+ * concrete descendant source route. The owner is what renders, and
+ * `matchInterceptRoute` reads the promoted route's params solely from these,
+ * so dropping them would render a dynamic owner without its segments.
+ *
+ * An exact match covers a source that names the owner itself. It cannot
+ * succeed when the source names a deeper descendant — a rejected Route
+ * Handler, or a path with no concrete route — so once the descendants-allowed
+ * gate has approved the source, take the owner's params from that prefix.
+ */
+function matchSlotOwnerSourceParams(
+  sourceParts: readonly string[],
+  patternParts: readonly string[],
+  descendantsAllowed: boolean,
+): AppRscRouteParams | null {
+  const exact = matchRoutePatternRaw(sourceParts, patternParts);
+  if (exact !== null) return exact;
+  if (!descendantsAllowed || !matchRoutePatternPrefix(sourceParts, patternParts)) return null;
+  return extractRawParamsForMatchedRoute(patternParts, sourceParts);
 }
 
 /**
