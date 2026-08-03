@@ -72,8 +72,16 @@ jobs:
         run: vp run build
 
       - name: Build example
+        if: github.event_name != 'pull_request' || matrix.example.name != 'workers-cache'
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
+
+      - name: Build Workers Cache preview with prewarmable routes
+        if: github.event_name == 'pull_request' && matrix.example.name == 'workers-cache'
+        run: vp exec vinext build
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          VINEXT_PREPARE_RSC_WARM_PREVIEW: "1"
 
       - name: Apply D1 migrations (benchmarks only)
         if: matrix.example.name == 'benchmarks' && github.event_name == 'push' && github.ref == 'refs/heads/main'

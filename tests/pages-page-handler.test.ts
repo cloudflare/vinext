@@ -25,6 +25,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -269,6 +270,28 @@ describe("createPagesPageHandler — route miss", () => {
       expect(genericResponse.headers.get("cache-control")).toBe("no-store");
       expect(genericResponse.headers.get("cdn-cache-control")).toBeNull();
       expect(genericResponse.headers.get("cache-tag")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("does not edge-cache cookie-bearing Pages ISR responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const route = makeRoute(
+        "/cached",
+        makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+      );
+      const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+      const request = new Request("http://localhost/cached", {
+        headers: { Cookie: "session=private" },
+      });
+
+      const response = await handler(request, "/cached", null, null, null);
+
+      expect(response.headers.get("cache-control")).toContain("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-tag")).toBeNull();
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }

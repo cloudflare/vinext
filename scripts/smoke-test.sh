@@ -41,6 +41,7 @@ CHECKS=(
   "nextra-docs-template          /about  About"
   "benchmarks                    /       Benchmark"
   "hackernews                    /       Hacker News"
+  "workers-cache                /       Request-context cache demo"
   "vinext-web                    /       Run your Next.js app on Vite"
 )
 
@@ -59,7 +60,8 @@ CONTENT_CHECKS=(
 )
 
 tmpfile=$(mktemp)
-trap "rm -f '$tmpfile'" EXIT
+rsc_headers=$(mktemp)
+trap "rm -f '$tmpfile' '$rsc_headers'" EXIT
 
 passed=0
 failed=0
@@ -95,6 +97,65 @@ for check in "${CHECKS[@]}"; do
   echo "  OK  ${worker}${path}"
   passed=$((passed + 1))
 done
+
+# ---------------------------------------------------------------------------
+# Real Workers Cache RSC reuse
+# ---------------------------------------------------------------------------
+
+if [[ -n "$PREVIEW_ALIAS" ]]; then
+  rsc_url="https://${PREVIEW_ALIAS}-workers-cache.${DOMAIN}/cached/intro?_rsc"
+else
+  rsc_url="https://workers-cache.${DOMAIN}/cached/intro?_rsc"
+fi
+
+rsc_request=(
+  -H "Accept: text/x-component"
+  -H "RSC: 1"
+  --max-time 10
+  "$rsc_url"
+)
+
+first_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${rsc_request[@]}" || echo "000")
+first_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+first_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_headers" | tr -d '\r' | tail -1)
+
+second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${rsc_request[@]}" || echo "000")
+second_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+second_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
+
+cookie_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
+  -H "Accept: text/x-component" \
+  -H "RSC: 1" \
+  -H "Cookie: __prerender_bypass=vinext-cache-isolation-probe" \
+  --max-time 10 \
+  "$rsc_url" || echo "000")
+cookie_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+cookie_cache_control=$(awk 'BEGIN { IGNORECASE=1 } /^cache-control:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+
+if [[ "$first_status" != "200" || -n "$first_location" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (canonical request returned HTTP ${first_status}${first_location:+, location ${first_location}})"
+  errors+=("canonical RSC request was not served directly")
+  failed=$((failed + 1))
+elif [[ -z "$first_cache_status" || "$first_cache_status" == "BYPASS" || "$first_cache_status" == "DYNAMIC" || "$first_cache_status" == "NONE/UNKNOWN" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (first CF-Cache-Status: ${first_cache_status:-missing})"
+  errors+=("canonical RSC response was not admitted to Workers Cache")
+  failed=$((failed + 1))
+elif [[ "$second_status" != "200" || "$second_cache_status" != "HIT" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (second HTTP ${second_status}, CF-Cache-Status: ${second_cache_status:-missing})"
+  errors+=("canonical RSC response did not reuse the warmed Workers Cache entry")
+  failed=$((failed + 1))
+elif ! grep -qiE '(^|,)[[:space:]]*Cookie([[:space:]]*,|$)' <<< "$second_vary"; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (Vary is missing Cookie)"
+  errors+=("canonical RSC response did not vary the anonymous entry on Cookie")
+  failed=$((failed + 1))
+elif [[ "$cookie_status" != "200" || "$cookie_cache_status" == "HIT" || "$cookie_cache_control" != *"no-store"* ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (cookie HTTP ${cookie_status}, CF-Cache-Status: ${cookie_cache_status:-missing}, Cache-Control: ${cookie_cache_control:-missing})"
+  errors+=("cookie-bearing RSC request reused or populated the anonymous cache entry")
+  failed=$((failed + 1))
+else
+  echo "  OK  workers-cache/cached/intro?_rsc  (warm ${first_cache_status} -> reuse HIT; cookie ${cookie_cache_status})"
+  passed=$((passed + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # Content-correctness checks: right data for the right dynamic route

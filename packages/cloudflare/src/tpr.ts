@@ -406,6 +406,7 @@ function cleanDomain(raw: string): string | null {
  */
 function extractFromTOML(content: string): WranglerConfig {
   const result: WranglerConfig = {};
+  const rootBody = getTomlRootBody(content);
 
   const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m);
   if (nameMatch) result.name = nameMatch[1];
@@ -433,28 +434,19 @@ function extractFromTOML(content: string): WranglerConfig {
     }
   }
 
-  // routes — both string and table forms
-  // route = "example.com/*"
-  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
-  if (routeMatch) {
-    const domain = cleanDomain(routeMatch[1]);
-    if (domain && !domain.includes("workers.dev")) {
-      result.customDomain = domain;
-    }
-  }
+  // Root routes only. Environment sections must not become the production
+  // warmup origin.
+  result.customDomain =
+    extractTomlRouteDomain(rootBody) ?? extractTomlRoutesArrayDomain(rootBody) ?? undefined;
 
   // [[routes]] blocks
   if (!result.customDomain) {
-    const routeBlocks = content.split(/\[\[routes\]\]/);
-    for (let i = 1; i < routeBlocks.length; i++) {
-      const block = routeBlocks[i].split(/\[\[/)[0];
-      const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
-      if (patternMatch) {
-        const domain = cleanDomain(patternMatch[1]);
-        if (domain && !domain.includes("workers.dev")) {
-          result.customDomain = domain;
-          break;
-        }
+    for (const section of getTomlSections(content)) {
+      if (section.header !== "routes") continue;
+      const domain = extractTomlRouteBlockDomain(section.body);
+      if (domain) {
+        result.customDomain = domain;
+        break;
       }
     }
   }
@@ -465,17 +457,14 @@ function extractFromTOML(content: string): WranglerConfig {
   const versionMetadataSection = getTomlSections(content).find(
     (section) => section.header === "version_metadata",
   );
-  const inlineVersionMetadata = extractTomlInlineTable(
-    getTomlRootBody(content),
-    "version_metadata",
-  );
+  const inlineVersionMetadata = extractTomlInlineTable(rootBody, "version_metadata");
   const versionMetadataBinding = extractTomlVersionMetadataBinding(
     versionMetadataSection?.body ?? inlineVersionMetadata ?? "",
   );
   if (versionMetadataBinding) result.versionMetadataBinding = versionMetadataBinding;
 
   const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
-  const inlineCache = extractTomlInlineTable(getTomlRootBody(content), "cache");
+  const inlineCache = extractTomlInlineTable(rootBody, "cache");
   const cache = cacheSection
     ? extractTomlCacheConfig(cacheSection.body)
     : inlineCache
@@ -487,7 +476,7 @@ function extractFromTOML(content: string): WranglerConfig {
   // deploy. If a valid TOML shape is newer or more exotic than the forms above,
   // fail closed: a false positive merely postpones warming until promotion,
   // while a false negative can write old content into a cross-version cache.
-  if (!result.cache?.crossVersionCache && /\bcross_version_cache\s*=\s*true\b/.test(content)) {
+  if (!result.cache?.crossVersionCache && /\bcross_version_cache\s*=\s*true\b/.test(rootBody)) {
     result.cache = { ...result.cache, crossVersionCache: true };
   }
 
@@ -507,7 +496,7 @@ function extractEnvConfigsFromTOML(
       const nameMatch = section.body.match(/^name\s*=\s*"([^"]+)"/m);
       if (nameMatch) envConfig.name = nameMatch[1];
       const domain =
-        extractTomlScalarRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
+        extractTomlRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
       const inlineCache = extractTomlInlineTable(section.body, "cache");
       const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
@@ -762,10 +751,15 @@ function parseTomlSectionHeader(line: string): string | null {
   return header.length > 0 ? header : null;
 }
 
-function extractTomlScalarRouteDomain(section: string): string | null {
-  const routeMatch = section.match(/^route\s*=\s*"([^"]+)"/m);
-  if (!routeMatch) return null;
-  const domain = cleanDomain(routeMatch[1]);
+function extractTomlRouteDomain(section: string): string | null {
+  const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "route");
+  if (!assignment) return null;
+  const scalarMatch = assignment.value.match(/^"([^"]+)"$/);
+  const inline = unwrapTomlInlineTable(assignment.value);
+  const patternMatch = inline?.match(/(?:^|,)\s*pattern\s*=\s*"([^"]+)"/);
+  const pattern = scalarMatch?.[1] ?? patternMatch?.[1];
+  if (!pattern) return null;
+  const domain = cleanDomain(pattern);
   return domain && !domain.includes("workers.dev") ? domain : null;
 }
 

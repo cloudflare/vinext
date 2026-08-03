@@ -216,7 +216,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
   });
 
-  it("promotes before warming when cross-version caching shares cache entries", async () => {
+  it("does not claim to warm shared entries that may belong to the previous version", async () => {
     const events: string[] = [];
     writeFile(
       "wrangler.toml",
@@ -225,15 +225,6 @@ route = "app.example.com/*"
 cache = { enabled = true, cross_version_cache = true }
 `,
     );
-    vi.mocked(fetch).mockImplementation(async (url, init) => {
-      const probe = versionProbeResponse(url, init);
-      if (probe) {
-        events.push(`probe:${formatFetchUrl(url)}`);
-        return probe;
-      }
-      events.push(`fetch:${init?.method ?? "GET"}:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
-    });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         events.push("upload");
@@ -259,18 +250,8 @@ cache = { enabled = true, cross_version_cache = true }
 
     await deployWithCdnWarmup(tmpDir, ["/"], { warmCdnConcurrency: 1 });
 
-    expect(events).toEqual([
-      "upload",
-      "status",
-      "promote",
-      "triggers",
-      "probe:https://app.example.com/?__vinext_version_probe=22222222-2222-4222-8222-222222222222",
-      "fetch:GET:https://app.example.com/",
-    ]);
-    const probeHeaders = new Headers(vi.mocked(fetch).mock.calls[0]![1]?.headers);
-    const headers = new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers);
-    expect(probeHeaders.has("Cloudflare-Workers-Version-Overrides")).toBe(false);
-    expect(headers.has("Cloudflare-Workers-Version-Overrides")).toBe(false);
+    expect(events).toEqual(["upload", "status", "promote", "triggers"]);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("does not send cacheable requests when version metadata is unavailable", async () => {
@@ -331,7 +312,7 @@ cache = { enabled = true, cross_version_cache = true }
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("fails strict warming after promotion when the active version cannot be verified", async () => {
+  it("rejects strict cross-version warming before uploading", async () => {
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({
@@ -340,27 +321,6 @@ cache = { enabled = true, cross_version_cache = true }
         cache: { enabled: true, cross_version_cache: true },
       }),
     );
-    vi.mocked(fetch).mockResolvedValue(
-      new Response(null, {
-        status: 503,
-        headers: { "X-Vinext-Worker-Version": "unavailable" },
-      }),
-    );
-    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
-      if (args.includes("upload")) {
-        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
-      }
-      if (args.includes("status")) {
-        return JSON.stringify({
-          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
-        });
-      }
-      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
-        return "Deployed version\nhttps://stable.example.workers.dev\n";
-      }
-      if (args.includes("triggers")) return "Triggers deployed\n";
-      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
-    });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
     await expect(
@@ -368,8 +328,9 @@ cache = { enabled = true, cross_version_cache = true }
         warmCdnConcurrency: 1,
         warmCdnStrict: true,
       }),
-    ).rejects.toThrow("was promoted to 100%: VINEXT_VERSION_METADATA is unavailable");
-    expect(fetch).toHaveBeenCalledTimes(1);
+    ).rejects.toThrow("cannot safely refresh cache.cross_version_cache entries");
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("uses the env Worker name and env custom domain for version override warmup", async () => {
@@ -377,6 +338,7 @@ cache = { enabled = true, cross_version_cache = true }
       "wrangler.jsonc",
       JSON.stringify({
         name: "my-worker",
+        version_metadata: { binding: "CUSTOM_ROOT_VERSION" },
         custom_domains: ["app.example.com"],
         cache: { enabled: true, cross_version_cache: true },
         env: {

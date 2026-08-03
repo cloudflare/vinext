@@ -577,14 +577,27 @@ export async function deployWithCdnWarmup(
 ): Promise<string> {
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const targetEnv = getWranglerTargetEnv(options);
-  const versionMetadataBinding =
-    (targetEnv ? wranglerConfig?.env?.[targetEnv]?.versionMetadataBinding : undefined) ??
-    wranglerConfig?.versionMetadataBinding;
+  // Wrangler does not inherit version_metadata into named environments.
+  // Inspect only the selected scope so an unrelated root binding cannot make
+  // an environment deploy fail validation (or appear to have the binding).
+  const versionMetadataBinding = targetEnv
+    ? wranglerConfig?.env?.[targetEnv]?.versionMetadataBinding
+    : wranglerConfig?.versionMetadataBinding;
   if (versionMetadataBinding && versionMetadataBinding !== "VINEXT_VERSION_METADATA") {
     throw new Error(
       `CDN warming requires the version metadata binding to be named "VINEXT_VERSION_METADATA", but Wrangler config uses "${versionMetadataBinding}"${targetEnv ? ` for env ${targetEnv}` : ""}. Run vinext init and update the binding before deploying.`,
     );
   }
+  const effectiveCache = targetEnv
+    ? wranglerConfig?.env?.[targetEnv]?.cache
+    : wranglerConfig?.cache;
+  const crossVersionCache = effectiveCache?.crossVersionCache === true;
+  if (crossVersionCache && options.warmCdnStrict) {
+    throw new Error(
+      "CDN warmup cannot safely refresh cache.cross_version_cache entries without purging the previous version. Disable cross-version caching or rerun without --warm-cdn-strict.",
+    );
+  }
+
   const upload = runWranglerVersionUpload(root, options);
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
@@ -592,9 +605,6 @@ export async function deployWithCdnWarmup(
   let triggersDeployedUrl: string | null = null;
   let warmedBeforePromotion = false;
   let triggersApplied = false;
-  const effectiveCache =
-    (targetEnv ? wranglerConfig?.env?.[targetEnv]?.cache : undefined) ?? wranglerConfig?.cache;
-  const crossVersionCache = effectiveCache?.crossVersionCache === true;
 
   function applyTriggers(): void {
     if (triggersApplied) return;
@@ -604,7 +614,7 @@ export async function deployWithCdnWarmup(
 
   if (crossVersionCache) {
     console.warn(
-      "  CDN warmup: pre-traffic warmup skipped because cache.cross_version_cache shares entries across Worker versions; promoting before warming.",
+      "  CDN warmup skipped: cache.cross_version_cache may serve the previous version's entry, and warming cannot safely replace it without a purge.",
     );
   } else if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
@@ -681,6 +691,8 @@ export async function deployWithCdnWarmup(
     } catch (error) {
       throw withPromotedVersionTriggerNote(error);
     }
+  }
+  if (!warmedBeforePromotion && !crossVersionCache) {
     const targetUrl = resolveCdnWarmupTargetUrl(
       root,
       deployed.deployedUrl ?? triggersDeployedUrl,

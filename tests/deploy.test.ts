@@ -3608,6 +3608,39 @@ staging = { cache = { enabled = true, cross_version_cache = true } }
     expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
   });
 
+  it("keeps environment-only TOML routes and cache settings out of production", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "production-worker"
+
+[env.staging]
+route = "staging.example.com/*"
+cache = { enabled = true, cross_version_cache = true }
+`,
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBeUndefined();
+    expect(config?.cache?.crossVersionCache).toBeUndefined();
+    expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
+    expect(config?.env?.staging?.cache?.crossVersionCache).toBe(true);
+  });
+
+  it("extracts singular inline TOML route objects at root and environment scope", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `route = { pattern = "app.example.com/*", custom_domain = true }
+
+[env.staging]
+route = { pattern = "staging.example.com/*", custom_domain = true }
+`,
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("app.example.com");
+    expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
+  });
+
   it("does not treat wildcard route hosts as deployable warmup origins", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ route: "*.example.com/*" }));
     expect(parseWranglerConfig(tmpDir)?.customDomain).toBeUndefined();
