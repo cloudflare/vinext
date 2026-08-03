@@ -141,6 +141,11 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
     expect(localFontHref).toBeDefined();
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
+    const localFontFace = styleMatch![1]
+      .match(/@font-face\s*\{[^}]*\}/g)
+      ?.find((fontFace) => fontFace.includes(localFontHref!));
+    expect(localFontFace).toBeDefined();
+    expect(localFontFace).not.toContain("font-weight:");
     for (const href of preloadHrefs) {
       expect(href).not.toContain("?");
       expect(styleMatch![1]).toContain(href);
