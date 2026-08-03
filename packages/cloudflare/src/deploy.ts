@@ -854,12 +854,22 @@ export async function deployWithCdnWarmup(
     );
   }
 
-  const deployed = runWranglerVersionDeploy(
-    root,
-    [{ versionId: upload.versionId, percentage: 100 }],
-    wranglerOptions,
-    warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
-  );
+  let deployed: ReturnType<typeof runWranglerVersionDeploy>;
+  try {
+    deployed = runWranglerVersionDeploy(
+      root,
+      [{ versionId: upload.versionId, percentage: 100 }],
+      wranglerOptions,
+      warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
+    );
+  } catch (error) {
+    // A successful staging deploy remains active if promotion fails. Explain
+    // that recovery state instead of surfacing only Wrangler's raw error; the
+    // next automated attempt otherwise sees a two-version deployment and cannot
+    // safely repeat the pre-traffic warm path.
+    if (staged !== null) throw withStagedVersionCleanupNote(error);
+    throw error;
+  }
   try {
     // Full trigger deployment also mutates crons, queue consumers, workflows,
     // routes, and workers.dev state. Apply it only after promotion so new

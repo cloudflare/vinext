@@ -99,6 +99,22 @@ export async function isRscPrewarmEligibleHref(href: string, basePath = ""): Pro
 }
 
 /**
+ * Background prefetch eligibility has no user-visible critical path, so it can
+ * wait for the already-started manifest without falling back to a contextual
+ * request. A click cancels the pending prefetch setup and performs its own
+ * bounded eligibility check through `isRscPrewarmEligibleHref`.
+ */
+export async function isRscPrewarmEligibleHrefForPrefetch(
+  href: string,
+  basePath = "",
+): Promise<boolean> {
+  const pathname = resolveEligibleHrefPathname(href, basePath);
+  if (pathname === null) return false;
+  const paths = loadedManifestPaths ?? (await preloadRscPrewarmManifest());
+  return paths.has(pathname);
+}
+
+/**
  * Synchronous eligibility check once the manifest has loaded. `null` means the
  * manifest is still pending, while `false` means it loaded and did not list the
  * href. Callers that preserve same-task navigation commits need that distinction

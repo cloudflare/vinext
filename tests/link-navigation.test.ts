@@ -1644,6 +1644,41 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("waits beyond the navigation timeout for prefetch eligibility before issuing one canonical request", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    const observer = stubIntersectionObserver();
+    let resolveManifest: ((response: Response) => void) | undefined;
+    const manifestResponse = new Promise<Response>((resolve) => {
+      resolveManifest = resolve;
+    });
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      manifestResponse,
+      nodeEnv: "production",
+      prewarmablePaths: ["/viewport-prefetch-target"],
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      resolveManifest?.(Response.json({ version: 1, paths: ["/viewport-prefetch-target"] }));
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const [input, init] = result.fetch.mock.calls[0] ?? [];
+      expect(input).toBe("/viewport-prefetch-target?_rsc");
+      const requestHeaders = new Headers(init?.headers);
+      expect(requestHeaders.get("rsc")).toBe("1");
+      expect(requestHeaders.get("next-router-state-tree")).toBeNull();
+      expect(requestHeaders.get("next-url")).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("uses one warmed full request for automatic loading-boundary prefetches", async () => {
     vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
     vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");

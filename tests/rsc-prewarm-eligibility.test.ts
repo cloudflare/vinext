@@ -3,6 +3,7 @@ import {
   getLoadedRscPrewarmEligibility,
   isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
+  isRscPrewarmEligibleHrefForPrefetch,
   isServerRscPrewarmEligiblePathname,
   normalizeRscPrewarmPath,
   preloadRscPrewarmManifest,
@@ -148,6 +149,31 @@ describe("RSC prewarm browser eligibility", () => {
     resolveManifest?.(Response.json({ version: 1, paths: ["/dashboard"] }));
     await preloadRscPrewarmManifest();
     expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(true);
+  });
+
+  it("keeps background prefetch eligibility pending beyond the navigation wait", async () => {
+    vi.useFakeTimers();
+    let resolveManifest: ((response: Response) => void) | undefined;
+    installBrowserGlobals({ version: 1, paths: ["/dashboard"] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveManifest = resolve;
+          }),
+      ),
+    );
+
+    let settled = false;
+    const eligibility = isRscPrewarmEligibleHrefForPrefetch("/dashboard").finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(RSC_PREWARM_MANIFEST_WAIT_MS + 1);
+    expect(settled).toBe(false);
+
+    resolveManifest?.(Response.json({ version: 1, paths: ["/dashboard"] }));
+    await expect(eligibility).resolves.toBe(true);
   });
 });
 

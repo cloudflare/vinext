@@ -460,7 +460,7 @@ function prefetchUrl(
           createRscClientRequestIdentity,
           createRscRequestUrl,
           getRscCacheKeyMode,
-          isRscPrewarmEligibleHref,
+          isRscPrewarmEligibleHrefForPrefetch,
         } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
@@ -492,7 +492,7 @@ function prefetchUrl(
 
         const isPrewarmEligible =
           getRscCacheKeyMode() === "response-vary" &&
-          (await isRscPrewarmEligibleHref(fullHref, __basePath));
+          (await isRscPrewarmEligibleHrefForPrefetch(fullHref, __basePath));
         // A prerender-certified route has a complete source-independent Flight
         // payload. Prefer that one navigation-reusable request over a loading
         // or route-tree shell so deploy warming, automatic prefetch, and the

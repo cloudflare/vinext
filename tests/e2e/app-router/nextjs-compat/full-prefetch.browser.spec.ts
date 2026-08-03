@@ -387,3 +387,82 @@ test("only a settled prepared prefetch commits in the initiating click task", as
     await fs.rm(fixtureRoot, { recursive: true, force: true });
   }
 });
+
+test("a slow eligibility manifest still produces one canonical Link prefetch", async ({ page }) => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-slow-prewarm-manifest-"));
+  let server: Server | undefined;
+  let releaseManifest: (() => void) | undefined;
+
+  try {
+    await writeFixture(fixtureRoot, { responseVary: true });
+    const { createBuilder } = await import("vite");
+    const builder = await createBuilder({
+      root: fixtureRoot,
+      configFile: path.join(fixtureRoot, "vite.config.ts"),
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const { startProdServer } = await import(
+      pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href
+    );
+    const started = await startProdServer({
+      host: "127.0.0.1",
+      port: 0,
+      outDir: path.join(fixtureRoot, "dist"),
+      noCompression: true,
+    });
+    server = started.server;
+    const baseUrl = `http://127.0.0.1:${started.port}`;
+
+    let markManifestStarted: (() => void) | undefined;
+    const manifestStarted = new Promise<void>((resolve) => {
+      markManifestStarted = resolve;
+    });
+    const manifestRelease = new Promise<void>((resolve) => {
+      releaseManifest = resolve;
+    });
+    await page.route("**/prewarm.json", async (route) => {
+      markManifestStarted?.();
+      await manifestRelease;
+      await route.continue();
+    });
+
+    const targetRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/settled-target" && url.searchParams.has("_rsc")) {
+        targetRequests.push(request.url());
+      }
+    });
+
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await manifestStarted;
+    await page.waitForTimeout(300);
+    expect(targetRequests).toEqual([]);
+
+    const responsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/settled-target" && url.searchParams.has("_rsc");
+    });
+    releaseManifest?.();
+    const response = await responsePromise;
+    await response.finished();
+    expect(new URL(response.url()).search).toBe("?_rsc");
+    expect(response.request().headers()["next-router-state-tree"]).toBeUndefined();
+    expect(response.request().headers()["next-url"]).toBeUndefined();
+    await page.waitForTimeout(50);
+
+    await page.locator("#settled-prefetch-link").click();
+    await expect(page.locator("#settled-target-content")).toHaveText(
+      "Settled prefetch page content",
+    );
+    expect(targetRequests).toHaveLength(1);
+  } finally {
+    releaseManifest?.();
+    await page.close();
+    if (server) await closeServer(server);
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  }
+});

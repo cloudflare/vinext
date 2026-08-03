@@ -792,6 +792,8 @@ function storeVisitedResponseSnapshot(
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
   requestVariantKey?: string | null,
+  prefetchRequestVariantKey: string | null | undefined = requestVariantKey,
+  completePayload: boolean = false,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
@@ -805,6 +807,7 @@ function storeVisitedResponseSnapshot(
     params,
     requestVariantKey,
     response: snapshot,
+    completePayload,
   });
   visitedResponseCache.set(cacheKey, entry);
   if (seedPrefetchCache) {
@@ -814,7 +817,7 @@ function storeVisitedResponseSnapshot(
       interceptionContext,
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
-      requestVariantKey,
+      prefetchRequestVariantKey,
     );
   }
   return () => {
@@ -1598,6 +1601,10 @@ function bootstrapHydration(
           mountedSlotsHeader,
           elements,
           false,
+          snapshot,
+          undefined,
+          undefined,
+          true,
         );
       });
     })
@@ -1828,7 +1835,11 @@ function bootstrapHydration(
         const usesCanonicalSharedRequest =
           isPrewarmEligible && canonicalizeFullRscRequestHeaders(requestHeaders);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
-        let requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
+        // A committed complete tree keeps this stable semantic identity. The
+        // live transport may add a client-reuse manifest after cache probing;
+        // raw partial snapshots remain pinned to that stricter final identity.
+        const requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
+        let transportRequestVariantKey = requestVariantKey;
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
@@ -2157,7 +2168,7 @@ function bootstrapHydration(
               createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
             if (clientReuseManifestHeader !== null) {
               requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
-              requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
+              transportRequestVariantKey = createRscClientCacheVariantKey(requestHeaders);
               // The contextual reuse header is part of the request digest.
               // Discard any URL computed during cache probing before the header
               // was added so the live request cannot alias another payload.
@@ -2178,7 +2189,7 @@ function bootstrapHydration(
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
-              requestVariantKey,
+              transportRequestVariantKey,
             );
             const contextualDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
               contextualCandidate.facts,
@@ -2390,10 +2401,14 @@ function bootstrapHydration(
               ? staticResponseSnapshot
               : {
                   ...responseSnapshot,
-                  ...(responseSnapshot.dynamicStaleTimeSeconds === undefined &&
-                  metadata.dynamicStaleTimeSeconds !== undefined
-                    ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
-                    : {}),
+                  ...(responseSnapshot.completedDynamicStaleTimeSeconds !== undefined
+                    ? {
+                        dynamicStaleTimeSeconds: responseSnapshot.completedDynamicStaleTimeSeconds,
+                      }
+                    : responseSnapshot.dynamicStaleTimeSeconds === undefined &&
+                        metadata.dynamicStaleTimeSeconds !== undefined
+                      ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
+                      : {}),
                 }),
             mountedSlotsHeader: getMountedSlotIdsHeader(renderedElements),
           };
@@ -2418,6 +2433,8 @@ function bootstrapHydration(
               true,
               prefetchSnapshot,
               requestVariantKey,
+              requestVariantKey,
+              true,
             );
           } else {
             const state = committedState;
@@ -2443,6 +2460,8 @@ function bootstrapHydration(
               true,
               prefetchSnapshot,
               requestVariantKey,
+              transportRequestVariantKey,
+              true,
             );
           }
         } catch {

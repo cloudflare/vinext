@@ -346,4 +346,28 @@ describe("visited response cache freshness", () => {
       findVisitedResponseCacheEntry(cache, "/target?_rsc=navigate-a", null, "reuse-manifest-a"),
     ).toEqual({ cacheKey: storedKey, entry });
   });
+
+  it("keeps legacy keyless entries unsafe while trusted complete hydration entries can normalize", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const legacyEntry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const hydrationEntry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+      completePayload: true,
+    });
+    cache.set("/legacy?_rsc=bootstrap", legacyEntry);
+    cache.set("/hydrated?_rsc=bootstrap", hydrationEntry);
+
+    expect(
+      findVisitedResponseCacheEntry(cache, "/legacy?_rsc=navigate", null, "source-variant"),
+    ).toBeNull();
+    expect(
+      findVisitedResponseCacheEntry(cache, "/hydrated?_rsc=navigate", null, "source-variant"),
+    ).toEqual({ cacheKey: "/hydrated?_rsc=bootstrap", entry: hydrationEntry });
+  });
 });

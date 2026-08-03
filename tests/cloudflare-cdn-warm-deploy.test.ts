@@ -1185,6 +1185,59 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
     ).toBe(false);
   });
 
+  it("explains the staged deployment when promotion fails after prewarming", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) return probe;
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return new Response("html", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote-failed");
+        throw new Error("promotion failed");
+      }
+      if (args.includes("triggers")) events.push("triggers");
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+      }),
+    ).rejects.toThrow("may remain staged at 0%");
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "fetch:https://app.example.com/",
+      "promote-failed",
+    ]);
+  });
+
   it("explains promoted version state when trigger deployment fails after prewarming", async () => {
     writeFile(
       "wrangler.jsonc",

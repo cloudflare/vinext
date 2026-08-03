@@ -36,7 +36,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
-  isRscPrewarmEligibleHref,
+  isRscPrewarmEligibleHrefForPrefetch,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -2759,7 +2759,7 @@ const _appRouter: AppRouterInstance = {
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const isPrewarmEligible =
         getRscCacheKeyMode() === "response-vary" &&
-        (await isRscPrewarmEligibleHref(fullHref, __basePath));
+        (await isRscPrewarmEligibleHrefForPrefetch(fullHref, __basePath));
       const reusable = policy.shouldPrefetch && (policy.cacheForNavigation || isPrewarmEligible);
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.

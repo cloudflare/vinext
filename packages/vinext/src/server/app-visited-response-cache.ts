@@ -12,6 +12,11 @@ export type VisitedResponseCacheEntry = {
   params: Record<string, string | string[]>;
   requestVariantKey?: string | null;
   response: CachedRscResponse;
+  /**
+   * Framework proof that this is a complete committed tree. When the response
+   * also does not vary on Next-Url, it can be re-keyed across source variants.
+   */
+  completePayload?: true;
 };
 
 export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
@@ -25,6 +30,7 @@ export function createVisitedResponseCacheEntry(options: {
   params: Record<string, string | string[]>;
   requestVariantKey?: string | null;
   response: CachedRscResponse;
+  completePayload?: boolean;
 }): VisitedResponseCacheEntry {
   return {
     createdAt: options.now,
@@ -38,6 +44,7 @@ export function createVisitedResponseCacheEntry(options: {
     params: options.params,
     requestVariantKey: options.requestVariantKey,
     response: options.response,
+    ...(options.completePayload === true ? { completePayload: true as const } : {}),
   };
 }
 
@@ -99,7 +106,11 @@ export function findVisitedResponseCacheEntry(
   if (normalizedTarget === null) return null;
 
   for (const [cacheKey, entry] of cache) {
-    if (requestVariantKey !== undefined && entry.requestVariantKey !== requestVariantKey) {
+    if (
+      requestVariantKey !== undefined &&
+      entry.requestVariantKey !== requestVariantKey &&
+      entry.completePayload !== true
+    ) {
       continue;
     }
     if (entry.response.variesOnNextUrl === true) continue;
