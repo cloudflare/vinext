@@ -219,6 +219,27 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it("passes source config headers into Server Action execution", async () => {
+    let sourceConfigHeader: string | null | undefined;
+    const handleServerActionRequest: NonNullable<
+      HandlerOptions["handleServerActionRequest"]
+    > = async (options) => {
+      sourceConfigHeader = options.sourceConfigHeaders?.get("x-test-header");
+      return new Response("action");
+    };
+    const handler = createHandler({ handleServerActionRequest });
+
+    await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "next-action": "action-id", "content-type": "text/plain" },
+      }),
+      null,
+    );
+
+    expect(sourceConfigHeader).toBe("applied");
+  });
+
   it.each(["afterFiles", "fallback"] as const)(
     "allows out-of-basePath POST requests through %s rewrites to App route handlers",
     async (phase) => {
@@ -519,6 +540,45 @@ describe("createAppRscHandler", () => {
     expect(middlewareRequest).not.toBeNull();
     expect(middlewareRequest!.nextUrl.basePath).toBe("");
     expect(middlewareRequest!.nextUrl.pathname).toBe("/outside");
+  });
+
+  it("dispatches Server Action redirect targets through the complete App pipeline", async () => {
+    const seenPathnames: string[] = [];
+    const middleware = vi.fn((request: NextRequest) => {
+      const { pathname } = new URL(request.url);
+      seenPathnames.push(pathname);
+      return pathname === "/docs/protected"
+        ? new Response("unauthorized", { status: 401 })
+        : new Response(null, { headers: { "x-middleware-next": "1" } });
+    });
+    let dispatchRedirectTargetRequest: ((request: Request) => Promise<Response>) | undefined;
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest: async (options) => {
+        dispatchRedirectTargetRequest = options.dispatchRedirectTargetRequest;
+        return new Response("action");
+      },
+      middlewareModule: { default: middleware },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "next-action": "action-id", "content-type": "text/plain" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(seenPathnames).toEqual(["/docs/about"]);
+
+    expect(dispatchRedirectTargetRequest).toBeDefined();
+    const targetResponse = await dispatchRedirectTargetRequest!(
+      new Request("https://example.test/docs/protected"),
+    );
+    expect(targetResponse.status).toBe(401);
+    expect(await targetResponse.text()).toBe("unauthorized");
+    expect(seenPathnames).toEqual(["/docs/about", "/docs/protected"]);
   });
 
   it.each([

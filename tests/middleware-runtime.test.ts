@@ -5,7 +5,7 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 // Tests for the redirect protocol implemented in `executeMiddleware`. These
 // fixtures mirror the behaviour Next.js's edge adapter applies after a
 // middleware returns a redirect Response:
-//   - Same-host Location headers are made relative.
+//   - Same-host Location headers are made relative when the result is safe.
 //   - When the original request carries `x-nextjs-data: 1`, the redirect is
 //     translated into a 200 response with `x-nextjs-redirect`.
 // Reference: packages/next/src/server/web/adapter.ts (canary)
@@ -172,6 +172,22 @@ describe("middleware redirect protocol", () => {
     expect(result.response?.headers.get("Location")).toBe("https://example.vercel.sh/");
   });
 
+  it("keeps same-host double-slash Location headers absolute", async () => {
+    const target = "https://victim.example//evil.example/steal?token=secret#fragment";
+    const module = {
+      default: () => Response.redirect(target, 307),
+    };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("https://victim.example/start"),
+    });
+
+    expect(result.redirectUrl).toBe(target);
+    expect(result.response?.headers.get("Location")).toBe(target);
+  });
+
   it("translates same-host redirects to x-nextjs-redirect for data requests", async () => {
     const module = {
       default: (req: Request) => Response.redirect(new URL("/new-home", req.url).toString(), 307),
@@ -193,6 +209,27 @@ describe("middleware redirect protocol", () => {
     // No HTTP redirect should be surfaced to upstream callers.
     expect(result.redirectUrl).toBeUndefined();
     expect(result.redirectStatus).toBeUndefined();
+  });
+
+  it("keeps same-host double-slash data redirects absolute when adding a trailing slash", async () => {
+    const module = {
+      default: () =>
+        Response.redirect("https://victim.example//evil.example/steal?token=secret#fragment", 307),
+    };
+
+    const result = await executeMiddleware({
+      isDataRequest: true,
+      isProxy: false,
+      module,
+      request: new Request("https://victim.example/start"),
+      trailingSlash: true,
+    });
+
+    expect(result.response?.status).toBe(200);
+    expect(result.response?.headers.get("x-nextjs-redirect")).toBe(
+      "https://victim.example//evil.example/steal/?token=secret#fragment",
+    );
+    expect(result.response?.headers.get("Location")).toBeNull();
   });
 
   it("preserves middleware cache opt-out when shaping data-request redirects", async () => {

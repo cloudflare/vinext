@@ -380,6 +380,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
   r.headers.set("x-mw-pathname", pathname);
   r.headers.set("x-mw-ran", "true");
+  if (pathname === "/about") {
+    r.headers.set(
+      "x-action-target-saw-source",
+      request.headers.get("x-action-source-only") ?? "missing",
+    );
+  }
   if (sessionToken) {
     r.headers.set("x-mw-has-session", "true");
   }

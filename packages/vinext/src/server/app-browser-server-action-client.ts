@@ -219,9 +219,10 @@ export async function invokeClientServerAction(
   }
 
   if (actionRedirectTarget) {
-    if (isServerActionResult(result) && result.root !== undefined) {
+    const redirectRoot = isServerActionResult(result) ? result.root : result;
+    if (redirectRoot !== undefined) {
       deps.renderRedirectPayload(
-        AppElementsWire.decode(result.root),
+        AppElementsWire.decode(redirectRoot),
         actionRedirectTarget,
         actionInitiation,
         revalidation,

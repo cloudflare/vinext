@@ -36,6 +36,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
+  hasRscCacheBustingSearchParam,
   isRscPrewarmEligibleHref,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
@@ -389,7 +390,7 @@ export function getCurrentNextUrl(): string {
     return "/";
   }
 
-  return window.location.pathname + window.location.search;
+  return stripBasePath(window.location.pathname, __basePath) + window.location.search;
 }
 
 export function createAppPrefetchRequestHeaders(options: {
@@ -545,6 +546,14 @@ function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
   }
 }
 
+function isExactRscCacheLookupUrl(rscUrl: string): boolean {
+  try {
+    return hasRscCacheBustingSearchParam(new URL(rscUrl, "http://vinext.local"));
+  } catch {
+    return false;
+  }
+}
+
 function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
   try {
     const url = new URL(rscUrl, "http://vinext.local");
@@ -601,6 +610,9 @@ function findPrefetchCacheEntryForNavigation(
     if (
       exactEntry &&
       exactEntry.cacheForNavigation !== false &&
+      (navigationVariant === undefined ||
+        isExactRscCacheLookupUrl(lookupRscUrl) ||
+        exactEntry.navigationVariant === navigationVariant) &&
       isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
     ) {
       return { cacheKey: exactCacheKey, entry: exactEntry };
@@ -617,7 +629,7 @@ function findPrefetchCacheEntryForNavigation(
   for (const [cacheKey, entry] of cache) {
     if (entry.cacheForNavigation === false) continue;
     if (entry.exactVariant) continue;
-    if (entry.navigationVariant !== undefined && entry.navigationVariant !== navigationVariant) {
+    if (navigationVariant !== undefined && entry.navigationVariant !== navigationVariant) {
       continue;
     }
 

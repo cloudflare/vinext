@@ -16,6 +16,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
@@ -352,6 +353,26 @@ const ADMITTED_CF_CACHE_STATUSES = new Set([
   "UPDATING",
   "STALE",
 ]);
+const CANONICAL_RSC_VARY_FIELDS = new Set(
+  ["accept", ...VINEXT_RSC_VARY_HEADER.split(",")].map((field) => field.trim().toLowerCase()),
+);
+
+function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"): string | null {
+  const vary = response.headers.get("Vary");
+  if (!vary) return null;
+  for (const token of vary.split(",")) {
+    const field = token.trim().toLowerCase();
+    if (!field) continue;
+    if (
+      field === "*" ||
+      (kind === "html" && field === "accept") ||
+      !CANONICAL_RSC_VARY_FIELDS.has(field)
+    ) {
+      return token.trim() || "*";
+    }
+  }
+  return null;
+}
 
 async function fetchWithTimeout(
   fetchImpl: typeof fetch,
@@ -409,6 +430,11 @@ async function warmOnePath(
           !response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)
         ) {
           lastError = `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+          break;
+        }
+        const unsupportedVaryField = findUnsupportedWarmVaryField(response, target.kind);
+        if (unsupportedVaryField !== null) {
+          lastError = `unsupported Vary field: ${unsupportedVaryField}`;
           break;
         }
         const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "";

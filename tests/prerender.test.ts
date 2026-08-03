@@ -308,6 +308,7 @@ describe("prerenderApp — RSC extraction", () => {
       "rsc-no-store",
       "rsc-non-flight",
       "rsc-flight",
+      "rsc-source-dependent",
     ]) {
       fs.mkdirSync(path.join(appDir, route));
       fs.writeFileSync(
@@ -347,7 +348,13 @@ describe("prerenderApp — RSC extraction", () => {
         res.setHeader("Vary", "RSC, User-Agent");
       } else if (pathname === "/rsc-no-store") {
         res.setHeader("Cache-Control", "public, max-age=60");
-      } else if (pathname === "/rsc-non-flight" || pathname === "/rsc-flight") {
+      } else if (
+        pathname === "/rsc-non-flight" ||
+        pathname === "/rsc-flight" ||
+        pathname === "/rsc-source-dependent"
+      ) {
+        res.setHeader("Cache-Control", "public, max-age=60");
+      } else if (pathname === "/robots.txt") {
         res.setHeader("Cache-Control", "public, max-age=60");
       } else {
         res.setHeader("Cache-Control", "private, max-age=60");
@@ -355,8 +362,13 @@ describe("prerenderApp — RSC extraction", () => {
       }
       res.setHeader(
         "content-type",
-        pathname === "/rsc-flight" && isRsc ? "text/x-component" : "text/html",
+        (pathname === "/rsc-flight" || pathname === "/rsc-source-dependent") && isRsc
+          ? "text/x-component"
+          : "text/html",
       );
+      if (pathname === "/rsc-flight" && isRsc) {
+        res.setHeader("x-vinext-rsc-prewarm-source-independent", "1");
+      }
       res.end(
         `<html><body>${runtimeRscChunkScript(rscPayload)}${runtimeRscDoneScript()}</body></html>`,
       );
@@ -378,6 +390,26 @@ describe("prerenderApp — RSC extraction", () => {
         outDir,
         config: await resolveNextConfig({ deploymentId: "test-deployment" }),
         probeRscCachePolicy: true,
+        metadataRoutes: [
+          {
+            contentType: "text/plain",
+            filePath: path.join(appDir, "robots.txt"),
+            isDynamic: false,
+            routePrefix: "/",
+            routeSegments: [],
+            servedUrl: "/robots.txt",
+            type: "robots",
+          },
+          {
+            contentType: "image/png",
+            filePath: path.join(appDir, "icon.png"),
+            isDynamic: false,
+            routePrefix: "/",
+            routeSegments: [],
+            servedUrl: "/icon.png",
+            type: "icon",
+          },
+        ],
         _prodServer: { server, port },
       });
 
@@ -416,6 +448,19 @@ describe("prerenderApp — RSC extraction", () => {
       if (rscFlight?.status === "rendered") {
         expect(rscFlight.prewarmable).toBeUndefined();
       }
+      expect(findRoute(prerenderResult.routes, "/rsc-source-dependent")).toMatchObject({
+        status: "rendered",
+        prewarmable: false,
+      });
+      expect(findRoute(prerenderResult.routes, "/robots.txt")).toMatchObject({
+        status: "rendered",
+        router: "metadata",
+      });
+      expect(findRoute(prerenderResult.routes, "/icon.png")).toMatchObject({
+        status: "rendered",
+        router: "metadata",
+        prewarmable: false,
+      });
       expect(rscProbeUrl).toBe("/rsc-no-store?_rsc");
       expect(
         getPrewarmableAppPaths({

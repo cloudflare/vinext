@@ -26,3 +26,7 @@ export async function middleware(request: NextRequest) {
   headers.set("x-from-middleware", "hello-from-middleware");
   return NextResponse.next({ request: { headers } });
 }
+
+export const config = {
+  matcher: ["/api/:path*", "/admin", "/%61dmin", "/encoded-parity/rewrite/:path*"],
+};

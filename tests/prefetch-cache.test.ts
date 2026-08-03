@@ -403,6 +403,39 @@ describe("prefetch cache eviction", () => {
     ).toMatchObject(snapshot);
   });
 
+  it("partitions rendered-path aliases by source navigation variant", async () => {
+    const sourceRscUrl = "/rewritten-dashboard?_rsc=source-a";
+    prefetchRscResponse(
+      sourceRscUrl,
+      Promise.resolve(
+        new Response("source-flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: "/dashboard",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { navigationVariant: "tree-a,next-url-a" },
+    );
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(sourceRscUrl)?.outcome === "cache-seeded",
+    );
+
+    expect(
+      hasPrefetchCacheEntryForNavigation("/dashboard", null, null, {
+        navigationVariant: "tree-b,next-url-b",
+      }),
+    ).toBe(false);
+    expect(
+      consumePrefetchResponse("/dashboard", null, null, {
+        navigationVariant: "tree-a,next-url-a",
+      }),
+    ).toMatchObject({ contentType: "text/x-component" });
+  });
+
   it("keeps learning-only prefetch responses out of navigation consumption", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();
@@ -768,13 +801,20 @@ describe("prefetch cache eviction", () => {
     // Seed a reusable entry the way a <Link prefetch={true}> would, under a
     // different `_rsc` cache-busting variant than router.prefetch computes.
     const aliasRscUrl = "/dashboard?_rsc=linkvariant";
+    const { createRscNavigationCacheVariant } =
+      await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const navigationVariant = createRscNavigationCacheVariant(
+      (await import("../packages/vinext/src/shims/navigation.js")).createAppPrefetchRequestHeaders({
+        fetchPriority: "low",
+      }),
+    );
     prefetchRscResponse(
       aliasRscUrl,
       Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
       null,
       null,
       undefined,
-      { cacheForNavigation: true },
+      { cacheForNavigation: true, navigationVariant },
     );
     await waitForPrefetchSetup(
       () => getPrefetchCache().get(aliasRscUrl)?.outcome === "cache-seeded",

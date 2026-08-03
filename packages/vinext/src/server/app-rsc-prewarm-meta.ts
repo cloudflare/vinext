@@ -22,9 +22,63 @@ export function removeRscPrewarmManifestInvalidatedHeaders(headers: Headers): vo
 }
 
 const RSC_PREWARM_MANIFEST_META_SOURCE = `<meta\\b(?=[^>]*\\bname\\s*=\\s*(["'])${RSC_PREWARM_MANIFEST_META_NAME}\\1)[^>]*>`;
+const HEAD_RAW_TEXT_ELEMENTS = new Set(["script", "style", "title", "noscript"]);
+
+/** Find the real head close while ignoring markup-looking raw-text contents. */
+function findClosingHeadIndex(html: string): number {
+  const lower = html.toLowerCase();
+  let index = 0;
+  let rawTextElement: string | null = null;
+
+  while (index < lower.length) {
+    if (rawTextElement !== null) {
+      const closeStart = lower.indexOf(`</${rawTextElement}`, index);
+      if (closeStart === -1) return -1;
+      const closeEnd = lower.indexOf(">", closeStart + rawTextElement.length + 2);
+      if (closeEnd === -1) return -1;
+      rawTextElement = null;
+      index = closeEnd + 1;
+      continue;
+    }
+
+    const tagStart = lower.indexOf("<", index);
+    if (tagStart === -1) return -1;
+    if (lower.startsWith("<!--", tagStart)) {
+      const commentEnd = lower.indexOf("-->", tagStart + 4);
+      if (commentEnd === -1) return -1;
+      index = commentEnd + 3;
+      continue;
+    }
+
+    let tagEnd = tagStart + 1;
+    let quote: '"' | "'" | null = null;
+    for (; tagEnd < lower.length; tagEnd++) {
+      const character = lower[tagEnd];
+      if (quote !== null) {
+        if (character === quote) quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === ">") {
+        break;
+      }
+    }
+    if (tagEnd >= lower.length) return -1;
+
+    const tag = lower.slice(tagStart + 1, tagEnd).trim();
+    const closing = tag.startsWith("/");
+    const name = tag.slice(closing ? 1 : 0).split(/[\s/>]/, 1)[0];
+    if (closing && name === "head") return tagStart;
+    if (!closing && HEAD_RAW_TEXT_ELEMENTS.has(name) && !tag.endsWith("/")) {
+      rawTextElement = name;
+    }
+    index = tagEnd + 1;
+  }
+
+  return -1;
+}
 
 function updateRscPrewarmManifestMetaInHead(html: string, metaHtml: string): string {
-  const headEnd = html.toLowerCase().indexOf("</head>");
+  const headEnd = findClosingHeadIndex(html);
   if (headEnd === -1) return html;
 
   const head = html.slice(0, headEnd);
@@ -50,7 +104,6 @@ export function injectRscPrewarmManifestMeta(
 
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
-  const closeTag = "</head>";
   const maxHeadScanChars = 64 * 1024;
   let pending = "";
   let injected = false;
@@ -66,7 +119,7 @@ export function injectRscPrewarmManifestMeta(
 
         pending += text;
 
-        const index = pending.toLowerCase().indexOf(closeTag);
+        const index = findClosingHeadIndex(pending);
         if (index !== -1) {
           controller.enqueue(encoder.encode(updateRscPrewarmManifestMetaInHead(pending, metaHtml)));
           pending = "";

@@ -11,6 +11,10 @@ import { headersContextFromRequest } from "vinext/shims/headers";
 import {
   ACTION_REVALIDATED_HEADER,
   NEXT_ACTION_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -20,6 +24,7 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
   VINEXT_REVALIDATE_HOST_HEADER,
+  VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -52,7 +57,7 @@ import {
   stripRscSuffix,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
-import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
+import { applyAppRscConfigHeaders, finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
@@ -107,6 +112,35 @@ type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
+type MiddlewareObservation = { matched: boolean };
+
+const SOURCE_VARIANT_CONFIG_HEADERS = new Set(
+  [
+    NEXT_ROUTER_PREFETCH_HEADER,
+    NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+    NEXT_ROUTER_STATE_TREE_HEADER,
+    NEXT_URL_HEADER,
+  ].map((header) => header.toLowerCase()),
+);
+
+function configDependsOnRscSourceVariant<TRoute extends AppRscHandlerRoute>(
+  options: CreateAppRscHandlerOptions<TRoute>,
+): boolean {
+  const rules = [
+    ...options.configHeaders,
+    ...options.configRedirects,
+    ...options.configRewrites.beforeFiles,
+    ...options.configRewrites.afterFiles,
+    ...options.configRewrites.fallback,
+  ];
+  return rules.some((rule) =>
+    [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+      (condition) =>
+        condition.type === "header" &&
+        SOURCE_VARIANT_CONFIG_HEADERS.has(condition.key.toLowerCase()),
+    ),
+  );
+}
 
 type RunAppMiddlewareOptions = {
   cleanPathname: string;
@@ -257,6 +291,8 @@ type HandleServerActionRequestOptions<TRoute> = {
   scriptNonce?: string;
   routeMatch: AppRscRouteMatch<TRoute> | null;
   routePathname: string;
+  dispatchRedirectTargetRequest: (request: Request) => Promise<Response>;
+  sourceConfigHeaders: Headers | null;
   searchParams: URLSearchParams;
 };
 
@@ -514,6 +550,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   isDataRequest: boolean,
   isMiddlewareDataRequest: boolean,
   pagesDataRequest: Request | null,
+  dispatchInternalRequest: (request: Request) => Promise<Response>,
+  allowInternalRscDocumentFallback: boolean,
+  middlewareObservation: MiddlewareObservation,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -688,6 +727,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       middlewareRequest: isolatedMiddlewareRequest,
       request: userlandRequest,
     });
+    middlewareObservation.matched ||= middlewareContext.matched === true;
     if (middlewareResult.kind === "response") {
       if (request.body && !request.body.locked) {
         void request.body.cancel().catch(() => {});
@@ -986,6 +1026,24 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     middlewareContext.status = 500;
   }
 
+  let sourceConfigHeaders: Headers | null = null;
+  if (filesystemRouteEligible && isPostRequest && actionId && options.handleServerActionRequest) {
+    sourceConfigHeaders = new Headers();
+    const sourceConfigUrl = new URL(request.url);
+    sourceConfigUrl.pathname = hadBasePath
+      ? addBasePathToPathname(requestCleanPathname, options.basePath)
+      : requestCleanPathname;
+    await applyAppRscConfigHeaders(
+      sourceConfigHeaders,
+      cloneRequestWithUrl(request, sourceConfigUrl.toString()),
+      {
+        basePath: options.basePath,
+        configHeaders: options.configHeaders,
+        i18nConfig: options.i18nConfig,
+        requestContext: preMiddlewareRequestContext,
+      },
+    );
+  }
   const serverActionResponse =
     filesystemRouteEligible && isPostRequest && actionId && options.handleServerActionRequest
       ? await options.handleServerActionRequest({
@@ -1000,6 +1058,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           scriptNonce,
           routeMatch: preActionMatch,
           routePathname: preActionRoutePathname,
+          dispatchRedirectTargetRequest: dispatchInternalRequest,
+          sourceConfigHeaders,
           searchParams: getResolvedSearchParams(),
         })
       : null;
@@ -1017,7 +1077,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       !isInterceptionMatch && (match === null || match.route.isDynamic)
         ? ((await options.renderPagesFallback?.({
             appRouteMatch: match ?? null,
-            allowRscDocumentFallback: didMiddlewareRewritePathname,
+            allowRscDocumentFallback:
+              didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
             isDataRequest,
             isRscRequest,
             matchKind,
@@ -1381,7 +1442,7 @@ function applyProgressiveActionSideEffects(
 export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): (request: Request, ctx: unknown) => Promise<Response> {
-  return async function appRscHandler(rawRequest, ctx) {
+  return async function appRscHandler(rawRequest, ctx, allowInternalRscDocumentFallback = false) {
     // Register config-driven cache adapters before anything touches the cache.
     // On the Cloudflare worker the entry already registered them with `env` (this
     // guarded call is a no-op); on Node/dev this is where they get wired, with no
@@ -1482,6 +1543,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
           ensureFetchPatch();
           const preMiddlewareRequestContext = requestContextFromRequest(request);
           let response: Response;
+          const middlewareObservation: MiddlewareObservation = { matched: false };
 
           try {
             response = await handleAppRscRequest(
@@ -1491,6 +1553,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               isPagesDataRequest,
               isPagesDataRequest,
               pagesDataRequest,
+              (internalRequest) => appRscHandler(internalRequest, ctx, true),
+              allowInternalRscDocumentFallback,
+              middlewareObservation,
             );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {
@@ -1499,12 +1564,22 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             throw error;
           }
 
-          return finalizeAppRscResponse(response, request, {
+          const finalized = await finalizeAppRscResponse(response, request, {
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
             requestContext: preMiddlewareRequestContext,
           });
+          if (
+            process.env.VINEXT_PRERENDER === "1" &&
+            request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) &&
+            request.headers.get(RSC_HEADER) === "1" &&
+            !middlewareObservation.matched &&
+            !configDependsOnRscSourceVariant(options)
+          ) {
+            finalized.headers.set(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
+          }
+          return finalized;
         },
         { route: () => new URL(request.url).pathname },
       ),

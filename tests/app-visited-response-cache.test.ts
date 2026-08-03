@@ -327,6 +327,23 @@ describe("visited response cache freshness", () => {
     ).toEqual({ cacheKey: storedKey, entry });
   });
 
+  it("lets traversal restore a normalized historical response regardless of source variant", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      navigationVariant: "tree-at-commit,next-url-at-commit",
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const storedKey = AppElementsWire.encodeCacheKey("/dashboard?_rsc=committed", null);
+    cache.set(storedKey, entry);
+
+    expect(findVisitedResponseCacheEntry(cache, "/dashboard?_rsc=traversal", null)).toEqual({
+      cacheKey: storedKey,
+      entry,
+    });
+  });
+
   it("keeps client-reuse visited responses scoped to their exact digest", () => {
     const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
     const entry = createVisitedResponseCacheEntry({

@@ -107,6 +107,23 @@ function pingVisibleLinksFromRuntime(): void {
   }
 }
 
+function notifyLinkNavigationStartFromRuntime(): void {
+  const runtime: unknown = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
+  if (typeof runtime !== "object" || runtime === null || !("functions" in runtime)) return;
+  const { functions } = runtime;
+  if (
+    typeof functions !== "object" ||
+    functions === null ||
+    !("notifyLinkNavigationStart" in functions)
+  ) {
+    return;
+  }
+  const { notifyLinkNavigationStart } = functions;
+  if (typeof notifyLinkNavigationStart === "function") {
+    notifyLinkNavigationStart();
+  }
+}
+
 type MockReactAnchorCaptureOptions = {
   captureAnchor(type: unknown, props: unknown): void;
   captureEffect?: (effect: CapturedEffect) => void;
@@ -1345,6 +1362,7 @@ describe("Pages Router Link onClick semantics", () => {
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
+  manifestResponse?: Promise<Response>;
   nodeEnv: string;
   prewarmablePaths?: string[];
   props?: Record<string, unknown>;
@@ -1383,7 +1401,10 @@ async function renderIsolatedLink(options: {
     const requestUrl =
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (requestUrl === prewarmManifestUrl) {
-      return Promise.resolve(Response.json({ version: 1, paths: options.prewarmablePaths ?? [] }));
+      return (
+        options.manifestResponse ??
+        Promise.resolve(Response.json({ version: 1, paths: options.prewarmablePaths ?? [] }))
+      );
     }
     return fetch(input, init);
   });
@@ -1618,6 +1639,61 @@ describe("Link prefetch scheduling", () => {
       expect(requestHeaders.get("next-router-segment-prefetch")).toBeNull();
       expect(requestHeaders.get("next-router-state-tree")).toBeNull();
       expect(requestHeaders.get("next-url")).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not resume a canonical prefetch after navigation starts during manifest loading", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    const observer = stubIntersectionObserver();
+    let resolveManifest: ((response: Response) => void) | undefined;
+    const manifestResponse = new Promise<Response>((resolve) => {
+      resolveManifest = resolve;
+    });
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      manifestResponse,
+      nodeEnv: "production",
+      prewarmablePaths: ["/viewport-prefetch-target"],
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      notifyLinkNavigationStartFromRuntime();
+
+      resolveManifest?.(Response.json({ version: 1, paths: ["/viewport-prefetch-target"] }));
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("strips basePath from source identity headers like soft navigation", async () => {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/docs/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        location: {
+          href: "https://example.com/docs/current",
+          origin: "https://example.com",
+          pathname: "/docs/current",
+          search: "",
+        },
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      const requestHeaders = new Headers(result.fetch.mock.calls[0]?.[1]?.headers);
+      expect(requestHeaders.get("next-url")).toBe("/current");
     } finally {
       result.restoreNodeEnv();
     }
@@ -2422,8 +2498,10 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
       windowOverrides: { requestIdleCallback },
     });
-    const { createRscRequestHeaders, createRscRequestUrl } =
+    const { createRscNavigationCacheVariant, createRscRequestHeaders, createRscRequestUrl } =
       await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const { createAppPrefetchRequestHeaders } =
+      await import("../packages/vinext/src/shims/navigation.js");
     const { consumePrefetchResponse, getPrefetchCache, getPrefetchedUrls } =
       await import("../packages/vinext/src/shims/navigation.js");
     const rscUrl = await createRscRequestUrl("/intent-prefetch-target", createRscRequestHeaders());
@@ -2437,8 +2515,12 @@ describe("Link prefetch scheduling", () => {
     };
 
     try {
+      const navigationVariant = createRscNavigationCacheVariant(
+        createAppPrefetchRequestHeaders({ fetchPriority: "high", prefetchKind: "auto" }),
+      );
       getPrefetchCache().set(rscUrl, {
         cacheForNavigation: true,
+        navigationVariant,
         outcome: "cache-seeded",
         snapshot,
         timestamp: Date.now(),

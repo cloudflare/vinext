@@ -151,6 +151,20 @@ describe("isPagesStreamingBot", () => {
     ).toBe(true);
   });
 
+  it("detects Google crawlers with the -Google suffix", () => {
+    expect(isPagesStreamingBot("Mediapartners-Google/2.1")).toBe(true);
+    expect(isPagesStreamingBot("AdsBot-Google (+http://www.google.com/adsbot.html)")).toBe(true);
+    expect(isPagesStreamingBot("Mozilla/5.0 Storebot-Google/1.0")).toBe(true);
+  });
+
+  it(
+    "handles long non-matching User-Agents without quadratic backtracking",
+    { timeout: 500 },
+    () => {
+      expect(isPagesStreamingBot("a".repeat(64_000))).toBe(false);
+    },
+  );
+
   it("detects other known HTML-limited bots", () => {
     expect(isPagesStreamingBot("Bingbot/2.0")).toBe(true);
     expect(isPagesStreamingBot("facebookexternalhit/1.1")).toBe(true);

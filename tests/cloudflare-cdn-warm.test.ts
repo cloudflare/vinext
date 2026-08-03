@@ -856,6 +856,21 @@ describe("Cloudflare CDN warmup", () => {
     expect(result.failures[0]?.error).toBe("missing CF-Cache-Status");
   });
 
+  it("does not count a cache entry varied by the warmup user agent as reusable", async () => {
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: ["/app"],
+      fetchImpl: async () =>
+        new Response("html", {
+          status: 200,
+          headers: { "CF-Cache-Status": "MISS", Vary: "User-Agent" },
+        }),
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
+    expect(result.failures[0]?.error).toBe("unsupported Vary field: User-Agent");
+  });
+
   it("reports warmup failures and throws in strict mode", async () => {
     writeFile(
       "dist/server/vinext-prerender.json",

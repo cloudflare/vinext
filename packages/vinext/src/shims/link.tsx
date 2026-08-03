@@ -527,11 +527,16 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
         const sourceNavigationVariant = createRscNavigationCacheVariant(headers);
-        const usesCanonicalSharedRequest =
+        const isPrewarmEligible =
           autoPrefetch.cacheForNavigation &&
           getRscCacheKeyMode() === "response-vary" &&
-          (await isRscPrewarmEligibleHref(fullHref, __basePath)) &&
-          canonicalizeFullRscRequestHeaders(headers);
+          (await isRscPrewarmEligibleHref(fullHref, __basePath));
+        // Navigation may have started while the eligibility asset was pending.
+        // In that case the click owns the request and this stale prefetch setup
+        // must not resume with a second (canonical) fetch.
+        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
+        const usesCanonicalSharedRequest =
+          isPrewarmEligible && canonicalizeFullRscRequestHeaders(headers);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         const navigationVariant = usesCanonicalSharedRequest ? undefined : sourceNavigationVariant;
         // Distinguish the same visible URL when it is prefetched from different

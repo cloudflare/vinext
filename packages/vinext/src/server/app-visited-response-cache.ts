@@ -107,7 +107,7 @@ export function findVisitedResponseCacheEntry(
 
   for (const [cacheKey, entry] of cache) {
     if (entry.exactVariant) continue;
-    if (entry.navigationVariant !== undefined && entry.navigationVariant !== navigationVariant) {
+    if (navigationVariant !== undefined && entry.navigationVariant !== navigationVariant) {
       continue;
     }
     const source = parseVisitedResponseCacheKey(cacheKey);

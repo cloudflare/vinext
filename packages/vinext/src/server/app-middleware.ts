@@ -15,6 +15,7 @@ import { internalServerErrorResponse } from "./http-error-responses.js";
 
 export type AppMiddlewareContext = {
   headers: Headers | null;
+  matched?: boolean;
   requestHeaders: Headers | null;
   status: number | null;
 };
@@ -221,6 +222,7 @@ export async function applyAppMiddleware(
   options: ApplyAppMiddlewareOptions,
 ): Promise<ApplyAppMiddlewareResult> {
   const forwarded = applyForwardedMiddlewareContext(options.request, options.context);
+  if (forwarded.applied) options.context.matched = true;
   let cleanPathname = options.cleanPathname;
   let rewritten = false;
   let search: string | null = null;
@@ -278,6 +280,7 @@ export async function applyAppMiddleware(
       // so this is a no-op and executeMiddleware owns the cancellation instead.
       cancelRequestBody(middlewareRequest);
     }
+    options.context.matched = result.matched !== false;
 
     if (!result.continue) {
       cancelRequestBody(options.request);

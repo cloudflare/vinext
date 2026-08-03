@@ -1071,6 +1071,8 @@ export default createAppRscHandler({
     scriptNonce,
     routeMatch,
     routePathname,
+    dispatchRedirectTargetRequest,
+    sourceConfigHeaders,
     searchParams,
   }) {
     const {
@@ -1101,6 +1103,7 @@ export default createAppRscHandler({
         renderMode: actionRenderMode,
         observeMetadataSearchParamsAccess,
         observePageSearchParamsAccess,
+        scriptNonce: targetScriptNonce,
       }) {
         return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
           opts: interceptOpts,
@@ -1111,7 +1114,7 @@ export default createAppRscHandler({
           renderMode: actionRenderMode,
           observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: observePageSearchParamsAccess === true,
-        }, undefined, actionCleanPathname, scriptNonce);
+        }, undefined, actionCleanPathname, targetScriptNonce ?? scriptNonce);
       },
       cleanPathname,
       clearRequestContext() {
@@ -1152,12 +1155,15 @@ export default createAppRscHandler({
       },
       isRscRequest,
       loadServerAction,
+      // Redirect targets are rendered as if the client had navigated to them,
+      // so they must route on the raw pathname a real request would use.
       matchRoute(pathnameToMatch) {
-        return matchRoute(pathnameToMatch);
+        return matchRequestRoute(pathnameToMatch);
       },
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       maxActionBodySizeLabel: __MAX_ACTION_BODY_SIZE_LABEL,
       middlewareHeaders: middlewareContext.headers,
+      middlewareRequestHeaders: middlewareContext.requestHeaders,
       middlewareStatus: middlewareContext.status,
       mountedSlotsHeader,
       readBodyWithLimit: __readBodyWithLimit,
@@ -1172,6 +1178,8 @@ export default createAppRscHandler({
       },
       resolveRouteRuntime: __resolveRouteRuntime,
       request,
+      dispatchRedirectTargetRequest,
+      sourceConfigHeaders,
       sanitizeErrorForClient(error) {
         return __sanitizeErrorForClient(error);
       },

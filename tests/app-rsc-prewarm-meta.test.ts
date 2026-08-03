@@ -116,4 +116,23 @@ describe("RSC prewarm manifest meta", () => {
     expect(output).toContain(`content="${META_URL}"`);
     expect(output).not.toContain("/old.json");
   });
+
+  it("ignores closing-head text inside inline scripts", async () => {
+    const html = `<html><head><script>const marker = "</head>"</script></head><body></body></html>`;
+    const output = injectRscPrewarmManifestMetaHtml(html);
+
+    expect(output).toContain(`<script>const marker = "</head>"</script>`);
+    expect(output).toContain(`</script>${getRscPrewarmManifestMetaHtml()}</head>`);
+  });
+
+  it("waits for a split raw-text element before finding the streamed head close", async () => {
+    const html = `<html><head><script>const marker = "</head>"</script></head><body></body></html>`;
+    const splitAt = html.indexOf("</script>");
+    const output = await readText(
+      injectRscPrewarmManifestMeta(textStream([html.slice(0, splitAt), html.slice(splitAt)])),
+    );
+
+    expect(output).toContain(`<script>const marker = "</head>"</script>`);
+    expect(output).toContain(`</script>${getRscPrewarmManifestMetaHtml()}</head>`);
+  });
 });
