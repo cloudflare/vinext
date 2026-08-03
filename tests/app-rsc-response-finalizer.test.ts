@@ -1,10 +1,22 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   finalizeAppRscResponse,
   markAppRscResponseConfigHeadersApplied,
 } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+
+const CDN_ADAPTER_KEY = Symbol.for("vinext.cdnCacheAdapter");
+
+afterEach(() => {
+  delete (globalThis as Record<PropertyKey, unknown>)[CDN_ADAPTER_KEY];
+});
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
   return {
@@ -52,6 +64,60 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-route-value")).toBe("target");
+  });
+
+  it("does not let matching config headers restore shared caching above middleware", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = new Response("personalized", {
+      headers: { "x-visitor-id": "visitor-a" },
+    });
+
+    await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      async () => {
+        await finalizeAppRscResponse(response, new Request("http://example.com/personalized"), {
+          basePath: "",
+          configHeaders: [
+            {
+              source: "/personalized",
+              headers: [
+                { key: "Cache-Control", value: "public, s-maxage=3600" },
+                { key: "CDN-Cache-Control", value: "public, max-age=3600" },
+              ],
+            },
+          ],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        });
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it("reasserts middleware-safe caching when target config headers were already applied", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = markAppRscResponseConfigHeadersApplied(
+      new Response("target", {
+        headers: {
+          "Cache-Control": "public, s-maxage=3600",
+          "CDN-Cache-Control": "public, max-age=3600",
+        },
+      }),
+    );
+
+    await runWithRequestContext(createRequestContext({ originManagedPageCache: true }), () =>
+      finalizeAppRscResponse(response, new Request("http://example.com/source"), {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      }),
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
   });
 
   it("adds the App Router RSC vary header when no config headers are configured", async () => {
@@ -225,6 +291,28 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     });
 
     expect(response.headers.get("x-added")).toBeNull();
+  });
+
+  it("removes shared-cache headers from a middleware-scoped redirect", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = Response.redirect("http://example.com/personalized", 307);
+    const result = await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      () =>
+        finalizeAppRscResponse(response, new Request("http://example.com/old"), {
+          basePath: "",
+          configHeaders: [],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        }),
+    );
+
+    expect(result).not.toBe(response);
+    expect(result.status).toBe(307);
+    expect(result.headers.get("location")).toBe("http://example.com/personalized");
+    expect(result.headers.get("cache-control")).toContain("no-store");
+    expect(result.headers.get("cdn-cache-control")).toBeNull();
+    expect(result.headers.get("cloudflare-cdn-cache-control")).toBeNull();
   });
 });
 

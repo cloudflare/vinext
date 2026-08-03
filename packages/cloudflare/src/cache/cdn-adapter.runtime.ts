@@ -6,11 +6,14 @@
  * the data cache and serves HIT/STALE itself), this adapter delegates serving
  * to Cloudflare's edge:
  *
- * - The origin never serves from a store — `get` returns `null`, so any
- *   request that reaches the Worker renders fresh. The edge absorbs HIT/STALE
- *   traffic and revalidates in the background (the `UPDATING` cache status).
- * - `set` is a no-op: the platform caches the *response* based on its
- *   cache headers, so there is nothing to persist at the origin.
+ * - Ordinarily the origin never serves from a store — `get` returns `null`, so
+ *   any request that reaches the Worker renders fresh. The edge absorbs
+ *   HIT/STALE traffic and revalidates in the background (the `UPDATING` cache
+ *   status). Request-time middleware/config composition instead uses vinext's
+ *   origin-managed fallback so that composition still runs on every request.
+ * - `set` is ordinarily a no-op: the platform caches the *response* based on
+ *   its cache headers. The origin-managed fallback writes through vinext's
+ *   default adapter rather than calling this method.
  * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control`
  *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
  *   revalidates, while the browser-facing `Cache-Control` is
@@ -121,6 +124,7 @@ function formatCacheTag(tags: readonly string[]): string | null {
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
+  readonly bypassesOriginOnCacheHit = true;
   // The Cloudflare edge revalidates by re-requesting the origin (UPDATING),
   // so the origin must not also run in-process background regeneration.
   readonly ownsBackgroundRevalidation = false;

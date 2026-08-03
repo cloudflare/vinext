@@ -1017,6 +1017,47 @@ export function matchesRewriteSource(
 }
 
 /**
+ * Whether a header/cookie-dependent rewrite can match this pathname without
+ * evaluating its `has` / `missing` inputs. Unlike host and query conditions,
+ * these inputs are not represented in the CDN URL cache key, so a response
+ * selected by the rule must not be shared above the request-routing layer.
+ */
+export function matchesRequestDependentRewriteSource(
+  pathname: string,
+  rewrites: NextRewrite[],
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  return rewrites.some(
+    (rewrite) =>
+      hasNonUrlCacheCondition(rewrite.has, rewrite.missing) &&
+      matchesRewriteSource(pathname, rewrite, basePathState),
+  );
+}
+
+/** Whether a header/cookie-dependent redirect source can match this pathname. */
+export function matchesRequestDependentRedirectSource(
+  pathname: string,
+  redirects: NextRedirect[],
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  return redirects.some(
+    (redirect) =>
+      hasNonUrlCacheCondition(redirect.has, redirect.missing) &&
+      shouldEvaluateRule(redirect.basePath, basePathState) &&
+      matchConfigPattern(pathname, redirect.source) !== null,
+  );
+}
+
+function hasNonUrlCacheCondition(
+  has: HasCondition[] | undefined,
+  missing: HasCondition[] | undefined,
+): boolean {
+  return [...(has ?? []), ...(missing ?? [])].some(
+    (condition) => condition.type === "header" || condition.type === "cookie",
+  );
+}
+
+/**
  * Substitute all matched route params into a redirect/rewrite destination.
  *
  * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
@@ -1409,6 +1450,33 @@ export function matchHeaders(
     }
   }
   return result;
+}
+
+/**
+ * Whether a header/cookie-dependent headers rule can match this pathname
+ * without evaluating its `has` / `missing` inputs. This shares matchHeaders'
+ * source compilation so the cache-safety scope cannot drift from application.
+ */
+export function matchesRequestDependentHeaderSource(
+  pathname: string,
+  headers: NextHeader[],
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+
+  for (const rule of headers) {
+    if (!hasNonUrlCacheCondition(rule.has, rule.missing)) continue;
+    if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
+    const source = pathnameHadTrailingSlash
+      ? stripTrailingSlashForConfigMatch(rule.source)
+      : rule.source;
+    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
+      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
+    );
+    if (sourceRegex?.test(pathname)) return true;
+  }
+  return false;
 }
 
 /**

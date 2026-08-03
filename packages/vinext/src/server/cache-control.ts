@@ -1,4 +1,9 @@
-import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/cdn-cache";
+import {
+  cdnCacheAdapterBypassesOriginOnHit,
+  getCdnCacheAdapter,
+  shouldUseOriginManagedPageCache,
+  type CdnCacheableHeaderInput,
+} from "vinext/shims/cdn-cache";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
@@ -34,12 +39,20 @@ function isSharedCacheControl(cacheControl: string): boolean {
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");
-  if (shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl)) {
+  // Middleware is part of the request pipeline, above the page artifact cache.
+  // If the configured adapter serves HITs without invoking the origin, cache
+  // the artifact in the origin store instead and make the composed response
+  // non-cacheable to browsers/CDNs. This preserves fresh middleware headers
+  // while still serving the page itself as ISR HIT/STALE, matching Next.js.
+  const effectiveInput = shouldUseOriginManagedPageCache()
+    ? { cacheControl: NEVER_CACHE_CONTROL }
+    : input;
+  if (shouldUseNextDeployCacheControl() && isSharedCacheControl(effectiveInput.cacheControl)) {
     headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
     return;
   }
 
-  const map = getCdnCacheAdapter().buildResponseHeaders(input);
+  const map = getCdnCacheAdapter().buildResponseHeaders(effectiveInput);
   for (const [name, value] of Object.entries(map)) {
     if (value === null) {
       headers.delete(name);
@@ -51,6 +64,89 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
     // rather than being emitted as a blank value.
     if (value === "") continue;
     headers.set(name, value);
+  }
+}
+
+/** Re-assert the middleware-safe policy after user response headers are merged. */
+export function applyOriginManagedPageCacheResponseHeaders(headers: Headers): void {
+  if (!shouldUseOriginManagedPageCache()) return;
+  applyMiddlewareSafePageCacheResponseHeaders(headers, true);
+}
+
+/**
+ * Apply the safe composed-response policy at a boundary that sits outside the
+ * request ALS scope (notably the Pages Router's final header merge).
+ */
+export function applyMiddlewareSafePageCacheResponseHeaders(
+  headers: Headers,
+  middlewarePathMatched: boolean,
+): void {
+  if (!middlewarePathMatched || !cdnCacheAdapterBypassesOriginOnHit()) return;
+  applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+}
+
+/**
+ * Apply the middleware-safe policy to headers passed to a Node adapter that
+ * writes directly to ServerResponse. Preserve untouched array-valued headers
+ * (notably Set-Cookie) by copying back only names changed by the CDN policy.
+ */
+export function finalizeMiddlewareSafePageCacheHeaderRecord(
+  headers: Record<string, string | string[]>,
+  middlewarePathMatched: boolean,
+): Record<string, string | string[]> {
+  if (!middlewarePathMatched || !cdnCacheAdapterBypassesOriginOnHit()) return headers;
+
+  const before = new Headers();
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      for (const item of value) before.append(name, item);
+    } else {
+      before.set(name, value);
+    }
+  }
+  const after = new Headers(before);
+  applyCdnResponseHeaders(after, { cacheControl: NEVER_CACHE_CONTROL });
+
+  const finalized = { ...headers };
+  for (const name of Object.keys(headers)) {
+    const afterValue = after.get(name);
+    if (afterValue === null) {
+      delete finalized[name];
+    } else if (afterValue !== before.get(name)) {
+      finalized[name] = afterValue;
+    }
+  }
+  after.forEach((value, name) => {
+    if (!before.has(name)) finalized[name] = value;
+  });
+  return finalized;
+}
+
+/**
+ * Finalize a response produced after middleware. Most response headers are
+ * mutable; redirect/error responses can carry an immutable guard, so rebuild
+ * only when the safe policy cannot be applied in place.
+ */
+export function finalizeMiddlewareSafePageCacheResponse(
+  response: Response,
+  middlewarePathMatched: boolean,
+): Response {
+  if (!middlewarePathMatched || !cdnCacheAdapterBypassesOriginOnHit()) return response;
+
+  try {
+    applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
+    return response;
+  } catch {
+    // Status 0 responses cannot be reconstructed with the Response constructor
+    // and are not valid HTTP responses that an edge can cache.
+    if (response.status === 0) return response;
+    const headers = new Headers(response.headers);
+    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
   }
 }
 

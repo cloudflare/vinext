@@ -22,6 +22,9 @@ import type { BasePathMatchState, RequestContext } from "../config/config-matche
 import {
   matchRedirect,
   matchRewrite,
+  matchesRequestDependentHeaderSource,
+  matchesRequestDependentRedirectSource,
+  matchesRequestDependentRewriteSource,
   preserveRedirectDestinationQuery,
   requestContextFromRequest,
   applyMiddlewareRequestHeaders,
@@ -43,10 +46,16 @@ import {
   methodNotAllowedResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
+import {
+  applyMiddlewareSafePageCacheResponseHeaders,
+  finalizeMiddlewareSafePageCacheHeaderRecord,
+  finalizeMiddlewareSafePageCacheResponse,
+} from "./cache-control.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
   isDataReq?: boolean;
+  originManagedPageCache?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
 };
@@ -101,6 +110,8 @@ export async function fetchWorkerFilesystemRoute(
 
 export type MiddlewareResult = {
   continue: boolean;
+  /** False only when no configured source pattern can match this pathname. */
+  middlewarePathMatched?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -148,6 +159,8 @@ export type PagesPipelineDeps = {
    * uses the same baked secret as the eventual page renderer.
    */
   authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean;
+  /** Pathname-only middleware scope used while authenticated regeneration skips execution. */
+  middlewarePathMatches?: (request: Request) => boolean;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
@@ -217,8 +230,26 @@ export function wrapMiddlewareWithBasePath(
   if (!hadBasePath || !basePath) return runMiddleware;
   return (request, ctx, opts) => {
     const mwUrl = new URL(request.url);
-    mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
+    // The adapter has already stripped exactly one basePath segment. Always
+    // restore it, even when the application pathname starts with the same
+    // segment (e.g. external /docs/docs/post -> internal /docs/post).
+    mwUrl.pathname = mwUrl.pathname === "/" ? basePath : `${basePath}${mwUrl.pathname}`;
     return runMiddleware(new Request(mwUrl, request), ctx, opts);
+  };
+}
+
+/** Restore the adapter-stripped basePath before generated matcher evaluation. */
+export function wrapMiddlewarePathMatcherWithBasePath(
+  middlewarePathMatches: NonNullable<PagesPipelineDeps["middlewarePathMatches"]>,
+  basePath: string,
+  hadBasePath: boolean,
+): NonNullable<PagesPipelineDeps["middlewarePathMatches"]> {
+  if (!hadBasePath || !basePath) return middlewarePathMatches;
+  return (request) => {
+    const matcherUrl = new URL(request.url);
+    matcherUrl.pathname =
+      matcherUrl.pathname === "/" ? basePath : `${basePath}${matcherUrl.pathname}`;
+    return middlewarePathMatches(new Request(matcherUrl, request));
   };
 }
 
@@ -300,6 +331,12 @@ export async function runPagesRequest(
   const isOnDemandRevalidate = deps.authorizeOnDemandRevalidate
     ? deps.authorizeOnDemandRevalidate(revalidateHeader)
     : isOnDemandRevalidateRequest(revalidateHeader);
+  let middlewarePathMatched =
+    isOnDemandRevalidate && deps.hasMiddleware
+      ? (deps.middlewarePathMatches?.(request) ?? true)
+      : false;
+  const finalizePostMiddlewareResponse = (response: Response): Response =>
+    finalizeMiddlewareSafePageCacheResponse(response, middlewarePathMatched);
   const requestConfigPathname = deps.configMatchPathname ?? pathname;
 
   // Step 1: Reconstruct basePathState
@@ -325,6 +362,38 @@ export async function runPagesRequest(
         hostname: requestHostname,
       })
     : requestConfigPathname;
+  if (
+    matchesRequestDependentHeaderSource(requestConfigMatchPathname, configHeaders, basePathState)
+  ) {
+    middlewarePathMatched = true;
+  }
+  if (
+    matchesRequestDependentRedirectSource(
+      requestConfigMatchPathname,
+      configRedirects,
+      basePathState,
+    )
+  ) {
+    middlewarePathMatched = true;
+  }
+  const matchConfigRewrite = (
+    sourcePathname: string,
+    rewrites: NextRewrite[],
+    requestContext: RequestContext,
+    rewriteBasePathState: BasePathMatchState = basePathState,
+    paramsPathname?: string,
+  ): string | null => {
+    if (matchesRequestDependentRewriteSource(sourcePathname, rewrites, rewriteBasePathState)) {
+      middlewarePathMatched = true;
+    }
+    return matchRewrite(
+      sourcePathname,
+      rewrites,
+      requestContext,
+      rewriteBasePathState,
+      paramsPathname,
+    );
+  };
 
   // Step 4: Config redirects (before middleware)
   if (configRedirects.length) {
@@ -350,10 +419,12 @@ export async function runPagesRequest(
       const location = preserveRedirectDestinationQuery(dest, deps.rawSearch ?? search);
       return {
         type: "response",
-        response: new Response(null, {
-          status: redirect.permanent ? 308 : 307,
-          headers: { Location: location },
-        }),
+        response: finalizePostMiddlewareResponse(
+          new Response(null, {
+            status: redirect.permanent ? 308 : 307,
+            headers: { Location: location },
+          }),
+        ),
       };
     }
   }
@@ -369,9 +440,13 @@ export async function runPagesRequest(
     phase: FilesystemRoutePhase,
   ): Promise<PagesPipelineResult | null> => {
     if (!deps.serveFilesystemRoute) return null;
+    const stagedHeaders = finalizeMiddlewareSafePageCacheHeaderRecord(
+      middlewareHeaders,
+      middlewarePathMatched,
+    );
     const served = await deps.serveFilesystemRoute(
       requestPathname,
-      middlewareHeaders,
+      stagedHeaders,
       phase,
       resolvedUrl,
     );
@@ -388,7 +463,7 @@ export async function runPagesRequest(
       }
       return {
         type: "response",
-        response,
+        response: finalizePostMiddlewareResponse(response),
       };
     }
     return served ? { type: "handled" } : null;
@@ -401,6 +476,7 @@ export async function runPagesRequest(
     const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
       isDataRequest,
     });
+    middlewarePathMatched ||= result.middlewarePathMatched !== false;
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -442,14 +518,19 @@ export async function runPagesRequest(
         }
         return {
           type: "response",
-          response: new Response(null, {
-            status: result.redirectStatus ?? 307,
-            headers,
-          }),
+          response: finalizePostMiddlewareResponse(
+            new Response(null, {
+              status: result.redirectStatus ?? 307,
+              headers,
+            }),
+          ),
         };
       }
       if (result.response) {
-        return { type: "response", response: result.response };
+        return {
+          type: "response",
+          response: finalizePostMiddlewareResponse(result.response),
+        };
       }
     }
 
@@ -483,7 +564,9 @@ export async function runPagesRequest(
   if (deps.dataNotFoundResponse && resolvedUrl === originalResolvedUrl) {
     return {
       type: "response",
-      response: mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
+      response: finalizePostMiddlewareResponse(
+        mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
+      ),
     };
   }
 
@@ -534,10 +617,12 @@ export async function runPagesRequest(
 
     return {
       type: "response",
-      response: mergeHeaders(
-        buildMiddlewarePrefetchSkipResponse(matchedPathnameForRoute(match.route.pattern)),
-        middlewareHeaders,
-        undefined,
+      response: finalizePostMiddlewareResponse(
+        mergeHeaders(
+          buildMiddlewarePrefetchSkipResponse(matchedPathnameForRoute(match.route.pattern)),
+          middlewareHeaders,
+          undefined,
+        ),
       ),
       defaultContentType: "application/json",
     };
@@ -565,7 +650,9 @@ export async function runPagesRequest(
     const proxyResponse = await proxyExternal(request, resolvedUrl);
     return {
       type: "response",
-      response: mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+      response: finalizePostMiddlewareResponse(
+        mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+      ),
     };
   }
 
@@ -574,7 +661,7 @@ export async function runPagesRequest(
   // continues afterFiles/fallback rules until a destination resolves.
   let configRewriteFired = false;
   for (const rewrite of configRewrites.beforeFiles ?? []) {
-    const rewritten = matchRewrite(
+    const rewritten = matchConfigRewrite(
       configSourcePathname(),
       [rewrite],
       rewriteRequestContext(),
@@ -583,7 +670,10 @@ export async function runPagesRequest(
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, rewritten) };
+        return {
+          type: "response",
+          response: finalizePostMiddlewareResponse(await proxyExternal(request, rewritten)),
+        };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
@@ -607,10 +697,12 @@ export async function runPagesRequest(
   const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
     type: "response",
-    response: new Response("This page could not be found", {
-      status: 404,
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    }),
+    response: finalizePostMiddlewareResponse(
+      new Response("This page could not be found", {
+        status: 404,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      }),
+    ),
   });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
@@ -643,7 +735,7 @@ export async function runPagesRequest(
         // API routes return arbitrary data; default a missing content-type to
         // application/octet-stream (not text/html) to avoid content sniffing.
         defaultContentType: "application/octet-stream",
-        response: merged,
+        response: finalizePostMiddlewareResponse(merged),
       };
     }
     return {
@@ -669,7 +761,7 @@ export async function runPagesRequest(
   let resolvedPathnameChanged = false;
   if (!pageMatch || pageMatch.route.isDynamic) {
     for (const rewrite of configRewrites.afterFiles ?? []) {
-      const rewritten = matchRewrite(
+      const rewritten = matchConfigRewrite(
         configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
@@ -678,7 +770,10 @@ export async function runPagesRequest(
       if (rewritten) {
         if (isExternalUrl(rewritten)) {
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-          return { type: "response", response: await proxyExternal(request, rewritten) };
+          return {
+            type: "response",
+            response: finalizePostMiddlewareResponse(await proxyExternal(request, rewritten)),
+          };
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
@@ -721,7 +816,7 @@ export async function runPagesRequest(
       configRewrites.fallback?.length
     ) {
       for (const rewrite of configRewrites.fallback) {
-        const fallbackRewrite = matchRewrite(
+        const fallbackRewrite = matchConfigRewrite(
           configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
@@ -731,7 +826,7 @@ export async function runPagesRequest(
         if (isExternalUrl(fallbackRewrite)) {
           return {
             type: "response",
-            response: await proxyExternal(request, fallbackRewrite),
+            response: finalizePostMiddlewareResponse(await proxyExternal(request, fallbackRewrite)),
           };
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
@@ -774,13 +869,24 @@ export async function runPagesRequest(
       }
     }
 
-    let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions, stagedHeaders);
+    const withCacheMode = (renderOptions?: PagesRenderOptions): PagesRenderOptions | undefined =>
+      middlewarePathMatched
+        ? { ...renderOptions, originManagedPageCache: true }
+        : deps.hasMiddleware
+          ? { ...renderOptions, originManagedPageCache: false }
+          : renderOptions;
+    let response = await deps.renderPage(
+      request,
+      resolvedUrl,
+      withCacheMode(initialRenderOptions),
+      stagedHeaders,
+    );
 
     // Fallback rewrites if 404 + deferred
     let matchedFallbackRewrite = false;
     if (response.status === 404 && shouldDeferErrorPageOnMiss && configRewrites.fallback?.length) {
       for (const rewrite of configRewrites.fallback) {
-        const fallbackRewrite = matchRewrite(
+        const fallbackRewrite = matchConfigRewrite(
           configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
@@ -791,7 +897,7 @@ export async function runPagesRequest(
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return {
             type: "response",
-            response: await proxyExternal(request, fallbackRewrite),
+            response: finalizePostMiddlewareResponse(await proxyExternal(request, fallbackRewrite)),
           };
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
@@ -805,7 +911,7 @@ export async function runPagesRequest(
         renderPageMatch = deps.matchPageRoute
           ? deps.matchPageRoute(resolvedPathname, request)
           : null;
-        response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+        response = await deps.renderPage(request, resolvedUrl, withCacheMode(), stagedHeaders);
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
       }
@@ -813,7 +919,7 @@ export async function runPagesRequest(
 
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
-      response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+      response = await deps.renderPage(request, resolvedUrl, withCacheMode(), stagedHeaders);
     }
 
     const matchedPathHeaders = { ...middlewareHeaders };
@@ -830,7 +936,9 @@ export async function runPagesRequest(
       const notFoundResponse = new Response("{}", { status: 200, headers });
       return {
         type: "response",
-        response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        response: finalizePostMiddlewareResponse(
+          mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        ),
         defaultContentType: "application/json",
       };
     }
@@ -844,6 +952,7 @@ export async function runPagesRequest(
       );
     }
     const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
+    applyMiddlewareSafePageCacheResponseHeaders(merged.headers, middlewarePathMatched);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),
     // so we copy the marker from the original render response to the merged one.
@@ -869,7 +978,7 @@ export async function runPagesRequest(
       : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
     for (const rewrite of configRewrites.fallback) {
-      const fallbackRewrite = matchRewrite(
+      const fallbackRewrite = matchConfigRewrite(
         configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
@@ -878,7 +987,10 @@ export async function runPagesRequest(
       if (!fallbackRewrite) continue;
       if (isExternalUrl(fallbackRewrite)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, fallbackRewrite) };
+        return {
+          type: "response",
+          response: finalizePostMiddlewareResponse(await proxyExternal(request, fallbackRewrite)),
+        };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
@@ -900,7 +1012,13 @@ export async function runPagesRequest(
   return {
     type: "render",
     resolvedUrl,
-    renderOptions: isDataReq ? { isDataReq: true } : undefined,
+    renderOptions: middlewarePathMatched
+      ? { ...(isDataReq ? { isDataReq: true } : {}), originManagedPageCache: true }
+      : deps.hasMiddleware
+        ? { ...(isDataReq ? { isDataReq: true } : {}), originManagedPageCache: false }
+        : isDataReq
+          ? { isDataReq: true }
+          : undefined,
     stagedHeaders: middlewareHeaders,
     requestHeaders: request.headers,
     middlewareStatus,

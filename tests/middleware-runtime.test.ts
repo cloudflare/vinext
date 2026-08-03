@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
+import {
+  executeMiddleware,
+  matchesMiddlewareModulePathname,
+} from "../packages/vinext/src/server/middleware-runtime.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
 // Tests for the redirect protocol implemented in `executeMiddleware`. These
@@ -458,6 +461,43 @@ describe("middleware redirect protocol", () => {
 // test/e2e/middleware-base-path/test/index.test.ts (canary) — including the
 // "should execute from absolute paths" case for out-of-basePath requests.
 describe("middleware nextUrl basePath", () => {
+  it("checks pathname scope without request-dependent matcher conditions", () => {
+    const module = {
+      config: {
+        matcher: [
+          {
+            source: "/dashboard",
+            has: [{ type: "header", key: "x-authenticated", value: "1" }],
+          },
+        ],
+      },
+    };
+
+    expect(
+      matchesMiddlewareModulePathname({
+        basePath: "/root",
+        module,
+        request: new Request("https://example.test/root/dashboard"),
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddlewareModulePathname({
+        basePath: "/root",
+        module,
+        request: new Request("https://example.test/root/excluded"),
+      }),
+    ).toBe(false);
+  });
+
+  it("fails safe when the request pathname cannot be decoded", () => {
+    expect(
+      matchesMiddlewareModulePathname({
+        module: { config: { matcher: "/dashboard" } },
+        request: new Request("https://example.test/%"),
+      }),
+    ).toBe(true);
+  });
+
   function captureModule() {
     const captured: { request?: NextRequest } = {};
     const module = {

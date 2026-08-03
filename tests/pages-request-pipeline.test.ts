@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vite-plus/test";
 import {
   runPagesRequest,
+  wrapMiddlewarePathMatcherWithBasePath,
   wrapMiddlewareWithBasePath,
   type PagesPipelineDeps,
   type MiddlewareResult,
@@ -8,6 +9,8 @@ import {
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 
 // Helpers
 
@@ -87,6 +90,69 @@ describe("on-demand revalidation middleware bypass", () => {
 
     expect(runMiddleware).toHaveBeenCalledOnce();
   });
+
+  // Ported from Next.js: test/e2e/middleware-trailing-slash/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-trailing-slash/test/index.test.ts
+  it("keeps matcher-excluded on-demand regeneration on the edge-managed store", async () => {
+    const renderPage = makeRenderPage();
+    const middlewarePathMatches = vi.fn(() => false);
+
+    await runPagesRequest(
+      makeRequest("/excluded", { [PRERENDER_REVALIDATE_HEADER]: "build-secret" }),
+      baseDeps({
+        authorizeOnDemandRevalidate: (value) => value === "build-secret",
+        hasMiddleware: true,
+        middlewarePathMatches,
+        renderPage,
+        runMiddleware: makeMiddleware({}),
+      }),
+    );
+
+    expect(middlewarePathMatches).toHaveBeenCalledOnce();
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/excluded",
+      { originManagedPageCache: false },
+      expect.any(Headers),
+    );
+  });
+
+  it("matches authenticated revalidation against the restored external basePath", async () => {
+    const renderPage = makeRenderPage();
+    const middlewarePathMatches = vi.fn(
+      (request: Request) => new URL(request.url).pathname === "/docs/docs/revalidate-target",
+    );
+
+    await runPagesRequest(
+      makeRequest("/docs/revalidate-target", {
+        [PRERENDER_REVALIDATE_HEADER]: "build-secret",
+      }),
+      baseDeps({
+        authorizeOnDemandRevalidate: (value) => value === "build-secret",
+        basePath: "/docs",
+        hadBasePath: true,
+        hasMiddleware: true,
+        middlewarePathMatches: wrapMiddlewarePathMatcherWithBasePath(
+          middlewarePathMatches,
+          "/docs",
+          true,
+        ),
+        renderPage,
+        runMiddleware: makeMiddleware({}),
+      }),
+    );
+
+    expect(middlewarePathMatches).toHaveBeenCalledOnce();
+    expect(middlewarePathMatches.mock.calls[0]?.[0].url).toBe(
+      "http://localhost/docs/docs/revalidate-target",
+    );
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/docs/revalidate-target",
+      { originManagedPageCache: true },
+      expect.any(Headers),
+    );
+  });
 });
 
 // 1. Trailing-slash: /foo/ with trailingSlash: false → {type:"response"} with status 308
@@ -123,6 +189,36 @@ describe("trailing slash normalization", () => {
 
 // 2. Config redirect: permanent redirect → status 308 with Location
 describe("config redirects", () => {
+  it("does not share header-conditional redirects above the routing layer", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/tenant", { "x-tenant": "a" }),
+        baseDeps({
+          configRedirects: [
+            {
+              source: "/tenant",
+              destination: "/a",
+              permanent: true,
+              has: [{ type: "header", key: "x-tenant", value: "a" }],
+            },
+          ],
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(308);
+      expect(result.response.headers.get("location")).toBe("/a");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
   it("permanent redirect returns 308", async () => {
     const req = makeRequest("/old");
     const result = await runPagesRequest(
@@ -302,6 +398,42 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-middleware-seen")).toBe("1");
   });
 
+  it("makes a deferred data 404 uncacheable after middleware", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/_next/data/stale/journal.json"),
+        baseDeps({
+          dataNotFoundResponse: new Response("{}", {
+            status: 404,
+            headers: { "CDN-Cache-Control": "public, max-age=60" },
+          }),
+          hasMiddleware: true,
+          isDataReq: true,
+          isDataRequest: true,
+          runMiddleware: makeMiddleware({
+            continue: true,
+            responseHeaders: new Headers({
+              "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+              "x-visitor-id": "visitor-a",
+            }),
+          }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(404);
+      expect(result.response.headers.get("x-visitor-id")).toBe("visitor-a");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
   it("adds the final matched path to rewritten data responses", async () => {
     const result = await runPagesRequest(
       makeRequest("/ssr-page"),
@@ -378,6 +510,18 @@ describe("middleware", () => {
   });
 
   it("returns middleware data misses as JSON with the requested matched path", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const renderPage = vi.fn(
+      async () =>
+        new Response("not found", {
+          status: 404,
+          headers: {
+            "CDN-Cache-Control": "public, max-age=60",
+            "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+          },
+        }),
+    );
     const result = await runPagesRequest(
       makeRequest("/unknown"),
       baseDeps({
@@ -386,15 +530,20 @@ describe("middleware", () => {
         hasMiddleware: true,
         runMiddleware: makeMiddleware({ continue: true }),
         matchPageRoute: vi.fn().mockReturnValue(null),
-        renderPage: makeRenderPage(404, "not found"),
+        renderPage,
       }),
-    );
+    ).finally(() => {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    });
 
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("content-type")).toContain("application/json");
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/unknown");
+    expect(result.response.headers.get("cache-control")).toContain("no-store");
+    expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
     expect(await result.response.text()).toBe("{}");
   });
 
@@ -421,25 +570,38 @@ describe("middleware", () => {
     // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
     const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const result = await runPagesRequest(
       makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
       baseDeps({
         isDataReq: true,
         isDataRequest: true,
         hasMiddleware: true,
-        runMiddleware: makeMiddleware({ continue: true }),
+        runMiddleware: makeMiddleware({
+          continue: true,
+          responseHeaders: new Headers({
+            "CDN-Cache-Control": "public, max-age=60",
+            "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+          }),
+        }),
         matchPageRoute: vi
           .fn()
           .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr", dataKind: "server" } }),
         renderPage,
       }),
-    );
+    ).finally(() => {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    });
 
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(renderPage).not.toHaveBeenCalled();
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("content-type")).toBe("application/json");
+    expect(result.response.headers.get("cache-control")).toContain("no-store");
+    expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
     expect(result.response.headers.get("x-matched-path")).toBe("/ssr");
     expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
     expect(await result.response.json()).toEqual({});
@@ -656,6 +818,68 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-redirect")).toBeNull();
   });
 
+  it("clears provider cache headers from direct middleware redirects", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/redirect"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            continue: false,
+            redirectUrl: "http://localhost/target",
+            responseHeaders: new Headers({
+              "CDN-Cache-Control": "public, max-age=60",
+              "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+            }),
+          }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(307);
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
+  it("clears provider cache headers from filesystem responses after middleware", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/public.txt"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: new Headers({ "x-visitor-id": "visitor-a" }),
+          }),
+          serveFilesystemRoute: async () =>
+            new Response("public", {
+              headers: {
+                "CDN-Cache-Control": "public, max-age=60",
+                "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+              },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("x-visitor-id")).toBe("visitor-a");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
   // 5. Middleware rewrite: resolvedUrl changes, pipeline continues
   it("middleware rewrite changes resolved URL, pipeline continues to render", async () => {
     const renderPage = makeRenderPage(200, "rewrite target");
@@ -674,9 +898,109 @@ describe("middleware", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/bar",
-      undefined,
+      { originManagedPageCache: true },
       expect.any(Headers),
     );
+  });
+
+  it("keeps matcher-excluded paths on the edge-managed cache path", async () => {
+    const renderPage = makeRenderPage();
+    await runPagesRequest(
+      makeRequest("/excluded"),
+      baseDeps({
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ middlewarePathMatched: false }),
+        renderPage,
+      }),
+    );
+
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/excluded",
+      { originManagedPageCache: false },
+      expect.any(Headers),
+    );
+  });
+
+  it("origin-manages pathname scopes with request-conditional config headers", async () => {
+    const renderPage = makeRenderPage();
+    await runPagesRequest(
+      makeRequest("/personalized"),
+      baseDeps({
+        configHeaders: [
+          {
+            source: "/personalized",
+            has: [{ type: "header", key: "x-private" }],
+            headers: [{ key: "x-private-result", value: "1" }],
+          },
+        ],
+        renderPage,
+      }),
+    );
+
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/personalized",
+      { originManagedPageCache: true },
+      expect.any(Headers),
+    );
+  });
+
+  it("origin-manages pathname scopes with request-conditional config rewrites", async () => {
+    const renderPage = makeRenderPage();
+    await runPagesRequest(
+      makeRequest("/variant", { "x-bucket": "a" }),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/variant",
+              destination: "/bucket-a",
+              has: [{ type: "header", key: "x-bucket", value: "a" }],
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        renderPage,
+      }),
+    );
+
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/bucket-a",
+      { originManagedPageCache: true },
+      expect.any(Headers),
+    );
+  });
+
+  it("clears provider cache overrides after the final Pages header merge", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/personalized"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: new Headers({
+              "Cache-Control": "public, s-maxage=60",
+              "CDN-Cache-Control": "public, max-age=60",
+              "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+            }),
+          }),
+          renderPage: makeRenderPage(),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
   });
 
   it.each([
@@ -1225,6 +1549,78 @@ describe("serveFilesystemRoute", () => {
     expect(renderPage).not.toHaveBeenCalled();
   });
 
+  it("passes middleware-safe headers to direct-write filesystem adapters", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const serveFilesystemRoute = vi.fn(
+        async (
+          _requestPathname: string,
+          _stagedHeaders: Record<string, string | string[]>,
+          _phase: string,
+          _resolvedUrl: string,
+        ) => true,
+      );
+      const result = await runPagesRequest(
+        makeRequest("/public.txt"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: new Headers({
+              "CDN-Cache-Control": "public, max-age=60",
+              "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+              "x-visitor-id": "visitor-a",
+            }),
+          }),
+          serveFilesystemRoute,
+        }),
+      );
+
+      expect(result.type).toBe("handled");
+      const stagedHeaders = serveFilesystemRoute.mock.calls[0]![1];
+      expect(stagedHeaders["x-visitor-id"]).toBe("visitor-a");
+      expect(stagedHeaders["cache-control"]).toContain("no-store");
+      expect(stagedHeaders["cdn-cache-control"]).toBeUndefined();
+      expect(stagedHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
+  it("leaves direct-write filesystem caching unchanged outside middleware matchers", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const serveFilesystemRoute = vi.fn(
+        async (
+          _requestPathname: string,
+          _stagedHeaders: Record<string, string | string[]>,
+          _phase: string,
+          _resolvedUrl: string,
+        ) => true,
+      );
+      await runPagesRequest(
+        makeRequest("/excluded.txt"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            middlewarePathMatched: false,
+            responseHeaders: new Headers({
+              "CDN-Cache-Control": "public, max-age=60",
+            }),
+          }),
+          serveFilesystemRoute,
+        }),
+      );
+
+      expect(serveFilesystemRoute.mock.calls[0]![1]).toEqual({
+        "cdn-cache-control": "public, max-age=60",
+      });
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
   it("strips stale middleware body headers from static 405 responses", async () => {
     const serveFilesystemRoute = vi.fn(
       async () =>
@@ -1747,7 +2143,7 @@ describe("afterFiles rewrites", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/ssg?slug=first",
-      { isDataReq: true },
+      { isDataReq: true, originManagedPageCache: true },
       expect.any(Headers),
     );
     expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
@@ -2150,10 +2546,29 @@ describe("wrapMiddlewareWithBasePath", () => {
     expect(opts).toEqual({ isDataRequest: true });
   });
 
-  it("does not double-add an already-present basePath (addBasePathToPathname is idempotent)", async () => {
+  it("restores the outer basePath when the application pathname starts with the same segment", async () => {
     const runMiddleware = makeMiddleware({ continue: true });
     const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
     await wrapped(makeRequest("/root/dashboard"), null, { isDataRequest: false });
-    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/dashboard");
+    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/root/dashboard");
+  });
+});
+
+describe("wrapMiddlewarePathMatcherWithBasePath", () => {
+  it("restores the exact external pathname before generated matcher evaluation", () => {
+    const middlewarePathMatches = vi.fn((_request: Request) => true);
+    const wrapped = wrapMiddlewarePathMatcherWithBasePath(middlewarePathMatches, "/docs", true);
+
+    expect(wrapped(makeRequest("/docs/revalidate-target?x=1"))).toBe(true);
+    expect(middlewarePathMatches.mock.calls[0]![0].url).toBe(
+      "http://localhost/docs/docs/revalidate-target?x=1",
+    );
+  });
+
+  it("passes through requests outside the configured basePath", () => {
+    const middlewarePathMatches = vi.fn((_request: Request) => false);
+    expect(wrapMiddlewarePathMatcherWithBasePath(middlewarePathMatches, "/docs", false)).toBe(
+      middlewarePathMatches,
+    );
   });
 });

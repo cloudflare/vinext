@@ -9,6 +9,11 @@ import { fileURLToPath } from "node:url";
  * edge cache.
  *
  * Workers Cache must be enabled in your Wrangler config for this to work.
+ * Responses whose request-time composition must run on every request (a
+ * middleware pathname scope or header/cookie-dependent config rule) cannot be
+ * served directly from the edge. Their page artifacts fall back to vinext's
+ * data cache instead; configure a durable data adapter such as
+ * `kvDataAdapter()` for cross-isolate ISR rather than the in-memory default.
  * ```jsonc
  * // wrangler.jsonc
  * {

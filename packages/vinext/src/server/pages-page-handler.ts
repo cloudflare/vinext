@@ -320,6 +320,7 @@ export type CreatePagesPageHandlerOptions = {
 // Internal render options (mirrors the options shape passed to `renderPage`).
 type RenderPageOptions = {
   isDataReq?: boolean;
+  originManagedPageCache?: boolean;
   statusCode?: number;
   asPath?: string;
   originalUrl?: string;
@@ -611,6 +612,7 @@ export function createPagesPageHandler(
       : routerAsPathSource;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
+      originManagedPageCache: options?.originManagedPageCache ?? hasMiddleware,
     });
 
     const response = await runWithRequestContext(uCtx, async () => {

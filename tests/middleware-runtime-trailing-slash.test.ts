@@ -241,7 +241,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
 
     expect(matchingResult.continue).toBe(false);
     expect(matchingResult.response?.status).toBe(401);
-    expect(nonMatchingResult).toEqual({ continue: true });
+    expect(nonMatchingResult).toEqual({ continue: true, middlewarePathMatched: false });
   });
 
   it("preserves a custom constraint that requires a terminal slash", async () => {
@@ -262,6 +262,6 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
 
     expect(matchingResult.continue).toBe(false);
     expect(matchingResult.response?.status).toBe(401);
-    expect(nonMatchingResult).toEqual({ continue: true });
+    expect(nonMatchingResult).toEqual({ continue: true, middlewarePathMatched: false });
   });
 });

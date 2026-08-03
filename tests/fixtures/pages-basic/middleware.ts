@@ -37,6 +37,14 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
 
+  if (url.pathname === "/middleware-image") {
+    const imageResponse = NextResponse.rewrite(
+      new URL("/_next/image?url=%2Ftest-image.png&w=828&q=75", request.url),
+    );
+    imageResponse.headers.set("x-custom-middleware", "active");
+    return imageResponse;
+  }
+
   // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/app/middleware-node.js
   if (url.pathname === "/middleware-general-ssr") {

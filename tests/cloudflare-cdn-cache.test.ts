@@ -11,17 +11,41 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
+  type CdnCacheAdapter,
   getCdnCacheAdapter,
+  getCdnCacheStorageAdapter,
+  shouldUseOriginManagedPageCache,
   setCdnCacheAdapter,
   DefaultCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import { finalizeAppPageRscCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
+import { mergeMiddlewareResponseHeaders } from "../packages/vinext/src/server/middleware-response-headers.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
 function resetActiveAdapter(): void {
   delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+}
+
+function makeCustomAdapter(bypassesOriginOnCacheHit?: false): CdnCacheAdapter {
+  return {
+    ...(bypassesOriginOnCacheHit === false ? { bypassesOriginOnCacheHit } : {}),
+    ownsBackgroundRevalidation: false,
+    async get() {
+      return null;
+    },
+    async set() {},
+    buildResponseHeaders({ cacheControl }) {
+      return { "Cache-Control": cacheControl };
+    },
+    async revalidateTag() {},
+  };
 }
 
 beforeEach(resetActiveAdapter);
@@ -105,6 +129,84 @@ describe("CloudflareCdnCacheAdapter", () => {
         "Cache-Tag": null,
       });
     }
+  });
+
+  it("uses origin ISR and disables edge caching when middleware must run", async () => {
+    const adapter = new CloudflareCdnCacheAdapter();
+    setCdnCacheAdapter(adapter);
+    const requestContext = createRequestContext({ originManagedPageCache: true });
+
+    await runWithRequestContext(requestContext, async () => {
+      expect(shouldUseOriginManagedPageCache()).toBe(true);
+      expect(getCdnCacheStorageAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
+
+      const headers = new Headers({
+        "Cache-Tag": "stale-tag",
+        "CDN-Cache-Control": "public, max-age=60",
+      });
+      applyCdnResponseHeaders(headers, {
+        cacheControl: "s-maxage=60, stale-while-revalidate",
+        tags: ["/personalized"],
+      });
+
+      expect(headers.get("Cache-Control")).toContain("no-store");
+      expect(headers.get("CDN-Cache-Control")).toBeNull();
+      expect(headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+      expect(headers.get("Cache-Tag")).toBeNull();
+
+      mergeMiddlewareResponseHeaders(
+        headers,
+        new Headers({
+          "Cache-Control": "public, s-maxage=3600",
+          "CDN-Cache-Control": "public, max-age=3600",
+        }),
+      );
+      expect(headers.get("Cache-Control")).toContain("no-store");
+      expect(headers.get("CDN-Cache-Control")).toBeNull();
+    });
+  });
+
+  it("keeps edge-managed ISR when no middleware can be bypassed", async () => {
+    const adapter = new CloudflareCdnCacheAdapter();
+    setCdnCacheAdapter(adapter);
+    const requestContext = createRequestContext({ originManagedPageCache: false });
+
+    await runWithRequestContext(requestContext, async () => {
+      expect(shouldUseOriginManagedPageCache()).toBe(false);
+      expect(getCdnCacheStorageAdapter()).toBe(adapter);
+    });
+  });
+
+  it("recognizes an explicitly installed default adapter as origin-serving", async () => {
+    const adapter = new DefaultCdnCacheAdapter();
+    setCdnCacheAdapter(adapter);
+    const requestContext = createRequestContext({ originManagedPageCache: true });
+
+    await runWithRequestContext(requestContext, async () => {
+      expect(shouldUseOriginManagedPageCache()).toBe(false);
+      expect(getCdnCacheStorageAdapter()).toBe(adapter);
+    });
+  });
+
+  it("defaults custom adapters to bypassing the origin for cache safety", async () => {
+    setCdnCacheAdapter(makeCustomAdapter());
+    const requestContext = createRequestContext({ originManagedPageCache: true });
+
+    await runWithRequestContext(requestContext, async () => {
+      expect(shouldUseOriginManagedPageCache()).toBe(true);
+      expect(getCdnCacheStorageAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
+    });
+  });
+
+  it("lets origin-serving custom adapters explicitly retain their storage", async () => {
+    const adapter = makeCustomAdapter(false);
+    setCdnCacheAdapter(adapter);
+    const requestContext = createRequestContext({ originManagedPageCache: true });
+
+    await runWithRequestContext(requestContext, async () => {
+      expect(shouldUseOriginManagedPageCache()).toBe(false);
+      expect(getCdnCacheStorageAdapter()).toBe(adapter);
+    });
   });
 
   it.each(["MISS", "STATIC"] as const)(

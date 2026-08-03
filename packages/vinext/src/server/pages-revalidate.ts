@@ -25,6 +25,8 @@ import {
 } from "./isr-cache.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { cdnCacheAdapterBypassesOriginOnHit, getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { normalizeDomainHostname } from "../utils/domain-locale.js";
 
 export type RevalidateOptions = {
@@ -101,6 +103,23 @@ export async function performOnDemandRevalidate(
 
   if (!ok) {
     throw new Error(`Failed to revalidate ${urlPath}: ${res.status}`);
+  }
+
+  // An edge-managed adapter does not observe the in-process regeneration
+  // response, so its previously cached representation would otherwise survive
+  // a successful res.revalidate(). Purge the response's authoritative cache
+  // tags (or the Pages path tag fallback) before reporting success. The next
+  // request then repopulates the edge with the regenerated representation.
+  if (cdnCacheAdapterBypassesOriginOnHit()) {
+    const responseTags = res.headers
+      .get("cache-tag")
+      ?.split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    const pathname = target.pathname;
+    const stem = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+    const tags = responseTags?.length ? responseTags : [encodeCacheTag(`_N_T_${stem || "/"}`)];
+    await getCdnCacheAdapter().revalidateTag(tags);
   }
 }
 

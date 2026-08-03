@@ -21,7 +21,7 @@ export type PagesEntry = {
     query: Record<string, unknown>,
     parsedUrl: unknown,
     middlewareRequestHeaders?: Headers | null,
-    options?: { isDataReq?: boolean },
+    options?: { isDataReq?: boolean; originManagedPageCache?: boolean },
   ) => Promise<Response> | Response;
 };
 
@@ -75,6 +75,7 @@ type RenderPagesFallbackOptions = {
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppMiddlewareContext;
+  originManagedPageCache?: boolean;
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
@@ -119,6 +120,7 @@ export async function renderPagesFallback(
     isRscRequest,
     matchKind,
     middlewareContext,
+    originManagedPageCache,
     pathname = options.url.pathname,
     pagesDataRequest = null,
     request,
@@ -149,6 +151,7 @@ export async function renderPagesFallback(
   const pagesPathname = queryIndex === -1 ? pathname : pathname.slice(0, queryIndex);
   const pagesSearch = queryIndex === -1 ? url.search || "" : pathname.slice(queryIndex);
   const pagesUrl = decodePathParams(pagesPathname) + pagesSearch;
+  const executionContext = getRequestExecutionContext();
   if (pagesPathname.startsWith("/api/") || pagesPathname === "/api") {
     if (typeof pagesEntry.handleApiRoute !== "function") return null;
     const hasApiMatcher = typeof pagesEntry.matchApiRoute === "function";
@@ -166,11 +169,10 @@ export async function renderPagesFallback(
         return null;
       }
     }
-    const executionContext = getRequestExecutionContext();
     const pagesApiResponse = await pagesEntry.handleApiRoute(
       pagesRequest,
       pagesUrl,
-      undefined,
+      executionContext ?? undefined,
       executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
       executionContext?.hostRuntime ?? "node",
     );
@@ -198,22 +200,37 @@ export async function renderPagesFallback(
   const renderRequest = pagesDataRequest
     ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)
     : pagesRequest;
-  const pagesRes = isDataRequest
-    ? await pagesEntry.renderPage(
-        renderRequest,
-        pagesUrl,
-        {},
-        undefined,
-        middlewareContext.requestHeaders,
-        { isDataReq: true },
-      )
-    : await pagesEntry.renderPage(
-        renderRequest,
-        pagesUrl,
-        {},
-        undefined,
-        middlewareContext.requestHeaders,
-      );
+  let pagesRes: Response;
+  if (isDataRequest) {
+    pagesRes = await pagesEntry.renderPage(
+      renderRequest,
+      pagesUrl,
+      {},
+      executionContext ?? undefined,
+      middlewareContext.requestHeaders,
+      {
+        isDataReq: true,
+        ...(originManagedPageCache === undefined ? {} : { originManagedPageCache }),
+      },
+    );
+  } else if (originManagedPageCache === undefined) {
+    pagesRes = await pagesEntry.renderPage(
+      renderRequest,
+      pagesUrl,
+      {},
+      executionContext ?? undefined,
+      middlewareContext.requestHeaders,
+    );
+  } else {
+    pagesRes = await pagesEntry.renderPage(
+      renderRequest,
+      pagesUrl,
+      {},
+      executionContext ?? undefined,
+      middlewareContext.requestHeaders,
+      { originManagedPageCache },
+    );
+  }
   if (pagesRes.status === 404 && pageMatch === null) return null;
   return applyDraftModeCookie(
     applyPagesMiddlewareContext(pagesRes, middlewareContext),

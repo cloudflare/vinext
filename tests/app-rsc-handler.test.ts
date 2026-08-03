@@ -24,7 +24,10 @@ import {
   VINEXT_MW_CTX_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import { getRevalidateSecret } from "../packages/vinext/src/server/isr-cache.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
   handleMetadataRouteRequest,
   type MetadataRuntimeRoute,
@@ -129,6 +132,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
             }
           : null),
     matchRequestRoute: overrides.matchRequestRoute,
+    middlewarePathMatches: overrides.middlewarePathMatches,
     runMiddleware:
       overrides.runMiddleware ??
       (overrides.middlewareModule
@@ -160,6 +164,159 @@ function prerenderRouteParamsHeader(payload: unknown): string {
 }
 
 describe("createAppRscHandler", () => {
+  it("keeps matcher-excluded on-demand regeneration on the edge-managed store", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const runMiddleware: NonNullable<HandlerOptions["runMiddleware"]> = vi.fn(
+      async ({ cleanPathname }: Parameters<NonNullable<HandlerOptions["runMiddleware"]>>[0]) => ({
+        kind: "continue" as const,
+        cleanPathname,
+        rewritten: false,
+        search: null,
+      }),
+    );
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async () =>
+          new Response("page", {
+            headers: {
+              "Cache-Control": "public, max-age=0, must-revalidate",
+              "CDN-Cache-Control": "public, max-age=60",
+            },
+          }),
+        middlewarePathMatches: () => false,
+        runMiddleware,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { "x-prerender-revalidate": getRevalidateSecret() },
+        }),
+        null,
+      );
+
+      expect(runMiddleware).not.toHaveBeenCalled();
+      expect(response.headers.get("cdn-cache-control")).toBe("public, max-age=60");
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
+  it("origin-manages request-conditional App config headers", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [
+          {
+            source: "/about",
+            has: [{ type: "header", key: "x-private", value: "1" }],
+            headers: [{ key: "x-private-result", value: "present" }],
+          },
+        ],
+        dispatchMatchedPage: async () =>
+          new Response("page", {
+            headers: {
+              "Cache-Control": "public, max-age=0, must-revalidate",
+              "CDN-Cache-Control": "public, max-age=60",
+            },
+          }),
+      });
+
+      const personalized = await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { "x-private": "1" },
+        }),
+        null,
+      );
+      const ordinary = await handler(new Request("https://example.test/docs/about"), null);
+
+      expect(personalized.headers.get("x-private-result")).toBe("present");
+      expect(ordinary.headers.get("x-private-result")).toBeNull();
+      for (const response of [personalized, ordinary]) {
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(response.headers.get("cdn-cache-control")).toBeNull();
+      }
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
+  it("origin-manages request-conditional App config rewrites", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/about",
+              destination: "/target",
+              has: [{ type: "header", key: "x-bucket", value: "a" }],
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        dispatchMatchedPage: async ({ route }) =>
+          new Response(route.pattern, {
+            headers: {
+              "Cache-Control": "public, max-age=0, must-revalidate",
+              "CDN-Cache-Control": "public, max-age=60",
+            },
+          }),
+        matchRoute: (pathname) => ({ params: {}, route: createPageRoute({ pattern: pathname }) }),
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { "x-bucket": "a" },
+        }),
+        null,
+      );
+
+      await expect(response.text()).resolves.toBe("/target");
+      expect(response.headers.get("cache-control")).toContain("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
+  it("does not share header-conditional App config redirects", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        configRedirects: [
+          {
+            source: "/about",
+            destination: "/tenant-a",
+            permanent: true,
+            has: [{ type: "header", key: "x-tenant", value: "a" }],
+          },
+        ],
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { "x-tenant": "a" },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(308);
+      expect(response.headers.get("location")).toBe("/docs/tenant-a");
+      expect(response.headers.get("cache-control")).toContain("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[adapterKey];
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
   it("applies basePath: false rewrites outside the App Router basePath", async () => {

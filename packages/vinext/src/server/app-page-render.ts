@@ -1263,6 +1263,7 @@ export async function renderAppPageLifecycle(
       },
       isrDebug: options.isrDebug,
       isrHtmlKey: options.isrHtmlKey,
+      linkHeader,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,

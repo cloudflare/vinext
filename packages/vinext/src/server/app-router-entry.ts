@@ -97,8 +97,10 @@ async function handleRequest(
   // credential never leaves the Worker isolate.
   const ctx = platformCtx?.trustedRevalidateOrigin
     ? platformCtx
-    : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
-        handleRequest(internalRequest, env, internalCtx),
+    : createWorkerRevalidationContext(
+        platformCtx,
+        (internalRequest, internalCtx) => handleRequest(internalRequest, env, internalCtx),
+        env as Record<string, unknown> | undefined,
       );
 
   // Register config-driven cache adapters before any rendering touches the cache.

@@ -38,6 +38,7 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  getRequestContext,
   preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
@@ -320,6 +321,7 @@ type RenderPagesFallbackOptions = {
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppRscMiddlewareContext;
+  originManagedPageCache: boolean;
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
@@ -376,6 +378,8 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
   isDev: boolean;
+  /** Precomputed cache-safety gate for header/cookie-dependent config rules. */
+  hasRequestDependentConfig?: boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   matchInterceptRoute?: (
     pathname: string,
@@ -383,6 +387,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  middlewarePathMatches?: (request: Request) => boolean;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -454,6 +459,15 @@ async function applyRewrite(
 
   const sourcePathname = options.paramsPathname ?? cleanPathname;
   const configMatchers = await import("../config/config-matchers.js");
+  if (
+    configMatchers.matchesRequestDependentRewriteSource(
+      sourcePathname,
+      options.rewrites,
+      options.basePathState,
+    )
+  ) {
+    getRequestContext().originManagedPageCache = true;
+  }
   const rewritten = configMatchers.matchRewrite(
     sourcePathname,
     options.rewrites,
@@ -656,9 +670,24 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // original percent-encoding for Location substitution.
   const redirectPathname = matchPathname(requestCleanPathname);
   const configMatchers =
-    HAS_CONFIG_REDIRECTS && options.configRedirects.length
+    (HAS_CONFIG_REDIRECTS && options.configRedirects.length) || options.hasRequestDependentConfig
       ? await import("../config/config-matchers.js")
       : null;
+  if (
+    configMatchers &&
+    (configMatchers.matchesRequestDependentHeaderSource(
+      redirectPathname,
+      options.configHeaders,
+      basePathState,
+    ) ||
+      configMatchers.matchesRequestDependentRedirectSource(
+        redirectPathname,
+        options.configRedirects,
+        basePathState,
+      ))
+  ) {
+    getRequestContext().originManagedPageCache = true;
+  }
   const redirect = configMatchers
     ? configMatchers.matchRedirect(
         redirectPathname,
@@ -703,6 +732,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   )
     ? undefined
     : options.runMiddleware;
+  if (
+    !runMiddleware &&
+    options.runMiddleware &&
+    (options.middlewarePathMatches?.(request) ?? true)
+  ) {
+    // Authenticated on-demand regeneration deliberately skips middleware, but
+    // must still write to the origin store used by normal matched requests.
+    getRequestContext().originManagedPageCache = true;
+  }
   // Branch the exact downstream body owner before creating URL aliases. URL
   // reconstruction shares a stream; cloning an alias would lock the body still
   // referenced by `request` and break the subsequent action/route-handler read.
@@ -1266,6 +1304,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             isRscRequest,
             matchKind,
             middlewareContext,
+            originManagedPageCache: getRequestContext().originManagedPageCache,
             pathname: resolvedUrl,
             pagesDataRequest,
             request,
@@ -1615,12 +1654,28 @@ function applyProgressiveActionSideEffects(
 export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): (request: Request, ctx: unknown) => Promise<Response> {
+  const hasRequestDependentConfig = [
+    ...options.configHeaders,
+    ...options.configRedirects,
+    ...options.configRewrites.beforeFiles,
+    ...options.configRewrites.afterFiles,
+    ...options.configRewrites.fallback,
+  ].some((rule) =>
+    [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+      (condition) => condition.type === "header" || condition.type === "cookie",
+    ),
+  );
+  const handlerOptions: CreateAppRscHandlerOptions<TRoute> = {
+    ...options,
+    hasRequestDependentConfig,
+  };
+
   return async function appRscHandler(rawRequest, ctx, allowInternalRscDocumentFallback = false) {
     // Register config-driven cache adapters before anything touches the cache.
     // On the Cloudflare worker the entry already registered them with `env` (this
     // guarded call is a no-op); on Node/dev this is where they get wired, with no
     // bindings available.
-    options.registerCacheAdapters();
+    options.registerCacheAdapters(getRequestExecutionContext()?.cacheAdapterEnv);
     await options.ensureInstrumentation?.();
 
     // Strip forged internal headers at the App Router request boundary.
@@ -1719,7 +1774,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
 
           try {
             response = await handleAppRscRequest(
-              options,
+              handlerOptions,
               request,
               preMiddlewareRequestContext,
               isPagesDataRequest,

@@ -134,6 +134,7 @@ describe("renderPagesFallback", () => {
         allowRscDocumentFallback: true,
         isRscRequest: true,
         middlewareContext: { headers: null, requestHeaders: null, status: null },
+        originManagedPageCache: false,
         pathname: "/pages",
         request: new Request("http://localhost/source"),
         url: new URL("http://localhost/source"),
@@ -142,6 +143,9 @@ describe("renderPagesFallback", () => {
     );
 
     expect(await response!.text()).toBe("pages");
+    expect(renderPage).toHaveBeenCalledWith(expect.any(Request), "/pages", {}, undefined, null, {
+      originManagedPageCache: false,
+    });
   });
 
   it("matches hybrid Pages data requests against their normalized page pathname", async () => {

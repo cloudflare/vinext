@@ -15,6 +15,8 @@ import {
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
 import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
@@ -6684,6 +6686,61 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("GET, HEAD");
     expect(await res.text()).toBe("Method Not Allowed");
+  });
+
+  it("makes middleware-composed public and image responses uncacheable (prod)", async () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    const registrationKey = Symbol.for("vinext.configuredCdnCacheAdapter");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+
+    const expectMiddlewareSafe = (response: Response) => {
+      expect(response.headers.get("x-custom-middleware")).toBe("active");
+      expect(response.headers.get("cache-control")).toContain("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    };
+
+    try {
+      const get = await fetch(`${prodUrl}/dedupe-script.js`);
+      expect(get.status).toBe(200);
+      expectMiddlewareSafe(get);
+      const etag = get.headers.get("etag");
+      expect(etag).toBeTruthy();
+
+      const head = await fetch(`${prodUrl}/dedupe-script.js`, { method: "HEAD" });
+      expect(head.status).toBe(200);
+      expectMiddlewareSafe(head);
+
+      // Node's fetch adds cache revalidation directives that make the static
+      // server deliberately return a fresh 200. Raw HTTP exercises the actual
+      // conditional request / 304 response path without those extra headers.
+      const notModified = await captureStreamedResponse(`${prodUrl}/dedupe-script.js`, {
+        headers: { "If-None-Match": etag! },
+      });
+      expect(notModified.statusCode).toBe(304);
+      expect(notModified.headers["x-custom-middleware"]).toBe("active");
+      expect(notModified.headers["cache-control"]).toContain("no-store");
+      expect(notModified.headers["cdn-cache-control"]).toBeUndefined();
+      expect(notModified.headers["cloudflare-cdn-cache-control"]).toBeUndefined();
+
+      const range = await fetch(`${prodUrl}/dedupe-script.js`, {
+        headers: { Range: "bytes=0-3" },
+      });
+      expect(range.status).toBe(206);
+      expectMiddlewareSafe(range);
+
+      const methodNotAllowed = await fetch(`${prodUrl}/dedupe-script.js`, { method: "POST" });
+      expect(methodNotAllowed.status).toBe(405);
+      expectMiddlewareSafe(methodNotAllowed);
+
+      const image = await fetch(`${prodUrl}/middleware-image`);
+      expect(image.status).toBe(200);
+      expectMiddlewareSafe(image);
+    } finally {
+      const state = globalThis as Record<PropertyKey, unknown>;
+      delete state[adapterKey];
+      delete state[registrationKey];
+    }
   });
 
   // Regression for #1331: after a middleware rewrite, the rewrite target

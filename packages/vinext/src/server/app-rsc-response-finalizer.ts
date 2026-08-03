@@ -1,7 +1,11 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  applyOriginManagedPageCacheResponseHeaders,
+} from "./cache-control.js";
+import { shouldUseOriginManagedPageCache } from "vinext/shims/cdn-cache";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -69,19 +73,29 @@ export async function applyAppRscConfigHeaders(
  * handling, so that every response path (page, route handler, server action,
  * metadata, not-found) gets headers applied consistently.
  *
- * Skips 3xx redirect responses. Response.redirect() creates immutable
- * headers that throw on mutation, and Next.js does not apply config headers
- * to redirects regardless.
+ * Skips config headers on 3xx redirect responses. Response.redirect() creates
+ * immutable headers, so middleware-scoped redirects are rebuilt before the
+ * safe composed-response cache policy is applied.
  */
 export async function finalizeAppRscResponse(
   response: Response,
   request: Request,
   options: FinalizeAppRscResponseOptions,
 ): Promise<Response> {
-  // 3xx responses: Response.redirect() headers are immutable (throws on write),
-  // and Next.js deliberately excludes config headers from redirect responses.
+  // Next.js deliberately excludes config headers from redirect responses.
+  // Outside middleware's cache-safety scope preserve the original response
+  // identity, including Response.redirect()'s immutable header guard. Inside
+  // that scope rebuild it with mutable headers before removing any shared-cache
+  // policy that could replay a personalized redirect above the Worker.
   if (response.status >= 300 && response.status < 400) {
-    return response;
+    if (!shouldUseOriginManagedPageCache()) return response;
+    const redirectResponse = new Response(response.body, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+    applyOriginManagedPageCacheResponseHeaders(redirectResponse.headers);
+    return redirectResponse;
   }
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
@@ -105,10 +119,9 @@ export async function finalizeAppRscResponse(
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }
 
-  if (configHeadersAlreadyApplied.has(response)) {
-    return response;
+  if (!configHeadersAlreadyApplied.has(response)) {
+    await applyAppRscConfigHeaders(response.headers, request, options);
   }
-  await applyAppRscConfigHeaders(response.headers, request, options);
 
   // Static-file 405 responses are synthesized before config headers run.
   // Reassert their body metadata afterward so a matching headers() rule cannot
@@ -116,6 +129,12 @@ export async function finalizeAppRscResponse(
   if (response.status === 405 && response.headers.get("Allow") === "GET, HEAD") {
     sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");
   }
+
+  // This is the outermost App Router response boundary. Reassert the safe
+  // policy after next.config headers (including internally dispatched target
+  // headers marked as already applied), so neither source can restore shared
+  // caching above middleware.
+  applyOriginManagedPageCacheResponseHeaders(response.headers);
 
   return response;
 }

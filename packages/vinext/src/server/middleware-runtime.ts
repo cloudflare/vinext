@@ -14,7 +14,11 @@ import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
-import { matchesMiddleware, type MatcherConfig } from "./middleware-matcher.js";
+import {
+  matchesMiddleware,
+  matchesMiddlewarePathname,
+  type MatcherConfig,
+} from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
@@ -30,6 +34,8 @@ export type MiddlewareModule = Record<string, unknown>;
 
 export type MiddlewareResult = {
   continue: boolean;
+  /** False only when no configured source pattern can match this pathname. */
+  middlewarePathMatched?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -149,6 +155,35 @@ function middlewareMatcher(mod: MiddlewareModule): MatcherConfig | undefined {
   const config = mod.config;
   if (!isMiddlewareConfigExport(config)) return undefined;
   return config.matcher;
+}
+
+/**
+ * Whether a middleware module's pathname matcher can select this request.
+ * Request-dependent `has` / `missing` conditions are deliberately ignored:
+ * requests to the same URL can vary those inputs, so the pathname is the
+ * cache-safety boundary shared by normal traffic and on-demand regeneration.
+ */
+export function matchesMiddlewareModulePathname(options: {
+  basePath?: string;
+  i18nConfig?: NextI18nConfig | null;
+  module: MiddlewareModule;
+  normalizedPathname?: string;
+  request: Request;
+}): boolean {
+  const normalizedPathname =
+    options.normalizedPathname ?? resolveMiddlewarePathname(options.request);
+  // Malformed URL decoding returns a 400 response in the execution path. Fail
+  // safe here so an auxiliary cache-mode decision never makes it public.
+  if (normalizedPathname instanceof Response) return true;
+
+  const matchPathname = options.basePath
+    ? stripBasePath(normalizedPathname, options.basePath)
+    : normalizedPathname;
+  return matchesMiddlewarePathname(
+    matchPathname,
+    middlewareMatcher(options.module),
+    options.i18nConfig,
+  );
 }
 
 function stripMiddlewareHeadersFromResponse(response: Response): Response {
@@ -342,15 +377,21 @@ export async function executeMiddleware(
     : normalizedPathname;
   const matchPathname = basePathStrippedPathname;
 
-  if (
-    !matchesMiddleware(
-      matchPathname,
-      middlewareMatcher(options.module),
-      options.request,
-      options.i18nConfig,
-    )
-  ) {
-    return { continue: true };
+  const matcher = middlewareMatcher(options.module);
+  const middlewarePathMatched = matchesMiddlewareModulePathname({
+    basePath: options.basePath,
+    i18nConfig: options.i18nConfig,
+    module: options.module,
+    normalizedPathname,
+    request: options.request,
+  });
+  if (!middlewarePathMatched) {
+    return { continue: true, middlewarePathMatched: false };
+  }
+  if (!matchesMiddleware(matchPathname, matcher, options.request, options.i18nConfig)) {
+    // The pathname is in middleware's cache-safety scope even though this
+    // request missed a has/missing condition.
+    return { continue: true, middlewarePathMatched: true };
   }
 
   const nextRequest = createNextRequest(

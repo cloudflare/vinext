@@ -11,6 +11,7 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
+import { randomUUID, createHash, randomBytes } from "node:crypto";
 import { createLogger, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
@@ -251,7 +252,6 @@ import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
 import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
@@ -1434,6 +1434,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
+  const cacheAdapterRegistrationScope = randomUUID();
   let root: string;
   let pagesDir: string;
   let canonicalPagesDir: string;
@@ -3832,7 +3833,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return generateRootParamsModule(routes.flatMap((route) => route.rootParamNames ?? []));
           }
           if (id === RESOLVED_CACHE_ADAPTERS) {
-            return generateCacheAdaptersModule(options.cache);
+            return generateCacheAdaptersModule(options.cache, cacheAdapterRegistrationScope);
           }
           if (id === RESOLVED_IMAGE_ADAPTERS) {
             return generateImageAdaptersModule(options.images);

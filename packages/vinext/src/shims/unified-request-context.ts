@@ -41,6 +41,13 @@ export type UnifiedRequestContext = {
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
 
+  /**
+   * Force page-level ISR through the origin store when middleware or a
+   * header/cookie-dependent config rule must compose every response. An
+   * adapter whose HITs bypass the origin cannot safely own those responses.
+   */
+  originManagedPageCache: boolean;
+
   // ── cache-for-request.ts ──────────────────────────────────────────
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -96,6 +103,7 @@ function _getInheritedExecutionContext(): ExecutionContextLike | null {
  * Pass partial overrides for the fields you need to pre-populate.
  */
 export function createRequestContext(opts?: Partial<UnifiedRequestContext>): UnifiedRequestContext {
+  const inheritedContext = _als.getStore();
   return {
     headersContext: null,
     actionRevalidationKind: 0,
@@ -125,6 +133,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     isFetchDedupeActive: false,
     currentFetchDedupeEntries: new Map(),
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    originManagedPageCache: inheritedContext?.originManagedPageCache ?? false,
     requestCache: new WeakMap(),
     afterContext: {
       callbacks: [],

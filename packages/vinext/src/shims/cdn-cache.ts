@@ -30,6 +30,7 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "./cache-handler.js";
+import { getRequestContext, isInsideUnifiedScope } from "./unified-request-context.js";
 
 /** A map of response header name -> value the adapter wants applied or removed. */
 export type CdnResponseHeaders = Record<string, string | null>;
@@ -106,6 +107,15 @@ export type CdnCacheAdapter = {
   readonly ownsBackgroundRevalidation: boolean;
 
   /**
+   * True when a cache HIT is served without invoking the vinext request
+   * pipeline. Such adapters cannot own responses whose middleware or
+   * request-dependent config composition must execute on every request. Custom
+   * adapters default to `true` for safety; origin-serving adapters must
+   * explicitly set `false`.
+   */
+  readonly bypassesOriginOnCacheHit?: boolean;
+
+  /**
    * Propagate a tag/path invalidation to the CDN edge (purge). Called *in
    * addition to* the data cache's own tag invalidation, so the default
    * implementation is a no-op (the data cache already invalidated its entries).
@@ -126,6 +136,7 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
  * framework's standard `Cache-Control` headers.
  */
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
+  readonly bypassesOriginOnCacheHit = false;
   readonly ownsBackgroundRevalidation = true;
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
@@ -169,6 +180,18 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
 
 const _CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 const _gCdn = globalThis as unknown as Record<PropertyKey, unknown>;
+const _CONFIGURED_CDN_KEY = Symbol.for("vinext.configuredCdnCacheAdapter");
+type ConfiguredCdnRegistration =
+  | {
+      adapter: CdnCacheAdapter;
+      env: unknown;
+      id: string;
+      kind: "generated";
+    }
+  | {
+      adapter: CdnCacheAdapter;
+      kind: "manual";
+    };
 
 let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
 
@@ -197,6 +220,69 @@ let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
  */
 export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
   _gCdn[_CDN_KEY] = adapter;
+  _gCdn[_CONFIGURED_CDN_KEY] = { adapter, kind: "manual" } satisfies ConfiguredCdnRegistration;
+}
+
+/** @internal Install a generated adapter and retain its build/env identity across module graphs. */
+export function setConfiguredCdnCacheAdapter(
+  adapter: CdnCacheAdapter,
+  id: string,
+  env: unknown,
+): void {
+  _gCdn[_CDN_KEY] = adapter;
+  _gCdn[_CONFIGURED_CDN_KEY] = {
+    adapter,
+    env,
+    id,
+    kind: "generated",
+  } satisfies ConfiguredCdnRegistration;
+}
+
+/** @internal Whether this generated adapter is already the active adapter. */
+export function isConfiguredCdnCacheAdapterActive(id: string, env: unknown): boolean {
+  const registration = _gCdn[_CONFIGURED_CDN_KEY] as ConfiguredCdnRegistration | undefined;
+  return (
+    registration !== undefined &&
+    registration.adapter === _gCdn[_CDN_KEY] &&
+    (registration.kind === "manual" || (registration.id === id && registration.env === env))
+  );
+}
+
+export { deactivateGeneratedCdnCacheAdapter } from "./cache-adapter-registration.js";
+
+const _FAILED_CDN_REGISTRATIONS_KEY = Symbol.for("vinext.failedCdnCacheAdapterRegistrations");
+type FailedCdnRegistrations = {
+  objectEnvs: WeakMap<object, Set<string>>;
+  otherEnvs: Map<unknown, Set<string>>;
+};
+
+function getFailedCdnRegistrations(): FailedCdnRegistrations {
+  return ((_gCdn[_FAILED_CDN_REGISTRATIONS_KEY] as FailedCdnRegistrations | undefined) ??= {
+    objectEnvs: new WeakMap(),
+    otherEnvs: new Map(),
+  });
+}
+
+function failedCdnRegistrationIds(state: FailedCdnRegistrations, env: unknown): Set<string> {
+  if ((typeof env === "object" && env !== null) || typeof env === "function") {
+    const objectEnv = env as object;
+    let ids = state.objectEnvs.get(objectEnv);
+    if (!ids) state.objectEnvs.set(objectEnv, (ids = new Set()));
+    return ids;
+  }
+  let ids = state.otherEnvs.get(env);
+  if (!ids) state.otherEnvs.set(env, (ids = new Set()));
+  return ids;
+}
+
+/** @internal Record a failed generated factory once per exact build/env identity. */
+export function markCdnCacheAdapterRegistrationFailed(id: string, env: unknown): void {
+  failedCdnRegistrationIds(getFailedCdnRegistrations(), env).add(id);
+}
+
+/** @internal Whether the exact generated factory identity already failed. */
+export function hasCdnCacheAdapterRegistrationFailed(id: string, env: unknown): boolean {
+  return failedCdnRegistrationIds(getFailedCdnRegistrations(), env).has(id);
 }
 
 /**
@@ -208,4 +294,27 @@ export function getCdnCacheAdapter(): CdnCacheAdapter {
   if (active) return active;
 
   return (_defaultAdapter ??= new DefaultCdnCacheAdapter());
+}
+
+/** Whether the configured custom adapter can serve a HIT above the origin. */
+export function cdnCacheAdapterBypassesOriginOnHit(): boolean {
+  const active = _gCdn[_CDN_KEY] as CdnCacheAdapter | undefined;
+  return active !== undefined && active.bypassesOriginOnCacheHit !== false;
+}
+
+/**
+ * Whether this request must keep page artifacts at the origin because the
+ * configured edge adapter would otherwise bypass request-time composition on HITs.
+ */
+export function shouldUseOriginManagedPageCache(): boolean {
+  if (!isInsideUnifiedScope() || !getRequestContext().originManagedPageCache) return false;
+  return cdnCacheAdapterBypassesOriginOnHit();
+}
+
+/** Page-artifact storage strategy for the current request. */
+export function getCdnCacheStorageAdapter(): CdnCacheAdapter {
+  if (shouldUseOriginManagedPageCache()) {
+    return (_defaultAdapter ??= new DefaultCdnCacheAdapter());
+  }
+  return getCdnCacheAdapter();
 }

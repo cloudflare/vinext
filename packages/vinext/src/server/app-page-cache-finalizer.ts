@@ -44,6 +44,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  /** Page-owned preload metadata, before middleware response headers are merged. */
+  linkHeader?: string;
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -217,7 +219,6 @@ export function finalizeAppPageHtmlCacheResponse(
         cacheTags: pageTags,
         state: observationState,
       });
-      const linkHeader = response.headers.get("link");
       const writes = [
         options.isrSet(
           htmlKey,
@@ -226,7 +227,7 @@ export function finalizeAppPageHtmlCacheResponse(
             undefined,
             200,
             htmlRenderObservation,
-            linkHeader ? { link: linkHeader } : undefined,
+            options.linkHeader ? { link: options.linkHeader } : undefined,
           ),
           { cacheControl, tags: pageTags },
         ),

@@ -47,6 +47,8 @@ export type ExecutionContextLike = {
    * CDN cache adapters that know the concrete shape narrow it themselves.
    */
   cache?: unknown;
+  /** @internal Binding environment used only for request-local adapter registration. */
+  cacheAdapterEnv?: Record<string, unknown>;
   /** Server-owned origin for credential-bearing Pages revalidation loopbacks. */
   trustedRevalidateOrigin?: string;
   /** Worker-owned in-process dispatcher for authenticated Pages revalidation. */
