@@ -382,8 +382,8 @@ const CANONICAL_RSC_VARY_FIELDS = new Set(
   ),
 );
 const REQUIRED_CANONICAL_RSC_VARY_FIELDS = new Set(
-  [...VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER.split(","), "Cookie", "Authorization"].map((field) =>
-    field.trim().toLowerCase(),
+  [...VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER.split(","), "Cookie", "Authorization", "Host"].map(
+    (field) => field.trim().toLowerCase(),
   ),
 );
 
@@ -396,7 +396,6 @@ function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"):
     if (
       field === "*" ||
       (kind === "html" && field === "accept") ||
-      (kind === "rsc" && field === "host") ||
       !CANONICAL_RSC_VARY_FIELDS.has(field)
     ) {
       return token.trim() || "*";

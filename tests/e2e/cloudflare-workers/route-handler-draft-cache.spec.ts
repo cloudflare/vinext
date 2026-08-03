@@ -358,7 +358,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       expect(vary).toContain("Accept");
       expect(vary).toContain("Cookie");
       expect(vary).toContain("Authorization");
-      expect(vary).not.toContain("Host");
+      expect(vary).toContain("Host");
     }
 
     for (const accept of ["application/json", "text/x-component, */*", "TEXT/X-COMPONENT"]) {

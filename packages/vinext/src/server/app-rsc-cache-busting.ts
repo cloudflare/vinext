@@ -653,8 +653,9 @@ export async function resolveInvalidRscCacheBustingRequest(
       }
     }
     if (
+      !options.request.headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER) &&
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
-      null
+        null
     ) {
       const previousHash = await computePreviousRscCacheBustingSearchParam(options.request.headers);
       const previousLegacyHash = computePreviousLegacyRscCacheBustingSearchParam(

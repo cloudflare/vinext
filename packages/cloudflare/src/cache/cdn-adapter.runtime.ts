@@ -75,6 +75,7 @@ function getWorkersCache(): WorkersCacheLike | null {
 /** Non-cacheable responses: nobody (edge or browser) stores them. */
 const NO_STORE = "no-store";
 const HTML_CACHE_TAG = "__vinext_html";
+const RSC_CACHE_TAG = "__vinext_rsc";
 const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
 const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
 const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
@@ -320,10 +321,10 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       };
     }
 
-    // Cloudflare's default key includes the host and URI (including its query
-    // string), but not Cookie or Authorization. Credential-bearing requests
-    // must reach vinext and are never stored because the framework cannot prove
-    // arbitrary credentials shareable.
+    // Workers Caching keys the URI path and query string, but not Host, Cookie,
+    // or Authorization. Credential-bearing requests must reach vinext and are
+    // never stored because the framework cannot prove arbitrary credentials
+    // shareable. Host is isolated through the response Vary contract below.
     if (hasRequestCookies() || hasRequestAuthorization()) {
       return {
         "Cache-Control": NO_STORE,
@@ -348,19 +349,26 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
-      // Cloudflare's default key already partitions by host. Retaining Host in
-      // HTML's Vary contract also records the app-level dependency for strict
-      // Vary adapters. A canonical RSC request is admitted only after the
-      // prerender proof excludes host dependencies, so it can omit Host.
-      Vary: requestKind === "rsc" ? "Accept, Cookie, Authorization" : "Cookie, Authorization, Host",
+      // Workers Caching is shared across every hostname that reaches one Worker.
+      // Host is therefore required for both HTML and canonical RSC so custom
+      // Worker wrappers outside vinext cannot leak one host's response to another.
+      Vary:
+        requestKind === "rsc"
+          ? "Accept, Cookie, Authorization, Host"
+          : "Cookie, Authorization, Host",
     };
 
     // Workers Caching requires every Vary variant of one URL to carry the same
-    // Cache-Tag set. HTML can legitimately vary by host and resolve to different
-    // routes/data, so give every HTML variant one stable family tag. Any tag/path
-    // invalidation purges that family below. Canonical RSC has only one stored
-    // request shape and can retain its precise render-derived tags.
-    const responseTags = requestKind === "html" ? [HTML_CACHE_TAG] : input.tags;
+    // Cache-Tag set. HTML and canonical RSC can legitimately vary by host, so
+    // give every stored variant a stable family tag. Any tag/path invalidation
+    // purges both families below. Requests outside a known page request context
+    // retain their precise render-derived tags.
+    const responseTags =
+      requestKind === "html"
+        ? [HTML_CACHE_TAG]
+        : requestKind === "rsc"
+          ? [RSC_CACHE_TAG]
+          : input.tags;
     if (responseTags && responseTags.length > 0) {
       const cacheTag = formatCacheTag(responseTags);
       if (!cacheTag.complete && requestKind !== "html") {
@@ -386,7 +394,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       (t): t is string => typeof t === "string" && t.length > 0,
     );
     if (sourceTags.length === 0) return;
-    const tagList = encodeWorkersCacheTags([...sourceTags, HTML_CACHE_TAG]);
+    const tagList = encodeWorkersCacheTags([...sourceTags, HTML_CACHE_TAG, RSC_CACHE_TAG]);
     if (tagList === null) {
       throw new Error("Cloudflare cache purge cannot represent the complete cache tag set");
     }

@@ -14,7 +14,7 @@ import {
 } from "../packages/cloudflare/src/cdn-warm.js";
 import { VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
-const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization`;
+const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization, Host`;
 
 let tmpDir: string;
 
@@ -983,7 +983,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(result.failures[0]?.error).toBe("missing required Vary field: rsc");
   });
 
-  it("rejects Host outside the adapter's canonical RSC Vary contract", async () => {
+  it("accepts Host as required isolation in the canonical RSC Vary contract", async () => {
     const result = await warmCdnCache({
       targetUrl: "https://warm.example.com",
       paths: [],
@@ -995,13 +995,12 @@ describe("Cloudflare CDN warmup", () => {
           headers: {
             "CF-Cache-Status": "MISS",
             "Content-Type": "text/x-component",
-            Vary: "RSC, Host",
+            Vary: CANONICAL_RSC_VARY,
           },
         }),
     });
 
-    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
-    expect(result.failures[0]?.error).toBe("unsupported Vary field: Host");
+    expect(result).toMatchObject({ total: 1, warmed: 1, failed: 0 });
   });
 
   it("reports warmup failures and throws in strict mode", async () => {

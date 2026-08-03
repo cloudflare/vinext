@@ -138,6 +138,7 @@ expected_rsc_vary=$(printf '%s\n' \
   accept \
   authorization \
   cookie \
+  host \
   next-router-prefetch \
   next-router-segment-prefetch \
   next-router-state-tree \

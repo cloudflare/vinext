@@ -913,9 +913,12 @@ export async function deployWithCdnWarmup(
         console.warn(`  ${message}`);
       }
     } else if (options.warmCdnStrict) {
-      throw new Error(
-        "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
-          "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or rerun without --warm-cdn-strict.",
+      throw withLiveVersionWarmupNote(
+        new Error(
+          "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
+            "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or rerun without --warm-cdn-strict.",
+        ),
+        upload.versionId,
       );
     } else {
       console.warn(

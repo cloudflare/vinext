@@ -580,6 +580,28 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${expectedHash}`);
   });
 
+  it("redirects hashes that predate both render mode and reuse metadata", async () => {
+    const headers = createRscRequestHeaders({
+      clientReuseManifestHeader: '{"entries":[]}',
+      mountedSlotsHeader: "slot:modal:/",
+    });
+    const previousInput = "0,0,0,0,0,slot:modal:/";
+    const previousHashes = [await sha256CacheBustingHash(previousInput), fnv1a64(previousInput)];
+    const expectedHash = await computeRscCacheBustingSearchParam(headers);
+
+    for (const previousHash of previousHashes) {
+      const response = await resolveInvalidRscCacheBustingRequest({
+        isRscRequest: true,
+        request: new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
+          headers,
+        }),
+      });
+
+      expect(response?.status).toBe(307);
+      expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${expectedHash}`);
+    }
+  });
+
   it("ignores non-RSC and mutating requests", async () => {
     const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
 

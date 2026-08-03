@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
-const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization`;
+const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization, Host`;
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -172,8 +172,11 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("warms HTML and RSC entries through a 0% staged version override", async () => {
+  it("warms browser-reusable HTML and RSC entries through a 0% staged version override", async () => {
     const events: string[] = [];
+    const edgeCache = new Set<string>();
+    let htmlOriginRenders = 0;
+    let rscOriginRenders = 0;
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({
@@ -184,17 +187,35 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       const probe = versionProbeResponse(url, init);
       if (probe) return probe;
-      events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Headers(init?.headers).get("RSC") === "1"
-        ? new Response("flight", {
-            status: 200,
-            headers: {
-              "CF-Cache-Status": "MISS",
-              "Content-Type": "text/x-component",
-              Vary: CANONICAL_RSC_VARY,
-            },
-          })
-        : new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
+      const requestUrl = new URL(formatFetchUrl(url));
+      const requestHeaders = new Headers(init?.headers);
+      const isRsc = requestHeaders.get("RSC") === "1";
+      const vary = isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host";
+      const cacheKey = JSON.stringify([
+        requestUrl.href,
+        ...vary.split(",").map((field) => {
+          const name = field.trim();
+          return [
+            name.toLowerCase(),
+            name.toLowerCase() === "host" ? requestUrl.host : (requestHeaders.get(name) ?? ""),
+          ];
+        }),
+      ]);
+      const cacheStatus = edgeCache.has(cacheKey) ? "HIT" : "MISS";
+      if (cacheStatus === "MISS") {
+        edgeCache.add(cacheKey);
+        if (isRsc) rscOriginRenders += 1;
+        else htmlOriginRenders += 1;
+      }
+      events.push(`fetch:${requestUrl.href}`);
+      return new Response(isRsc ? "flight" : "ok", {
+        status: 200,
+        headers: {
+          "CF-Cache-Status": cacheStatus,
+          "Content-Type": isRsc ? "text/x-component" : "text/html; charset=utf-8",
+          Vary: vary,
+        },
+      });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -308,6 +329,26 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
       expect.arrayContaining(["triggers", "deploy"]),
       expect.any(Object),
     );
+    const browserHtml = await fetch(new URL("https://app.example.com/"), {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "en-GB,en-US;q=0.9",
+        "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36",
+      },
+    });
+    const browserRsc = await fetch(new URL("https://app.example.com/?_rsc"), {
+      headers: {
+        Accept: "text/x-component",
+        "Accept-Language": "en-GB,en-US;q=0.9",
+        RSC: "1",
+        "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36",
+      },
+    });
+    expect(browserHtml.headers.get("CF-Cache-Status")).toBe("HIT");
+    expect(browserRsc.headers.get("CF-Cache-Status")).toBe("HIT");
+    expect(htmlOriginRenders).toBe(2);
+    expect(rscOriginRenders).toBe(1);
+    expect(fetch).toHaveBeenCalledTimes(6);
     expect(events).toEqual([
       "upload",
       "status",
@@ -317,6 +358,8 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
       "fetch:https://app.example.com/?_rsc",
       "promote",
       "triggers",
+      "fetch:https://app.example.com/",
+      "fetch:https://app.example.com/?_rsc",
     ]);
   });
 
@@ -1020,6 +1063,39 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       "triggers",
       "fetch:https://app.example.com/",
     ]);
+  });
+
+  it("explains that the version is already live when no fallback warm URL is available", async () => {
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\n";
+      }
+      if (args.includes("triggers")) return "Triggers deployed\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow(
+      "Worker version 22222222-2222-4222-8222-222222222222 is already live at 100% and its triggers/routes have been updated",
+    );
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("uses the explicit Worker name for version upload, override, promotion, and triggers", async () => {
