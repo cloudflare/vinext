@@ -395,7 +395,7 @@ describe("route handler responses route through the CDN cache adapter", () => {
     expect(response.headers.get("CDN-Cache-Control")).toBe(
       "public, max-age=60, stale-while-revalidate=540",
     );
-    expect(response.headers.get("Cache-Tag")).toBe("_N_T_/api/feed,posts");
+    expect(response.headers.get("Cache-Tag")).toBe("_N_T_%2Fapi%2Ffeed,posts");
   });
 
   it("does not promote a revalidate=0 (non-cacheable) response to the edge", () => {

@@ -71,7 +71,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(url).toEqual(
       new URL("https://app.example.com/about?__vinext_version_probe=version-new"),
     );
-    expect(init?.method).toBe("POST");
+    expect(init?.method).toBe("GET");
     expect(new Headers(init?.headers).get("X-Vinext-Version-Probe")).toBe("1");
     expect(new Headers(init?.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
       'app="version-new"',
@@ -983,7 +983,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(result.failures[0]?.error).toBe("missing required Vary field: rsc");
   });
 
-  it("rejects host-partitioned RSC entries as not reusable across ingress hosts", async () => {
+  it("rejects Host outside the adapter's canonical RSC Vary contract", async () => {
     const result = await warmCdnCache({
       targetUrl: "https://warm.example.com",
       paths: [],

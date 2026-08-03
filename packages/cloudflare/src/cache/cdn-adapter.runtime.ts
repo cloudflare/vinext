@@ -61,7 +61,7 @@ import {
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
-  purge(options: { tags: string[] }): Promise<unknown>;
+  purge(options: { tags: string[] }): Promise<{ success: boolean }>;
 };
 
 function getWorkersCache(): WorkersCacheLike | null {
@@ -185,17 +185,18 @@ function toEdgeCacheControl(cacheControl: string): string {
 }
 
 /**
- * Cloudflare's `Cache-Tag` header budget is 16 KB total with each tag capped at
- * 1024 bytes. Keep a conservative ceiling so a page with a large tag set never
- * produces an oversized (silently-dropped) header.
+ * Cloudflare's `Cache-Tag` header budget is 16 KB total, while tags supplied to
+ * a purge are capped at 1024 characters. Keep a conservative header ceiling
+ * and use the purge limit for writes too, so every stored tag remains purgeable.
  */
 const MAX_CACHE_TAG_BYTES = 8 * 1024;
 const MAX_SINGLE_TAG_BYTES = 1024;
+const MAX_CACHE_TAGS = 1000;
 
 /**
- * Build a `Cache-Tag` header value from canonicalised tags. Tags containing a
- * comma (the header separator) or exceeding the per-tag size are skipped, and
- * the whole value is bounded to stay within Cloudflare's limit.
+ * Build a `Cache-Tag` header value from canonicalised tags. Provider-unsafe
+ * characters are percent-encoded, and the whole value is bounded to stay
+ * within Cloudflare's limits.
  */
 function encodeWorkersCacheTag(tag: string): string | null {
   try {
@@ -206,12 +207,34 @@ function encodeWorkersCacheTag(tag: string): string | null {
   }
 }
 
-function formatCacheTag(tags: readonly string[]): { complete: boolean; value: string | null } {
-  const parts: string[] = [];
-  let total = 0;
+/**
+ * Encode and de-duplicate tags exactly as they will be sent to Cloudflare.
+ * Cache tags are case-insensitive, so the first spelling of each encoded tag
+ * is retained while subsequent case-only duplicates do not consume the limit.
+ */
+function encodeWorkersCacheTags(tags: readonly string[]): string[] | null {
+  const encodedTags: string[] = [];
+  const identities = new Set<string>();
   for (const tag of tags) {
     const encoded = encodeWorkersCacheTag(tag);
-    if (encoded === null) return { complete: false, value: null };
+    if (encoded === null) return null;
+
+    const identity = encoded.toLowerCase();
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    encodedTags.push(encoded);
+    if (encodedTags.length > MAX_CACHE_TAGS) return null;
+  }
+  return encodedTags;
+}
+
+function formatCacheTag(tags: readonly string[]): { complete: boolean; value: string | null } {
+  const encodedTags = encodeWorkersCacheTags(tags);
+  if (encodedTags === null) return { complete: false, value: null };
+
+  const parts: string[] = [];
+  let total = 0;
+  for (const encoded of encodedTags) {
     // +1 accounts for the joining comma.
     const next = total + encoded.length + (parts.length > 0 ? 1 : 0);
     if (next > MAX_CACHE_TAG_BYTES) return { complete: false, value: null };
@@ -231,7 +254,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   /** Handle the deploy-time staged-version probe owned by this adapter. */
   handleRequest(request: Request): Response | null {
     if (
-      request.method !== "POST" ||
+      request.method !== "GET" ||
       request.headers.get(VINEXT_VERSION_PROBE_HEADER) !== "1" ||
       !new URL(request.url).searchParams.has(VINEXT_VERSION_PROBE_QUERY)
     ) {
@@ -297,9 +320,10 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       };
     }
 
-    // Workers Caching excludes Cookie, Authorization, and the request host from
-    // its base key. Credential-bearing requests must reach vinext and are never
-    // stored because the framework cannot prove arbitrary credentials shareable.
+    // Cloudflare's default key includes the host and URI (including its query
+    // string), but not Cookie or Authorization. Credential-bearing requests
+    // must reach vinext and are never stored because the framework cannot prove
+    // arbitrary credentials shareable.
     if (hasRequestCookies() || hasRequestAuthorization()) {
       return {
         "Cache-Control": NO_STORE,
@@ -324,11 +348,10 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
-      // HTML may be rewritten by host-dependent middleware/config, so keep host
-      // isolation there. A canonical RSC request is admitted only after the
-      // prerender proof excludes those dependencies; omitting Host lets the one
-      // warmed Flight entry serve every ingress hostname without adding an
-      // unbounded raw-host variant family.
+      // Cloudflare's default key already partitions by host. Retaining Host in
+      // HTML's Vary contract also records the app-level dependency for strict
+      // Vary adapters. A canonical RSC request is admitted only after the
+      // prerender proof excludes host dependencies, so it can omit Host.
       Vary: requestKind === "rsc" ? "Accept, Cookie, Authorization" : "Cookie, Authorization, Host",
     };
 
@@ -363,12 +386,15 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       (t): t is string => typeof t === "string" && t.length > 0,
     );
     if (sourceTags.length === 0) return;
-    const tagList = sourceTags
-      .map(encodeWorkersCacheTag)
-      .filter((tag): tag is string => tag !== null);
-    if (!tagList.includes(HTML_CACHE_TAG)) tagList.push(HTML_CACHE_TAG);
+    const tagList = encodeWorkersCacheTags([...sourceTags, HTML_CACHE_TAG]);
+    if (tagList === null) {
+      throw new Error("Cloudflare cache purge cannot represent the complete cache tag set");
+    }
 
-    await cache.purge({ tags: tagList });
+    const result = await cache.purge({ tags: tagList });
+    if (result.success !== true) {
+      throw new Error("Cloudflare cache tag purge failed");
+    }
   }
 }
 

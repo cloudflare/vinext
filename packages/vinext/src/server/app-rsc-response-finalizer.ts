@@ -3,6 +3,8 @@ import type { RequestContext } from "../config/request-context.js";
 import { NEXT_URL_HEADER, RSC_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import {
+  VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER,
+  VINEXT_APP_VARY_HEADER,
   VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
   VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_VARY_HEADER,
@@ -104,7 +106,11 @@ function reapplyNonCacheableCdnPolicy(headers: Headers): void {
 
 function applyAppRscVaryHeader(
   headers: Headers,
-  options: { pathCouldBeIntercepted: boolean; preserveNextUrlVary: boolean },
+  options: {
+    isRscRequest: boolean;
+    pathCouldBeIntercepted: boolean;
+    preserveNextUrlVary: boolean;
+  },
 ): void {
   if (!options.pathCouldBeIntercepted && !options.preserveNextUrlVary) {
     const current = headers.get("Vary");
@@ -125,7 +131,13 @@ function applyAppRscVaryHeader(
 
   mergeVaryHeader(
     headers,
-    options.pathCouldBeIntercepted ? VINEXT_RSC_VARY_HEADER : VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
+    options.isRscRequest
+      ? options.pathCouldBeIntercepted
+        ? VINEXT_RSC_VARY_HEADER
+        : VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER
+      : options.pathCouldBeIntercepted
+        ? VINEXT_APP_VARY_HEADER
+        : VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER,
   );
 }
 
@@ -147,6 +159,7 @@ export async function finalizeAppRscResponse(
   options: FinalizeAppRscResponseOptions,
 ): Promise<Response> {
   const varyOptions = {
+    isRscRequest: request.headers.get(RSC_HEADER) === "1",
     pathCouldBeIntercepted: options.pathCouldBeIntercepted === true,
     preserveNextUrlVary:
       options.preserveNextUrlVary === true ||

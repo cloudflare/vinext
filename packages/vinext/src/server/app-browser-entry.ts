@@ -168,6 +168,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
+  isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
   preloadRscPrewarmManifest,
   getVinextRscCompatibilityId,
@@ -1804,7 +1805,8 @@ function bootstrapHydration(
         });
         const usesCanonicalSharedRequest =
           getRscCacheKeyMode() === "response-vary" &&
-          (await isRscPrewarmEligibleHref(currentHref, __basePath)) &&
+          (isLoadedRscPrewarmEligibleHref(currentHref, __basePath) ||
+            (await isRscPrewarmEligibleHref(currentHref, __basePath))) &&
           canonicalizeFullRscRequestHeaders(requestHeaders);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         const requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
@@ -2142,7 +2144,33 @@ function bootstrapHydration(
             }
           }
           activeRscUrl = await getLiveRscUrl();
-          navResponse = await fetch(activeRscUrl, {
+          // A contextual response is stored under the digest that includes the
+          // client-reuse manifest. The first cache probe intentionally omits
+          // that header so a Link prefetch can still win; after that misses,
+          // probe the exact live-request identity before going to the network.
+          if (
+            requestHeaders.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER) &&
+            !shouldBypassNavigationCache
+          ) {
+            const contextualCandidate = readVisitedResponseCacheCandidate(
+              activeRscUrl,
+              requestInterceptionContext,
+              mountedSlotsHeader,
+              navigationKind,
+            );
+            const contextualDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
+              contextualCandidate.facts,
+            );
+            const contextualCachedRoute = applyVisitedResponseCacheCandidateDecision(
+              contextualCandidate,
+              contextualDecision,
+            );
+            if (contextualCachedRoute !== null) {
+              navResponse = restoreRscResponse(contextualCachedRoute.response);
+              navResponseUrl = activeRscUrl;
+            }
+          }
+          navResponse ??= await fetch(activeRscUrl, {
             headers: requestHeaders,
             credentials: "include",
             priority: "auto",

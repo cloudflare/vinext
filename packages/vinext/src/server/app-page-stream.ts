@@ -1,7 +1,7 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
-import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import { VINEXT_APP_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -292,7 +292,7 @@ export async function renderAppPageHtmlResponse(
 
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
-    Vary: VINEXT_RSC_VARY_HEADER,
+    Vary: VINEXT_APP_VARY_HEADER,
   });
 
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);

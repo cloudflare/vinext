@@ -1,5 +1,6 @@
 import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache-handler";
 import {
+  VINEXT_APP_VARY_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
@@ -170,7 +171,10 @@ function buildAppPageCachedHeaders(options: {
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
-    Vary: VINEXT_RSC_VARY_HEADER,
+    Vary:
+      options.contentType === VINEXT_RSC_CONTENT_TYPE
+        ? VINEXT_RSC_VARY_HEADER
+        : VINEXT_APP_VARY_HEADER,
   });
   // Page artifacts served from the origin store get their cache headers from the
   // CDN adapter (default: a single Cache-Control identical to the prior behavior).

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
   VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_VARY_HEADER,
@@ -91,7 +92,7 @@ describe("finalizeAppRscResponse — config header application", () => {
 
     expect(result).toBe(response);
     expect(result.headers.get("x-existing")).toBe("keep");
-    expect(result.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+    expect(result.headers.get("vary")).toBe(VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER);
   });
 
   it("does not apply config headers when source pattern does not match", async () => {
@@ -176,7 +177,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
     });
 
     expect(response.headers.get("vary")).toBe(
-      `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+      `User-Agent, ${VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER}`,
     );
   });
 
@@ -376,7 +377,7 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     expect(result).not.toBe(response);
     expect(result.status).toBe(307);
     expect(result.headers.get("location")).toBe("/old");
-    expect(result.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+    expect(result.headers.get("vary")).toBe(VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER);
     expect(result.headers.get("cache-control")).toContain("no-store");
     expect(result.headers.get(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER)).toBeNull();
     expect(result.headers.get("x-added")).toBeNull();

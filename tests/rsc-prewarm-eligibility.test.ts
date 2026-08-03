@@ -7,6 +7,7 @@ import {
   preloadRscPrewarmManifest,
   resetRscPrewarmManifestForTesting,
   RSC_PREWARM_MANIFEST_META_NAME,
+  RSC_PREWARM_MANIFEST_WAIT_MS,
 } from "../packages/vinext/src/client/rsc-prewarm-eligibility.js";
 
 const ORIGIN = "https://example.com";
@@ -43,6 +44,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   resetRscPrewarmManifestForTesting();
   vi.unstubAllGlobals();
 });
@@ -99,7 +101,7 @@ describe("RSC prewarm browser eligibility", () => {
     await expect(isRscPrewarmEligibleHref("/dashboard")).resolves.toBe(false);
   });
 
-  it("never makes navigation wait for a pending eligibility manifest", async () => {
+  it("exposes loaded eligibility synchronously after a pending manifest settles", async () => {
     let resolveManifest: ((response: Response) => void) | undefined;
     installBrowserGlobals({ version: 1, paths: ["/dashboard"] });
     vi.stubGlobal(
@@ -117,6 +119,30 @@ describe("RSC prewarm browser eligibility", () => {
 
     resolveManifest?.(Response.json({ version: 1, paths: ["/dashboard"] }));
     await pending;
+    expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(true);
+  });
+
+  it("bounds a pending manifest wait and keeps loading it for later navigations", async () => {
+    vi.useFakeTimers();
+    let resolveManifest: ((response: Response) => void) | undefined;
+    installBrowserGlobals({ version: 1, paths: ["/dashboard"] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveManifest = resolve;
+          }),
+      ),
+    );
+
+    const eligibility = isRscPrewarmEligibleHref("/dashboard");
+    await vi.advanceTimersByTimeAsync(RSC_PREWARM_MANIFEST_WAIT_MS);
+    await expect(eligibility).resolves.toBe(false);
+    expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(false);
+
+    resolveManifest?.(Response.json({ version: 1, paths: ["/dashboard"] }));
+    await preloadRscPrewarmManifest();
     expect(isLoadedRscPrewarmEligibleHref("/dashboard")).toBe(true);
   });
 });

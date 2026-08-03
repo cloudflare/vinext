@@ -39,7 +39,7 @@ export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 // Re-export so existing consumers that import from this module keep working.
 export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 
-const VINEXT_RSC_BASE_VARY_HEADERS = [
+const VINEXT_APP_BASE_VARY_HEADERS = [
   RSC_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
@@ -48,18 +48,23 @@ const VINEXT_RSC_BASE_VARY_HEADERS = [
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
-  "Accept",
 ] as const;
 
+/** App response identity for requests without active interception context. */
+export const VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER = VINEXT_APP_BASE_VARY_HEADERS.join(", ");
+
+/** App response identity for requests whose interception context can affect the payload. */
+export const VINEXT_APP_VARY_HEADER = [
+  ...VINEXT_APP_BASE_VARY_HEADERS.slice(0, 4),
+  NEXT_URL_HEADER,
+  ...VINEXT_APP_BASE_VARY_HEADERS.slice(4),
+].join(", ");
+
 /** RSC response identity for requests without active interception context. */
-export const VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER = VINEXT_RSC_BASE_VARY_HEADERS.join(", ");
+export const VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER = `${VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER}, Accept`;
 
 /** RSC response identity for requests whose interception context can affect the payload. */
-export const VINEXT_RSC_VARY_HEADER = [
-  ...VINEXT_RSC_BASE_VARY_HEADERS.slice(0, 4),
-  NEXT_URL_HEADER,
-  ...VINEXT_RSC_BASE_VARY_HEADERS.slice(4),
-].join(", ");
+export const VINEXT_RSC_VARY_HEADER = `${VINEXT_APP_VARY_HEADER}, Accept`;
 
 const SHARED_RSC_VARIANT_HEADERS = [
   NEXT_ROUTER_STATE_TREE_HEADER,
@@ -632,14 +637,20 @@ export async function resolveInvalidRscCacheBustingRequest(
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
-    const previousClientReuseHash = await computePreviousClientReuseRscCacheBustingSearchParam(
-      options.request.headers,
-    );
-    const previousClientReuseLegacyHash =
-      computePreviousClientReuseLegacyRscCacheBustingSearchParam(options.request.headers);
-    if (previousClientReuseHash !== null) acceptedHashes.add(previousClientReuseHash);
-    if (previousClientReuseLegacyHash !== null) {
-      acceptedHashes.add(previousClientReuseLegacyHash);
+    // A request carrying the new reuse-manifest field can render a partial
+    // payload, so accepting the pre-field digest would alias it with the full
+    // response in URL-only caches. Compatibility is safe only when the field
+    // is absent and both request generations describe the same payload.
+    if (!options.request.headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)) {
+      const previousClientReuseHash = await computePreviousClientReuseRscCacheBustingSearchParam(
+        options.request.headers,
+      );
+      const previousClientReuseLegacyHash =
+        computePreviousClientReuseLegacyRscCacheBustingSearchParam(options.request.headers);
+      if (previousClientReuseHash !== null) acceptedHashes.add(previousClientReuseHash);
+      if (previousClientReuseLegacyHash !== null) {
+        acceptedHashes.add(previousClientReuseLegacyHash);
+      }
     }
     if (
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===

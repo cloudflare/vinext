@@ -3,6 +3,10 @@ import { normalizePath } from "../server/normalize-path.js";
 import { removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
 
 export const RSC_PREWARM_MANIFEST_META_NAME = "vinext-rsc-prewarm-manifest";
+// Keep the optimization off the critical path: a very early click may briefly
+// wait for the already-started static asset, then falls back to the normal
+// contextual request if the asset is slow or unavailable.
+export const RSC_PREWARM_MANIFEST_WAIT_MS = 250;
 
 type RscPrewarmManifest = {
   version: 1;
@@ -83,8 +87,15 @@ function resolveEligibleHrefPathname(href: string, basePath: string): string | n
 export async function isRscPrewarmEligibleHref(href: string, basePath = ""): Promise<boolean> {
   const pathname = resolveEligibleHrefPathname(href, basePath);
   if (pathname === null) return false;
-  const paths = await preloadRscPrewarmManifest();
-  return paths.has(pathname);
+  if (loadedManifestPaths !== null) return loadedManifestPaths.has(pathname);
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), RSC_PREWARM_MANIFEST_WAIT_MS);
+  });
+  const paths = await Promise.race([preloadRscPrewarmManifest(), timeout]);
+  if (timeoutId !== undefined) clearTimeout(timeoutId);
+  return paths?.has(pathname) ?? false;
 }
 
 /** Synchronous check for callers that cannot await the manifest preload. */

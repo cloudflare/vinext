@@ -125,14 +125,69 @@ browser_rsc_request=(
   "$rsc_url"
 )
 
+normalize_vary() {
+  tr ',' '\n' <<< "$1" |
+    sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' |
+    tr '[:upper:]' '[:lower:]' |
+    sed '/^$/d' |
+    sort -u |
+    paste -sd ',' -
+}
+
+expected_rsc_vary=$(printf '%s\n' \
+  accept \
+  authorization \
+  cookie \
+  next-router-prefetch \
+  next-router-segment-prefetch \
+  next-router-state-tree \
+  rsc \
+  x-vinext-client-reuse-manifest \
+  x-vinext-interception-context \
+  x-vinext-mounted-slots \
+  x-vinext-rsc-render-mode |
+  sort -u |
+  paste -sd ',' -)
+
 first_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${warm_rsc_request[@]}" || echo "000")
 first_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
 first_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_headers" | tr -d '\r' | tail -1)
+first_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
+first_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
 
-second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${browser_rsc_request[@]}" || echo "000")
-second_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
-second_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
-second_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+second_status="000"
+second_cache_status=""
+second_vary=""
+second_content_type=""
+canonical_failure=""
+hit_attempt=""
+for attempt in {1..8}; do
+  second_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" "${browser_rsc_request[@]}" || echo "000")
+  second_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+  second_location=$(awk 'BEGIN { IGNORECASE=1 } /^location:/ { print $2 }' "$rsc_headers" | tr -d '\r' | tail -1)
+  second_vary=$(awk 'BEGIN { IGNORECASE=1 } /^vary:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print }' "$rsc_headers" | tail -1)
+  second_content_type=$(awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+
+  if [[ "$second_status" != "200" || -n "$second_location" ]]; then
+    canonical_failure="HTTP ${second_status}${second_location:+, location ${second_location}}"
+    break
+  fi
+  if [[ "$second_content_type" != *"text/x-component"* ]]; then
+    canonical_failure="Content-Type ${second_content_type:-missing}"
+    break
+  fi
+  if [[ "$(normalize_vary "$second_vary")" != "$expected_rsc_vary" ]]; then
+    canonical_failure="Vary ${second_vary:-missing}"
+    break
+  fi
+  if [[ "$second_cache_status" == "HIT" ]]; then
+    hit_attempt="$attempt"
+    break
+  fi
+  if [[ "$attempt" -lt 8 ]]; then
+    sleep 1
+  fi
+done
 
 cookie_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
   -H "Accept: text/x-component" \
@@ -142,6 +197,15 @@ cookie_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
   "$rsc_url" || echo "000")
 cookie_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
 cookie_cache_control=$(awk 'BEGIN { IGNORECASE=1 } /^cache-control:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+
+authorization_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
+  -H "Accept: text/x-component" \
+  -H "RSC: 1" \
+  -H "Authorization: Bearer vinext-cache-isolation-probe" \
+  --max-time 10 \
+  "$rsc_url" || echo "000")
+authorization_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+authorization_cache_control=$(awk 'BEGIN { IGNORECASE=1 } /^cache-control:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
 
 invalid_accept_failure=""
 for invalid_accept in "application/json" "text/x-component, */*" "TEXT/X-COMPONENT"; do
@@ -162,32 +226,40 @@ if [[ "$first_status" != "200" || -n "$first_location" ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (canonical request returned HTTP ${first_status}${first_location:+, location ${first_location}})"
   errors+=("canonical RSC request was not served directly")
   failed=$((failed + 1))
+elif [[ "$first_content_type" != *"text/x-component"* ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (warm Content-Type: ${first_content_type:-missing})"
+  errors+=("canonical warm request did not return an RSC payload")
+  failed=$((failed + 1))
+elif [[ "$(normalize_vary "$first_vary")" != "$expected_rsc_vary" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (warm Vary: ${first_vary:-missing})"
+  errors+=("canonical warm response did not use the required RSC Vary fields")
+  failed=$((failed + 1))
 elif [[ -z "$first_cache_status" || "$first_cache_status" == "BYPASS" || "$first_cache_status" == "DYNAMIC" || "$first_cache_status" == "NONE/UNKNOWN" ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (first CF-Cache-Status: ${first_cache_status:-missing})"
   errors+=("canonical RSC response was not admitted to Workers Cache")
   failed=$((failed + 1))
-elif [[ "$second_status" != "200" || "$second_cache_status" != "HIT" ]]; then
-  echo "FAIL  workers-cache/cached/intro?_rsc  (second HTTP ${second_status}, CF-Cache-Status: ${second_cache_status:-missing})"
-  errors+=("canonical RSC response did not reuse the warmed Workers Cache entry")
+elif [[ -n "$canonical_failure" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (canonical browser request returned ${canonical_failure})"
+  errors+=("canonical browser RSC request did not match the warmed cache variant")
   failed=$((failed + 1))
-elif [[ "$second_content_type" != *"text/x-component"* ]]; then
-  echo "FAIL  workers-cache/cached/intro?_rsc  (HIT Content-Type: ${second_content_type:-missing})"
-  errors+=("warmed Workers Cache entry was not an RSC payload")
+elif [[ -z "$hit_attempt" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (last HTTP ${second_status}, CF-Cache-Status: ${second_cache_status:-missing}; no HIT after 8 attempts)"
+  errors+=("canonical RSC response did not reuse the warmed Workers Cache entry")
   failed=$((failed + 1))
 elif [[ -n "$invalid_accept_failure" ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (${invalid_accept_failure})"
   errors+=("invalid Accept request reused or populated the canonical RSC cache entry")
   failed=$((failed + 1))
-elif ! grep -qiE '(^|,)[[:space:]]*Cookie([[:space:]]*,|$)' <<< "$second_vary"; then
-  echo "FAIL  workers-cache/cached/intro?_rsc  (Vary is missing Cookie)"
-  errors+=("canonical RSC response did not vary the anonymous entry on Cookie")
-  failed=$((failed + 1))
 elif [[ "$cookie_status" != "200" || "$cookie_cache_status" == "HIT" || "$cookie_cache_control" != *"no-store"* ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (cookie HTTP ${cookie_status}, CF-Cache-Status: ${cookie_cache_status:-missing}, Cache-Control: ${cookie_cache_control:-missing})"
   errors+=("cookie-bearing RSC request reused or populated the anonymous cache entry")
   failed=$((failed + 1))
+elif [[ "$authorization_status" != "200" || "$authorization_cache_status" == "HIT" || "$authorization_cache_control" != *"no-store"* ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (authorization HTTP ${authorization_status}, CF-Cache-Status: ${authorization_cache_status:-missing}, Cache-Control: ${authorization_cache_control:-missing})"
+  errors+=("authorization-bearing RSC request reused or populated the anonymous cache entry")
+  failed=$((failed + 1))
 else
-  echo "  OK  workers-cache/cached/intro?_rsc  (warm ${first_cache_status} -> reuse HIT; invalid Accept isolated; cookie ${cookie_cache_status})"
+  echo "  OK  workers-cache/cached/intro?_rsc  (warm ${first_cache_status} -> reuse HIT on attempt ${hit_attempt}; invalid Accept, cookie, and authorization isolated)"
   passed=$((passed + 1))
 fi
 

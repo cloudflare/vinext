@@ -13,6 +13,8 @@ import {
   setRscCacheBustingSearchParam,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
+  VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER,
+  VINEXT_APP_VARY_HEADER,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
@@ -558,6 +560,26 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
+  it("redirects pre-reuse-manifest hashes when the reuse header is present", async () => {
+    const headers = createRscRequestHeaders({
+      clientReuseManifestHeader: '{"entries":[]}',
+      mountedSlotsHeader: "slot:modal:/",
+    });
+    const previousHash = await sha256CacheBustingHash("0,0,0,0,0,slot:modal:/,0");
+    const expectedHash = await computeRscCacheBustingSearchParam(headers);
+    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
+      headers,
+    });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${expectedHash}`);
+  });
+
   it("ignores non-RSC and mutating requests", async () => {
     const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
 
@@ -602,6 +624,13 @@ describe("App Router RSC cache-busting", () => {
       "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Client-Reuse-Manifest, Accept",
     );
     expect(VINEXT_RSC_VARY_HEADER.split(", ")).toContain("Accept");
+    expect(VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER).toBe(
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Client-Reuse-Manifest",
+    );
+    expect(VINEXT_APP_VARY_HEADER).toBe(
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Client-Reuse-Manifest",
+    );
+    expect(VINEXT_APP_VARY_HEADER.split(", ")).not.toContain("Accept");
   });
 
   it("applies the current compatibility ID to RSC response headers when available", () => {

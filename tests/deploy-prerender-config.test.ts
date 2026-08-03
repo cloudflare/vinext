@@ -159,9 +159,10 @@ function writeApiOnlyProject(): void {
       'import { defineConfig } from "vite";',
       'import { cloudflare } from "@cloudflare/vite-plugin";',
       'import vinext from "../packages/vinext/src/index";',
+      'import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";',
       "",
       "export default defineConfig({",
-      "  plugins: [vinext(), cloudflare()],",
+      "  plugins: [vinext({ cache: { cdn: cdnAdapter() } }), cloudflare()],",
       "});",
       "",
     ].join("\n"),
@@ -302,7 +303,7 @@ describe("deploy prerender config wiring", () => {
   });
 
   it("loads Vite config once for all deploy metadata", async () => {
-    writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }), cdn: cdnAdapter() }');
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
     runPrerenderMock.mockImplementationOnce(async () => {

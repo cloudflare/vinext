@@ -886,17 +886,21 @@ export async function deployWithCdnWarmup(
           })
         : { verified: true as const };
       if (probe.verified) {
-        await warmCdnCache({
-          targetUrl,
-          paths,
-          deploymentId: options.deploymentId,
-          concurrency: options.warmCdnConcurrency,
-          timeoutMs: options.warmCdnTimeout,
-          retries: options.warmCdnRetries,
-          rscCacheKeyMode: options.rscCacheKeyMode,
-          rscPaths: options.rscPaths,
-          strict: options.warmCdnStrict,
-        });
+        try {
+          await warmCdnCache({
+            targetUrl,
+            paths,
+            deploymentId: options.deploymentId,
+            concurrency: options.warmCdnConcurrency,
+            timeoutMs: options.warmCdnTimeout,
+            retries: options.warmCdnRetries,
+            rscCacheKeyMode: options.rscCacheKeyMode,
+            rscPaths: options.rscPaths,
+            strict: options.warmCdnStrict,
+          });
+        } catch (error) {
+          throw withLiveVersionWarmupNote(error, upload.versionId);
+        }
       } else {
         const reason =
           probe.reason === "binding-unavailable"
@@ -1021,6 +1025,15 @@ function withPromotedVersionTriggerNote(error: unknown): Error {
     {
       cause: error,
     },
+  );
+}
+
+function withLiveVersionWarmupNote(error: unknown, versionId: string): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `${message} Worker version ${versionId} is already live at 100% and its triggers/routes have been updated; ` +
+      "rerun deploy after fixing the warmup failure to populate the CDN cache.",
+    { cause: error },
   );
 }
 

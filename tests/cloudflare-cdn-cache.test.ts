@@ -62,7 +62,6 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
     const response = configured.handleRequest(
       new Request("https://app.example.com/about?__vinext_version_probe=version-new", {
-        method: "POST",
         headers: { "X-Vinext-Version-Probe": "1" },
       }),
     );
@@ -72,12 +71,19 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(response?.headers.get("Cache-Control")).toBe("no-store");
     expect(response?.headers.has("CDN-Cache-Control")).toBe(false);
     expect(configured.handleRequest(new Request("https://app.example.com/about"))).toBeNull();
+    expect(
+      configured.handleRequest(
+        new Request("https://app.example.com/about?__vinext_version_probe=version-new", {
+          method: "POST",
+          headers: { "X-Vinext-Version-Probe": "1" },
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("marks staged Worker version probes unavailable when the binding is absent", () => {
     const response = adapter.handleRequest(
       new Request("https://app.example.com/?__vinext_version_probe=version-new", {
-        method: "POST",
         headers: { "X-Vinext-Version-Probe": "1" },
       }),
     );
@@ -454,6 +460,39 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["Cache-Tag"]).toBe("a%2Cb,tag%20with%20space,ok");
   });
 
+  it("de-duplicates encoded tags using Cloudflare's case-insensitive identity", () => {
+    const headers = adapter.buildResponseHeaders({
+      cacheControl: "s-maxage=60",
+      tags: ["a,b", "A,B", "posts", "POSTS"],
+    });
+    expect(headers["Cache-Tag"]).toBe("a%2Cb,posts");
+  });
+
+  it("does not cache precise-tag RSC responses with more than 1000 distinct tags", async () => {
+    const request = new Request("https://example.com/blog?_rsc", {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    const headers = await runWithHeadersContext(headersContextFromRequest(request), () =>
+      adapter.buildResponseHeaders({
+        cacheControl: "s-maxage=60",
+        tags: Array.from({ length: 1001 }, (_, index) => `t${index}`),
+      }),
+    );
+    expect(headers).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
+  });
+
+  it("counts distinct provider tags after de-duplication", () => {
+    const tags = Array.from({ length: 1000 }, (_, index) => `t${index}`);
+    tags.push("T0");
+    const headers = adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags });
+    expect(headers["Cache-Tag"]?.split(",")).toHaveLength(1000);
+  });
+
   it("does not cache precise-tag responses when the full tag set is unrepresentable", () => {
     expect(
       adapter.buildResponseHeaders({
@@ -667,7 +706,7 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("revalidateTag purges the Workers Cache by tag via ctx.cache.purge", async () => {
-    const purge = vi.fn(async () => {});
+    const purge = vi.fn(async () => ({ success: true }));
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag(["posts", "_N_T_/blog"]);
     });
@@ -677,7 +716,7 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("revalidateTag normalizes a single tag to an array", async () => {
-    const purge = vi.fn(async () => {});
+    const purge = vi.fn(async () => ({ success: true }));
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag("posts");
     });
@@ -690,9 +729,50 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("revalidateTag does not purge for an empty tag set", async () => {
-    const purge = vi.fn(async () => {});
+    const purge = vi.fn(async () => ({ success: true }));
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag([]);
+    });
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("uses the same encoded and de-duplicated tags for purge as for cache writes", async () => {
+    const purge = vi.fn(async () => ({ success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag(["a,b", "A,B", "posts", "POSTS"]);
+    });
+    expect(purge).toHaveBeenCalledWith({ tags: ["a%2Cb", "posts", "__vinext_html"] });
+  });
+
+  it("throws when a purge result reports failure", async () => {
+    const purge = vi.fn(async () => ({ success: false }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await expect(adapter.revalidateTag("posts")).rejects.toThrow(
+        "Cloudflare cache tag purge failed",
+      );
+    });
+  });
+
+  it("rejects an unrepresentable purge without dropping tags", async () => {
+    const purge = vi.fn(async () => ({ success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await expect(adapter.revalidateTag("x".repeat(2000))).rejects.toThrow(
+        "cannot represent the complete cache tag set",
+      );
+    });
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("rejects more than 1000 distinct purge tags after provider de-duplication", async () => {
+    const purge = vi.fn(async () => ({ success: true }));
+    const tags = Array.from({ length: 1000 }, (_, index) => `t${index}`);
+    tags.push("T0");
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      // The 1000 source identities fit after T0 is de-duplicated, but the HTML
+      // family tag is another required purge identity and must not be dropped.
+      await expect(adapter.revalidateTag(tags)).rejects.toThrow(
+        "cannot represent the complete cache tag set",
+      );
     });
     expect(purge).not.toHaveBeenCalled();
   });

@@ -11,6 +11,7 @@ import {
 } from "../packages/vinext/src/server/app-page-cache.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import {
+  VINEXT_APP_VARY_HEADER,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
@@ -230,7 +231,7 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("Cache-Control")).toBe("private, no-store");
     expect(response?.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'none'");
     expect(response?.headers.get("Set-Cookie")).toBe("session=abc; Path=/; HttpOnly");
-    expect(response?.headers.get("Vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, Accept-Encoding`);
+    expect(response?.headers.get("Vary")).toBe(`${VINEXT_APP_VARY_HEADER}, Accept-Encoding`);
     expect(response?.headers.get("X-Frame-Options")).toBe("DENY");
     expect(response?.headers.get("X-Vinext-Cache")).toBe("HIT");
   });

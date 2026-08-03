@@ -228,6 +228,12 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     );
     const initialResponse = await page.goto(BASE_URL);
     expect(initialResponse).not.toBeNull();
+    const initialVary = initialResponse!
+      .headers()
+      .vary?.split(",")
+      .map((token) => token.trim());
+    expect(initialVary).toContain("RSC");
+    expect(initialVary).not.toContain("Accept");
     const initialHtml = await initialResponse!.text();
     expect(initialHtml).toContain('name="vinext-rsc-prewarm-manifest"');
     const eligibilityManifestMeta = initialHtml.match(
@@ -378,9 +384,25 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   test("waits for prewarm eligibility before an immediate no-prefetch navigation", async ({
     page,
   }) => {
+    let markManifestStarted: (() => void) | undefined;
+    const manifestStarted = new Promise<void>((resolve) => {
+      markManifestStarted = resolve;
+    });
+    let releaseManifest: (() => void) | undefined;
+    const manifestRelease = new Promise<void>((resolve) => {
+      releaseManifest = resolve;
+    });
     await page.route(/\/vinext-rsc-prewarm-[a-f0-9]{16}\.json$/, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      markManifestStarted?.();
+      await manifestRelease;
       await route.continue();
+    });
+    let navigationStarted = false;
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/blog/hello-world" && url.searchParams.has("_rsc")) {
+        navigationStarted = true;
+      }
     });
     const navigationRequestPromise = page.waitForRequest((request) => {
       const url = new URL(request.url());
@@ -388,8 +410,13 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
 
     await page.goto(BASE_URL);
-    await page.click("#cdn-navigation-link");
+    await manifestStarted;
+    const click = page.click("#cdn-navigation-link");
+    await page.waitForTimeout(100);
+    expect(navigationStarted).toBe(false);
+    releaseManifest?.();
     const navigationRequest = await navigationRequestPromise;
+    await click;
     const url = new URL(navigationRequest.url());
     const headers = navigationRequest.headers();
 
@@ -401,8 +428,48 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     await expect(page.locator("h1")).toHaveText("Blog post");
   });
 
+  test("fails a hung prewarm manifest closed to a contextual navigation", async ({ page }) => {
+    let markManifestStarted: (() => void) | undefined;
+    const manifestStarted = new Promise<void>((resolve) => {
+      markManifestStarted = resolve;
+    });
+    let releaseManifest: (() => void) | undefined;
+    const manifestRelease = new Promise<void>((resolve) => {
+      releaseManifest = resolve;
+    });
+    await page.route(/\/vinext-rsc-prewarm-[a-f0-9]{16}\.json$/, async (route) => {
+      markManifestStarted?.();
+      await manifestRelease;
+      await route.abort();
+    });
+
+    try {
+      await page.goto(BASE_URL);
+      await manifestStarted;
+      const navigationRequestPromise = page.waitForRequest((request) => {
+        const url = new URL(request.url());
+        return url.pathname === "/blog/hello-world" && url.searchParams.has("_rsc");
+      });
+      const click = page.click("#cdn-navigation-link");
+      const navigationRequest = await navigationRequestPromise;
+      const url = new URL(navigationRequest.url());
+      const headers = navigationRequest.headers();
+
+      expect(url.searchParams.get("_rsc")).toMatch(/^[A-Za-z0-9_-]{16}$/);
+      expect(headers.accept).toBe("text/x-component");
+      expect(headers.rsc).toBe("1");
+      expect(headers["next-url"]).toBe("/");
+      expect(headers["next-router-state-tree"]).toBeTruthy();
+      expect(headers["x-vinext-client-reuse-manifest"]).toBeTruthy();
+      await click;
+      await expect(page.locator("h1")).toHaveText("Blog post");
+    } finally {
+      releaseManifest?.();
+    }
+  });
+
   test("handles staged-version probes through the generated Worker entry", async ({ request }) => {
-    const response = await request.post(`${BASE_URL}/?__vinext_version_probe=expected`, {
+    const response = await request.get(`${BASE_URL}/?__vinext_version_probe=expected`, {
       headers: { "X-Vinext-Version-Probe": "1" },
     });
 

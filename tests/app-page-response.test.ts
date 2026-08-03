@@ -7,6 +7,7 @@ import {
   resolveAppPageRscResponsePolicy,
 } from "../packages/vinext/src/server/app-page-response.js";
 import {
+  VINEXT_APP_VARY_HEADER,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
@@ -574,7 +575,7 @@ describe("app page response helpers", () => {
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
     expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
-    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+    expect(response.headers.get("vary")).toBe(VINEXT_APP_VARY_HEADER);
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );

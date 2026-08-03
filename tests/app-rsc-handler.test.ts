@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER,
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -1831,7 +1832,7 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(200);
     expect(response.headers.get("x-test-header")).toBe("applied");
-    expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+    expect(response.headers.get("vary")).toBe(VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER);
   });
 
   it("preserves an explicit middleware Vary: Next-Url on a non-interceptable route", async () => {
@@ -4125,7 +4126,7 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("pages:/about");
     expect(requestNextUrl).toBeNull();
     expect(headersNextUrl).toBeNull();
-    expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+    expect(response.headers.get("vary")).toBe(VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER);
   });
 
   it("normalizes hybrid Pages data requests before middleware", async () => {
@@ -5168,7 +5169,7 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("vary")).toBe(
-      `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+      `User-Agent, ${VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER}`,
     );
   });
 
@@ -5191,7 +5192,7 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request("https://example.test/docs/api/123"), null);
 
     expect(response.headers.get("vary")).toBe(
-      `Next-Url, User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+      `Next-Url, User-Agent, ${VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER}`,
     );
   });
 
@@ -5209,7 +5210,7 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request(`https://example.test${pathname}`), null);
 
     expect(response.headers.get("vary")).toBe(
-      `Next-Url, User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+      `Next-Url, User-Agent, ${VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER}`,
     );
   });
 

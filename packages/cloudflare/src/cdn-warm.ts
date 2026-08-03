@@ -467,7 +467,10 @@ export async function probeWorkerVersion(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(url, {
-        method: "POST",
+        // Probes may briefly reach the previously deployed Worker while the
+        // version override propagates. Keep them non-mutating so an older
+        // Worker cannot route the probe into user POST behavior.
+        method: "GET",
         redirect: "manual",
         headers,
         signal: controller.signal,
@@ -482,7 +485,7 @@ export async function probeWorkerVersion(
       }
     } catch {
       // A failed override may reach the old version or a not-yet-propagated
-      // route. Retry the exact staged-version probe within the bounded window.
+      // route. Retry the exact non-mutating probe within the bounded window.
     } finally {
       clearTimeout(timer);
     }

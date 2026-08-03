@@ -52,11 +52,12 @@ function versionProbeResponse(
   url: Parameters<typeof fetch>[0],
   init?: RequestInit,
 ): Response | null {
-  if (init?.method !== "POST") return null;
+  if (init?.method !== "GET") return null;
   const versionId = new URL(formatFetchUrl(url)).searchParams.get("__vinext_version_probe");
+  if (!versionId) return null;
   return new Response(null, {
     status: 204,
-    headers: { "X-Vinext-Worker-Version": versionId ?? "unavailable" },
+    headers: { "X-Vinext-Worker-Version": versionId },
   });
 }
 
@@ -283,7 +284,7 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
       new URL("https://app.example.com/?_rsc"),
       expect.any(Object),
     );
-    expect(probeInit.method).toBe("POST");
+    expect(probeInit.method).toBe("GET");
     expect(new Headers(probeInit.headers).get("X-Vinext-Version-Probe")).toBe("1");
     expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker="22222222-2222-4222-8222-222222222222"',
@@ -367,7 +368,10 @@ name = "my-worker-staging"
       JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
     );
     vi.mocked(fetch).mockImplementation(async (url, init) => {
-      if (init?.method === "POST") {
+      if (
+        init?.method === "GET" &&
+        new URL(formatFetchUrl(url)).searchParams.has("__vinext_version_probe")
+      ) {
         events.push("probe-unavailable");
         return new Response(null, {
           status: 503,
@@ -424,8 +428,11 @@ name = "my-worker-staging"
       "wrangler.jsonc",
       JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
     );
-    vi.mocked(fetch).mockImplementation(async (_url, init) => {
-      if (init?.method === "POST") {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (
+        init?.method === "GET" &&
+        new URL(formatFetchUrl(url)).searchParams.has("__vinext_version_probe")
+      ) {
         events.push("probe-unavailable");
         return new Response(null, {
           status: 503,
@@ -953,6 +960,65 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       "promote",
       "triggers",
       "fetch:https://workers-cache.vinext.workers.dev/cached/intro",
+    ]);
+  });
+
+  it("explains that the version is already live when strict fallback warming fails", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const probe = versionProbeResponse(url, init);
+      if (probe) return probe;
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return new Response("nope", { status: 500 });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+        warmCdnRetries: 0,
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow(
+      "Worker version 22222222-2222-4222-8222-222222222222 is already live at 100% and its triggers/routes have been updated",
+    );
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "promote",
+      "triggers",
+      "fetch:https://app.example.com/",
     ]);
   });
 

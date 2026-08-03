@@ -19,6 +19,7 @@ import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import {
+  VINEXT_APP_VARY_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
@@ -397,7 +398,7 @@ export function buildAppPageHtmlResponse(
 ): Response {
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
-    Vary: VINEXT_RSC_VARY_HEADER,
+    Vary: VINEXT_APP_VARY_HEADER,
   });
 
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
