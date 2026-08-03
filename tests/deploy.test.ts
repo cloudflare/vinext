@@ -3994,6 +3994,36 @@ version_metadata.binding = 'STAGING_VERSION'
     expect(config?.customDomain).toBe("shop.example.com.au");
   });
 
+  it("extracts and deduplicates every concrete route host", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        routes: [
+          "shop.example.com/*",
+          { pattern: "api.example.com/v1/*" },
+          "SHOP.EXAMPLE.COM/assets/*",
+          "*.example.com/*",
+        ],
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("shop.example.com");
+    expect(config?.customDomains).toEqual(["shop.example.com", "api.example.com"]);
+  });
+
+  it("extracts every concrete TOML route host", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `routes = ["shop.example.com/*", { pattern = "api.example.com/v1/*" }]
+`,
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("shop.example.com");
+    expect(config?.customDomains).toEqual(["shop.example.com", "api.example.com"]);
+  });
+
   it("ignores workers.dev domains", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ routes: ["my-app.workers.dev/*"] }));
     const config = parseWranglerConfig(tmpDir);

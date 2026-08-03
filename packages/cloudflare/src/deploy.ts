@@ -795,39 +795,55 @@ export async function deployWithCdnWarmup(
     );
   } else if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, wranglerOptions, "stage");
-    const targetUrl = resolveCdnWarmupTargetUrl(root, staged.deployedUrl, targetResolutionOptions);
+    const targetUrls = resolveCdnWarmupTargetUrls(
+      root,
+      staged.deployedUrl,
+      targetResolutionOptions,
+    );
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, wranglerOptions);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
-    if (targetUrl && headers) {
+    if (targetUrls.length > 0 && headers) {
       const probePath = paths[0] ?? options.rscPaths?.[0];
-      const probe = probePath
-        ? await probeWorkerVersion({
-            targetUrl,
-            pathname: probePath,
-            versionId: upload.versionId,
-            headers,
-            timeoutMs: options.warmCdnTimeout,
-          })
-        : { verified: false as const, reason: "not-ready" as const };
-      if (probe.verified) {
+      let failedProbe: Exclude<
+        Awaited<ReturnType<typeof probeWorkerVersion>>,
+        { verified: true }
+      > | null = null;
+      for (const targetUrl of targetUrls) {
+        const probe = probePath
+          ? await probeWorkerVersion({
+              targetUrl,
+              pathname: probePath,
+              versionId: upload.versionId,
+              headers,
+              timeoutMs: options.warmCdnTimeout,
+            })
+          : { verified: false as const, reason: "not-ready" as const };
+        if (!probe.verified) {
+          failedProbe = probe;
+          break;
+        }
+      }
+      if (failedProbe === null) {
         try {
-          await warmCdnCache({
-            targetUrl,
-            paths,
-            headers,
-            deploymentId: options.deploymentId,
-            concurrency: options.warmCdnConcurrency,
-            timeoutMs: options.warmCdnTimeout,
-            retries: options.warmCdnRetries,
-            rscCacheKeyMode: options.rscCacheKeyMode,
-            rscPaths: options.rscPaths,
-            strict: options.warmCdnStrict,
-          });
+          for (const targetUrl of targetUrls) {
+            await warmCdnCache({
+              targetUrl,
+              paths,
+              headers,
+              deploymentId: options.deploymentId,
+              concurrency: options.warmCdnConcurrency,
+              timeoutMs: options.warmCdnTimeout,
+              retries: options.warmCdnRetries,
+              rscCacheKeyMode: options.rscCacheKeyMode,
+              rscPaths: options.rscPaths,
+              strict: options.warmCdnStrict,
+            });
+          }
         } catch (error) {
           throw withStagedVersionCleanupNote(error);
         }
         warmedBeforePromotion = true;
-      } else if (probe.reason === "binding-unavailable") {
+      } else if (failedProbe.reason === "binding-unavailable") {
         if (options.warmCdnStrict) {
           throw withStagedVersionCleanupNote(
             new Error(
@@ -880,47 +896,49 @@ export async function deployWithCdnWarmup(
     throw withPromotedVersionTriggerNote(error);
   }
   if (!warmedBeforePromotion && !crossVersionCache) {
-    const targetUrl = resolveCdnWarmupTargetUrl(
+    const targetUrls = resolveCdnWarmupTargetUrls(
       root,
       deployed.deployedUrl ?? triggersDeployedUrl,
       targetResolutionOptions,
     );
-    if (targetUrl) {
+    if (targetUrls.length > 0) {
       const probePath = paths[0] ?? options.rscPaths?.[0];
-      const probe = probePath
-        ? await probeWorkerVersion({
-            targetUrl,
-            pathname: probePath,
-            versionId: upload.versionId,
-            timeoutMs: options.warmCdnTimeout,
-          })
-        : { verified: true as const };
-      if (probe.verified) {
-        try {
-          await warmCdnCache({
-            targetUrl,
-            paths,
-            deploymentId: options.deploymentId,
-            concurrency: options.warmCdnConcurrency,
-            timeoutMs: options.warmCdnTimeout,
-            retries: options.warmCdnRetries,
-            rscCacheKeyMode: options.rscCacheKeyMode,
-            rscPaths: options.rscPaths,
-            strict: options.warmCdnStrict,
-          });
-        } catch (error) {
-          throw withLiveVersionWarmupNote(error, upload.versionId);
+      for (const targetUrl of targetUrls) {
+        const probe = probePath
+          ? await probeWorkerVersion({
+              targetUrl,
+              pathname: probePath,
+              versionId: upload.versionId,
+              timeoutMs: options.warmCdnTimeout,
+            })
+          : { verified: true as const };
+        if (probe.verified) {
+          try {
+            await warmCdnCache({
+              targetUrl,
+              paths,
+              deploymentId: options.deploymentId,
+              concurrency: options.warmCdnConcurrency,
+              timeoutMs: options.warmCdnTimeout,
+              retries: options.warmCdnRetries,
+              rscCacheKeyMode: options.rscCacheKeyMode,
+              rscPaths: options.rscPaths,
+              strict: options.warmCdnStrict,
+            });
+          } catch (error) {
+            throw withLiveVersionWarmupNote(error, upload.versionId);
+          }
+        } else {
+          const reason =
+            probe.reason === "binding-unavailable"
+              ? "VINEXT_VERSION_METADATA is unavailable"
+              : "the promoted version did not become verifiable in time";
+          const message =
+            `CDN warmup skipped for ${targetUrl} after Worker version ${upload.versionId} was promoted to 100%: ${reason}. ` +
+            "No cacheable requests were sent to this target.";
+          if (options.warmCdnStrict) throw new Error(message);
+          console.warn(`  ${message}`);
         }
-      } else {
-        const reason =
-          probe.reason === "binding-unavailable"
-            ? "VINEXT_VERSION_METADATA is unavailable"
-            : "the promoted version did not become verifiable in time";
-        const message =
-          `CDN warmup skipped after Worker version ${upload.versionId} was promoted to 100%: ${reason}. ` +
-          "No cacheable requests were sent.";
-        if (options.warmCdnStrict) throw new Error(message);
-        console.warn(`  ${message}`);
       }
     } else if (options.warmCdnStrict) {
       throw withLiveVersionWarmupNote(
@@ -956,13 +974,23 @@ export function resolveCdnWarmupTargetUrl(
   deployedUrl: string | null,
   options?: Pick<DeployOptions, "preview" | "env" | "config">,
 ): string | null {
+  return resolveCdnWarmupTargetUrls(root, deployedUrl, options)[0] ?? null;
+}
+
+export function resolveCdnWarmupTargetUrls(
+  root: string,
+  deployedUrl: string | null,
+  options?: Pick<DeployOptions, "preview" | "env" | "config">,
+): string[] {
   const config = parseWranglerConfig(root, options?.config);
   const env = getWranglerTargetEnv(options ?? {});
-  const customDomain = (env ? config?.env?.[env]?.customDomain : undefined) ?? config?.customDomain;
-  if (customDomain) {
-    return `https://${customDomain}`;
-  }
-  return deployedUrl;
+  const selectedConfig = env && config?.targetEnvironment !== env ? config?.env?.[env] : config;
+  const customDomains =
+    selectedConfig?.customDomains ??
+    (selectedConfig?.customDomain ? [selectedConfig.customDomain] : []);
+  const targets = customDomains.map((customDomain) => `https://${customDomain}`);
+  if (targets.length === 0 && deployedUrl) targets.push(deployedUrl);
+  return [...new Set(targets)];
 }
 
 function readWranglerDeploymentStatus(

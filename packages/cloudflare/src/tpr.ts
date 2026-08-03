@@ -81,6 +81,8 @@ type WranglerConfig = {
   cache?: WranglerCacheConfig;
   kvNamespaceId?: string;
   customDomain?: string;
+  /** All concrete route/custom-domain hosts when more than one is configured. */
+  customDomains?: string[];
   name?: string;
   legacyEnv?: boolean;
   targetEnvironment?: string;
@@ -92,6 +94,8 @@ type WranglerConfig = {
 export type WranglerEnvironmentConfig = {
   cache?: WranglerCacheConfig;
   customDomain?: string;
+  /** All concrete route/custom-domain hosts when more than one is configured. */
+  customDomains?: string[];
   name?: string;
   versionMetadataBinding?: string;
 };
@@ -301,12 +305,8 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     }
   }
 
-  // Custom domain — check singular route, routes[], and custom_domains[].
-  const domain =
-    extractDomainFromRoute(config.route) ??
-    extractDomainFromRoutes(config.routes) ??
-    extractDomainFromCustomDomains(config);
-  if (domain) result.customDomain = domain;
+  // Custom domains — check singular route, routes[], and custom_domains[].
+  mergeCustomDomains(result, extractDomainsFromConfig(config));
 
   const env = extractEnvConfigs(config.env);
   if (env) result.env = env;
@@ -338,11 +338,7 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
   }
-  const domain =
-    extractDomainFromRoute(config.route) ??
-    extractDomainFromRoutes(config.routes) ??
-    extractDomainFromCustomDomains(config);
-  if (domain) result.customDomain = domain;
+  mergeCustomDomains(result, extractDomainsFromConfig(config));
   const cache = extractCacheConfig(config.cache);
   if (cache) result.cache = cache;
   const versionMetadataBinding = extractVersionMetadataBinding(config.version_metadata);
@@ -367,14 +363,45 @@ function extractCacheConfig(value: unknown): WranglerCacheConfig | undefined {
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function extractDomainFromRoutes(routes: unknown): string | null {
-  if (!Array.isArray(routes)) return null;
+function dedupeDomains(domains: readonly string[]): string[] {
+  const seen = new Set<string>();
+  return domains.filter((domain) => {
+    const key = domain.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
+function mergeCustomDomains(
+  target: { customDomain?: string; customDomains?: string[] },
+  domains: readonly string[],
+): void {
+  const current = target.customDomains ?? (target.customDomain ? [target.customDomain] : []);
+  const merged = dedupeDomains([...current, ...domains]);
+  if (merged.length === 0) return;
+  target.customDomain = merged[0];
+  if (merged.length > 1) target.customDomains = merged;
+  else delete target.customDomains;
+}
+
+function extractDomainsFromConfig(config: Record<string, unknown>): string[] {
+  const singularDomain = extractDomainFromRoute(config.route);
+  return dedupeDomains([
+    ...(singularDomain ? [singularDomain] : []),
+    ...extractDomainsFromRoutes(config.routes),
+    ...extractDomainsFromCustomDomains(config),
+  ]);
+}
+
+function extractDomainsFromRoutes(routes: unknown): string[] {
+  if (!Array.isArray(routes)) return [];
+  const domains: string[] = [];
   for (const route of routes) {
     const domain = extractDomainFromRoute(route);
-    if (domain) return domain;
+    if (domain) domains.push(domain);
   }
-  return null;
+  return dedupeDomains(domains);
 }
 
 function extractDomainFromRoute(route: unknown): string | null {
@@ -391,16 +418,18 @@ function extractDomainFromRoute(route: unknown): string | null {
   return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
-function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
+function extractDomainsFromCustomDomains(config: Record<string, unknown>): string[] {
   // Workers Custom Domains: "custom_domains": ["example.com"]
+  const domains: string[] = [];
   if (Array.isArray(config.custom_domains)) {
     for (const d of config.custom_domains) {
       if (typeof d === "string" && !d.includes("workers.dev")) {
-        return cleanDomain(d);
+        const domain = cleanDomain(d);
+        if (domain) domains.push(domain);
       }
     }
   }
-  return null;
+  return dedupeDomains(domains);
 }
 
 /** Strip protocol and trailing wildcards from a route pattern to get a bare domain. */
@@ -453,19 +482,15 @@ function extractFromTOML(content: string): WranglerConfig {
 
   // Root routes only. Environment sections must not become the production
   // warmup origin.
-  result.customDomain =
-    extractTomlRouteDomain(rootBody) ?? extractTomlRoutesArrayDomain(rootBody) ?? undefined;
+  mergeCustomDomains(result, [
+    ...extractTomlRouteDomains(rootBody),
+    ...extractTomlRoutesArrayDomains(rootBody),
+  ]);
 
-  // [[routes]] blocks
-  if (!result.customDomain) {
-    for (const section of getTomlSections(content)) {
-      if (section.header !== "route" && section.header !== "routes") continue;
-      const domain = extractTomlRouteBlockDomain(section.body);
-      if (domain) {
-        result.customDomain = domain;
-        break;
-      }
-    }
+  // [route] / [[routes]] blocks
+  for (const section of getTomlSections(content)) {
+    if (section.header !== "route" && section.header !== "routes") continue;
+    mergeCustomDomains(result, extractTomlRouteBlockDomains(section.body));
   }
 
   const env = extractEnvConfigsFromTOML(content);
@@ -517,8 +542,10 @@ function applyTomlEnvironmentAssignment(
     const inlineEnv = unwrapTomlInlineTable(value);
     if (inlineEnv) {
       const name = findTomlStringAssignment(inlineEnv, "name");
-      const customDomain =
-        extractTomlRouteDomain(inlineEnv) ?? extractTomlRoutesArrayDomain(inlineEnv) ?? undefined;
+      const customDomains = [
+        ...extractTomlRouteDomains(inlineEnv),
+        ...extractTomlRoutesArrayDomains(inlineEnv),
+      ];
       const inlineCache = extractTomlInlineTable(inlineEnv, "cache");
       const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
       const inlineVersionMetadata = extractTomlInlineTable(inlineEnv, "version_metadata");
@@ -526,10 +553,10 @@ function applyTomlEnvironmentAssignment(
         ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
         : undefined;
       if (name) envConfig.name = name;
-      if (customDomain) envConfig.customDomain = customDomain;
+      mergeCustomDomains(envConfig, customDomains);
       if (cache) envConfig.cache = { ...envConfig.cache, ...cache };
       if (versionMetadataBinding) envConfig.versionMetadataBinding = versionMetadataBinding;
-      changed = Boolean(name || customDomain || cache || versionMetadataBinding);
+      changed = Boolean(name || customDomains.length > 0 || cache || versionMetadataBinding);
     }
   } else if (fieldPath.length === 1 && fieldPath[0] === "name") {
     const name = parseTomlString(value);
@@ -538,12 +565,12 @@ function applyTomlEnvironmentAssignment(
       changed = true;
     }
   } else if (fieldPath.length === 1 && (fieldPath[0] === "route" || fieldPath[0] === "routes")) {
-    const customDomain =
+    const customDomains =
       fieldPath[0] === "route"
-        ? extractTomlRouteDomain(`route = ${value}`)
-        : extractTomlRoutesArrayDomain(`routes = ${value}`);
-    if (customDomain) {
-      envConfig.customDomain = customDomain;
+        ? extractTomlRouteDomains(`route = ${value}`)
+        : extractTomlRoutesArrayDomains(`routes = ${value}`);
+    if (customDomains.length > 0) {
+      mergeCustomDomains(envConfig, customDomains);
       changed = true;
     }
   } else if (fieldPath.length === 1 && fieldPath[0] === "cache") {
@@ -614,9 +641,10 @@ function extractEnvConfigsFromTOML(
       const envConfig = result[envName] ?? {};
       const name = findTomlStringAssignment(section.body, "name");
       if (name) envConfig.name = name;
-      const domain =
-        extractTomlRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
-      if (domain) envConfig.customDomain = domain;
+      mergeCustomDomains(envConfig, [
+        ...extractTomlRouteDomains(section.body),
+        ...extractTomlRoutesArrayDomains(section.body),
+      ]);
       const inlineCache = extractTomlInlineTable(section.body, "cache");
       const cache = inlineCache
         ? extractTomlCacheConfig(inlineCache)
@@ -645,8 +673,7 @@ function extractEnvConfigsFromTOML(
         : undefined;
     if (routesEnvName) {
       const envConfig = result[routesEnvName] ?? {};
-      const domain = extractTomlRouteBlockDomain(section.body);
-      if (domain) envConfig.customDomain = domain;
+      mergeCustomDomains(envConfig, extractTomlRouteBlockDomains(section.body));
       if (envConfig.name || envConfig.customDomain) {
         result[routesEnvName] = envConfig;
       }
@@ -725,17 +752,19 @@ function extractEnvConfigsFromTOML(
           (candidate) => candidate.key === "name",
         );
         const name = nameAssignment ? parseTomlString(nameAssignment.value) : null;
-        const customDomain =
-          extractTomlRouteDomain(inlineEnv) ?? extractTomlRoutesArrayDomain(inlineEnv) ?? undefined;
-        if (!name && !customDomain && !cache && !versionMetadataBinding) continue;
+        const customDomains = [
+          ...extractTomlRouteDomains(inlineEnv),
+          ...extractTomlRoutesArrayDomains(inlineEnv),
+        ];
+        if (!name && customDomains.length === 0 && !cache && !versionMetadataBinding) continue;
         const envName = assignmentPath[0]!;
         result[envName] = {
           ...result[envName],
           ...(name ? { name } : {}),
-          ...(customDomain ? { customDomain } : {}),
           ...(cache ? { cache } : {}),
           ...(versionMetadataBinding ? { versionMetadataBinding } : {}),
         };
+        mergeCustomDomains(result[envName], customDomains);
       }
     }
   }
@@ -967,22 +996,23 @@ function parseTomlSectionHeader(line: string): string | null {
   return header.length > 0 ? header : null;
 }
 
-function extractTomlRouteDomain(section: string): string | null {
+function extractTomlRouteDomains(section: string): string[] {
   const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "route");
-  if (!assignment) return null;
+  if (!assignment) return [];
   const scalar = parseTomlString(assignment.value);
   const inline = unwrapTomlInlineTable(assignment.value);
   const pattern = scalar ?? (inline ? findTomlStringAssignment(inline, "pattern") : null);
-  if (!pattern) return null;
+  if (!pattern) return [];
   const domain = cleanDomain(pattern);
-  return domain && !domain.includes("workers.dev") ? domain : null;
+  return domain && !domain.includes("workers.dev") ? [domain] : [];
 }
 
-function extractTomlRoutesArrayDomain(section: string): string | null {
+function extractTomlRoutesArrayDomains(section: string): string[] {
   const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "routes");
-  if (!assignment) return null;
+  if (!assignment) return [];
   const value = assignment.value.trim();
-  if (!value.startsWith("[") || !value.endsWith("]")) return null;
+  if (!value.startsWith("[") || !value.endsWith("]")) return [];
+  const domains: string[] = [];
   for (const item of splitTomlTopLevelItems(value.slice(1, -1))) {
     const inline = unwrapTomlInlineTable(item);
     const pattern = inline
@@ -991,17 +1021,17 @@ function extractTomlRoutesArrayDomain(section: string): string | null {
       : parseTomlString(item);
     if (!pattern) continue;
     const domain = cleanDomain(pattern);
-    if (domain && !domain.includes("workers.dev")) return domain;
+    if (domain && !domain.includes("workers.dev")) domains.push(domain);
   }
-  return null;
+  return dedupeDomains(domains);
 }
 
-function extractTomlRouteBlockDomain(section: string): string | null {
+function extractTomlRouteBlockDomains(section: string): string[] {
   const pattern =
     findTomlStringAssignment(section, "pattern") ?? findTomlStringAssignment(section, "zone_name");
-  if (!pattern) return null;
+  if (!pattern) return [];
   const domain = cleanDomain(pattern);
-  return domain && !domain.includes("workers.dev") ? domain : null;
+  return domain && !domain.includes("workers.dev") ? [domain] : [];
 }
 
 function splitTomlTopLevelItems(source: string): string[] {

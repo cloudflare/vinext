@@ -363,6 +363,145 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
     ]);
   });
 
+  it("warms one HTML and RSC entry for every concrete host", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com", "www.example.com", "APP.EXAMPLE.COM"],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const requestUrl = new URL(formatFetchUrl(url));
+      const probe = versionProbeResponse(url, init);
+      if (probe) {
+        events.push(`probe:${requestUrl.host}`);
+        return probe;
+      }
+      const isRsc = new Headers(init?.headers).get("RSC") === "1";
+      events.push(`${isRsc ? "rsc" : "html"}:${requestUrl.host}${requestUrl.pathname}`);
+      return new Response(isRsc ? "flight" : "html", {
+        status: 200,
+        headers: {
+          "CF-Cache-Status": "MISS",
+          "Content-Type": isRsc ? "text/x-component" : "text/html",
+          Vary: isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host",
+        },
+      });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/about"], {
+      rscCacheKeyMode: "response-vary",
+      rscPaths: ["/about"],
+      warmCdnConcurrency: 1,
+    });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "probe:app.example.com",
+      "probe:www.example.com",
+      "html:app.example.com/about",
+      "rsc:app.example.com/about",
+      "html:www.example.com/about",
+      "rsc:www.example.com/about",
+      "promote",
+      "triggers",
+    ]);
+  });
+
+  it("does not inherit a production custom domain for a selected environment", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["prod.example.com"],
+        env: { staging: { name: "my-worker-staging" } },
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const requestUrl = new URL(formatFetchUrl(url));
+      events.push(`fetch:${requestUrl.host}${requestUrl.pathname}`);
+      return (
+        versionProbeResponse(url, init) ??
+        new Response("html", {
+          status: 200,
+          headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+        })
+      );
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://my-worker-staging.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://my-worker-staging.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/about"], {
+      env: "staging",
+      warmCdnConcurrency: 1,
+    });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "fetch:my-worker-staging.example.workers.dev/about",
+      "fetch:my-worker-staging.example.workers.dev/about",
+      "promote",
+      "triggers",
+    ]);
+  });
+
   it("does not claim to warm shared entries that may belong to the previous version", async () => {
     const events: string[] = [];
     writeFile(
