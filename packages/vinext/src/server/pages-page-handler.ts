@@ -78,7 +78,10 @@ import {
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 
-function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewState): Response {
+export function finalizePagesPreviewResponse(
+  response: Response,
+  preview: PagesPreviewState,
+): Response {
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
   if (preview.data !== false) {

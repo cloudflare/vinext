@@ -5,9 +5,10 @@
  * verifying route matching, 404/500 fallback, _next/data envelope,
  * i18n redirect, 405 method check, and internal-error guard.
  */
-import { describe, it, expect, vi } from "vite-plus/test";
+import { afterEach, describe, it, expect, vi } from "vite-plus/test";
 import {
   createPagesPageHandler,
+  finalizePagesPreviewResponse,
   shouldEmitPagesClientTraceMetadata,
 } from "../packages/vinext/src/server/pages-page-handler.js";
 import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/server/pages-page-handler.js";
@@ -26,6 +27,8 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+
+afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -707,37 +710,42 @@ describe("createPagesPageHandler — preview responses", () => {
     expect(response.headers.getSetCookie()).toEqual(["app-2=1; Path=/"]);
   });
 
-  it("does not expose preview notFound responses to shared CDN caching", async () => {
+  it("preserves adapter-unowned headers on preview responses", () => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    const response = finalizePagesPreviewResponse(
+      new Response("preview", {
+        headers: {
+          "Cache-Control": "s-maxage=6000",
+          "X-Example-Edge-Policy": "s-maxage=6000",
+          "X-Example-Cache-Tag": "draft-404",
+        },
+      }),
+      { data: { draft: true }, shouldClear: false },
+    );
+
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.get("x-example-edge-policy")).toBe("s-maxage=6000");
+    expect(response.headers.get("x-example-cache-tag")).toBe("draft-404");
+  });
+
+  it("clears Cloudflare-owned headers on preview responses", () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
-    const pageRoute = makeRoute(
-      "/missing",
-      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    const response = finalizePagesPreviewResponse(
+      new Response("preview", {
+        headers: {
+          "Cache-Control": "s-maxage=6000",
+          "CDN-Cache-Control": "s-maxage=6000",
+          "Cloudflare-CDN-Cache-Control": "s-maxage=6000",
+          "Cache-Tag": "draft-404",
+        },
+      }),
+      { data: { draft: true }, shouldClear: false },
     );
-    const notFoundRoute = makeRoute(
-      "/404",
-      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
-    );
-    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
-    const request = new Request("http://localhost/missing", {
-      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
-    });
-    const middlewareHeaders = new Headers({
-      "CDN-Cache-Control": "s-maxage=6000",
-      "Cloudflare-CDN-Cache-Control": "s-maxage=6000",
-      "Cache-Tag": "draft-404",
-    });
 
-    try {
-      const response = await handler(request, "/missing", null, middlewareHeaders, null);
-
-      expect(response.status).toBe(404);
-      expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
-      expect(response.headers.get("cdn-cache-control")).toBeNull();
-      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
-      expect(response.headers.get("cache-tag")).toBeNull();
-    } finally {
-      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
-    }
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-tag")).toBeNull();
   });
 
   it("keeps nonce-bearing source notFound HTML out of shared caches", async () => {

@@ -14,14 +14,68 @@ import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,
   DefaultCdnCacheAdapter,
+  type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
-import { finalizeAppPageRscCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
+import {
+  finalizeAppPageHtmlCacheResponse,
+  finalizeAppPageRscCacheResponse,
+} from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
 function resetActiveAdapter(): void {
   delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+}
+
+function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
+  return {
+    ownsBackgroundRevalidation: false,
+    async get() {
+      return null;
+    },
+    async set() {},
+    buildResponseHeaders(input) {
+      return {
+        "Cache-Control": input.pendingDynamicCheck
+          ? "no-store, must-revalidate"
+          : input.cacheControl,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      };
+    },
+    async revalidateTag() {},
+  };
+}
+
+function finalizePendingDynamicRscResponse(): Response {
+  return finalizeAppPageRscCacheResponse(
+    new Response("pending-dynamic-flight", {
+      headers: {
+        "Cache-Control": "s-maxage=60",
+        "Cache-Tag": "/dashboard",
+        "CDN-Cache-Control": "public, max-age=60",
+        "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+        "X-Vinext-Cache": "MISS",
+      },
+    }),
+    {
+      capturedRscDataPromise: null,
+      cleanPathname: "/dashboard",
+      consumeDynamicUsage() {
+        return false;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["/dashboard"];
+      },
+      isrRscKey: vi.fn(),
+      isrSet: vi.fn(),
+      preserveClientResponseHeaders: false,
+      revalidateSeconds: 60,
+    },
+  );
 }
 
 beforeEach(resetActiveAdapter);
@@ -126,6 +180,55 @@ describe("CloudflareCdnCacheAdapter", () => {
         new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
       ),
     ).toBe(true);
+  });
+
+  it("replaces Cloudflare headers on pending HTML and still skips a late-dynamic cache write", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn();
+
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response("<h1>personalized</h1>", {
+        headers: {
+          "Cache-Control": "s-maxage=60, stale-while-revalidate",
+          "CDN-Cache-Control": "public, max-age=6000",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=6000",
+          "Cache-Tag": "stale",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/dynamic-html",
+        consumeDynamicUsage() {
+          return true;
+        },
+        getPageTags() {
+          return ["/dynamic-html"];
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        isrSet,
+        revalidateSeconds: 60,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBe(
+      "public, max-age=60, stale-while-revalidate=31536000",
+    );
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBe("/dynamic-html");
+    await expect(response.text()).resolves.toBe("<h1>personalized</h1>");
+    await Promise.all(pendingCacheWrites);
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it.each(["MISS", "STATIC"] as const)(
@@ -253,35 +356,21 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(response.text()).resolves.toBe("dynamic-slot-flight");
   });
 
-  it("replaces stale Cloudflare cache overrides for pending dynamic misses", async () => {
-    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+  it("clears adapter-owned headers for pending dynamic misses", async () => {
+    setCdnCacheAdapter(createHeaderClearingCdnAdapter());
+    const response = finalizePendingDynamicRscResponse();
 
-    const response = finalizeAppPageRscCacheResponse(
-      new Response("pending-dynamic-flight", {
-        headers: {
-          "Cache-Control": "s-maxage=60",
-          "Cache-Tag": "/dashboard",
-          "CDN-Cache-Control": "public, max-age=60",
-          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
-          "X-Vinext-Cache": "MISS",
-        },
-      }),
-      {
-        capturedRscDataPromise: null,
-        cleanPathname: "/dashboard",
-        consumeDynamicUsage() {
-          return false;
-        },
-        dynamicUsedDuringBuild: false,
-        getPageTags() {
-          return ["/dashboard"];
-        },
-        isrRscKey: vi.fn(),
-        isrSet: vi.fn(),
-        preserveClientResponseHeaders: false,
-        revalidateSeconds: 60,
-      },
-    );
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("pending-dynamic-flight");
+  });
+
+  it("applies the Cloudflare pending edge policy in a separate adapter case", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = finalizePendingDynamicRscResponse();
 
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
     expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
