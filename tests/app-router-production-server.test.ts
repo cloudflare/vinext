@@ -1140,6 +1140,28 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain('"cookie":null');
   });
 
+  it("lets a concrete Pages data route win a middleware rewrite over an App catch-all", async () => {
+    // Next.js merges Pages and App matchers before applying dynamic-route
+    // precedence, so this concrete Pages route wins over app/docs/[...slug].
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-matcher-managers/default-route-matcher-manager.ts
+    const buildId = fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf8").trim();
+    const res = await fetch(`${baseUrl}/_next/data/${buildId}/pages-data-rewrite-source.json`, {
+      headers: { "x-nextjs-data": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-nextjs-rewrite")).toBe("/docs/pages-data-rewrite-target");
+    expect(res.headers.get("cache-control")).toContain("private");
+    expect(res.headers.getSetCookie()).toEqual([
+      "pages-rewrite-session=middleware; Path=/",
+      "pages-rewrite-session=gssp; Path=/",
+    ]);
+    expect(await res.json()).toEqual({
+      pageProps: { message: "concrete Pages GSSP" },
+      __N_SSP: true,
+    });
+  });
+
   it("serves Pages Router edge API ImageResponse routes in hybrid production", async () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts

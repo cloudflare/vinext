@@ -1244,7 +1244,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   syncNextUrlHeaderVisibility(cleanPathname);
 
-  if (pagesDataRequest && didMiddlewareRewritePathname && preActionMatch) {
+  // A Pages client navigating to a path that middleware rewrites into App
+  // territory needs `x-nextjs-rewrite` so it can hard-navigate; the body is an
+  // unused placeholder. Only take this shortcut when the App match definitively
+  // owns the rewrite target. A dynamic App match does not: a concrete Pages
+  // route outranks it, so those fall through to the arbitration below, which
+  // gives `renderPagesFallback` its chance to run getServerSideProps.
+  if (
+    pagesDataRequest &&
+    didMiddlewareRewritePathname &&
+    preActionMatch &&
+    !preActionMatch.route.isDynamic
+  ) {
     const headers = new Headers();
     mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
     headers.set("content-type", "application/json");
@@ -1493,6 +1504,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     ) {
       const response = buildNextDataNotFoundResponse();
       const headers = new Headers(response.headers);
+      mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
       headers.set("x-nextjs-matched-path", matchPathname(canonicalPathname));
       if (resolvedUrl !== originalResolvedUrl) {
         headers.set("x-nextjs-rewrite", resolvedUrl);

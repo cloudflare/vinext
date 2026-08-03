@@ -3795,6 +3795,99 @@ describe("createAppRscHandler", () => {
     expect(clearRequestContext).toHaveBeenCalled();
   });
 
+  it("lets a concrete Pages route win a middleware rewrite over a dynamic App match", async () => {
+    // A dynamic App match does not own the rewrite target: the Pages route is
+    // more specific, so its data (here a getServerSideProps redirect) must be
+    // rendered rather than short-circuited into an empty rewrite response.
+    const renderPagesFallback = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { __N_REDIRECT: "/login" } }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: (pathname: string) =>
+        pathname === "/protected"
+          ? {
+              params: { slug: ["protected"] },
+              route: createPageRoute({
+                isDynamic: true,
+                pattern: "/[...slug]",
+                routeSegments: ["[...slug]"],
+              }),
+            }
+          : null,
+      middlewareModule: {
+        default: (request: NextRequest) =>
+          request.nextUrl.pathname === "/source"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": new URL("/protected", request.url).toString() },
+              })
+            : undefined,
+      },
+      renderPagesFallback,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/data/build-id/source.json", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-rewrite")).toBe("/protected");
+    expect(await response.json()).toEqual({ pageProps: { __N_REDIRECT: "/login" } });
+    expect(renderPagesFallback).toHaveBeenCalled();
+  });
+
+  it("keeps middleware response headers when a rewrite lands on a dynamic App route", async () => {
+    // No Pages route claims the target, so the App match legitimately owns it.
+    // The response still has to carry cookies the middleware set on the way.
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: (pathname: string) =>
+        pathname === "/app-only"
+          ? {
+              params: { slug: ["app-only"] },
+              route: createPageRoute({
+                isDynamic: true,
+                pattern: "/[...slug]",
+                routeSegments: ["[...slug]"],
+              }),
+            }
+          : null,
+      middlewareModule: {
+        default: (request: NextRequest) =>
+          request.nextUrl.pathname === "/source"
+            ? new Response(null, {
+                headers: {
+                  "set-cookie": "probe=1; Path=/",
+                  "x-test-header": "middleware",
+                  "x-middleware-rewrite": new URL("/app-only", request.url).toString(),
+                },
+              })
+            : undefined,
+      },
+      renderPagesFallback: vi.fn(async () => null),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/data/build-id/source.json", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-rewrite")).toBe("/app-only");
+    expect(response.headers.get("set-cookie")).toBe("probe=1; Path=/");
+    expect(response.headers.get("x-test-header")).toBe("middleware");
+    expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(await response.text()).toBe("{}");
+  });
+
   it.each([
     { convention: "middleware", isProxy: false },
     { convention: "proxy", isProxy: true },

@@ -1234,6 +1234,9 @@ describe("app page cache helpers", () => {
         headers: {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "s-maxage=60, stale-while-revalidate",
+          "Cache-Tag": "/dynamic-html",
+          "CDN-Cache-Control": "public, max-age=60",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
           Vary: "RSC, Accept",
           "X-Vinext-Cache": "MISS",
         },
@@ -1242,6 +1245,9 @@ describe("app page cache helpers", () => {
     );
 
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     await expect(response.text()).resolves.toBe("<h1>personalized</h1>");
     expect(pendingCacheWrites).toHaveLength(1);
@@ -1396,6 +1402,50 @@ describe("app page cache helpers", () => {
     });
 
     expect(didSchedule).toBe(false);
+    expect(pendingCacheWrites).toEqual([]);
+    expect(isrRscKey).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("marks mounted-slot RSC cache MISS responses no-store without persisting them", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrRscKey = vi.fn();
+    const isrSet = vi.fn();
+
+    const response = finalizeAppPageRscCacheResponse(
+      new Response("flight", {
+        headers: {
+          "Content-Type": "text/x-component",
+          "Cache-Control": "s-maxage=60, stale-while-revalidate",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/fresh-rsc",
+        consumeDynamicUsage() {
+          return false;
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags() {
+          return ["/fresh-rsc"];
+        },
+        isrRscKey,
+        isrSet,
+        mountedSlotsHeader: "slot:auth:/",
+        preserveClientResponseHeaders: false,
+        revalidateSeconds: 60,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    // The slot variant is never written to the ISR store, but the fresh MISS
+    // still has to leave the origin uncacheable by shared caches.
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("flight");
     expect(pendingCacheWrites).toEqual([]);
     expect(isrRscKey).not.toHaveBeenCalled();
     expect(isrSet).not.toHaveBeenCalled();
