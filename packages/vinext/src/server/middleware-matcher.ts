@@ -4,7 +4,6 @@ import {
   type RequestContext,
 } from "../config/config-matchers.js";
 import type { NextI18nConfig } from "../config/next-config.js";
-import { removeTrailingSlash } from "../utils/base-path.js";
 import {
   compileMiddlewareMatcherPattern,
   isValidMiddlewareMatcherObjectConfig,
@@ -134,19 +133,16 @@ function stripFirstPathSegment(pathname: string): string {
 }
 
 export function matchPattern(pathname: string, pattern: string): boolean {
-  const hasPatternSyntax = /[\\():*+?]/.test(pattern);
-  const normalizedPattern = hasPatternSyntax ? pattern : removeTrailingSlash(pattern);
-  if (normalizedPattern === "/" && (pathname === "//" || pathname === "/?" || pathname === "/#")) {
+  if (pattern === "/" && (pathname === "//" || pathname === "/?" || pathname === "/#")) {
     return false;
   }
-  let cached = _mwPatternCache.get(normalizedPattern);
+  let cached = _mwPatternCache.get(pattern);
   if (cached === undefined) {
-    cached = compileMatcherPattern(normalizedPattern);
-    _mwPatternCache.set(normalizedPattern, cached);
+    cached = compileMatcherPattern(pattern);
+    _mwPatternCache.set(pattern, cached);
   }
   if (cached === UNSAFE_MATCHER_PATTERN) return true;
-  if (cached.test(pathname)) return true;
-  return pathname.endsWith("/") && !pathname.endsWith("//") && cached.test(pathname.slice(0, -1));
+  return cached.test(pathname);
 }
 
 function compileMatcherPattern(pattern: string): CompiledMatcherPattern {
