@@ -365,23 +365,44 @@ export function getCurrentInterceptionContext(): string | null {
 }
 
 export function getPrefetchInterceptionContext(targetHref: string): string | null {
-  if (isServer) {
-    return null;
-  }
+  return getAppPrefetchRequestState(targetHref).interceptionContext;
+}
+
+export type AppPrefetchRequestState = {
+  interceptionContext: string | null;
+  nextUrl: string;
+};
+
+/**
+ * Capture the source identity for a Link/router prefetch. Once the App Router
+ * has committed an intercepted tree, its visible URL is the intercepted target
+ * while `previousNextUrl` remains the source route that selects the payload.
+ * The browser runtime owns that committed state, so prefer its resolver and
+ * retain the window/manifest derivation only for the pre-hydration fallback.
+ */
+export function getAppPrefetchRequestState(targetHref: string): AppPrefetchRequestState {
+  if (isServer) return { interceptionContext: null, nextUrl: "/" };
+
+  const runtimeState =
+    getNavigationRuntime()?.functions.getPrefetchRequestState?.(targetHref) ?? null;
+  if (runtimeState !== null) return runtimeState;
 
   let targetUrl: URL;
   try {
     targetUrl = new URL(targetHref, window.location.href);
   } catch {
-    return null;
+    return { interceptionContext: null, nextUrl: getCurrentNextUrl() };
   }
 
-  return resolveManifestNavigationInterceptionContext({
-    basePath: __basePath,
-    currentPathname: window.location.pathname,
-    routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
-    targetPathname: targetUrl.pathname,
-  });
+  return {
+    interceptionContext: resolveManifestNavigationInterceptionContext({
+      basePath: __basePath,
+      currentPathname: window.location.pathname,
+      routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
+      targetPathname: targetUrl.pathname,
+    }),
+    nextUrl: getCurrentNextUrl(),
+  };
 }
 
 export function getCurrentNextUrl(): string {
@@ -398,13 +419,14 @@ export function createAppPrefetchRequestHeaders(options: {
   fetchPriority: "auto" | "high" | "low";
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  nextUrl?: string | null;
   prefetchKind?: "auto" | "full";
   renderMode?: AppRscRenderMode;
 }): Headers {
   const prefetchRouterState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
   return createRscRequestHeaders({
     ...options,
-    nextUrl: getCurrentNextUrl(),
+    nextUrl: options.nextUrl === undefined ? getCurrentNextUrl() : options.nextUrl,
     includePrefetchHeader: options.prefetchKind !== "full",
     prefetchRouterState,
   });
@@ -2700,12 +2722,14 @@ const _appRouter: AppRouterInstance = {
     // must not make this prefetch look as though it originated from the target
     // route, and an intervening route change must not change its interception
     // or mounted-slot key.
-    const interceptionContext = getPrefetchInterceptionContext(fullHref);
+    const prefetchRequestState = getAppPrefetchRequestState(fullHref);
+    const interceptionContext = prefetchRequestState.interceptionContext;
     const mountedSlotsHeader = getMountedSlotsHeader();
     const headers = createAppPrefetchRequestHeaders({
       fetchPriority: "low",
       interceptionContext,
       mountedSlotsHeader: mountedSlotsHeader || null,
+      nextUrl: prefetchRequestState.nextUrl,
     });
     const setup = beginPrefetchSetup(fullHref);
     void (async () => {

@@ -458,7 +458,7 @@ function prefetchUrl(
         // begin a second request after it consumes an equivalent cached route.
         if (setup.cancelled) return;
         const {
-          getPrefetchInterceptionContext,
+          getAppPrefetchRequestState,
           getPrefetchCache,
           getPrefetchedUrls,
           getMountedSlotsHeader,
@@ -519,7 +519,8 @@ function prefetchUrl(
         const cacheForNavigation = autoPrefetch.cacheForNavigation || isPrewarmEligible;
         const prefetchShellFirst = autoPrefetch.prefetchShellFirst && !isPrewarmEligible;
 
-        const interceptionContext = getPrefetchInterceptionContext(fullHref);
+        const prefetchRequestState = getAppPrefetchRequestState(fullHref);
+        const interceptionContext = prefetchRequestState.interceptionContext;
         const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
@@ -535,6 +536,7 @@ function prefetchUrl(
         const headers = createAppPrefetchRequestHeaders({
           interceptionContext,
           fetchPriority: priority,
+          nextUrl: prefetchRequestState.nextUrl,
           prefetchKind: mode === "full" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
             ? hasSearchAgnosticShell
@@ -604,6 +606,7 @@ function prefetchUrl(
           const shellHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
+            nextUrl: prefetchRequestState.nextUrl,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           });
           shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -653,6 +656,7 @@ function prefetchUrl(
           const probeHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
+            nextUrl: prefetchRequestState.nextUrl,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           });
           probeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -721,6 +725,7 @@ function prefetchUrl(
                 const shellHeaders = createAppPrefetchRequestHeaders({
                   interceptionContext,
                   fetchPriority: priority,
+                  nextUrl: prefetchRequestState.nextUrl,
                   renderMode: undefined,
                 });
                 shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");

@@ -303,6 +303,7 @@ describe("prerenderApp — RSC extraction", () => {
     );
     for (const route of [
       "vary-all",
+      "vary-accept",
       "vary-user-agent",
       "sets-cookie",
       "rsc-no-store",
@@ -340,6 +341,9 @@ describe("prerenderApp — RSC extraction", () => {
       } else if (pathname === "/vary-all") {
         res.setHeader("Cache-Control", "public, max-age=60");
         res.setHeader("Vary", "Accept-Encoding, *");
+      } else if (pathname === "/vary-accept") {
+        res.setHeader("Cache-Control", "public, max-age=60");
+        res.setHeader("Vary", "Accept");
       } else if (pathname === "/sets-cookie") {
         res.setHeader("Cache-Control", "public, max-age=60");
         res.setHeader("Set-Cookie", "private-token=secret; HttpOnly");
@@ -362,11 +366,14 @@ describe("prerenderApp — RSC extraction", () => {
       }
       res.setHeader(
         "content-type",
-        (pathname === "/rsc-flight" || pathname === "/rsc-source-dependent") && isRsc
+        (pathname === "/rsc-flight" ||
+          pathname === "/rsc-source-dependent" ||
+          pathname === "/vary-accept") &&
+          isRsc
           ? "text/x-component"
           : "text/html",
       );
-      if (pathname === "/rsc-flight" && isRsc) {
+      if ((pathname === "/rsc-flight" || pathname === "/vary-accept") && isRsc) {
         res.setHeader("x-vinext-rsc-prewarm-source-independent", "1");
       }
       res.end(
@@ -432,6 +439,15 @@ describe("prerenderApp — RSC extraction", () => {
         status: "rendered",
         headers: { vary: "Accept-Encoding, *" },
       });
+      const varyAccept = findRoute(prerenderResult.routes, "/vary-accept");
+      expect(varyAccept).toMatchObject({
+        status: "rendered",
+        headers: { vary: "Accept" },
+      });
+      if (varyAccept?.status === "rendered") {
+        expect(varyAccept.prewarmable).toBeUndefined();
+        expect(getPrewarmableAppPaths({ routes: [varyAccept] })).toEqual([]);
+      }
       const setsCookie = findRoute(prerenderResult.routes, "/sets-cookie");
       expect(setsCookie).toMatchObject({ status: "rendered", hasSetCookie: true });
       if (setsCookie?.status === "rendered") {
@@ -913,7 +929,11 @@ describe("writePrerenderIndex", () => {
         },
       ],
       dir,
-      { buildId: "b1", deploymentId: "deploy-1" },
+      {
+        buildId: "b1",
+        deploymentId: "deploy-1",
+        controlledResponseVaryHeaders: ["X-Forwarded-Proto"],
+      },
     );
 
     const index = JSON.parse(fs.readFileSync(path.join(dir, "vinext-prerender.json"), "utf-8"));
@@ -924,6 +944,7 @@ describe("writePrerenderIndex", () => {
       stale: 30,
     });
     expect(index.deploymentId).toBe("deploy-1");
+    expect(index.controlledResponseVaryHeaders).toEqual(["X-Forwarded-Proto"]);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -1446,7 +1467,7 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
     const pageSource =
       "export async function getStaticProps() { return { props: {} }; }\n" +
       "export default function Page() { return null; }\n";
-    for (const page of ["cacheable", "private", "redirect"]) {
+    for (const page of ["cacheable", "private", "redirect", "vary-accept"]) {
       fs.writeFileSync(path.join(pagesDir, `${page}.tsx`), pageSource);
     }
 
@@ -1461,6 +1482,7 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
       } else {
         res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
         res.setHeader("CDN-Cache-Control", "public, max-age=60");
+        if (pathname === "/vary-accept") res.setHeader("Vary", "Accept");
       }
       res.setHeader("Content-Type", "text/html");
       res.end("<html><body>page</body></html>");
@@ -1502,6 +1524,10 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
       expect(findRoute(result.routes, "/cacheable")).toMatchObject({
         status: "rendered",
         headers: { "cdn-cache-control": "public, max-age=60" },
+      });
+      expect(findRoute(result.routes, "/vary-accept")).toMatchObject({
+        status: "rendered",
+        headers: { vary: "Accept" },
       });
       expect(getPrewarmableConcretePaths({ routes: result.routes })).toEqual(["/cacheable"]);
     } finally {

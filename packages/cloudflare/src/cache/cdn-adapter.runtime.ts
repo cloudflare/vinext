@@ -79,6 +79,7 @@ const RSC_CACHE_TAG = "__vinext_rsc";
 const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
 const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
 const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
+const CLOUDFLARE_FORWARDED_PROTO_HEADER = "X-Forwarded-Proto";
 
 type CloudflareCdnCacheAdapterEnv = {
   VINEXT_VERSION_METADATA?: { id?: unknown };
@@ -321,10 +322,11 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       };
     }
 
-    // Workers Caching keys the URI path and query string, but not Host, Cookie,
-    // or Authorization. Credential-bearing requests must reach vinext and are
-    // never stored because the framework cannot prove arbitrary credentials
-    // shareable. Host is isolated through the response Vary contract below.
+    // Workers Caching keys the URI path and query string, but not scheme, Host,
+    // Cookie, or Authorization. Credential-bearing requests must reach vinext
+    // and are never stored because the framework cannot prove arbitrary
+    // credentials shareable. Host and Cloudflare's trusted forwarded protocol
+    // are isolated through the response Vary contract below.
     if (hasRequestCookies() || hasRequestAuthorization()) {
       return {
         "Cache-Control": NO_STORE,
@@ -349,13 +351,14 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
-      // Workers Caching is shared across every hostname that reaches one Worker.
-      // Host is therefore required for both HTML and canonical RSC so custom
-      // Worker wrappers outside vinext cannot leak one host's response to another.
+      // Workers Caching is shared across every hostname and URL scheme that
+      // reaches one Worker. Host and Cloudflare's overwritten
+      // X-Forwarded-Proto are therefore required for both HTML and canonical
+      // RSC so one ingress identity cannot reuse another's response.
       Vary:
         requestKind === "rsc"
-          ? "Accept, Cookie, Authorization, Host"
-          : "Cookie, Authorization, Host",
+          ? `Accept, Cookie, Authorization, Host, ${CLOUDFLARE_FORWARDED_PROTO_HEADER}`
+          : `Cookie, Authorization, Host, ${CLOUDFLARE_FORWARDED_PROTO_HEADER}`,
     };
 
     // Workers Caching requires every Vary variant of one URL to carry the same

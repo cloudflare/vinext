@@ -19,7 +19,10 @@ import {
   emitPrerenderPathManifest,
   type PrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
-import { resolveRscCacheKeyMode } from "vinext/internal/cache-adapters";
+import {
+  resolveControlledResponseVaryHeaders,
+  resolveRscCacheKeyMode,
+} from "vinext/internal/cache-adapters";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
@@ -1405,6 +1408,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
       injectPregeneratedPaths: Boolean(prerenderDecision),
       nextConfig,
       rscCacheKeyMode: prerenderPathManifest?.rscCacheKeyMode ?? resolvedRscCacheKeyMode,
+      controlledResponseVaryHeaders: resolveControlledResponseVaryHeaders(
+        viteConfigMetadata.cacheConfig,
+      ),
     });
     ranPrerender = true;
   }

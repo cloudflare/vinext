@@ -25,6 +25,7 @@ import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
 const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
 const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
+const CLOUDFLARE_FORWARDED_PROTO_HEADER = "X-Forwarded-Proto";
 
 export type CdnWarmOptions = {
   targetUrl: string;
@@ -377,17 +378,28 @@ const ADMITTED_CF_CACHE_STATUSES = new Set([
   "STALE",
 ]);
 const CANONICAL_RSC_VARY_FIELDS = new Set(
-  ["accept", "cookie", "authorization", "host", ...VINEXT_RSC_VARY_HEADER.split(",")].map((field) =>
-    field.trim().toLowerCase(),
-  ),
+  [
+    "accept",
+    "cookie",
+    "authorization",
+    "host",
+    CLOUDFLARE_FORWARDED_PROTO_HEADER,
+    ...VINEXT_RSC_VARY_HEADER.split(","),
+  ].map((field) => field.trim().toLowerCase()),
 );
 const REQUIRED_CANONICAL_RSC_VARY_FIELDS = new Set(
-  [...VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER.split(","), "Cookie", "Authorization", "Host"].map(
-    (field) => field.trim().toLowerCase(),
-  ),
+  [
+    ...VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER.split(","),
+    "Cookie",
+    "Authorization",
+    "Host",
+    CLOUDFLARE_FORWARDED_PROTO_HEADER,
+  ].map((field) => field.trim().toLowerCase()),
 );
 const REQUIRED_HTML_VARY_FIELDS = new Set(
-  ["Cookie", "Authorization", "Host"].map((field) => field.toLowerCase()),
+  ["Cookie", "Authorization", "Host", CLOUDFLARE_FORWARDED_PROTO_HEADER].map((field) =>
+    field.toLowerCase(),
+  ),
 );
 
 function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"): string | null {
@@ -421,7 +433,51 @@ function findMissingWarmVaryField(response: Response, kind: "html" | "rsc"): str
   return null;
 }
 
-async function fetchWithTimeout(
+async function drainResponseBody(response: Response, signal: AbortSignal): Promise<void> {
+  if (!response.body) {
+    signal.throwIfAborted();
+    return;
+  }
+
+  const reader = response.body.getReader();
+  let rejectOnAbort: ((reason?: unknown) => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = reject;
+  });
+  const abort = () => {
+    const reason = signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+    // Do not leave a stalled response producing data after its warmup deadline.
+    // Reject immediately even if a custom stream's cancellation hook is slow.
+    void reader.cancel(reason).catch(() => {});
+    rejectOnAbort?.(reason);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+
+  let drainSettled = false;
+  const drain = (async () => {
+    try {
+      while (true) {
+        const { done } = await reader.read();
+        if (done) return;
+      }
+    } finally {
+      drainSettled = true;
+    }
+  })();
+
+  try {
+    signal.throwIfAborted();
+    await Promise.race([drain, aborted]);
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener("abort", abort);
+    // A custom stream may keep read() pending after cancellation. Releasing a
+    // reader with a pending read throws and would mask the timeout error.
+    if (drainSettled) reader.releaseLock();
+  }
+}
+
+async function fetchAndDrainWithTimeout(
   fetchImpl: typeof fetch,
   url: URL,
   timeoutMs: number,
@@ -433,12 +489,14 @@ async function fetchWithTimeout(
   const requestHeaders = new Headers(headers);
   requestHeaders.set("User-Agent", "vinext-cloudflare-cdn-warm");
   try {
-    return await fetchImpl(url, {
+    const response = await fetchImpl(url, {
       method: "GET",
       redirect,
       headers: requestHeaders,
       signal: controller.signal,
     });
+    await drainResponseBody(response, controller.signal);
+    return response;
   } finally {
     clearTimeout(timer);
   }
@@ -509,14 +567,13 @@ async function warmOnePath(
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
     try {
-      const response = await fetchWithTimeout(
+      const response = await fetchAndDrainWithTimeout(
         options.fetchImpl,
         url,
         options.timeoutMs,
         target.headers ?? options.headers,
         "manual",
       );
-      await response.arrayBuffer();
 
       if (response.redirected || response.status < 200 || response.status >= 300) {
         lastError = response.redirected ? "redirected response" : `HTTP ${response.status}`;

@@ -2503,6 +2503,45 @@ function bootstrapHydration(
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    getPrefetchRequestState: (targetHref) => {
+      let targetUrl: URL;
+      try {
+        targetUrl = new URL(targetHref, window.location.href);
+      } catch {
+        targetUrl = new URL(window.location.href);
+      }
+
+      if (!browserNavigationController.hasBrowserRouterState()) {
+        const sourceUrl = new URL(window.location.href);
+        return {
+          interceptionContext: resolveManifestNavigationInterceptionContext({
+            basePath: __basePath,
+            currentPathname: sourceUrl.pathname,
+            routeManifest: getBrowserRouteManifest(),
+            targetPathname: targetUrl.pathname,
+          }),
+          nextUrl: resolveNavigationRequestNextUrl({
+            basePath: __basePath,
+            previousNextUrl: null,
+            sourceUrl,
+          }),
+        };
+      }
+
+      const state = browserNavigationController.getBrowserRouterState();
+      const requestState = getRequestState("navigate", targetUrl.pathname);
+      return {
+        interceptionContext: requestState.interceptionContext,
+        nextUrl: resolveNavigationRequestNextUrl({
+          basePath: __basePath,
+          previousNextUrl: requestState.previousNextUrl,
+          sourceUrl: new URL(
+            clientNavigationSnapshotHref(state.navigationSnapshot),
+            window.location.origin,
+          ),
+        }),
+      };
+    },
     getPrefetchRouterState: () => {
       if (!browserNavigationController.hasBrowserRouterState()) {
         if (initialPrefetchRouterState) return initialPrefetchRouterState;

@@ -37,6 +37,8 @@ export type PrerenderManifest = {
   buildId?: string;
   deploymentId?: string;
   trailingSlash?: boolean;
+  /** Adapter-owned response Vary fields admitted during prewarm selection. */
+  controlledResponseVaryHeaders?: string[];
   routes?: PrerenderManifestRoute[];
   pregeneratedConcretePaths?: Array<[string, string[]]>;
 };
@@ -81,7 +83,6 @@ const CONTROLLED_PREWARM_VARY_HEADERS = new Set(
     VINEXT_MOUNTED_SLOTS_HEADER,
     VINEXT_RSC_RENDER_MODE_HEADER,
     VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
-    "Accept",
     "Cookie",
     "Authorization",
     "Host",
@@ -90,8 +91,17 @@ const CONTROLLED_PREWARM_VARY_HEADERS = new Set(
 
 export function hasNonCacheablePrewarmHeaders(
   headers: Headers | Record<string, string> | undefined,
+  options?: {
+    allowRscAcceptVary?: boolean;
+    controlledResponseVaryHeaders?: readonly string[];
+  },
 ): boolean {
   if (!headers) return false;
+  const controlledVaryHeaders = new Set(CONTROLLED_PREWARM_VARY_HEADERS);
+  for (const name of options?.controlledResponseVaryHeaders ?? []) {
+    if (typeof name !== "string") continue;
+    controlledVaryHeaders.add(name.toLowerCase());
+  }
   for (const [name, value] of headers instanceof Headers ? headers : Object.entries(headers)) {
     const lowerName = name.toLowerCase();
     if (lowerName === "set-cookie") return true;
@@ -99,7 +109,13 @@ export function hasNonCacheablePrewarmHeaders(
       for (const token of value.split(",")) {
         const fieldName = token.trim().toLowerCase();
         if (!fieldName) continue;
-        if (fieldName === "*" || !CONTROLLED_PREWARM_VARY_HEADERS.has(fieldName)) return true;
+        // Persisted prerender headers describe the HTML response. An HTML
+        // `Vary: Accept` needs a browser-shaped document warm request and cannot
+        // be represented by the single generic HTML request in the warm plan.
+        // The separate canonical RSC policy probe does vary on Accept by
+        // design, so admit it only when validating that response directly.
+        if (fieldName === "accept" && options?.allowRscAcceptVary === true) continue;
+        if (fieldName === "*" || !controlledVaryHeaders.has(fieldName)) return true;
       }
     }
     if (!isCdnCachePolicyHeaderName(name)) continue;
@@ -113,11 +129,17 @@ export function hasNonCacheablePrewarmHeaders(
  * RSC cache shape only when its completed build result has a cacheable lifetime.
  * `revalidate: 0` and explicit private/no-store policies fail closed.
  */
-export function isPrewarmableAppRoute(route: PrerenderManifestRoute): boolean {
-  return route.router === "app" && isPrewarmableRoute(route);
+export function isPrewarmableAppRoute(
+  route: PrerenderManifestRoute,
+  controlledResponseVaryHeaders?: readonly string[],
+): boolean {
+  return route.router === "app" && isPrewarmableRoute(route, controlledResponseVaryHeaders);
 }
 
-export function isPrewarmableRoute(route: PrerenderManifestRoute): boolean {
+export function isPrewarmableRoute(
+  route: PrerenderManifestRoute,
+  controlledResponseVaryHeaders?: readonly string[],
+): boolean {
   const hasCacheableLifetime =
     route.revalidate === false ||
     (typeof route.revalidate === "number" &&
@@ -128,7 +150,7 @@ export function isPrewarmableRoute(route: PrerenderManifestRoute): boolean {
     hasCacheableLifetime &&
     route.prewarmable !== false &&
     route.hasSetCookie !== true &&
-    !hasNonCacheablePrewarmHeaders(route.headers)
+    !hasNonCacheablePrewarmHeaders(route.headers, { controlledResponseVaryHeaders })
   );
 }
 
@@ -257,7 +279,7 @@ export function getPrewarmableConcretePaths(
   const paths: string[] = [];
   const seen = new Set<string>();
   for (const route of routes) {
-    if (!isPrewarmableRoute(route)) continue;
+    if (!isPrewarmableRoute(route, manifest.controlledResponseVaryHeaders)) continue;
     if (options?.router && route.router !== options.router) continue;
     const pathname = route.path ?? route.route;
     if (!options?.includeFallbackShells && isFallbackShellArtifactPath(pathname, route)) continue;
@@ -277,7 +299,7 @@ export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
   const paths: string[] = [];
   const seen = new Set<string>();
   for (const route of routes) {
-    if (!isPrewarmableAppRoute(route)) continue;
+    if (!isPrewarmableAppRoute(route, manifest.controlledResponseVaryHeaders)) continue;
     const pathname = route.path ?? route.route;
     if (
       isUnresolvedRoutePattern(pathname, route) ||

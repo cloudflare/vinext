@@ -236,6 +236,8 @@ type PrerenderOptions = {
    * multiple phases and write a single unified manifest itself.
    */
   skipManifest?: boolean;
+  /** Adapter-owned response Vary fields that its warmer reproduces. */
+  controlledResponseVaryHeaders?: readonly string[];
 };
 
 type PrerenderPagesOptions = {
@@ -919,7 +921,11 @@ export async function prerenderPages({
           }
           const hasSetCookie = response.headers.has("set-cookie");
           const isRedirect = response.status >= 300 && response.status < 400;
-          const prewarmable = !isRedirect && !hasNonCacheablePrewarmHeaders(response.headers);
+          const prewarmable =
+            !isRedirect &&
+            !hasNonCacheablePrewarmHeaders(response.headers, {
+              controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
+            });
 
           if (isRedirect) {
             // getStaticProps returned a redirect — emit a meta-refresh HTML page
@@ -1017,6 +1023,7 @@ export async function prerenderPages({
         buildId: config.buildId,
         deploymentId: config.deploymentId,
         trailingSlash: config.trailingSlash,
+        controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
       });
 
     return { routes: results };
@@ -1600,7 +1607,10 @@ export async function prerenderApp({
                   ?.toLowerCase()
                   .startsWith(VINEXT_RSC_CONTENT_TYPE),
               ) &&
-              !hasNonCacheablePrewarmHeaders(rscRes.headers);
+              !hasNonCacheablePrewarmHeaders(rscRes.headers, {
+                allowRscAcceptVary: true,
+                controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
+              });
           }
           if (rscData === null) {
             for (const [name, value] of rscRes.headers) {
@@ -1724,7 +1734,10 @@ export async function prerenderApp({
           }
           const hasSetCookie = response.headers.has("set-cookie");
           const prewarmable =
-            response.status === 200 && !hasNonCacheablePrewarmHeaders(response.headers);
+            response.status === 200 &&
+            !hasNonCacheablePrewarmHeaders(response.headers, {
+              controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
+            });
           await response.body?.cancel();
           return {
             route: route.servedUrl,
@@ -1794,6 +1807,7 @@ export async function prerenderApp({
         buildId: config.buildId,
         deploymentId: config.deploymentId,
         trailingSlash: config.trailingSlash,
+        controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
       });
 
     return {
@@ -1911,9 +1925,14 @@ function parseCacheControlSeconds(cacheControl: string, directive: string): numb
 export function writePrerenderIndex(
   routes: PrerenderRouteResult[],
   outDir: string,
-  options?: { buildId?: string; deploymentId?: string; trailingSlash?: boolean },
+  options?: {
+    buildId?: string;
+    deploymentId?: string;
+    trailingSlash?: boolean;
+    controlledResponseVaryHeaders?: readonly string[];
+  },
 ): void {
-  const { buildId, deploymentId, trailingSlash } = options ?? {};
+  const { buildId, deploymentId, trailingSlash, controlledResponseVaryHeaders } = options ?? {};
   // Produce a stripped-down version for the index (omit outputFiles detail)
   const indexRoutes = routes.map((r) => {
     if (r.status === "rendered") {
@@ -1942,6 +1961,9 @@ export function writePrerenderIndex(
     ...(buildId ? { buildId } : {}),
     ...(deploymentId ? { deploymentId } : {}),
     ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
+    ...(controlledResponseVaryHeaders && controlledResponseVaryHeaders.length > 0
+      ? { controlledResponseVaryHeaders }
+      : {}),
     routes: indexRoutes,
     pregeneratedConcretePaths: buildPregeneratedConcretePathTable({ routes: indexRoutes }),
   };

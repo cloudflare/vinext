@@ -14,7 +14,7 @@ import {
 } from "../packages/cloudflare/src/cdn-warm.js";
 import { VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
-const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization, Host`;
+const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization, Host, X-Forwarded-Proto`;
 
 let tmpDir: string;
 
@@ -137,6 +137,76 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/docs/intro"]);
+  });
+
+  it("keeps HTML Accept variants out of strict warmup for App and Pages routes", async () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/app-vary-accept", "/pages-vary-accept", "/safe"],
+        appPaths: ["/app-vary-accept"],
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/app-vary-accept",
+            status: "rendered",
+            router: "app",
+            revalidate: false,
+            fallback: false,
+            headers: { Vary: "Accept" },
+          },
+          {
+            route: "/pages-vary-accept",
+            status: "rendered",
+            router: "pages",
+            revalidate: false,
+            fallback: false,
+            headers: { Vary: "Accept" },
+          },
+          {
+            route: "/safe",
+            status: "rendered",
+            router: "pages",
+            revalidate: false,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response("html", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": "MISS",
+            Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+          },
+        }),
+    );
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/safe"],
+      rscPaths: [],
+      rscCacheKeyMode: "response-vary",
+    });
+    await expect(
+      warmCdnCacheFromPrerender({
+        root: tmpDir,
+        targetUrl: "https://app.example.com",
+        strict: true,
+        fetchImpl,
+      }),
+    ).resolves.toMatchObject({ total: 1, warmed: 1, failed: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toEqual(new URL("https://app.example.com/safe"));
   });
 
   it("uses trailing-slash config from the full prerender manifest fallback", () => {
@@ -731,7 +801,7 @@ describe("Cloudflare CDN warmup", () => {
             status: 200,
             headers: {
               "CF-Cache-Status": "MISS",
-              Vary: "Cookie, Authorization, Host",
+              Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
             },
           }),
     );
@@ -761,7 +831,10 @@ describe("Cloudflare CDN warmup", () => {
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("ok", {
           status: 200,
-          headers: { "CF-Cache-Status": "HIT", Vary: "Cookie, Authorization, Host" },
+          headers: {
+            "CF-Cache-Status": "HIT",
+            Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+          },
         }),
     );
 
@@ -774,6 +847,92 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds response body draining by the configured request timeout", async () => {
+    vi.useFakeTimers();
+    let bodyCancelled = false;
+    const stalledBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+      },
+      cancel() {
+        bodyCancelled = true;
+      },
+    });
+
+    try {
+      const resultPromise = warmCdnCache({
+        targetUrl: "https://app.example.com",
+        paths: ["/streaming"],
+        timeoutMs: 25,
+        retries: 0,
+        fetchImpl: async () =>
+          new Response(stalledBody, {
+            status: 200,
+            headers: {
+              "CF-Cache-Status": "MISS",
+              Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+            },
+          }),
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        total: 1,
+        warmed: 0,
+        failed: 1,
+        failures: [{ path: "/streaming", error: "timed out after 25ms" }],
+      });
+      expect(bodyCancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries after a response body drain times out", async () => {
+    vi.useFakeTimers();
+    let bodyCancelled = false;
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              bodyCancelled = true;
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response("complete", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": "MISS",
+            Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+          },
+        }),
+      );
+
+    try {
+      const resultPromise = warmCdnCache({
+        targetUrl: "https://app.example.com",
+        paths: ["/streaming"],
+        timeoutMs: 25,
+        retries: 1,
+        fetchImpl: fetchMock,
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      await expect(resultPromise).resolves.toMatchObject({ total: 1, warmed: 1, failed: 0 });
+      expect(bodyCancelled).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("warms one exact base RSC request for each App Router path", async () => {
@@ -793,7 +952,7 @@ describe("Cloudflare CDN warmup", () => {
             headers: {
               "CF-Cache-Status": "MISS",
               "Content-Type": "text/html",
-              Vary: "Cookie, Authorization, Host",
+              Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
             },
           });
     });
@@ -935,7 +1094,7 @@ describe("Cloudflare CDN warmup", () => {
       fetchImpl: async () =>
         new Response("html", {
           status: 200,
-          headers: { Vary: "Cookie, Authorization, Host" },
+          headers: { Vary: "Cookie, Authorization, Host, X-Forwarded-Proto" },
         }),
     });
 
@@ -962,6 +1121,7 @@ describe("Cloudflare CDN warmup", () => {
     ["Authorization, Host", "cookie"],
     ["Cookie, Host", "authorization"],
     ["Cookie, Authorization", "host"],
+    ["Cookie, Authorization, Host", "x-forwarded-proto"],
   ])("rejects HTML entries without required Vary isolation (%s)", async (vary, missing) => {
     const result = await warmCdnCache({
       targetUrl: "https://app.example.com",
@@ -977,7 +1137,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(result.failures[0]?.error).toBe(`missing required Vary field: ${missing}`);
   });
 
-  it("accepts HTML entries isolated by Cookie, Authorization, and Host", async () => {
+  it("accepts HTML entries isolated by credentials, host, and forwarded protocol", async () => {
     const result = await warmCdnCache({
       targetUrl: "https://app.example.com",
       paths: ["/app"],
@@ -986,7 +1146,7 @@ describe("Cloudflare CDN warmup", () => {
           status: 200,
           headers: {
             "CF-Cache-Status": "MISS",
-            Vary: "Cookie, Authorization, Host",
+            Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
           },
         }),
     });
@@ -1036,7 +1196,28 @@ describe("Cloudflare CDN warmup", () => {
     expect(result.failures[0]?.error).toBe("missing required Vary field: rsc");
   });
 
-  it("accepts Host as required isolation in the canonical RSC Vary contract", async () => {
+  it("rejects RSC entries without forwarded-protocol isolation", async () => {
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: [],
+      rscPaths: ["/app"],
+      rscCacheKeyMode: "response-vary",
+      fetchImpl: async () =>
+        new Response("flight", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": "MISS",
+            "Content-Type": "text/x-component",
+            Vary: `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization, Host`,
+          },
+        }),
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
+    expect(result.failures[0]?.error).toBe("missing required Vary field: x-forwarded-proto");
+  });
+
+  it("accepts host and forwarded protocol in the canonical RSC Vary contract", async () => {
     const result = await warmCdnCache({
       targetUrl: "https://warm.example.com",
       paths: [],

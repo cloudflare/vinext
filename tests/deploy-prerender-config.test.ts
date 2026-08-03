@@ -230,6 +230,7 @@ describe("deploy prerender config wiring", () => {
         injectPregeneratedPaths: true,
         root: tmpDir,
         rscCacheKeyMode: "response-vary",
+        controlledResponseVaryHeaders: ["X-Forwarded-Proto"],
       }),
     );
   });
@@ -247,6 +248,7 @@ describe("deploy prerender config wiring", () => {
         injectPregeneratedPaths: false,
         root: tmpDir,
         rscCacheKeyMode: "response-vary",
+        controlledResponseVaryHeaders: ["X-Forwarded-Proto"],
       }),
     );
     expect(
@@ -510,7 +512,10 @@ describe("deploy prerender config wiring", () => {
 
     const metadata = await loadDeployViteConfigMetadata(tmpDir);
 
-    expect(metadata.cacheConfig?.cdn?.capabilities).toEqual({ responseVary: "verbatim" });
+    expect(metadata.cacheConfig?.cdn?.capabilities).toEqual({
+      responseVary: "verbatim",
+      controlledResponseVaryHeaders: ["X-Forwarded-Proto"],
+    });
   });
 
   it("accepts non-literal cache descriptors when validating ISR deploys", async () => {

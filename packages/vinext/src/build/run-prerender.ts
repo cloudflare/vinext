@@ -106,6 +106,8 @@ type RunPrerenderOptions = {
   rscBundlePath?: string;
   /** RSC URL strategy selected by the configured CDN cache adapter. */
   rscCacheKeyMode?: RscCacheKeyMode;
+  /** Adapter-owned response Vary fields that its warmer reproduces. */
+  controlledResponseVaryHeaders?: readonly string[];
   /** Whether rendered artifacts should become runtime pregenerated routes. */
   injectPregeneratedPaths?: boolean;
   /**
@@ -268,6 +270,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         config,
         concurrency: options.concurrency,
         probeRscCachePolicy: options.rscCacheKeyMode === "response-vary",
+        controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
         rscBundlePath,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
@@ -303,6 +306,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         skipManifest: true,
         config,
         concurrency: options.concurrency,
+        controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
         // For hybrid builds pass the shared prod server; for single-router builds
         // fall back to the pages bundle path so prerenderPages starts its own.
         ...(sharedProdServer
@@ -354,6 +358,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       buildId: config.buildId,
       deploymentId: config.deploymentId,
       trailingSlash: config.trailingSlash,
+      controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
     });
   } finally {
     progress.finish(rendered, skipped, errors);

@@ -17,6 +17,7 @@ import {
   findVinextCacheConfigInPlugins,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
+  resolveControlledResponseVaryHeaders,
   resolveRscCacheKeyMode,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
@@ -141,6 +142,23 @@ describe("cache adapter capabilities", () => {
         cdn: { adapter: "custom", capabilities: { responseVary: "verbatim" } },
       }),
     ).toBe("response-vary");
+  });
+
+  it("normalizes adapter-owned response Vary fields for prerender admission", () => {
+    expect(
+      resolveControlledResponseVaryHeaders({
+        cdn: {
+          adapter: "custom",
+          capabilities: {
+            controlledResponseVaryHeaders: [
+              " X-Forwarded-Proto ",
+              "x-forwarded-proto",
+              "invalid header",
+            ],
+          },
+        },
+      }),
+    ).toEqual(["X-Forwarded-Proto"]);
   });
 
   it("compiles the Cloudflare capability into the shared browser/server protocol", async () => {
@@ -331,7 +349,10 @@ describe("cdnAdapter builder + factory", () => {
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toBeUndefined();
-    expect(descriptor.capabilities).toEqual({ responseVary: "verbatim" });
+    expect(descriptor.capabilities).toEqual({
+      responseVary: "verbatim",
+      controlledResponseVaryHeaders: ["X-Forwarded-Proto"],
+    });
   });
 
   it("factory returns a CloudflareCdnCacheAdapter", () => {

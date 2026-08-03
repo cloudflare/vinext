@@ -63,7 +63,11 @@ import {
   type ResolvedVinextPrerenderConfig,
   type VinextRouteRootConfig,
 } from "./config/prerender.js";
-import { resolveRscCacheKeyMode, type VinextCacheConfig } from "./cache/cache-adapters-virtual.js";
+import {
+  resolveControlledResponseVaryHeaders,
+  resolveRscCacheKeyMode,
+  type VinextCacheConfig,
+} from "./cache/cache-adapters-virtual.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -718,6 +722,9 @@ async function buildApp() {
       concurrency: parsed.prerenderConcurrency,
       nextConfig: resolvedNextConfig,
       rscCacheKeyMode: resolveRscCacheKeyMode(buildConfigMetadata.cacheConfig),
+      controlledResponseVaryHeaders: resolveControlledResponseVaryHeaders(
+        buildConfigMetadata.cacheConfig,
+      ),
     });
     await emitPrerenderPathManifest({
       root,

@@ -32,6 +32,7 @@ let storePrefetchResponse: Navigation["storePrefetchResponse"];
 let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
+let getAppPrefetchRequestState: Navigation["getAppPrefetchRequestState"];
 let getCurrentInterceptionContext: Navigation["getCurrentInterceptionContext"];
 let getCurrentNextUrl: Navigation["getCurrentNextUrl"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
@@ -72,6 +73,7 @@ beforeEach(async () => {
   consumePrefetchResponse = nav.consumePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
+  getAppPrefetchRequestState = nav.getAppPrefetchRequestState;
   getCurrentInterceptionContext = nav.getCurrentInterceptionContext;
   getCurrentNextUrl = nav.getCurrentNextUrl;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
@@ -408,6 +410,23 @@ describe("prefetch cache eviction", () => {
     (globalThis as any).window.location.pathname = "/feed";
 
     expect(getCurrentInterceptionContext()).toBe("/feed");
+  });
+
+  it("prefers the committed App Router source identity for prefetch requests", () => {
+    const getPrefetchRequestState = vi.fn(() => ({
+      interceptionContext: "/feed",
+      nextUrl: "/feed?view=grid",
+    }));
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { getPrefetchRequestState },
+    };
+
+    expect(getAppPrefetchRequestState("/photos/42")).toEqual({
+      interceptionContext: "/feed",
+      nextUrl: "/feed?view=grid",
+    });
+    expect(getPrefetchRequestState).toHaveBeenCalledWith("/photos/42");
   });
 
   it("allows separate interception-context entries for the same RSC URL", () => {

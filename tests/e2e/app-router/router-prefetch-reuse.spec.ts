@@ -13,6 +13,7 @@ import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4174";
 const FILM_HREF = "/film/tt0068646-the-godfather-1972";
+const SECOND_FILM_HREF = "/film/tt0111161-the-shawshank-redemption-1994";
 
 type RouterWindow = Window & {
   next?: { router?: { prefetch(href: string): void; push(href: string): void } };
@@ -81,6 +82,47 @@ test.describe("router.prefetch navigation reuse", () => {
     await expect(page.locator('[data-testid="film-panel"]')).toBeVisible();
     await expect(page).toHaveURL(`${BASE}${FILM_HREF}`);
     expect(filmRscRequests.length).toBe(1);
+  });
+
+  test("router.prefetch after interception shares the committed source identity with push", async ({
+    page,
+  }) => {
+    const targetRequests: Request[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === SECOND_FILM_HREF && url.searchParams.has("_rsc")) {
+        targetRequests.push(request);
+      }
+    });
+
+    await page.goto(`${BASE}/top`);
+    await waitForAppRouterHydration(page);
+    await page.click("#godfather-film-link");
+    await expect(page.locator('[data-testid="film-panel"]')).toBeVisible();
+    await expect(page).toHaveURL(`${BASE}${FILM_HREF}`);
+
+    await page.evaluate((href) => {
+      const router = (window as RouterWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      router.prefetch(href);
+    }, SECOND_FILM_HREF);
+    await expect.poll(() => targetRequests.length).toBe(1);
+
+    const prefetchHeaders = targetRequests[0]!.headers();
+    expect(prefetchHeaders["next-url"]).toBe("/top");
+    expect(prefetchHeaders["x-vinext-interception-context"]).toBe("/top");
+
+    await page.evaluate((href) => {
+      const router = (window as RouterWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      void router.push(href);
+    }, SECOND_FILM_HREF);
+
+    await expect(page.locator('[data-testid="film-panel-id"]')).toHaveText(
+      "tt0111161-the-shawshank-redemption-1994",
+    );
+    await expect(page).toHaveURL(`${BASE}${SECOND_FILM_HREF}`);
+    expect(targetRequests).toHaveLength(1);
   });
 
   test("router.prefetch and router.push in the same task issue one request", async ({ page }) => {

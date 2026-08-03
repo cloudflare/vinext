@@ -35,6 +35,11 @@ type NavigationRuntimePrefetchRouterState = {
   routeId: string;
 };
 
+export type NavigationRuntimePrefetchRequestState = {
+  interceptionContext: string | null;
+  nextUrl: string;
+};
+
 type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
   historyState: unknown;
@@ -65,6 +70,7 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
+  getPrefetchRequestState?: (targetHref: string) => NavigationRuntimePrefetchRequestState;
   getPrefetchRouterState?: () => NavigationRuntimePrefetchRouterState | null;
   /**
    * Called at the start of every App Router navigation so the <Link> shim can
@@ -130,6 +136,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRequestState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRouterState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&

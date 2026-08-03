@@ -100,7 +100,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     ).toEqual({
       "Cache-Control": "public, max-age=0, must-revalidate",
       "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
-      Vary: "Cookie, Authorization, Host",
+      Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
     });
   });
 
@@ -140,7 +140,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
       "Cache-Tag": "__vinext_rsc",
-      Vary: "Accept, Cookie, Authorization, Host",
+      Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
     });
 
     const variantHeaders: HeadersInit[] = [
@@ -305,7 +305,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      Vary: "Accept, Cookie, Authorization, Host",
+      Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
     });
     await expect(
       buildFor({
@@ -347,8 +347,42 @@ describe("CloudflareCdnCacheAdapter", () => {
     for (const host of ["tenant-a.example.com", "tenant-b.example.com"]) {
       expect(buildForHost(host)).toMatchObject({
         "CDN-Cache-Control": "public, max-age=60",
-        Vary: "Cookie, Authorization, Host",
+        Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
       });
+    }
+  });
+
+  it("partitions cacheable HTML and RSC entries by Cloudflare's forwarded protocol", async () => {
+    const buildVaryIdentity = async (protocol: "http" | "https", rsc: boolean) => {
+      const requestHeaders = new Headers({
+        "X-Forwarded-Proto": protocol,
+        ...(rsc ? { Accept: "text/x-component", RSC: "1" } : {}),
+      });
+      const responseHeaders = await runWithHeadersContext(
+        headersContextFromRequest(
+          new Request(`${protocol}://example.com/blog${rsc ? "?_rsc" : ""}`, {
+            headers: requestHeaders,
+          }),
+        ),
+        () => adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog"] }),
+      );
+      const vary = responseHeaders.Vary;
+      expect(vary).toContain("X-Forwarded-Proto");
+      return {
+        cacheTag: responseHeaders["Cache-Tag"],
+        identity: vary
+          ?.split(",")
+          .map((field) => requestHeaders.get(field.trim()) ?? "")
+          .join("\n"),
+      };
+    };
+
+    for (const rsc of [false, true]) {
+      const http = await buildVaryIdentity("http", rsc);
+      const https = await buildVaryIdentity("https", rsc);
+      expect(http.identity).not.toBe(https.identity);
+      expect(http.cacheTag).toBe(rsc ? "__vinext_rsc" : "__vinext_html");
+      expect(https.cacheTag).toBe(http.cacheTag);
     }
   });
 
@@ -484,7 +518,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       "Cache-Control": "public, max-age=0, must-revalidate",
       "CDN-Cache-Control": "public, max-age=60",
       "Cache-Tag": "__vinext_rsc",
-      Vary: "Accept, Cookie, Authorization, Host",
+      Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
     });
   });
 

@@ -33,6 +33,12 @@ export type CdnCacheAdapterCapabilities = {
    * header digest in `_rsc` for caches that key only by URL.
    */
   responseVary?: "verbatim";
+  /**
+   * Additional response `Vary` fields that the adapter controls and its
+   * deploy-time warmer reproduces. These fields are admitted when deciding
+   * whether a prerendered response can be safely prewarmed.
+   */
+  controlledResponseVaryHeaders?: readonly string[];
 };
 
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
@@ -51,6 +57,25 @@ export type RscCacheKeyMode = "header-digest" | "response-vary";
 
 export function resolveRscCacheKeyMode(cache?: VinextCacheConfig | null): RscCacheKeyMode {
   return cache?.cdn?.capabilities?.responseVary === "verbatim" ? "response-vary" : "header-digest";
+}
+
+const HTTP_FIELD_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+export function resolveControlledResponseVaryHeaders(cache?: VinextCacheConfig | null): string[] {
+  const headers = cache?.cdn?.capabilities?.controlledResponseVaryHeaders;
+  if (!headers) return [];
+
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const header of headers) {
+    if (typeof header !== "string") continue;
+    const normalized = header.trim();
+    const key = normalized.toLowerCase();
+    if (!HTTP_FIELD_NAME.test(normalized) || seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
 }
 
 /**

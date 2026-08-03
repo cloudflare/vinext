@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
-const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization, Host`;
+const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization, Host, X-Forwarded-Proto`;
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -76,7 +76,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             status: 200,
             headers: {
               "CF-Cache-Status": "MISS",
-              Vary: "Cookie, Authorization, Host",
+              Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
             },
           }),
       ),
@@ -197,7 +197,7 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
       const requestUrl = new URL(formatFetchUrl(url));
       const requestHeaders = new Headers(init?.headers);
       const isRsc = requestHeaders.get("RSC") === "1";
-      const vary = isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host";
+      const vary = isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host, X-Forwarded-Proto";
       const cacheKey = JSON.stringify([
         requestUrl.href,
         ...vary.split(",").map((field) => {
@@ -393,7 +393,7 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
         headers: {
           "CF-Cache-Status": "MISS",
           "Content-Type": isRsc ? "text/x-component" : "text/html",
-          Vary: isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host",
+          Vary: isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host, X-Forwarded-Proto",
         },
       });
     });
@@ -465,7 +465,10 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
         versionProbeResponse(url, init) ??
         new Response("html", {
           status: 200,
-          headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+          headers: {
+            "CF-Cache-Status": "MISS",
+            Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+          },
         })
       );
     });
@@ -536,7 +539,7 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
         headers: {
           "CF-Cache-Status": "MISS",
           "Content-Type": isRsc ? "text/x-component" : "text/html",
-          Vary: isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host",
+          Vary: isRsc ? CANONICAL_RSC_VARY : "Cookie, Authorization, Host, X-Forwarded-Proto",
         },
       });
     });
@@ -655,7 +658,10 @@ name = "my-worker-staging"
       events.push(`fetch:${formatFetchUrl(url)}`);
       return new Response("ok", {
         status: 200,
-        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+        headers: {
+          "CF-Cache-Status": "MISS",
+          Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+        },
       });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -1145,7 +1151,10 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       events.push(`fetch:${formatFetchUrl(url)}`);
       return new Response("ok", {
         status: 200,
-        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+        headers: {
+          "CF-Cache-Status": "MISS",
+          Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+        },
       });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -1201,7 +1210,10 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       events.push(`fetch:${formatFetchUrl(url)}`);
       return new Response("ok", {
         status: 200,
-        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+        headers: {
+          "CF-Cache-Status": "MISS",
+          Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+        },
       });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -1264,7 +1276,10 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       events.push(`fetch:${formatFetchUrl(url)}`);
       return new Response("ok", {
         status: 200,
-        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+        headers: {
+          "CF-Cache-Status": "MISS",
+          Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+        },
       });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -1328,7 +1343,10 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       events.push(`fetch:${warmAttempts}`);
       return new Response("ok", {
         status: warmAttempts === 1 ? 500 : 200,
-        headers: { "CF-Cache-Status": "MISS", Vary: "Cookie, Authorization, Host" },
+        headers: {
+          "CF-Cache-Status": "MISS",
+          Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
+        },
       });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -1576,7 +1594,7 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
         status: 200,
         headers: {
           "CF-Cache-Status": "MISS",
-          Vary: "Cookie, Authorization, Host",
+          Vary: "Cookie, Authorization, Host, X-Forwarded-Proto",
         },
       });
     });

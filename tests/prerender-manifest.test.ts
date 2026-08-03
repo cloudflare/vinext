@@ -1,17 +1,84 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   getPrewarmableAppPaths,
+  getPrewarmableConcretePaths,
   hasNonCacheablePrewarmHeaders,
   type PrerenderManifest,
 } from "../packages/vinext/src/server/prerender-manifest.js";
 
 describe("getPrewarmableAppPaths", () => {
-  it("accepts adapter-owned request identity Vary fields", () => {
+  it("rejects HTML Accept variance but accepts the canonical RSC Vary contract", () => {
     expect(
       hasNonCacheablePrewarmHeaders({
         Vary: "RSC, Accept, Cookie, Authorization, Host",
       }),
+    ).toBe(true);
+    expect(
+      hasNonCacheablePrewarmHeaders(
+        {
+          Vary: "RSC, Accept, Cookie, Authorization, Host",
+        },
+        { allowRscAcceptVary: true },
+      ),
     ).toBe(false);
+  });
+
+  it("excludes App and Pages HTML that varies on Accept from prewarm eligibility", () => {
+    const manifest: PrerenderManifest = {
+      routes: [
+        {
+          route: "/app-vary-accept",
+          status: "rendered",
+          router: "app",
+          revalidate: false,
+          fallback: false,
+          headers: { Vary: "Accept" },
+        },
+        {
+          route: "/pages-vary-accept",
+          status: "rendered",
+          router: "pages",
+          revalidate: false,
+          fallback: false,
+          headers: { Vary: "Accept" },
+        },
+        {
+          route: "/app-safe",
+          status: "rendered",
+          router: "app",
+          revalidate: false,
+          fallback: false,
+        },
+        {
+          route: "/pages-safe",
+          status: "rendered",
+          router: "pages",
+          revalidate: false,
+          fallback: false,
+        },
+      ],
+    };
+
+    expect(getPrewarmableAppPaths(manifest)).toEqual(["/app-safe"]);
+    expect(getPrewarmableConcretePaths(manifest)).toEqual(["/app-safe", "/pages-safe"]);
+  });
+
+  it("admits adapter-owned Vary fields only when persisted in the manifest", () => {
+    const route = {
+      route: "/scheme-aware",
+      status: "rendered",
+      router: "app",
+      revalidate: false,
+      headers: { Vary: "X-Forwarded-Proto" },
+    } as const;
+
+    expect(getPrewarmableAppPaths({ routes: [route] })).toEqual([]);
+    expect(
+      getPrewarmableAppPaths({
+        controlledResponseVaryHeaders: ["X-Forwarded-Proto"],
+        routes: [route],
+      }),
+    ).toEqual(["/scheme-aware"]);
   });
 
   it("selects only exact cacheable App paths proven by the final prerender", () => {

@@ -146,7 +146,8 @@ expected_rsc_vary=$(printf '%s\n' \
   x-vinext-client-reuse-manifest \
   x-vinext-interception-context \
   x-vinext-mounted-slots \
-  x-vinext-rsc-render-mode |
+  x-vinext-rsc-render-mode \
+  x-forwarded-proto |
   sort -u |
   paste -sd ',' -)
 

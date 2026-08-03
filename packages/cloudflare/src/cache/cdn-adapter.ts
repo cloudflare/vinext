@@ -24,6 +24,7 @@ export function cdnAdapter(options?: Record<string, never>) {
     options,
     capabilities: {
       responseVary: "verbatim" as const,
+      controlledResponseVaryHeaders: ["X-Forwarded-Proto"],
     },
   };
 }
