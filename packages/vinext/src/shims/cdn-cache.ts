@@ -94,7 +94,9 @@ export type CdnCacheAdapter = {
   /**
    * Build the response cache headers for a given policy. Returns a map so an
    * adapter can emit more than one header and remove stale adapter-owned
-   * headers with `null`.
+   * headers with `null`. Adapters must return `null` for every header they own
+   * when the input policy should remove it; core never infers provider header
+   * names or deletes headers the active adapter did not claim.
    */
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
 
@@ -132,7 +134,9 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 /**
  * Default origin-managed ISR strategy: store page artifacts in the data cache,
  * serve HIT/STALE from it, run in-process background regeneration, and emit the
- * framework's standard `Cache-Control` headers.
+ * framework's standard `Cache-Control` headers. It deliberately leaves unknown
+ * response headers alone. Deployments where provider headers carry cache
+ * semantics must configure the adapter that owns those headers.
  */
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
