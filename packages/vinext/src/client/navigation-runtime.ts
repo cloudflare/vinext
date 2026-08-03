@@ -72,8 +72,10 @@ export type NavigationRuntimeFunctions = {
    * is not the one driving this navigation (e.g. a programmatic router.push or
    * a shallow-routing transition). Registered by shims/link.tsx; decoupled
    * through the runtime to avoid a circular import with shims/navigation.ts.
+   * The optional destination lets Link cancel only setup that would duplicate
+   * the navigation's own RSC request.
    */
-  notifyLinkNavigationStart?: () => void;
+  notifyLinkNavigationStart?: (destination?: string) => void;
   pingVisibleLinks?: () => void;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
 };

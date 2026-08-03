@@ -837,9 +837,6 @@ function evictPrefetchCacheIfNeeded(): void {
  * Sticky matters: a navigation to `/a` followed by one to `/b` must leave a
  * pending `/a` prefetch cancelled, which comparing against a "current
  * destination" value would not.
- *
- * `linkPrefetchNavigationEpoch` in link.tsx still uses a global counter for the
- * navigation case; unifying the two is tracked separately.
  */
 type PendingPrefetchSetup = { readonly destination: string; cancelled: boolean };
 const pendingPrefetchSetups = new Set<PendingPrefetchSetup>();
@@ -2370,8 +2367,8 @@ function hardNavigateTo(fullHref: string, mode: "push" | "replace"): void {
  * submit, or a raw history update). A <Link> click registers itself first, so
  * the hook keeps that link pending.
  */
-function resetStaleLinkStatus(): void {
-  getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
+function resetStaleLinkStatus(destination?: string): void {
+  getNavigationRuntime()?.functions.notifyLinkNavigationStart?.(destination);
 }
 
 /**
@@ -2387,10 +2384,12 @@ function notifyAppNavigationStart(href: string): void {
   // fetch, so neither supersedes a pending prefetch. The hash is stripped from
   // the destination above precisely because it does not select a resource —
   // which makes checking for the same-document case here load-bearing.
-  if (destination !== null && !isHashOnlyBrowserUrlChange(href, window.location.href, __basePath)) {
+  const drivesRscRequest =
+    destination !== null && !isHashOnlyBrowserUrlChange(href, window.location.href, __basePath);
+  if (drivesRscRequest) {
     cancelPendingPrefetchSetups(destination);
   }
-  resetStaleLinkStatus();
+  resetStaleLinkStatus(drivesRscRequest ? destination : undefined);
 }
 
 /**
@@ -2404,7 +2403,7 @@ function notifyAppNavigationStart(href: string): void {
 function notifyAppPopstateNavigationStart(): void {
   const destination = toAppPrefetchDestination(window.location.href);
   if (destination !== null) cancelPendingPrefetchSetups(destination);
-  resetStaleLinkStatus();
+  resetStaleLinkStatus(destination ?? undefined);
 }
 
 /**

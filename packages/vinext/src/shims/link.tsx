@@ -175,10 +175,25 @@ export function useLinkStatus(): LinkStatusContextValue {
   return useContext(LinkStatusContext);
 }
 
-let linkPrefetchNavigationEpoch = 0;
+type PendingLinkPrefetchSetup = { cancelled: boolean; destination: string };
+const pendingLinkPrefetchSetups = new Set<PendingLinkPrefetchSetup>();
 
-function notifyLinkNavigationStartAndCancelPrefetchSetup(): void {
-  linkPrefetchNavigationEpoch += 1;
+function linkPrefetchDestinationKey(href: string): string {
+  try {
+    const url = new URL(href, window.location.href);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return href.split("#", 1)[0];
+  }
+}
+
+function notifyLinkNavigationStartAndCancelPrefetchSetup(destination?: string): void {
+  if (destination !== undefined) {
+    const key = linkPrefetchDestinationKey(destination);
+    for (const setup of pendingLinkPrefetchSetups) {
+      if (setup.destination === key) setup.cancelled = true;
+    }
+  }
   notifyLinkNavigationStart();
 }
 
@@ -366,7 +381,6 @@ function prefetchUrl(
   locale?: string | false,
 ): void {
   if (typeof window === "undefined") return;
-  const navigationEpoch = linkPrefetchNavigationEpoch;
 
   const prefetchHref = getLinkPrefetchHref({
     href,
@@ -411,6 +425,11 @@ function prefetchUrl(
     return;
   }
 
+  const setup: PendingLinkPrefetchSetup = {
+    cancelled: false,
+    destination: linkPrefetchDestinationKey(fullHref),
+  };
+  pendingLinkPrefetchSetups.add(setup);
   const runPrefetch = () => {
     void (async () => {
       if (hasAppNavigationRuntime()) {
@@ -437,7 +456,7 @@ function prefetchUrl(
         // A pointer-intent prefetch and its click navigation can start in the
         // same event turn. If navigation won the module-loading race, do not
         // begin a second request after it consumes an equivalent cached route.
-        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
+        if (setup.cancelled) return;
         const {
           getPrefetchInterceptionContext,
           getPrefetchCache,
@@ -539,7 +558,7 @@ function prefetchUrl(
         // Navigation may have started while the eligibility asset was pending.
         // In that case the click owns the request and this stale prefetch setup
         // must not resume with a second (canonical) fetch.
-        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
+        if (setup.cancelled) return;
         const usesCanonicalSharedRequest =
           cacheForNavigation && isPrewarmEligible && canonicalizeFullRscRequestHeaders(headers);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
@@ -552,6 +571,12 @@ function prefetchUrl(
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers, requestCacheKeyMode)]
             : [];
+        // Request identity generation is asynchronous (contextual browser-local
+        // keys hash their semantic headers before reaching the cache).
+        // A click can therefore start after the eligibility check above but
+        // before this setup reaches the cache. Let that navigation own the
+        // request instead of resuming with a duplicate RSC fetch.
+        if (setup.cancelled) return;
         const cacheKey = AppElementsWire.encodeCacheKey(rscCacheKeyUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (cacheForNavigation) {
@@ -838,9 +863,13 @@ function prefetchUrl(
           document.head.appendChild(link);
         }
       }
-    })().catch((error) => {
-      console.error("[vinext] RSC prefetch setup error:", error);
-    });
+    })()
+      .catch((error) => {
+        console.error("[vinext] RSC prefetch setup error:", error);
+      })
+      .finally(() => {
+        pendingLinkPrefetchSetups.delete(setup);
+      });
   };
 
   if (priority === "high" || hasAppNavigationRuntime()) {

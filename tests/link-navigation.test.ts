@@ -107,7 +107,7 @@ function pingVisibleLinksFromRuntime(): void {
   }
 }
 
-function notifyLinkNavigationStartFromRuntime(): void {
+function notifyLinkNavigationStartFromRuntime(destination?: string): void {
   const runtime: unknown = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
   if (typeof runtime !== "object" || runtime === null || !("functions" in runtime)) return;
   const { functions } = runtime;
@@ -120,7 +120,7 @@ function notifyLinkNavigationStartFromRuntime(): void {
   }
   const { notifyLinkNavigationStart } = functions;
   if (typeof notifyLinkNavigationStart === "function") {
-    notifyLinkNavigationStart();
+    notifyLinkNavigationStart(destination);
   }
 }
 
@@ -434,14 +434,19 @@ describe("Link prefetch pure decisions", () => {
 
 const pendingRscCacheBustingDigests = new Set<Promise<ArrayBuffer>>();
 let rscCacheBustingDigestDelayMs = 0;
+let rscCacheBustingDigestGate: Promise<void> | null = null;
 
 beforeEach(() => {
   rscCacheBustingDigestDelayMs = 0;
+  rscCacheBustingDigestGate = null;
   const digest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
   vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation((algorithm, data) => {
     const pending = (async () => {
       if (rscCacheBustingDigestDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, rscCacheBustingDigestDelayMs));
+      }
+      if (rscCacheBustingDigestGate !== null) {
+        await rscCacheBustingDigestGate;
       }
       return digest(algorithm, data);
     })();
@@ -1363,6 +1368,7 @@ async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
   manifestResponse?: Promise<Response>;
+  navigate?: (...args: unknown[]) => unknown;
   nodeEnv: string;
   prewarmablePaths?: string[];
   props?: Record<string, unknown>;
@@ -1408,7 +1414,7 @@ async function renderIsolatedLink(options: {
     }
     return fetch(input, init);
   });
-  const navigate = vi.fn();
+  const navigate = vi.fn(options.navigate);
   const pagePrefetchLinks: CapturedPrefetchLinkElement[] = [];
   const location = {
     href: "https://example.com/current",
@@ -1766,12 +1772,136 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
       expect(result.fetch).not.toHaveBeenCalled();
 
-      notifyLinkNavigationStartFromRuntime();
+      notifyLinkNavigationStartFromRuntime("/viewport-prefetch-target");
 
       resolveManifest?.(Response.json({ version: 1, paths: ["/viewport-prefetch-target"] }));
       await flushPrefetchTasks();
       expect(result.fetch).not.toHaveBeenCalled();
     } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("matches pending Link cancellation after basePath and trailing-slash normalization", async () => {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    const observer = stubIntersectionObserver();
+    let resolveManifest: ((response: Response) => void) | undefined;
+    const manifestResponse = new Promise<Response>((resolve) => {
+      resolveManifest = resolve;
+    });
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      manifestResponse,
+      nodeEnv: "production",
+      prewarmablePaths: ["/viewport-prefetch-target"],
+      windowOverrides: {
+        location: {
+          href: "https://example.com/docs/current/",
+          origin: "https://example.com",
+          pathname: "/docs/current/",
+          search: "",
+        },
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      notifyLinkNavigationStartFromRuntime("/docs/viewport-prefetch-target/");
+
+      resolveManifest?.(Response.json({ version: 1, paths: ["/viewport-prefetch-target"] }));
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps a pending visible Link prefetch across navigation to another destination", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    const observer = stubIntersectionObserver();
+    let resolveManifest: ((response: Response) => void) | undefined;
+    const manifestResponse = new Promise<Response>((resolve) => {
+      resolveManifest = resolve;
+    });
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      manifestResponse,
+      nodeEnv: "production",
+      prewarmablePaths: ["/viewport-prefetch-target"],
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      notifyLinkNavigationStartFromRuntime("/unrelated");
+      resolveManifest?.(Response.json({ version: 1, paths: ["/viewport-prefetch-target"] }));
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({ priority: "low" }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not resume a contextual prefetch after a click starts during request identity generation", async () => {
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "response-vary");
+    let releaseDigest: (() => void) | undefined;
+    rscCacheBustingDigestGate = new Promise<void>((resolve) => {
+      releaseDigest = resolve;
+    });
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/products/1",
+      navigate: async (href) => {
+        const target = new URL(String(href), "https://example.com");
+        return fetch(`${target.pathname}?_rsc=navigation`, {
+          headers: { Accept: "text/x-component", RSC: "1" },
+        });
+      },
+      nodeEnv: "production",
+      props: { scroll: false },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      for (let attempt = 0; attempt < 1_000; attempt++) {
+        if (pendingRscCacheBustingDigests.size > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(pendingRscCacheBustingDigests.size).toBeGreaterThan(0);
+
+      const onClick = result.capturedAnchorProps.onClick;
+      expect(onClick).toBeTypeOf("function");
+      await onClick?.({
+        button: 0,
+        currentTarget: { hasAttribute: () => false, target: "" },
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      });
+
+      releaseDigest?.();
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/products/1",
+        expect.objectContaining({ headers: { Accept: "text/x-component", RSC: "1" } }),
+      );
+      expect(result.navigate).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseDigest?.();
       result.restoreNodeEnv();
     }
   });
