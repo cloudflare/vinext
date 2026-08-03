@@ -58,6 +58,21 @@ describe("finalizeAppRscResponse — config header application", () => {
     expect(response.headers.get("x-route-value")).toBe("target");
   });
 
+  it("preserves an internally finalized target's Next-Url Vary provenance", async () => {
+    const response = markAppRscResponseConfigHeadersApplied(
+      new Response("target flight", { headers: { Vary: VINEXT_RSC_VARY_HEADER } }),
+    );
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/action-source"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
   it("adds the App Router RSC vary header when no config headers are configured", async () => {
     // Behavior: App Router responses always carry the RSC vary key, even when
     // no next.config.js headers match. This covers app route handlers that
@@ -182,7 +197,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
   });
 
-  it("includes Next-Url only when a validated interception context is active", async () => {
+  it("includes Next-Url when the resolved route could be intercepted", async () => {
     // Mirrors Next.js AppPageRouteModule.getVaryHeader(), which only adds
     // Next-Url when interception can affect the rendered response.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
@@ -199,13 +214,14 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
       basePath: "",
       configHeaders: [],
       i18nConfig: null,
+      pathCouldBeIntercepted: true,
       requestContext: makeRequestContext(request.headers),
     });
 
     expect(response.headers.get("vary")).toBe(`User-Agent, ${VINEXT_RSC_VARY_HEADER}`);
   });
 
-  it("does not let a malformed interception context activate Next-Url Vary", async () => {
+  it("does not let active request context add Next-Url for non-interceptable routes", async () => {
     const response = new Response("body", {
       status: 200,
       headers: { Vary: VINEXT_RSC_VARY_HEADER },
@@ -214,7 +230,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
       headers: {
         "Next-Url": "/feed",
         RSC: "1",
-        "X-Vinext-Interception-Context": "not-a-path",
+        "X-Vinext-Interception-Context": "/feed",
       },
     });
 
@@ -228,7 +244,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
   });
 
-  it("removes Next-Url contributed by config while preserving its other Vary fields", async () => {
+  it("preserves Next-Url explicitly contributed by config", async () => {
     const response = new Response("body", { status: 200, headers: { Vary: "User-Agent" } });
     const request = new Request("http://example.com/about", {
       headers: { "Next-Url": "/source", RSC: "1" },
@@ -247,7 +263,29 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
     });
 
     expect(response.headers.get("vary")).toBe(
-      `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, X-Auth-State`,
+      `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Next-Url, X-Auth-State`,
+    );
+  });
+
+  it("preserves Next-Url explicitly contributed by middleware", async () => {
+    const response = new Response("body", {
+      status: 200,
+      headers: { Vary: `Next-Url, User-Agent, ${VINEXT_RSC_VARY_HEADER}` },
+    });
+    const request = new Request("http://example.com/about", {
+      headers: { "Next-Url": "/source", RSC: "1" },
+    });
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      preserveNextUrlVary: true,
+      requestContext: makeRequestContext(request.headers),
+    });
+
+    expect(response.headers.get("vary")).toBe(
+      `Next-Url, User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
     );
   });
 

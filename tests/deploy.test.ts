@@ -3519,6 +3519,28 @@ cross_version_cache = false
     });
   });
 
+  it("parses quoted cache tables and dotted cache settings below the env table", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `["cache"]
+enabled = true
+cross_version_cache = true
+
+[env]
+staging.cache.enabled = true
+staging.cache.cross_version_cache = true
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.cache).toEqual({ enabled: true, crossVersionCache: true });
+    expect(config?.env?.staging?.cache).toEqual({
+      enabled: true,
+      crossVersionCache: true,
+    });
+  });
+
   it("parses inline and commented TOML cross-version cache settings", () => {
     writeFile(
       tmpDir,

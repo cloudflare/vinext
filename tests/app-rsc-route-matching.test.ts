@@ -219,6 +219,34 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("reports whether a resolved pathname matches interception target topology", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/feed", ["feed"], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+            {
+              targetPattern: "/docs/:path+",
+              interceptLayouts: ["modal-layout"],
+              page: "docs-page",
+              params: ["path"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.pathCouldBeIntercepted("/photos/42")).toBe(true);
+    expect(matcher.pathCouldBeIntercepted("/docs/guides/rsc")).toBe(true);
+    expect(matcher.pathCouldBeIntercepted("/docs")).toBe(false);
+    expect(matcher.pathCouldBeIntercepted("/feed")).toBe(false);
+  });
+
   it("prefers static interception targets over dynamic targets", () => {
     // Ported from Next.js:
     // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts

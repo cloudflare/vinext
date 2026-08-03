@@ -239,6 +239,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 ): {
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
+  pathCouldBeIntercepted(pathname: string): boolean;
   findIntercept(pathname: string, sourcePathname?: string | null): AppRscInterceptMatch | null;
 } {
   const routeTrie = buildRouteTrie(routes);
@@ -259,6 +260,12 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       if (!result) return null;
       normalizeMatchedParamsForRoute(result);
       return result;
+    },
+    pathCouldBeIntercepted(pathname) {
+      const pathnameParts = appRscPathnameParts(pathname, true);
+      return interceptLookup.some(
+        (entry) => matchRoutePatternRaw(pathnameParts, entry.targetPatternParts) !== null,
+      );
     },
     findIntercept(pathname, sourcePathname = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the

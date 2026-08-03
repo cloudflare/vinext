@@ -1,11 +1,6 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import {
-  NEXT_URL_HEADER,
-  RSC_HEADER,
-  VINEXT_INTERCEPTION_CONTEXT_HEADER,
-  VINEXT_STATIC_FILE_HEADER,
-} from "./headers.js";
+import { NEXT_URL_HEADER, RSC_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import {
   VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
@@ -16,7 +11,6 @@ import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
-import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -35,14 +29,24 @@ type FinalizeAppRscResponseOptions = {
    * before middleware runs.
    */
   requestContext: RequestContext;
+  /** Whether the resolved route matches any interception target topology. */
+  pathCouldBeIntercepted?: boolean;
+  /** Preserve a Next-Url Vary token explicitly contributed by middleware. */
+  preserveNextUrlVary?: boolean;
 };
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
+const preserveAppliedNextUrlVary = new WeakSet<Response>();
 
 /** Mark a response whose final target pipeline has already applied config headers. */
 export function markAppRscResponseConfigHeadersApplied(response: Response): Response {
   configHeadersAlreadyApplied.add(response);
+  // The response crossed an internal target dispatch whose config/middleware
+  // provenance is no longer available to the outer source handler. Preserve
+  // its already-finalized Next-Url token rather than treating it as a source
+  // route framework default and accidentally stripping an explicit target rule.
+  preserveAppliedNextUrlVary.add(response);
   return response;
 }
 
@@ -78,12 +82,11 @@ function reapplyNonCacheableCdnPolicy(headers: Headers): void {
   }
 }
 
-function applyAppRscVaryHeader(headers: Headers, request: Request): void {
-  const hasInterceptionContext =
-    normalizeInterceptionContextHeader(request.headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)) !==
-    null;
-
-  if (!hasInterceptionContext) {
+function applyAppRscVaryHeader(
+  headers: Headers,
+  options: { pathCouldBeIntercepted: boolean; preserveNextUrlVary: boolean },
+): void {
+  if (!options.pathCouldBeIntercepted && !options.preserveNextUrlVary) {
     const current = headers.get("Vary");
     if (current !== null && current !== "*") {
       const withoutNextUrl = current
@@ -102,7 +105,7 @@ function applyAppRscVaryHeader(headers: Headers, request: Request): void {
 
   mergeVaryHeader(
     headers,
-    hasInterceptionContext ? VINEXT_RSC_VARY_HEADER : VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
+    options.pathCouldBeIntercepted ? VINEXT_RSC_VARY_HEADER : VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   );
 }
 
@@ -123,6 +126,11 @@ export async function finalizeAppRscResponse(
   request: Request,
   options: FinalizeAppRscResponseOptions,
 ): Promise<Response> {
+  const varyOptions = {
+    pathCouldBeIntercepted: options.pathCouldBeIntercepted === true,
+    preserveNextUrlVary:
+      options.preserveNextUrlVary === true || preserveAppliedNextUrlVary.has(response),
+  };
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.
   if (response.status >= 300 && response.status < 400) {
@@ -132,7 +140,7 @@ export async function finalizeAppRscResponse(
 
     const headers = new Headers(response.headers);
     headers.delete(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER);
-    applyAppRscVaryHeader(headers, request);
+    applyAppRscVaryHeader(headers, varyOptions);
     applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
     return new Response(response.body, {
       headers,
@@ -142,7 +150,7 @@ export async function finalizeAppRscResponse(
   }
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
-    applyAppRscVaryHeader(response.headers, request);
+    applyAppRscVaryHeader(response.headers, varyOptions);
   }
 
   // The CDN cache adapter owns the *default* Cache-Control. If no route path
@@ -163,11 +171,14 @@ export async function finalizeAppRscResponse(
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
 
-  // Config headers run after framework response shaping and may contribute
-  // their own Vary fields. Reconcile once more so custom fields survive while
-  // a non-contextual response cannot reintroduce Next-Url.
+  // Config headers run after framework response shaping and may explicitly
+  // contribute Next-Url. Do not strip that user-owned token on this second
+  // pass; only append/dedupe the framework topology fields.
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
-    applyAppRscVaryHeader(response.headers, request);
+    applyAppRscVaryHeader(response.headers, {
+      ...varyOptions,
+      preserveNextUrlVary: true,
+    });
   }
 
   // A route/runtime no-store decision is authoritative over next.config

@@ -622,6 +622,10 @@ function matchRequestRoute(url) {
   return __routeMatcher.matchRequestRoute(url);
 }
 
+function pathCouldBeIntercepted(pathname) {
+  return __routeMatcher.pathCouldBeIntercepted(pathname);
+}
+
 /**
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
@@ -1228,6 +1232,7 @@ export default createAppRscHandler({
   }
   matchRoute,
   matchRequestRoute,
+  pathCouldBeIntercepted,
   matchInterceptRoute(pathname, sourcePathname) {
     const intercept = findIntercept(pathname, sourcePathname);
     if (!intercept) return null;

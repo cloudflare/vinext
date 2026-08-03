@@ -798,6 +798,42 @@ describe("prefetch cache eviction", () => {
     ).toBe(false);
   });
 
+  it("aliases settled legacy variants only when the response is source-independent", () => {
+    const sourceIndependentUrl = "/legacy-shared?_rsc=prefetch";
+    const contextualUrl = "/legacy-contextual?_rsc=prefetch";
+    const createSnapshot = (url: string, variesOnNextUrl = false) => ({
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url,
+      ...(variesOnNextUrl ? { variesOnNextUrl: true } : {}),
+    });
+    getPrefetchCache().set(sourceIndependentUrl, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      snapshot: createSnapshot(sourceIndependentUrl),
+      timestamp: Date.now(),
+    });
+    getPrefetchCache().set(contextualUrl, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      snapshot: createSnapshot(contextualUrl, true),
+      timestamp: Date.now(),
+    });
+
+    expect(
+      hasPrefetchCacheEntryForNavigation("/legacy-shared?_rsc=navigate", null, null, {
+        requestVariantKey: "current-request",
+      }),
+    ).toBe(true);
+    expect(
+      hasPrefetchCacheEntryForNavigation("/legacy-contextual?_rsc=navigate", null, null, {
+        requestVariantKey: "different-source",
+      }),
+    ).toBe(false);
+  });
+
   it("notifies onInvalidate when a learning-only prefetch is superseded (#2707)", async () => {
     // A loading-shell route: the default `kind` resolves to learning-only, and
     // a later `kind: "full"` upgrades the same URL to a reusable entry.

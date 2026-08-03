@@ -315,6 +315,56 @@ name = "my-worker-staging"
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("does not promote in strict mode when staged version metadata is unavailable", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      if (init?.method === "POST") {
+        events.push("probe-unavailable");
+        return new Response(null, {
+          status: 503,
+          headers: { "X-Vinext-Worker-Version": "unavailable" },
+        });
+      }
+      throw new Error("Strict warmup must not send a cacheable request without verification");
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow("may remain staged at 0%");
+
+    expect(events).toEqual(["upload", "status", "stage", "triggers", "probe-unavailable"]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects strict cross-version warming before uploading", async () => {
     writeFile(
       "wrangler.jsonc",
@@ -332,6 +382,32 @@ name = "my-worker-staging"
         warmCdnStrict: true,
       }),
     ).rejects.toThrow("cannot safely refresh cache.cross_version_cache entries");
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "a quoted root cache table",
+      config: `["cache"]
+cross_version_cache = true
+`,
+      options: { warmCdnConcurrency: 1, warmCdnStrict: true },
+    },
+    {
+      name: "a dotted cache setting below the env table",
+      config: `[env]
+staging.cache.cross_version_cache = true
+`,
+      options: { env: "staging", warmCdnConcurrency: 1, warmCdnStrict: true },
+    },
+  ])("protects cross-version cache warming configured with $name", async ({ config, options }) => {
+    writeFile("wrangler.toml", config);
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deployWithCdnWarmup(tmpDir, ["/"], options)).rejects.toThrow(
+      "cannot safely refresh cache.cross_version_cache entries",
+    );
     expect(execFileSyncMock).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });

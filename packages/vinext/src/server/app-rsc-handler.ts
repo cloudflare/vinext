@@ -119,8 +119,15 @@ type AppRscMiddlewareContext = AppMiddlewareContext;
 type MiddlewareObservation = {
   conditionalConfigPathMatched: boolean;
   conditionalPathMatched: boolean;
+  explicitNextUrlVary: boolean;
   matched: boolean;
+  resolvedPathCouldBeIntercepted: boolean;
 };
+
+function varyIncludesHeader(vary: string | null, headerName: string): boolean {
+  if (vary === null) return false;
+  return vary.split(",").some((token) => token.trim().toLowerCase() === headerName.toLowerCase());
+}
 
 // URL query conditions remain cache-keyed except for `_rsc`, whose bare and
 // hashed forms are the transport shapes this proof is trying to collapse.
@@ -403,6 +410,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  pathCouldBeIntercepted?: (pathname: string) => boolean;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -610,14 +618,28 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     clientReuseManifest,
     hadBasePath,
   } = normalized;
-  // Next-Url only affects an interception render. Keep it on the transport
-  // request for `_rsc` cache-busting validation, but hide it from userland
-  // `headers()` when there is no validated interception context.
-  if (interceptionContextHeader === null) {
-    getHeadersContext()?.headers.delete(NEXT_URL_HEADER);
-  }
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
+  let hiddenNextUrl: string | null = null;
+  const syncNextUrlHeaderVisibility = (resolvedPathname: string): void => {
+    const pathCouldBeIntercepted = options.pathCouldBeIntercepted?.(resolvedPathname) === true;
+    middlewareObservation.resolvedPathCouldBeIntercepted = pathCouldBeIntercepted;
+
+    const headersContext = getHeadersContext();
+    if (!headersContext) return;
+    if (pathCouldBeIntercepted) {
+      if (!headersContext.headers.has(NEXT_URL_HEADER) && hiddenNextUrl !== null) {
+        headersContext.headers.set(NEXT_URL_HEADER, hiddenNextUrl);
+        headersContext.readonlyHeaders = undefined;
+      }
+    } else if (headersContext.headers.has(NEXT_URL_HEADER)) {
+      hiddenNextUrl = headersContext.headers.get(NEXT_URL_HEADER);
+      headersContext.headers.delete(NEXT_URL_HEADER);
+      headersContext.readonlyHeaders = undefined;
+    }
+  };
+  middlewareObservation.resolvedPathCouldBeIntercepted =
+    options.pathCouldBeIntercepted?.(cleanPathname) === true;
   // Final prerender validation must exercise the same bare `?_rsc` URL that
   // browsers will use after the eligibility manifest is emitted. The route is
   // not in that manifest yet, so only the authenticated, prerender-only server
@@ -795,6 +817,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       middlewareRequest: isolatedMiddlewareRequest,
       request: userlandRequest,
     });
+    middlewareObservation.explicitNextUrlVary ||= varyIncludesHeader(
+      middlewareContext.headers?.get("Vary") ?? null,
+      NEXT_URL_HEADER,
+    );
     middlewareObservation.matched ||= middlewareContext.matched === true;
     middlewareObservation.conditionalPathMatched ||=
       middlewareContext.conditionalPathMatched === true;
@@ -802,12 +828,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       if (request.body && !request.body.locked) {
         void request.body.cancel().catch(() => {});
       }
-      return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
-        basePathState,
-        configHeaders: options.configHeaders,
-        pathname: matchPathname(requestCleanPathname),
-        requestContext: preMiddlewareRequestContext,
-      });
+      const middlewareResponse = await applyConfigHeadersToMiddlewareRedirect(
+        middlewareResult.response,
+        {
+          basePathState,
+          configHeaders: options.configHeaders,
+          pathname: matchPathname(requestCleanPathname),
+          requestContext: preMiddlewareRequestContext,
+        },
+      );
+      middlewareObservation.explicitNextUrlVary ||= varyIncludesHeader(
+        middlewareResponse.headers.get("Vary"),
+        NEXT_URL_HEADER,
+      );
+      return middlewareResponse;
     }
 
     cleanPathname = middlewareResult.cleanPathname;
@@ -964,6 +998,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   if (filesystemRouteEligible && options.handleMetadataRouteRequest) {
+    syncNextUrlHeaderVisibility(cleanPathname);
     const metadataRouteResponse = await options.handleMetadataRouteRequest(cleanPathname);
     if (metadataRouteResponse && HAS_CONFIG_HEADERS && options.configHeaders.length) {
       const { applyConfigHeadersToResponse } = await import("./config-headers.js");
@@ -1207,6 +1242,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
+  syncNextUrlHeaderVisibility(cleanPathname);
 
   if (pagesDataRequest && didMiddlewareRewritePathname && preActionMatch) {
     const headers = new Headers();
@@ -1314,6 +1350,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible) return null;
+    syncNextUrlHeaderVisibility(cleanPathname);
     const response =
       !isInterceptionMatch && (match === null || match.route.isDynamic)
         ? ((await options.renderPagesFallback?.({
@@ -1491,6 +1528,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response("", { status: 404 });
     }
 
+    syncNextUrlHeaderVisibility(cleanPathname);
     const renderedNotFoundResponse = await options.renderNotFound({
       isRscRequest,
       middlewareContext,
@@ -1507,6 +1545,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  syncNextUrlHeaderVisibility(cleanPathname);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
   if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
@@ -1791,7 +1830,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
           const middlewareObservation: MiddlewareObservation = {
             conditionalConfigPathMatched: false,
             conditionalPathMatched: false,
+            explicitNextUrlVary: false,
             matched: false,
+            resolvedPathCouldBeIntercepted: false,
           };
 
           try {
@@ -1817,6 +1858,8 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            pathCouldBeIntercepted: middlewareObservation.resolvedPathCouldBeIntercepted,
+            preserveNextUrlVary: middlewareObservation.explicitNextUrlVary,
             requestContext: preMiddlewareRequestContext,
           });
           if (

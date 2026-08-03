@@ -454,8 +454,8 @@ function extractFromTOML(content: string): WranglerConfig {
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;
 
-  const versionMetadataSection = getTomlSections(content).find(
-    (section) => section.header === "version_metadata",
+  const versionMetadataSection = getTomlSections(content).find((section) =>
+    isTomlSectionPath(section.header, "version_metadata"),
   );
   const inlineVersionMetadata = extractTomlInlineTable(rootBody, "version_metadata");
   const versionMetadataBinding = versionMetadataSection
@@ -465,7 +465,9 @@ function extractFromTOML(content: string): WranglerConfig {
       : extractTomlDottedVersionMetadataBinding(rootBody);
   if (versionMetadataBinding) result.versionMetadataBinding = versionMetadataBinding;
 
-  const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
+  const cacheSection = getTomlSections(content).find((section) =>
+    isTomlSectionPath(section.header, "cache"),
+  );
   const inlineCache = extractTomlInlineTable(rootBody, "cache");
   const cache = cacheSection
     ? extractTomlCacheConfig(cacheSection.body)
@@ -560,6 +562,27 @@ function extractEnvConfigsFromTOML(
 
     if (headerPath.length === 1 && headerPath[0] === "env") {
       for (const assignment of parseTomlAssignments(section.body)) {
+        const assignmentPath = assignment.key.split(".");
+        if (
+          assignmentPath.length === 3 &&
+          assignmentPath[1] === "cache" &&
+          (assignmentPath[2] === "enabled" || assignmentPath[2] === "cross_version_cache")
+        ) {
+          const value = assignment.value.trim();
+          if (/^(?:true|false)$/.test(value)) {
+            const envName = assignmentPath[0]!;
+            const envConfig = result[envName] ?? {};
+            envConfig.cache = {
+              ...envConfig.cache,
+              ...(assignmentPath[2] === "enabled" ? { enabled: value === "true" } : {}),
+              ...(assignmentPath[2] === "cross_version_cache"
+                ? { crossVersionCache: value === "true" }
+                : {}),
+            };
+            result[envName] = envConfig;
+          }
+          continue;
+        }
         const inlineEnv = unwrapTomlInlineTable(assignment.value);
         if (!inlineEnv) continue;
         const inlineCache = extractTomlInlineTable(inlineEnv, "cache");
@@ -673,6 +696,11 @@ function parseTomlDottedKey(value: string): string[] {
   }
   result.push(current.trim());
   return result.filter(Boolean);
+}
+
+function isTomlSectionPath(header: string, ...expected: string[]): boolean {
+  const path = parseTomlDottedKey(header);
+  return path.length === expected.length && path.every((part, index) => part === expected[index]);
 }
 
 function parseTomlAssignments(source: string): Array<{ key: string; value: string }> {

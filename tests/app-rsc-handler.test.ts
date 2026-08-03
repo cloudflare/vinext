@@ -133,6 +133,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
             }
           : null),
     matchRequestRoute: overrides.matchRequestRoute,
+    pathCouldBeIntercepted: overrides.pathCouldBeIntercepted ?? (() => false),
     runMiddleware:
       overrides.runMiddleware ??
       (overrides.middlewareModule
@@ -1688,6 +1689,27 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
   });
 
+  it("preserves an explicit middleware Vary: Next-Url on a non-interceptable route", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage: async ({ middlewareContext }) =>
+        new Response("page", { headers: middlewareContext.headers ?? undefined }),
+      middlewareModule: {
+        default: () =>
+          new Response(null, {
+            headers: {
+              "x-middleware-next": "1",
+              Vary: "Next-Url",
+            },
+          }),
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/about"), null);
+
+    expect((response.headers.get("vary") ?? "").split(/,\s*/)).toContain("Next-Url");
+  });
+
   it("hides non-contextual Next-Url from headers() without changing cache-busting validation", async () => {
     let transportNextUrl: string | null = null;
     let userlandNextUrl: string | null = null;
@@ -1712,13 +1734,17 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
   });
 
-  it("keeps Next-Url in headers() and Vary for validated interception context", async () => {
+  it("keeps Next-Url in headers() and Vary when the resolved path could be intercepted", async () => {
     let userlandNextUrl: string | null = null;
     const dispatchMatchedPage = vi.fn(async () => {
       userlandNextUrl = (await requestHeaders()).get(NEXT_URL_HEADER);
       return new Response("page", { status: 200 });
     });
-    const handler = createHandler({ configHeaders: [], dispatchMatchedPage });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      pathCouldBeIntercepted: (pathname) => pathname === "/about",
+    });
     const headers = createRscRequestHeaders({
       interceptionContext: "/source",
       nextUrl: "/source",
@@ -1732,6 +1758,57 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.has("location")).toBe(false);
+    expect(userlandNextUrl).toBe("/source");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
+  it("keeps Next-Url for an interceptable target even without active interception context", async () => {
+    let userlandNextUrl: string | null = null;
+    const dispatchMatchedPage = vi.fn(async () => {
+      userlandNextUrl = (await requestHeaders()).get(NEXT_URL_HEADER);
+      return new Response("page", { status: 200 });
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      pathCouldBeIntercepted: (pathname) => pathname === "/about",
+    });
+    const headers = createRscRequestHeaders({ nextUrl: "/source" });
+    const requestPath = await createRscRequestUrl("/docs/about", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${requestPath}`, { headers }),
+      null,
+    );
+
+    expect(userlandNextUrl).toBe("/source");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
+  it("uses the rewritten resolved pathname for Next-Url visibility and Vary", async () => {
+    let userlandNextUrl: string | null = null;
+    const dispatchMatchedPage = vi.fn(async () => {
+      userlandNextUrl = (await requestHeaders()).get(NEXT_URL_HEADER);
+      return new Response("page", { status: 200 });
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/alias", destination: "/about" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      pathCouldBeIntercepted: (pathname) => pathname === "/about",
+    });
+    const headers = createRscRequestHeaders({ nextUrl: "/source" });
+    const requestPath = await createRscRequestUrl("/docs/alias", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${requestPath}`, { headers }),
+      null,
+    );
+
     expect(userlandNextUrl).toBe("/source");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
   });

@@ -591,7 +591,13 @@ function isPrefetchCacheEntryCompatibleWithRequestVariant(
   requireStoredKey: boolean,
 ): boolean {
   if (requestVariantKey === undefined) return true;
-  if (entry.requestVariantKey === undefined) return !requireStoredKey;
+  if (entry.requestVariantKey === undefined) {
+    if (!requireStoredKey) return true;
+    // Legacy/cache-seeded entries predate the request-side semantic key. A
+    // completed response still tells us whether normalized source reuse is
+    // safe; pending entries have no such proof and must not alias.
+    return entry.outcome === "cache-seeded" && entry.snapshot?.variesOnNextUrl !== true;
+  }
   return entry.requestVariantKey === requestVariantKey;
 }
 

@@ -662,6 +662,13 @@ export async function deployWithCdnWarmup(
         }
         warmedBeforePromotion = true;
       } else if (probe.reason === "binding-unavailable") {
+        if (options.warmCdnStrict) {
+          throw withStagedVersionCleanupNote(
+            new Error(
+              "CDN warmup failed: staged version could not be verified because VINEXT_VERSION_METADATA is unavailable. No cacheable requests were sent.",
+            ),
+          );
+        }
         console.warn(
           "  CDN warmup: staged version could not be verified because VINEXT_VERSION_METADATA is unavailable; promoting before warming.",
         );
