@@ -1362,7 +1362,11 @@ export function prefetchRscResponse(
           entry.timestamp,
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
-          behavior.honorDynamicStaleTime !== false,
+          // A search-agnostic PPR shell contains no query-dependent dynamic
+          // data and is never navigation-consumable. Keep it on the prefetch
+          // freshness lattice so another search string can reuse the shell;
+          // the later navigation response still honors dynamicStaleTime.
+          behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
         );
         if (behavior.prepareSnapshot) {
           try {
@@ -1498,6 +1502,7 @@ function consumeMatchedPrefetchResponse(
   cacheKey: string,
   entry: PrefetchCacheEntry,
   mountedSlotsHeader: string | null,
+  allowExpiredInFlightHandoff: boolean = false,
 ): CachedRscResponse | null {
   const cache = getPrefetchCache();
   // Skip in-flight snapshots and error-path residue where pending cleared
@@ -1511,7 +1516,7 @@ function consumeMatchedPrefetchResponse(
       // be safely reused.
       return null;
     }
-    if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
+    if (!allowExpiredInFlightHandoff && resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
       // The entry aged out before navigation reached it — that *is* the
       // invalidation `onInvalidate` subscribers are waiting for.
       deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
@@ -1574,6 +1579,11 @@ export async function consumePrefetchResponseForNavigation(
   // concurrency cap, where it would compete with the current navigation.
   if (options?.shouldConsume?.() === false) return null;
 
+  // Claim only a request that was still in flight when this navigation began.
+  // A zero dynamic stale time may expire the completed entry immediately, but
+  // Next still lets the navigation already waiting on that request finish with
+  // it. Settled zero-stale entries remain unavailable to later navigations.
+  const allowExpiredInFlightHandoff = entry.pending !== undefined;
   if (entry.pending !== undefined) {
     // This navigation is about to wait on the prefetch's request. If that
     // request is still queued behind the low-priority concurrency cap, waiting
@@ -1586,7 +1596,12 @@ export async function consumePrefetchResponseForNavigation(
     if (options?.shouldConsume?.() === false) return null;
   }
 
-  return consumeMatchedPrefetchResponse(cacheKey, entry, mountedSlotsHeader);
+  return consumeMatchedPrefetchResponse(
+    cacheKey,
+    entry,
+    mountedSlotsHeader,
+    allowExpiredInFlightHandoff,
+  );
 }
 
 // ---------------------------------------------------------------------------
