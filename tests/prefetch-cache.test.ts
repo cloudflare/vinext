@@ -1289,6 +1289,66 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
   });
 
+  it("hands an in-flight zero-stale prefetch to its waiting navigation exactly once", async () => {
+    // Next applies the dynamic stale time to visited/BFCache reuse after the
+    // navigation. It does not discard the request that the navigation is
+    // already waiting for. The handoff is ownership transfer, not a later
+    // cache hit: a settled zero-stale entry must still be unavailable to a
+    // navigation that did not claim it while it was in flight.
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/zero-stale-in-flight-prefetch.rsc";
+    const deferred = createDeferredResponse();
+
+    prefetchRscResponse(rscUrl, deferred.promise, null, null, undefined, {
+      fallbackTtlMs: PREFETCH_CACHE_TTL,
+    });
+    const consumedPromise = consumePrefetchResponseForNavigation(rscUrl, null, null);
+
+    deferred.resolve(
+      new Response("flight", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+        },
+      }),
+    );
+
+    const consumed = await consumedPromise;
+    expect(consumed).not.toBeNull();
+    await expect(restoreRscResponse(consumed!).text()).resolves.toBe("flight");
+    expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
+  });
+
+  it("does not transfer a zero-stale prefetch after its waiting navigation is superseded", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/superseded-zero-stale-prefetch.rsc";
+    const deferred = createDeferredResponse();
+    let isCurrentNavigation = true;
+
+    prefetchRscResponse(rscUrl, deferred.promise, null, null, undefined, {
+      fallbackTtlMs: PREFETCH_CACHE_TTL,
+    });
+    const consumedPromise = consumePrefetchResponseForNavigation(rscUrl, null, null, {
+      shouldConsume: () => isCurrentNavigation,
+    });
+
+    isCurrentNavigation = false;
+    deferred.resolve(
+      new Response("flight", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+        },
+      }),
+    );
+
+    await expect(consumedPromise).resolves.toBeNull();
+    expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
+  });
+
   it("keeps the prefetch floor for an explicit full prefetch of dynamic content", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
@@ -1762,6 +1822,44 @@ describe("prefetch cache eviction", () => {
 
     expect(hasSearchAgnosticPrefetchShellForRoute(secondRscUrl, null, null)).toBe(true);
     expect(hasPrefetchCacheEntryForNavigation(secondRscUrl, null, null)).toBe(false);
+  });
+
+  it("retains a zero-stale search-agnostic shell without making it navigation-reusable", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
+    // A search-agnostic PPR shell contains no query-dependent dynamic data.
+    // Reusing its route shell for another search string is safe, while the
+    // dynamic navigation response remains subject to staleTimes.dynamic: 0.
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const firstRscUrl = "/search-params/target-page?searchParam=a_PPR&_rsc=first";
+    const secondRscUrl = "/search-params/target-page?searchParam=c_PPR&_rsc=second";
+
+    prefetchRscResponse(
+      firstRscUrl,
+      Promise.resolve(
+        new Response("search-agnostic shell", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      {
+        cacheForNavigation: false,
+        fallbackTtlMs: PREFETCH_CACHE_TTL,
+        optimisticRouteShell: true,
+        searchAgnosticShell: true,
+      },
+    );
+    await getPrefetchCache().get(firstRscUrl)?.pending;
+
+    expect(hasSearchAgnosticPrefetchShellForRoute(secondRscUrl, null, null)).toBe(true);
+    expect(hasPrefetchCacheEntryForNavigation(secondRscUrl, null, null)).toBe(false);
+    expect(consumePrefetchResponse(firstRscUrl, null, null)).toBeNull();
   });
 
   it("aliases full prefetch responses by their server-rendered path and search", async () => {
