@@ -713,6 +713,9 @@ describe("isHashOnlyChange", () => {
     expect(
       isHashOnlyBrowserUrlChange("/diagnostics#details", "http://localhost/diagnostics#details"),
     ).toBe(true);
+    expect(
+      isHashOnlyBrowserUrlChange("/diagnostics#next", "http://localhost/diagnostics#details"),
+    ).toBe(true);
     expect(isHashOnlyBrowserUrlChange("/diagnostics", "http://localhost/diagnostics")).toBe(false);
   });
 });

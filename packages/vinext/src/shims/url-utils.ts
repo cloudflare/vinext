@@ -230,7 +230,7 @@ export function isHashOnlyBrowserUrlChange(
 
     // Mirrors Next.js: navigating repeatedly to the same non-empty hash still
     // scrolls to it, while identical absent/empty hashes are no-ops.
-    if (nextHash) return currentHash === nextHash;
+    if (nextHash && currentHash === nextHash) return true;
     return currentHash !== nextHash;
   } catch {
     return false;
