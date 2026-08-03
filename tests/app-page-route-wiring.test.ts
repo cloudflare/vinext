@@ -6,7 +6,7 @@ import {
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
-  APP_SOURCE_PAGE_KEY,
+  APP_SOURCE_PAGE_SEGMENTS_KEY,
   AppElementsWire,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
@@ -41,7 +41,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
-import { createAppRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
+import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
 
 /**
  * Build the resolved semantic branch the route matcher hands to slot overrides.
@@ -733,7 +733,7 @@ describe("app page route wiring helpers", () => {
         rootNotFoundModule: null,
       });
 
-      expect(elements[APP_SOURCE_PAGE_KEY]).toBe(sourcePage);
+      expect(elements[APP_SOURCE_PAGE_SEGMENTS_KEY]).toEqual(sourcePage.slice(1).split("/"));
       expect(AppElementsWire.readMetadata(elements).sourcePage).toBe(sourcePage);
     }
   });
@@ -784,7 +784,7 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements.__route).toBe("route:/blog/post");
-    expect(elements.__sourcePage).toBe("/(marketing)/blog/[slug]/page");
+    expect(elements.__srcPage).toEqual(["(marketing)", "blog", "[slug]", "page"]);
     expect(elements.__layoutIds).toEqual(["layout:/", "layout:/(marketing)"]);
     expect(elements.__rootLayout).toBe("/");
     expect(elements["layout:/"]).toBeDefined();
@@ -3566,7 +3566,7 @@ describe("app page route wiring helpers", () => {
 
   it("waits for page initialization before serializing parallel slot entries", async () => {
     let activeLocale = "en";
-    const pageRenderDependency = createAppRenderDependency();
+    const pageRenderDependency = createAppPageRenderDependency();
 
     function LocaleSlot() {
       return createElement("aside", null, `slot:${activeLocale}`);

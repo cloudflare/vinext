@@ -14,6 +14,9 @@ import {
 } from "./pages-preview.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
+// Next.js's Node sendData() strips bodies for 204/304. Fetch additionally
+// forbids a body for 205, so the Worker adapter must normalize that status too.
+const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
 /**
  * @deprecated Use PagesBodyParseError from pages-media-type.ts instead.
@@ -254,6 +257,8 @@ class PagesResponseStream extends Writable {
   private controller: ReadableStreamDefaultController | null = null;
   private readonly bufferedChunks: Buffer[] = [];
   private streamEnded = false;
+  private pendingWrite: ((error?: Error | null) => void) | null = null;
+  private discardBody = false;
 
   constructor(
     private readonly resolveResponse: (value: Response) => void,
@@ -394,6 +399,10 @@ class PagesResponseStream extends Writable {
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
+    if (this.discardBody) {
+      callback();
+      return;
+    }
     const buffer = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
     if (this.controller && !this.streamEnded) {
       try {
@@ -405,7 +414,23 @@ class PagesResponseStream extends Writable {
       this.bufferedChunks.push(buffer);
     }
     this.resolveOnce();
-    callback();
+    // Propagate consumer backpressure to the Node source: while the response
+    // body's queue is full, hold the write callback until the consumer pulls.
+    // A held callback makes `write()` return false, which pauses any piped
+    // source (e.g. a proxied upstream) instead of queueing chunks without
+    // bound. `end(data)` writes can park here too because Node sets
+    // writableEnded after _write returns; the adapter's first body pull
+    // releases them, and the completed response remains on the buffered path.
+    if (
+      this.controller &&
+      !this.streamEnded &&
+      !this.writableEnded &&
+      (this.controller.desiredSize ?? 1) <= 0
+    ) {
+      this.pendingWrite = callback;
+    } else {
+      callback();
+    }
   }
 
   override _final(callback: (error?: Error | null) => void): void {
@@ -423,6 +448,9 @@ class PagesResponseStream extends Writable {
 
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.streamEnded = true;
+    // A write parked for backpressure would otherwise never complete; release
+    // it so piped sources unwind instead of waiting on a dead stream.
+    this.releasePendingWrite(error);
     if (!this.resolved) {
       if (error) {
         this.resolved = true;
@@ -464,6 +492,12 @@ class PagesResponseStream extends Writable {
     this.resHeaders[name.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value;
   }
 
+  private releasePendingWrite(error?: Error | null): void {
+    const callback = this.pendingWrite;
+    this.pendingWrite = null;
+    callback?.(error);
+  }
+
   private resolveOnce(): void {
     if (this.resolved) {
       return;
@@ -476,6 +510,20 @@ class PagesResponseStream extends Writable {
     }
     for (const cookie of this.setCookieHeaders) {
       headers.append("set-cookie", cookie);
+    }
+
+    // Fetch rejects a Response that pairs 204/205/304 with any body, including
+    // an empty ReadableStream. Node's ServerResponse accepts `res.status(204).end()`,
+    // so preserve that API while matching Next.js's sendData() cleanup for
+    // bodyless statuses.
+    if (NO_BODY_RESPONSE_STATUSES.has(this.resStatusCode)) {
+      this.discardBody = true;
+      this.bufferedChunks.length = 0;
+      headers.delete("content-length");
+      headers.delete("content-type");
+      headers.delete("transfer-encoding");
+      this.resolveResponse(new Response(null, { status: this.resStatusCode, headers }));
+      return;
     }
 
     const stream = new ReadableStream({
@@ -497,6 +545,9 @@ class PagesResponseStream extends Writable {
           }
         }
       },
+      pull: () => {
+        this.releasePendingWrite();
+      },
       cancel: (reason) => {
         this.bufferedChunks.length = 0;
         this.destroy(reason instanceof Error ? reason : new Error("Response body cancelled"));
@@ -505,6 +556,26 @@ class PagesResponseStream extends Writable {
 
     this.resolveResponse(new Response(stream, { status: this.resStatusCode, headers }));
   }
+}
+
+type ResponseWithVinextStreamedApiBody = Response & {
+  __vinextStreamedApiResponse?: boolean;
+};
+
+/**
+ * Marks a Pages API Response whose body was still being written when the
+ * handler settled (streaming/piping), so Node adapters forward it as a stream.
+ * Buffering a live stream would defer delivery until the source closes and
+ * hold the whole body in memory. Complete bodies (`res.json`, `res.send`,
+ * `res.end(data)`) are not marked and keep the buffered path, which preserves
+ * Content-Length.
+ */
+export function markVinextStreamedApiResponse(response: Response): void {
+  (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse = true;
+}
+
+export function isVinextStreamedApiResponse(response: Response): boolean {
+  return (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse === true;
 }
 
 export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePagesReqResResult {

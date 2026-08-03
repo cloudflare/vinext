@@ -6,6 +6,7 @@ import {
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
+import { getUnconsumedMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
 import {
   forbiddenResponse,
   methodNotAllowedResponse,
@@ -475,15 +476,22 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  *
  * Middleware uses `x-middleware-*` headers as internal signals (e.g.
  * `x-middleware-next`, `x-middleware-rewrite`, `x-middleware-request-*`).
- * These must be removed before sending the response to the client.
+ * Consumed protocol headers must be removed before sending the response to the
+ * client. Next.js exposes truthy unconsumed `x-middleware-request-*` values as
+ * literal request and response headers, so those are intentionally preserved.
  *
  * @param headers - The Headers object to modify in place
  */
 export function processMiddlewareHeaders(headers: Headers): void {
   const keysToDelete: string[] = [];
+  const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(headers);
 
   for (const key of headers.keys()) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
+    if (
+      key.startsWith(MIDDLEWARE_HEADER_PREFIX) &&
+      key !== MIDDLEWARE_CACHE_HEADER &&
+      !unconsumedRequestHeaders.has(key)
+    ) {
       keysToDelete.push(key);
     }
   }
@@ -537,6 +545,24 @@ function getRequestCf(request: Request): unknown {
 }
 
 /**
+ * Re-attach the Workers-specific `cf` metadata from `source` onto a rebuilt
+ * Request. `new Request()` never copies it, and middleware/authorization code
+ * can key off `request.cf` (geo checks, bot scores), so every reconstruction
+ * must restore it explicitly.
+ */
+export function attachRequestCfMetadata(target: Request, source: Request): Request {
+  const cf = getRequestCf(source);
+  if (cf !== undefined) {
+    Object.defineProperty(target, "cf", {
+      value: cf,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return target;
+}
+
+/**
  * Clone a Request while overriding headers, preserving metadata when possible.
  *
  * Some runtimes (Workers) allow `new Request(request, { headers })` which
@@ -568,16 +594,7 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
     }
     cloned = new Request(request.url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }
 
 /**
@@ -616,14 +633,5 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
     }
     cloned = new Request(url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }

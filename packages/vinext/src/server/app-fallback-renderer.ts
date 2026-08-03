@@ -17,6 +17,7 @@ import type { AppElements } from "./app-elements.js";
 import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
+import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = import("react").ComponentType<any>;
@@ -206,11 +207,20 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   // 404s in the same worker hit a warm import instead of re-resolving the
   // dynamic chunk. The loader itself is invoked at most once per worker;
   // failures are surfaced on every call so they don't get swallowed.
+  //
+  // That once-per-worker import happens while the 404-triggering request's
+  // scopes are active, and `import()` propagates AsyncLocalStorage into module
+  // evaluation — so `runOutsideRequestScopes` keeps global-not-found.tsx's
+  // module scope from binding to that first request and serving it to everyone
+  // after. Same contract as the route-module loader; see
+  // `app-route-module-loader.ts`.
   let globalNotFoundModulePromise: Promise<TModule | null | undefined> | null = null;
   function resolveGlobalNotFoundModule(): Promise<TModule | null | undefined> | null {
     if (!loadGlobalNotFoundModule) return null;
     if (globalNotFoundModulePromise === null) {
-      globalNotFoundModulePromise = Promise.resolve().then(loadGlobalNotFoundModule);
+      globalNotFoundModulePromise = runOutsideRequestScopes(() =>
+        Promise.resolve().then(loadGlobalNotFoundModule),
+      );
     }
     return globalNotFoundModulePromise;
   }

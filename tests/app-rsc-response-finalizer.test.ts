@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import {
+  finalizeAppRscResponse,
+  markAppRscResponseConfigHeadersApplied,
+} from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
@@ -29,6 +32,26 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-added")).toBe("config");
+  });
+
+  it("does not reapply source config headers to an internally dispatched target response", async () => {
+    const response = markAppRscResponseConfigHeadersApplied(
+      new Response("target flight", { headers: { "x-route-value": "target" } }),
+    );
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/action-source"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/action-source",
+          headers: [{ key: "x-route-value", value: "source" }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("x-route-value")).toBe("target");
   });
 
   it("adds the App Router RSC vary header when no config headers are configured", async () => {

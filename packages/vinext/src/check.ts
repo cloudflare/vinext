@@ -281,12 +281,12 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "not recognized; instrumentation files are enabled automatically",
   },
   skipMiddlewareUrlNormalize: {
-    status: "unsupported",
-    detail: "not recognized; use of this option is ignored",
+    status: "partial",
+    detail: "preserves raw Pages Router _next/data URLs passed to middleware",
   },
   skipProxyUrlNormalize: {
-    status: "unsupported",
-    detail: "not recognized; use of this option is ignored",
+    status: "partial",
+    detail: "preserves raw Pages Router _next/data URLs passed to proxy",
   },
   "i18n.domains": {
     status: "partial",

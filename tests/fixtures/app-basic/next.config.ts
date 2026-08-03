@@ -203,7 +203,19 @@ const nextConfig: NextConfig = {
       // Used by Vitest: app-router.test.ts
       {
         source: "/about",
-        headers: [{ key: "X-Page-Header", value: "about-page" }],
+        headers: [
+          { key: "X-Page-Header", value: "about-page" },
+          { key: "X-Action-Header-Collision", value: "target" },
+        ],
+      },
+      // Server-action redirect parity: source headers are forwarded into the
+      // internal target GET and retained unless the target replaces them.
+      {
+        source: "/nextjs-compat/action-redirect-middleware",
+        headers: [
+          { key: "X-Action-Source-Only", value: "yes" },
+          { key: "X-Action-Header-Collision", value: "source" },
+        ],
       },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {

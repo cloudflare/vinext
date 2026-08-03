@@ -41,7 +41,8 @@ import {
   createAppRenderDependency,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
-  renderWithAppDependencyBarrier,
+  renderAppComponentWithDependencyBarrier,
+  type AppPageRenderDependency,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
@@ -242,7 +243,7 @@ type BuildAppPageRouteElementOptions<
     component: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode;
-  pageRenderDependency?: AppRenderDependency | null;
+  pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -1055,6 +1056,8 @@ export function buildAppPageElements<
     pageDependencies.push(templateDependency);
   }
 
+  pageRenderDependency?.setResultDependencies(pageDependencies);
+
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   const prefetchLoadingComponent = getDefaultExport(prefetchLoadingEntry?.loadingModule);
   const shouldRenderPrefetchLoadingShell =
@@ -1103,10 +1106,9 @@ export function buildAppPageElements<
     const TemplateComponent = templateComponent;
     const templateDependency = templateDependenciesById.get(templateEntry.id);
     let templateElement: ReactNode = templateDependency ? (
-      renderWithAppDependencyBarrier(
-        <TemplateComponent>
-          <Children />
-        </TemplateComponent>,
+      renderAppComponentWithDependencyBarrier(
+        TemplateComponent,
+        { children: <Children /> },
         templateDependency,
       )
     ) : (
@@ -1172,10 +1174,9 @@ export function buildAppPageElements<
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
     let layoutElement: ReactNode = layoutDependency ? (
-      renderWithAppDependencyBarrier(
-        <LayoutComponent {...layoutProps}>
-          <Children />
-        </LayoutComponent>,
+      renderAppComponentWithDependencyBarrier(
+        LayoutComponent,
+        { ...layoutProps, children: <Children /> },
         layoutDependency,
       )
     ) : (

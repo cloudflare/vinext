@@ -158,6 +158,10 @@ export type PagesPipelineDeps = {
         opts: { isDataRequest: boolean },
       ) => Promise<MiddlewareResult>)
     | null;
+  /** Original URL presented to middleware when URL normalization is disabled. */
+  middlewareRequest?: Request;
+  /** Stale/malformed data response emitted only if middleware does not handle the request. */
+  dataNotFoundResponse?: Response | null;
   renderPage?:
     | ((
         request: Request,
@@ -178,7 +182,7 @@ export type PagesPipelineDeps = {
   /**
    * Optional filesystem/static-asset probe supplied by each runtime adapter.
    * Called post-middleware (so middleware can intercept/redirect public files) with the
-   * original basePath-stripped pathname and the staged middleware response headers.
+   * resolved basePath-stripped pathname and URL plus the staged middleware response headers.
    * Node may write directly to `res` and return true; dev/Workers return a Response.
    * Resolves false to continue through rewrites, API routes, and page rendering.
    */
@@ -187,6 +191,7 @@ export type PagesPipelineDeps = {
         requestPathname: string,
         stagedHeaders: HeaderRecord,
         phase: FilesystemRoutePhase,
+        resolvedUrl: string,
       ) => Promise<boolean | Response>)
     | null;
 };
@@ -364,7 +369,12 @@ export async function runPagesRequest(
     phase: FilesystemRoutePhase,
   ): Promise<PagesPipelineResult | null> => {
     if (!deps.serveFilesystemRoute) return null;
-    const served = await deps.serveFilesystemRoute(requestPathname, middlewareHeaders, phase);
+    const served = await deps.serveFilesystemRoute(
+      requestPathname,
+      middlewareHeaders,
+      phase,
+      resolvedUrl,
+    );
     if (served instanceof Response) {
       const isStaticMethodNotAllowed =
         served.status === 405 && served.headers.get("allow") === "GET, HEAD";
@@ -388,7 +398,9 @@ export async function runPagesRequest(
   // parity, this keeps the internal credential out of user middleware and any
   // external destination it may choose.
   if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
-    const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
+    const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
+      isDataRequest,
+    });
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -468,11 +480,17 @@ export async function runPagesRequest(
     middlewareStatus = result.status ?? result.rewriteStatus;
   }
 
+  if (deps.dataNotFoundResponse && resolvedUrl === originalResolvedUrl) {
+    return {
+      type: "response",
+      response: mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
+    };
+  }
+
   // Step 6: Unpack middleware request headers
   const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(
     middlewareHeaders,
     request,
-    { preserveCredentialHeaders: isExternalUrl(resolvedUrl) },
   );
   request = postMwReq;
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
@@ -611,12 +629,21 @@ export async function runPagesRequest(
         apiRequest = cloneRequestWithUrl(request, apiRequestUrl.toString());
       }
       const response = await deps.handleApi(apiRequest, apiLookupUrl, deps.ctx ?? null);
+      const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
+      // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
+      // mergeHeaders may create a new Response object (losing non-standard
+      // properties), so copy the marker from the original API response.
+      if (merged !== response) {
+        (merged as { __vinextStreamedApiResponse?: boolean }).__vinextStreamedApiResponse = (
+          response as { __vinextStreamedApiResponse?: boolean }
+        ).__vinextStreamedApiResponse;
+      }
       return {
         type: "response",
         // API routes return arbitrary data; default a missing content-type to
         // application/octet-stream (not text/html) to avoid content sniffing.
         defaultContentType: "application/octet-stream",
-        response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
+        response: merged,
       };
     }
     return {

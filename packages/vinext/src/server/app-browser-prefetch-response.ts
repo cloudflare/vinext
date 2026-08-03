@@ -1,4 +1,25 @@
 import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import { peekPrefetchResponseForNavigation, type CachedRscResponse } from "vinext/shims/navigation";
+
+export function peekSettledPrefetchResponseForNavigation(options: {
+  additionalRscUrls: readonly string[];
+  bypassNavigationCache: boolean;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+  navigationKind: "navigate" | "refresh" | "traverse";
+  peek?: typeof peekPrefetchResponseForNavigation;
+  targetPathAndSearch: string;
+}): CachedRscResponse | null {
+  if (options.navigationKind !== "navigate" || options.bypassNavigationCache) {
+    return null;
+  }
+  return (options.peek ?? peekPrefetchResponseForNavigation)(
+    options.targetPathAndSearch,
+    options.interceptionContext,
+    options.mountedSlotsHeader,
+    { additionalRscUrls: options.additionalRscUrls },
+  );
+}
 
 function normalizeBrowserRscUrlForReuse(
   url: string | null | undefined,
@@ -52,4 +73,27 @@ export function resolvePrefetchNavigationResponseUrl(options: {
   return matchedAlternate
     ? options.visibleRscUrl
     : canonicalizeBrowserRscResponseUrl(options.responseUrl, options.origin);
+}
+
+export function prepareConsumedPrefetchResponseForPublication(
+  response: CachedRscResponse,
+  responseUrl: string,
+): {
+  expiresAt: number | undefined;
+  preparedElements: CachedRscResponse["preparedElements"];
+  snapshot: CachedRscResponse;
+} {
+  const { expiresAt, preparedElements, ...snapshot } = response;
+  return {
+    expiresAt,
+    preparedElements,
+    snapshot: { ...snapshot, url: responseUrl },
+  };
+}
+
+export function preserveCommittedPrefetchExpiry(
+  snapshot: CachedRscResponse,
+  expiresAt: number | undefined,
+): CachedRscResponse {
+  return expiresAt === undefined ? snapshot : { ...snapshot, expiresAt };
 }

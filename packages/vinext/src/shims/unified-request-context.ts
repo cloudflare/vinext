@@ -324,6 +324,9 @@ export function closeAfterResponseWithBody(
   (wrapped as { __vinextStreamedHtmlResponse?: boolean }).__vinextStreamedHtmlResponse = (
     response as { __vinextStreamedHtmlResponse?: boolean }
   ).__vinextStreamedHtmlResponse;
+  (wrapped as { __vinextStreamedApiResponse?: boolean }).__vinextStreamedApiResponse = (
+    response as { __vinextStreamedApiResponse?: boolean }
+  ).__vinextStreamedApiResponse;
   return wrapped;
 }
 

@@ -19,7 +19,7 @@ test.describe("surrogate cache policy", () => {
     expect(standard.headers()["surrogate-control"]).toBe("max-age=10800s, delta=noop");
   });
 
-  test.fixme("unacceptable gallery queries produce a cacheable 404", async ({ request }) => {
+  test("unacceptable gallery queries produce a cacheable 404", async ({ request }) => {
     const response = await request.get("/gallery/tides?page=abc");
     expect(response.status()).toBe(404);
     expect(response.headers()["surrogate-control"]).toBe("max-age=600s, delta=noop");
@@ -35,13 +35,13 @@ test.describe("surrogate cache policy", () => {
     expect(response.headers()["surrogate-control"]).toBe("no-store, delta=noop");
   });
 
-  test.fixme("type-ahead shim answers 204 with cache headers, including via the legacy rewrite", async ({
+  test("type-ahead shim answers 204 with cache headers, including via the legacy rewrite", async ({
     request,
   }) => {
     for (const path of ["/api/type-ahead", "/legacy/gateway/type-ahead"]) {
       const response = await request.get(path);
-      expect(response.status()).toBe(204);
-      expect(response.headers()["surrogate-control"]).toBe("max-age=14400s, delta=noop");
+      expect(response.status(), path).toBe(204);
+      expect(response.headers()["surrogate-control"], path).toBe("max-age=14400s, delta=noop");
     }
   });
 });

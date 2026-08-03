@@ -25,6 +25,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.rewrite(new URL("/about", request.url));
   }
 
+  // A concrete Pages route owns this destination even though the App Router's
+  // /docs/[...slug] catch-all also matches it. The Pages data response must run
+  // GSSP instead of being replaced by the App rewrite placeholder.
+  if (pathname === "/pages-data-rewrite-source") {
+    const response = NextResponse.rewrite(new URL("/docs/pages-data-rewrite-target", request.url));
+    response.cookies.set("pages-rewrite-session", "middleware", { path: "/" });
+    response.headers.set("cache-control", "public, max-age=3600");
+    return response;
+  }
+
   // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/app/middleware-node.js
   if (pathname === "/_next/static/middleware-rewrite.js") {
@@ -115,10 +125,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     if (target) {
       const rewriteTarget = new URL("/middleware-external-target", target);
       rewriteTarget.search = request.nextUrl.search;
-      if (request.headers.get("x-middleware-test-request-override") === "1") {
+      const override = request.headers.get("x-middleware-test-request-override");
+      if (override === "stray-forwarded-value") {
+        const response = NextResponse.rewrite(rewriteTarget);
+        response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+        return response;
+      }
+      if (override === "1" || override === "strip-credentials") {
         const headers = new Headers(request.headers);
+        headers.set("x-added", "from-middleware");
         headers.set("x-hello-from-middleware1", "hello");
         headers.set("x-hello-from-middleware2", "world");
+        // Credentials deleted here must not reach the external target (#1121 regression).
+        if (override === "strip-credentials") {
+          headers.delete("cookie");
+          headers.delete("authorization");
+        }
         return NextResponse.rewrite(rewriteTarget, { request: { headers } });
       }
       return NextResponse.rewrite(rewriteTarget);
@@ -248,6 +270,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  if (pathname === "/api/header-override-stray") {
+    const response = NextResponse.next();
+    response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+    return response;
+  }
+
   // Regression for a bug where a middleware that reads `next/headers` →
   // `headers()` before returning a `NextResponse.next({ request: { headers } })`
   // override leaked the pre-override snapshot into the Server Component.
@@ -362,6 +390,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
   r.headers.set("x-mw-pathname", pathname);
   r.headers.set("x-mw-ran", "true");
+  if (pathname === "/about") {
+    r.headers.set(
+      "x-action-target-saw-source",
+      request.headers.get("x-action-source-only") ?? "missing",
+    );
+  }
   if (sessionToken) {
     r.headers.set("x-mw-has-session", "true");
   }
@@ -382,6 +416,7 @@ export const config = {
   matcher: [
     "/about",
     "/exists-but-not-routed",
+    "/pages-data-rewrite-source",
     "/middleware-redirect",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",
@@ -400,6 +435,7 @@ export const config = {
     "/headers/override-from-middleware",
     "/header-override-delete",
     "/api/header-override-delete",
+    "/api/header-override-stray",
     "/api/pages-og",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",

@@ -7,7 +7,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types"]
+    "types": ["vinext/types", "@cloudflare/workers-types"]
   },
   "include": ["app", "worker", "*.ts"],
 }

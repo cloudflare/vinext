@@ -116,6 +116,20 @@ export function normalizeNextDataPagePathname(pagePathname: string, trailingSlas
 }
 
 /**
+ * Next.js only applies `trailingSlash` while normalizing a data URL for
+ * middleware when proxy URL normalization is enabled. With
+ * `skipProxyUrlNormalize`, the data route must retain the page's canonical
+ * pathname without adding a slash.
+ */
+export function shouldAddTrailingSlashToPagesDataPath(
+  hasMiddleware: boolean,
+  trailingSlash: boolean,
+  skipProxyUrlNormalize: boolean,
+): boolean {
+  return hasMiddleware && trailingSlash && !skipProxyUrlNormalize;
+}
+
+/**
  * Build the JSON envelope returned by `/_next/data/<buildId>/<page>.json`.
  * Mirrors Next.js' `RenderResult(JSON.stringify(props))` path in
  * `packages/next/src/server/render.tsx` (search for `isNextDataRequest`).
@@ -143,13 +157,12 @@ export function buildNextDataPropsJsonResponse(
   init?: ResponseInit,
 ): Response {
   const body = safeJsonStringify(props);
+  const headers = new Headers(init?.headers);
+  headers.set("Content-Type", "application/json");
   return new Response(body, {
     status: init?.status ?? 200,
     statusText: init?.statusText,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers as Record<string, string> | undefined),
-    },
+    headers,
   });
 }
 
@@ -201,10 +214,10 @@ type NormalizePagesDataRequestResult =
       notFoundResponse: null;
     }
   | {
-      isDataReq: false;
+      isDataReq: true;
       request: Request;
       normalizedPathname: null;
-      search: "";
+      search: string;
       notFoundResponse: Response;
     }
   | {
@@ -222,9 +235,10 @@ type NormalizePagesDataRequestResult =
  *
  * Returns:
  * - `isDataReq: false, notFoundResponse: null` — not a data request.
- * - `isDataReq: false, notFoundResponse: Response` — looks like a data URL but
- *   the buildId does not match; callers should return `notFoundResponse`
- *   immediately so stale clients fall back to a hard navigation.
+ * - `isDataReq: true, normalizedPathname: null` — looks like a data URL but
+ *   the buildId does not match. Callers may defer `notFoundResponse` until
+ *   after middleware so `skipProxyUrlNormalize` middleware can intercept the
+ *   original URL.
  * - `isDataReq: true` — valid data request; `request` is re-pointed at the
  *   normalized page path, `normalizedPathname` carries the bare page path, and
  *   `search` carries the original query string for callers that need to
@@ -254,10 +268,10 @@ export function normalizePagesDataRequest(
   const dataMatch = buildId ? parseNextDataPathname(dataPathname, buildId) : null;
   if (!dataMatch) {
     return {
-      isDataReq: false,
+      isDataReq: true,
       request,
       normalizedPathname: null,
-      search: "",
+      search: reqUrl.search,
       notFoundResponse: buildNextDataNotFoundResponse(),
     };
   }

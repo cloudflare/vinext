@@ -4,7 +4,6 @@ import React from "react";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_LAYOUT_FLAGS_KEY,
-  APP_RENDER_OBSERVATION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   AppElementsWire,
@@ -1322,16 +1321,25 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("emits the dynamic stale time header on RSC responses during dynamic renders", async () => {
+  it("emits dynamic BFCache and completed runtime-prefetch stale times together", async () => {
     const common = createCommonOptions();
     const response = await renderAppPageLifecycle({
       ...common.options,
       consumeDynamicUsage: vi.fn(() => true),
       dynamicStaleTimeSeconds: 60,
       isRscRequest: true,
+      peekRequestCacheLife() {
+        return { stale: 240 };
+      },
     });
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
-    await expect(response.text()).resolves.toBe("flight-data");
+    expect(response.headers.get(VINEXT_RSC_COMPLETION_METADATA_HEADER)).toBe("1");
+    const completed = extractRscCompletionMetadata(await response.arrayBuffer());
+    expect(new TextDecoder().decode(completed.buffer)).toBe("flight-data");
+    expect(completed.metadata).toEqual({
+      dynamicStaleTimeSeconds: 60,
+      serverStaleTimeSeconds: 240,
+    });
   });
 
   it("omits the dynamic stale time header during prerender (isPrerender=true)", async () => {
@@ -1690,6 +1698,7 @@ describe("layoutFlags injection into RSC payload", () => {
     element?: Record<string, ReactNode>;
     layoutParamAccess?: ReturnType<typeof createAppLayoutParamAccessTracker>;
     layoutCount?: number;
+    pageTags?: string[];
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
     routePattern?: string;
@@ -1708,7 +1717,7 @@ describe("layoutFlags injection into RSC payload", () => {
       getFontPreloads: () => [],
       getFontStyles: () => [],
       getNavigationContext: () => null,
-      getPageTags: () => [],
+      getPageTags: () => overrides.pageTags ?? [],
       getRequestCacheLife: () => null,
       handlerStart: 0,
       hasLoadingBoundary: false,
@@ -1839,13 +1848,14 @@ describe("layoutFlags injection into RSC payload", () => {
     });
   });
 
-  it("injects partial render observation metadata into outgoing AppElements payloads", async () => {
+  it("keeps server-only render observations out of outgoing AppElements payloads", async () => {
     const { options, getCapturedElement } = createRscOptions({
       element: {
         [APP_ROOT_LAYOUT_KEY]: "/",
         "layout:/": "root-layout",
         "page:/test": "test-page",
       },
+      pageTags: ["/test", "_N_T_/(marketing)/pricing/page"],
     });
 
     await renderAppPageLifecycle({
@@ -1860,25 +1870,9 @@ describe("layoutFlags injection into RSC payload", () => {
       },
     });
 
-    const renderObservation = getCapturedElement()[APP_RENDER_OBSERVATION_KEY];
-
-    expect(renderObservation).toMatchObject({
-      boundaryOutcome: { kind: "unknown" },
-      cacheability: "unknown",
-      completeness: "partial",
-      output: {
-        kind: "app-rsc",
-        mountedSlotsFingerprint: null,
-        renderEpoch: null,
-        rootBoundaryId: "/",
-        routeId: "route:/test",
-      },
-      requestApis: expect.arrayContaining([
-        { kind: "headers", status: "observed" },
-        { kind: "params", status: "observed" },
-      ]),
-    });
-    expect(JSON.stringify(renderObservation)).not.toContain("secret");
+    const outgoingPayload = getCapturedElement();
+    expect(outgoingPayload).not.toHaveProperty("__renderObservation");
+    expect(JSON.stringify(outgoingPayload)).not.toContain("_N_T_/(marketing)/pricing/page");
   });
 
   it("injects __layoutFlags for multiple independently classified layouts", async () => {

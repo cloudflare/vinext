@@ -18,6 +18,7 @@ import { matchesMiddleware, type MatcherConfig } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
 import {
   addBasePathToPathname,
   hasBasePath,
@@ -75,6 +76,12 @@ type ExecuteMiddlewareOptions = {
   isProxy: boolean;
   module: MiddlewareModule;
   normalizedPathname?: string;
+  /**
+   * The caller already created an isolated body branch for middleware. This
+   * lets App Router normalize that branch's URL and headers without adding a
+   * second tee whose preserved side would never be consumed.
+   */
+  requestBodyAlreadyIsolated?: boolean;
   request: Request;
   /**
    * The user's `trailingSlash` config. Plumbed into the NextRequest's NextURL
@@ -155,8 +162,9 @@ function stripMiddlewareHeadersFromResponse(response: Response): Response {
 }
 
 /**
- * Make a same-host URL relative to the request origin. Cross-origin URLs are
- * returned unchanged. Mirrors Next.js's `getRelativeURL` behaviour:
+ * Make a same-host URL relative to the request origin unless removing the
+ * origin would create a protocol-relative redirect. Cross-origin URLs are
+ * returned unchanged. Based on Next.js's `getRelativeURL` behaviour:
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/relativize-url.ts
  */
 function relativizeLocation(location: string, requestUrl: string): string {
@@ -168,6 +176,11 @@ function relativizeLocation(location: string, requestUrl: string): string {
   }
   const base = new URL(requestUrl);
   if (parsed.origin !== base.origin) return parsed.toString();
+  // A leading double slash is a valid same-origin pathname while the URL is
+  // absolute, but becomes a protocol-relative redirect if the origin is
+  // removed. Keep the absolute form for every shape covered by the shared
+  // redirect guard.
+  if (isOpenRedirectShaped(parsed.pathname)) return parsed.toString();
   return parsed.pathname + parsed.search + parsed.hash;
 }
 
@@ -228,11 +241,13 @@ function createNextRequest(
   basePath?: string,
   trailingSlash?: boolean,
   hadBasePath?: boolean,
+  requestBodyAlreadyIsolated = false,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
   // the original request body.
-  let mwRequest = request.body && !request.bodyUsed ? request.clone() : request;
+  let mwRequest =
+    !requestBodyAlreadyIsolated && request.body && !request.bodyUsed ? request.clone() : request;
   // NextURL._stripBasePath only recognises basePath when the request URL's
   // pathname actually starts with the configured prefix. Dev requests may
   // arrive after Vite has stripped that prefix, so restore it for requests
@@ -260,9 +275,37 @@ function createNextRequest(
       }
     : undefined;
 
-  return mwRequest instanceof NextRequest
-    ? mwRequest
-    : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+  const nextRequest =
+    mwRequest instanceof NextRequest && (!mwRequest.body || mwRequest.bodyUsed)
+      ? mwRequest
+      : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+  if (mwRequest !== request && mwRequest.body && !mwRequest.bodyUsed && !mwRequest.body.locked) {
+    void mwRequest.body.cancel().catch(() => {});
+  }
+  return nextRequest;
+}
+
+function releaseMiddlewareRequestBody(
+  request: NextRequest,
+  waitUntilPromises: Promise<unknown>[],
+  retainedByResponse = false,
+): void {
+  const body = request.body;
+  if (!body || retainedByResponse) return;
+
+  const cancel = () => {
+    if (!body.locked) {
+      void body.cancel().catch(() => {});
+    }
+  };
+  if (waitUntilPromises.length === 0) {
+    cancel();
+    return;
+  }
+
+  // waitUntil work is allowed to keep reading the middleware request after
+  // the handler returns. Release the branch only once that work has settled.
+  void Promise.allSettled(waitUntilPromises).then(cancel);
 }
 
 export async function executeMiddleware(
@@ -316,6 +359,7 @@ export async function executeMiddleware(
     options.basePath,
     options.trailingSlash,
     hadBasePath,
+    options.requestBodyAlreadyIsolated,
   );
   if (options.isDataRequest) {
     Object.defineProperty(nextRequest, "__isData", {
@@ -331,6 +375,7 @@ export async function executeMiddleware(
   } catch (e) {
     console.error("[vinext] Middleware error:", e);
     const waitUntilPromises = drainFetchEvent(fetchEvent);
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     const message = options.includeErrorDetails
       ? "Middleware Error: " + (e instanceof Error ? e.message : String(e))
       : "Internal Server Error";
@@ -339,19 +384,17 @@ export async function executeMiddleware(
       response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
-  } finally {
-    if (process.env.NODE_ENV !== "development" && nextRequest.body) {
-      void nextRequest.body.cancel().catch(() => {});
-    }
   }
 
   const waitUntilPromises = drainFetchEvent(fetchEvent);
 
   if (!response) {
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return { continue: true, waitUntilPromises };
   }
 
   if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return {
       continue: true,
       responseHeaders: collectMiddlewareHeaders(response),
@@ -389,7 +432,8 @@ export async function executeMiddleware(
               }
             }
             if (normalized !== null) {
-              normalizedLocation = normalized + loc.search + loc.hash;
+              loc.pathname = normalized;
+              normalizedLocation = relativizeLocation(loc.toString(), options.request.url);
             }
           }
         } catch {
@@ -403,6 +447,7 @@ export async function executeMiddleware(
       // Internal data headers are stripped before middleware runs, so this
       // protocol is gated on trusted classification threaded by the caller.
       if (options.isDataRequest) {
+        releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
         return {
           continue: false,
           response: dataRedirectResponse(normalizedLocation, response),
@@ -410,12 +455,9 @@ export async function executeMiddleware(
         };
       }
 
-      const responseHeaders = new Headers();
-      for (const [key, value] of response.headers) {
-        if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key.toLowerCase() !== "location") {
-          responseHeaders.append(key, value);
-        }
-      }
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.delete("location");
+      processMiddlewareHeaders(responseHeaders);
       // Rebuild the response with the relativized Location so consumers that
       // forward `result.response` (rather than `result.redirectUrl`) also send
       // the correct header.
@@ -426,6 +468,11 @@ export async function executeMiddleware(
         statusText: response.statusText,
         headers: relativizedResponseHeaders,
       });
+      releaseMiddlewareRequestBody(
+        nextRequest,
+        waitUntilPromises,
+        response.body === nextRequest.body,
+      );
       return {
         continue: false,
         redirectUrl: normalizedLocation,
@@ -474,6 +521,7 @@ export async function executeMiddleware(
     } catch {
       rewritePath = rewriteUrl;
     }
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return {
       continue: true,
       rewriteUrl: rewritePath,
@@ -484,6 +532,7 @@ export async function executeMiddleware(
     };
   }
 
+  releaseMiddlewareRequestBody(nextRequest, waitUntilPromises, response.body === nextRequest.body);
   return {
     continue: false,
     response: stripMiddlewareHeadersFromResponse(response),

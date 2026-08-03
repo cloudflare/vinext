@@ -67,7 +67,12 @@ const baseConfig = {
         }))
       : [];
     return {
-      beforeFiles: [],
+      beforeFiles: [
+        {
+          source: "/legacy/image-alias",
+          destination: "/_next/image?url=%2Ffoo.png&w=828&q=75",
+        },
+      ],
       afterFiles: [
         { source: "/legacy/gateway/type-ahead", destination: "/api/type-ahead" },
       ],

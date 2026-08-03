@@ -42,7 +42,14 @@ import {
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
-import { createAppRenderDependency, type AppRenderDependency } from "./app-render-dependency.js";
+import {
+  createAppPageRenderDependency,
+  invokeAppComponent,
+  isAppRenderSuspension,
+  isReactOwnedAppComponent,
+  renderAfterAppDependencies,
+  type AppPageRenderDependency,
+} from "./app-render-dependency.js";
 import { isPromiseLike } from "../utils/promise.js";
 
 function resolveInterceptLayoutParams(
@@ -56,31 +63,6 @@ function resolveInterceptLayoutParams(
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
 type AppPageComponent = NonNullable<AppPageModule["default"]>;
-const REACT_CLIENT_REFERENCE = Symbol.for("react.client.reference");
-
-function isReactOwnedPageComponent(component: AppPageComponent): boolean {
-  if (typeof component !== "function") {
-    return true;
-  }
-  const candidate = component as AppPageComponent & {
-    $$typeof?: symbol;
-    prototype?: { isReactComponent?: unknown };
-  };
-  return (
-    candidate.$$typeof === REACT_CLIENT_REFERENCE || candidate.prototype?.isReactComponent != null
-  );
-}
-
-function isReactSuspension(error: unknown): boolean {
-  if (isPromiseLike(error)) {
-    return true;
-  }
-
-  return (
-    error instanceof Error &&
-    error.message.startsWith("Suspense Exception: This is not a real error!")
-  );
-}
 
 /**
  * Route shape passed from the generated entry. Extends the wiring route with
@@ -522,15 +504,15 @@ export async function buildPageElements<
         pageTreePosition,
       ) !== null);
   const pageRenderDependency =
-    EffectivePageComponent && !isReactOwnedPageComponent(EffectivePageComponent)
-      ? createAppRenderDependency()
+    EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
+      ? createAppPageRenderDependency()
       : null;
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
-    renderDependency?: AppRenderDependency | null,
+    renderDependency?: AppPageRenderDependency | null,
   ) => {
-    if (isReactOwnedPageComponent(PageComponent)) {
+    if (isReactOwnedAppComponent(PageComponent)) {
       const invocationProps = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
@@ -542,9 +524,6 @@ export async function buildPageElements<
       return createElement(PageComponent, invocationProps);
     }
 
-    const ServerPageComponent = PageComponent as unknown as (
-      props: Readonly<Record<string, unknown>>,
-    ) => ReturnType<typeof createElement> | Promise<unknown> | string | number | null;
     const PageInvoker = () => {
       const invocationProps = { ...props };
       if (searchParams) {
@@ -554,32 +533,34 @@ export async function buildPageElements<
       }
 
       try {
-        const result = ServerPageComponent(invocationProps);
+        const result = invokeAppComponent(PageComponent, invocationProps);
         if (isPromiseLike(result)) {
           if (renderDependency) {
-            if (hasPageLoadingBoundary) {
-              // A loading boundary needs the dependent route/layout entries to
-              // serialize while the page is still pending so its fallback can
-              // stream. Request state consumed by those entries must therefore
-              // be established in the page's first continuation; an async
-              // consumer gets its own continuation before reading that state.
-              void Promise.resolve().then(() => renderDependency.release());
-            } else {
-              // With no loading UI to stream, preserve the stronger ordering
-              // contract: even a synchronous layout cannot observe request
-              // state until the async page has finished initializing it.
-              void Promise.resolve(result).then(
-                () => renderDependency.release(),
-                () => renderDependency.release(),
-              );
-            }
+            // A declared-async page reaches its first continuation before this
+            // microtask. That is enough for the Next.js pattern where the page
+            // awaits params and establishes request-scoped state for a parent
+            // layout. Do not wait for the complete page result: doing so turns
+            // an ancestor Suspense boundary into a blocking render.
+            void Promise.resolve().then(() => renderDependency.release());
           }
-          return result;
+          return Promise.resolve(result).then((resolvedResult) =>
+            renderDependency
+              ? renderAfterAppDependencies(
+                  resolvedResult as React.ReactNode,
+                  renderDependency.resultDependencies,
+                )
+              : (resolvedResult as React.ReactNode),
+          );
         }
         renderDependency?.release();
-        return result;
+        return renderDependency
+          ? renderAfterAppDependencies(
+              result as React.ReactNode,
+              renderDependency.resultDependencies,
+            )
+          : result;
       } catch (error) {
-        if (isReactSuspension(error)) {
+        if (isAppRenderSuspension(error)) {
           // React requires its internal use() suspension value to be rethrown
           // immediately. With loading UI, release from a microtask so the
           // page-entry Suspense boundary can serialize its fallback. Without

@@ -324,10 +324,19 @@ function writeGsspRedirect(
     ...props,
     pageProps: props.pageProps,
   });
+  // `getServerSideProps` may set response headers before returning a redirect.
+  // Pass them explicitly to writeHead: unlike the normal render path, redirects
+  // return before the later gSSP-header capture/forwarding step runs.
+  const gsspHeaders = Object.fromEntries(
+    Object.entries(res.getHeaders()).filter(
+      (entry): entry is [string, string | number | string[]] => entry[1] !== undefined,
+    ),
+  );
 
   if (isDangerousScheme(resolved.destination)) {
     const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-    const headers: Record<string, string> = {
+    const headers: Record<string, string | number | string[]> = {
+      ...gsspHeaders,
       "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
       "Content-Type": "text/plain; charset=utf-8",
     };
@@ -343,7 +352,10 @@ function writeGsspRedirect(
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
     // `_next/data` redirect exits for deployment-skew protection. Fixes #1829.
     const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-    const dataHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    const dataHeaders: Record<string, string | number | string[]> = {
+      ...gsspHeaders,
+      "Content-Type": "application/json",
+    };
     if (deploymentId) {
       dataHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
     }
@@ -358,6 +370,7 @@ function writeGsspRedirect(
 
   const location = resolvePagesRedirectLocation(resolved, options.basePath);
   res.writeHead(resolved.statusCode, {
+    ...gsspHeaders,
     Location: location,
     ...(resolved.statusCode === 308 ? { Refresh: `0;url=${location}` } : {}),
   });
@@ -366,6 +379,11 @@ function writeGsspRedirect(
 
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+
+function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
+  res.removeHeader("Content-Length");
+  res.removeHeader("Transfer-Encoding");
+}
 
 /**
  * Stream a Pages Router page response using progressive SSR.
@@ -422,6 +440,8 @@ async function streamPageToResponse(
     crossOrigin?: string;
     /** Buffer the body before writing headers so error-page fallback remains safe. */
     bufferBodyBeforeHeaders?: boolean;
+    /** Keep a response Content-Type set before rendering a notFound page. */
+    preserveExistingContentType?: boolean;
   },
 ): Promise<void> {
   const {
@@ -440,6 +460,7 @@ async function streamPageToResponse(
     setDocumentInitialHead,
     crossOrigin,
     bufferBodyBeforeHeaders = false,
+    preserveExistingContentType = false,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -595,10 +616,10 @@ async function streamPageToResponse(
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
   // before writeHead(), since writeHead()'s headers object doesn't handle
   // arrays portably. Then writeHead() merges with any setHeader() calls.
-  const headers: Record<string, string> = {
-    "Content-Type": "text/html; charset=utf-8",
-    "Transfer-Encoding": "chunked",
-  };
+  const headers: Record<string, string> = { "Transfer-Encoding": "chunked" };
+  if (!preserveExistingContentType || !res.hasHeader("Content-Type")) {
+    headers["Content-Type"] = "text/html; charset=utf-8";
+  }
   if (extraHeaders) {
     for (const [key, val] of Object.entries(extraHeaders)) {
       if (Array.isArray(val)) {
@@ -1231,11 +1252,14 @@ export function createSSRHandler(
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
               const deploymentId =
                 process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-              const notFoundHeaders: Record<string, string> = {
-                "Content-Type": "application/json",
-              };
-              if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
-              res.writeHead(404, notFoundHeaders);
+              stripDevPagesNotFoundFramingHeaders(res);
+              if (!res.hasHeader("Content-Type")) {
+                res.setHeader("Content-Type", "application/json");
+              }
+              if (deploymentId && !res.hasHeader(NEXTJS_DEPLOYMENT_ID_HEADER)) {
+                res.setHeader(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
+              }
+              res.writeHead(404);
               res.end('{"notFound":true}');
               return;
             }
@@ -2060,6 +2084,7 @@ async function renderErrorPage(
         setPagePatternsFromNextData: true,
       });
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
+      if (statusCode === 404) stripDevPagesNotFoundFramingHeaders(res);
       if (DocumentComponent) {
         await streamPageToResponse(res, element, {
           url,
@@ -2095,6 +2120,7 @@ async function renderErrorPage(
               ? headShim.setDocumentInitialHead
               : undefined,
           crossOrigin: context.crossOrigin,
+          preserveExistingContentType: statusCode === 404,
         });
       } else {
         const bodyHtml = await renderToStringAsync(element);
@@ -2133,7 +2159,12 @@ async function renderErrorPage(
           ),
           protectedAssetMarker,
         );
-        res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
+        res.writeHead(
+          statusCode,
+          statusCode === 404 && res.hasHeader("Content-Type")
+            ? undefined
+            : { "Content-Type": "text/html; charset=utf-8" },
+        );
         res.end(transformedHtml);
       }
       return;

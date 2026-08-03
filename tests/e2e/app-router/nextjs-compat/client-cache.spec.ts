@@ -291,9 +291,56 @@ test.describe("Next.js compat: client cache", () => {
       .poll(() => requestsFor(requests, `${ROOT}/0`).some((request) => !request.partial))
       .toBe(true);
 
+    // Delay the redundant cache branch that formerly blocked committed-cache
+    // publication after the prefetch was consumed. The consumed snapshot must
+    // remain discoverable during that handoff so a Link remount cannot start a
+    // duplicate request.
+    await page.evaluate(() => {
+      const testWindow = window as ClientCacheTestWindow;
+      const state: DelayedNavigationCachePublicationState = {
+        releaseOldNavigationTail: null,
+      };
+      testWindow.__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__ = state;
+      const originalTee = Reflect.get(
+        ReadableStream.prototype,
+        "tee",
+      ) as typeof ReadableStream.prototype.tee;
+      ReadableStream.prototype.tee = function (this: ReadableStream<unknown>) {
+        ReadableStream.prototype.tee = originalTee;
+        const [reactBranch, cacheBranch] = originalTee.call(this);
+        const cacheReader = cacheBranch.getReader();
+        const delayedCacheBranch = new ReadableStream({
+          async start(controller) {
+            while (true) {
+              const result = await cacheReader.read();
+              if (result.done) break;
+              controller.enqueue(result.value);
+            }
+            await new Promise<void>((resolve) => {
+              state.releaseOldNavigationTail = resolve;
+            });
+            controller.close();
+          },
+          cancel(reason) {
+            return cacheReader.cancel(reason);
+          },
+        });
+        return [reactBranch, delayedCacheBranch];
+      } as typeof ReadableStream.prototype.tee;
+    });
+
     requests.length = 0;
     await targetLink.click();
     await expect(page.locator("#client-cache-id")).toHaveText("0");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            typeof (window as ClientCacheTestWindow).__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__
+              ?.releaseOldNavigationTail === "function",
+        ),
+      )
+      .toBe(true);
     const initial = await readRandom(page);
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
 
@@ -308,10 +355,22 @@ test.describe("Next.js compat: client cache", () => {
 
     requests.length = 0;
     const cachedTargetLink = await revealAccordionLink(page, `${ROOT}/0`);
+    expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
     await cachedTargetLink.click();
     await expect(page.locator("#client-cache-id")).toHaveText("0");
     expect(await readRandom(page)).toBe(initial);
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
+    await page.evaluate(() => {
+      const state = (window as ClientCacheTestWindow)
+        .__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__;
+      if (
+        state?.releaseOldNavigationTail === null ||
+        state?.releaseOldNavigationTail === undefined
+      ) {
+        throw new Error("Consumed prefetch cache tail was not delayed");
+      }
+      state.releaseOldNavigationTail();
+    });
 
     const cachedHomeLink = await revealAccordionLink(page, ROOT);
     await cachedHomeLink.click();
