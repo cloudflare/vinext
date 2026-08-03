@@ -90,6 +90,23 @@ export default defineConfig({
         },
       },
       {
+        files: ["**.spec.ts", "**.test.ts", "tests/**/*.ts"],
+        rules: {
+          "no-restricted-imports": [
+            "error",
+            {
+              paths: [
+                {
+                  name: "vitest",
+                  message:
+                    'Import test APIs from "vite-plus/test" instead (matches the bundled Vitest).',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
         files: ["packages/vinext/src/**/*.{ts,tsx}"],
         rules: {
           "typescript/no-misused-promises": "error",
