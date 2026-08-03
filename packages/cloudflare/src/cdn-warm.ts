@@ -439,6 +439,14 @@ async function drainResponseBody(response: Response, signal: AbortSignal): Promi
     return;
   }
 
+  if (signal.aborted) {
+    // A custom fetch implementation may resolve after ignoring the aborted
+    // signal. Cancel its late body without acquiring a reader, then preserve
+    // the timeout reason for the caller.
+    void response.body.cancel(signal.reason).catch(() => {});
+    signal.throwIfAborted();
+  }
+
   const reader = response.body.getReader();
   let rejectOnAbort: ((reason?: unknown) => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
@@ -453,7 +461,6 @@ async function drainResponseBody(response: Response, signal: AbortSignal): Promi
   };
   signal.addEventListener("abort", abort, { once: true });
 
-  let drainSettled = false;
   const drain = (async () => {
     try {
       while (true) {
@@ -461,7 +468,9 @@ async function drainResponseBody(response: Response, signal: AbortSignal): Promi
         if (done) return;
       }
     } finally {
-      drainSettled = true;
+      // This runs only after the pending read settles. Keeping release here
+      // avoids masking the timeout while still unlocking cancellable streams.
+      reader.releaseLock();
     }
   })();
 
@@ -471,9 +480,6 @@ async function drainResponseBody(response: Response, signal: AbortSignal): Promi
     signal.throwIfAborted();
   } finally {
     signal.removeEventListener("abort", abort);
-    // A custom stream may keep read() pending after cancellation. Releasing a
-    // reader with a pending read throws and would mask the timeout error.
-    if (drainSettled) reader.releaseLock();
   }
 }
 
@@ -487,7 +493,9 @@ async function fetchAndDrainWithTimeout(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const requestHeaders = new Headers(headers);
-  requestHeaders.set("User-Agent", "vinext-cloudflare-cdn-warm");
+  if (!requestHeaders.has("User-Agent")) {
+    requestHeaders.set("User-Agent", "vinext-cloudflare-cdn-warm");
+  }
   try {
     const response = await fetchImpl(url, {
       method: "GET",
@@ -523,19 +531,12 @@ export async function probeWorkerVersion(
   const fetchImpl = options.fetchImpl ?? fetch;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(url, {
-        // Probes may briefly reach the previously deployed Worker while the
-        // version override propagates. Keep them non-mutating so an older
-        // Worker cannot route the probe into user POST behavior.
-        method: "GET",
-        redirect: "manual",
-        headers,
-        signal: controller.signal,
-      });
-      await response.arrayBuffer();
+      // Probes may briefly reach the previously deployed Worker while the
+      // version override propagates. Keep them non-mutating so an older
+      // Worker cannot route the probe into user POST behavior. Bound both the
+      // fetch and body discard so an old response cannot hang or be buffered.
+      const response = await fetchAndDrainWithTimeout(fetchImpl, url, timeoutMs, headers, "manual");
       const observedVersion = response.headers.get(VINEXT_WORKER_VERSION_HEADER);
       if (response.status === 204 && observedVersion === options.versionId) {
         return { verified: true };
@@ -546,8 +547,6 @@ export async function probeWorkerVersion(
     } catch {
       // A failed override may reach the old version or a not-yet-propagated
       // route. Retry the exact non-mutating probe within the bounded window.
-    } finally {
-      clearTimeout(timer);
     }
     if (attempt < retries) await waitForRetry(retryDelayMs);
   }

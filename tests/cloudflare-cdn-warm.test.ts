@@ -94,6 +94,39 @@ describe("Cloudflare CDN warmup", () => {
     ).resolves.toEqual({ verified: false, reason: "binding-unavailable" });
   });
 
+  it("bounds and cancels a stalled version-probe response body", async () => {
+    vi.useFakeTimers();
+    let bodyCancelled = false;
+    const stalledBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        bodyCancelled = true;
+      },
+    });
+
+    try {
+      const resultPromise = probeWorkerVersion({
+        targetUrl: "https://app.example.com",
+        pathname: "/about",
+        versionId: "version-new",
+        timeoutMs: 5,
+        retries: 0,
+        fetchImpl: async () =>
+          new Response(stalledBody, {
+            status: 200,
+            headers: { "X-Vinext-Worker-Version": "version-old" },
+          }),
+      });
+
+      await vi.advanceTimersByTimeAsync(5);
+
+      await expect(resultPromise).resolves.toEqual({ verified: false, reason: "not-ready" });
+      expect(bodyCancelled).toBe(true);
+      await vi.waitFor(() => expect(stalledBody.locked).toBe(false));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reads warmable paths from the prerender manifest", () => {
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -886,6 +919,42 @@ describe("Cloudflare CDN warmup", () => {
         failures: [{ path: "/streaming", error: "timed out after 25ms" }],
       });
       expect(bodyCancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a late response without locking its body after timeout", async () => {
+    vi.useFakeTimers();
+    let bodyCancelled = false;
+    const lateBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        bodyCancelled = true;
+      },
+    });
+
+    try {
+      const resultPromise = warmCdnCache({
+        targetUrl: "https://app.example.com",
+        paths: ["/late"],
+        timeoutMs: 5,
+        retries: 0,
+        fetchImpl: async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+          return new Response(lateBody, { status: 200 });
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        total: 1,
+        warmed: 0,
+        failed: 1,
+        failures: [{ path: "/late", error: "timed out after 5ms" }],
+      });
+      expect(bodyCancelled).toBe(true);
+      expect(lateBody.locked).toBe(false);
     } finally {
       vi.useRealTimers();
     }
