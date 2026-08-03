@@ -3460,6 +3460,22 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     });
   });
 
+  it("parses UTF-8 BOM-prefixed JSONC like Wrangler", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `\uFEFF${JSON.stringify({
+        cache: { enabled: true, cross_version_cache: true },
+        version_metadata: { binding: "CUSTOM_VERSION" },
+      })}`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      cache: { enabled: true, crossVersionCache: true },
+      versionMetadataBinding: "CUSTOM_VERSION",
+    });
+  });
+
   it("parses top-level and environment-specific cross-version cache settings", () => {
     writeFile(
       tmpDir,
@@ -3494,6 +3510,26 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     const config = parseWranglerConfig(tmpDir);
     expect(config?.versionMetadataBinding).toBe("VINEXT_VERSION_METADATA");
     expect(config?.env?.staging?.versionMetadataBinding).toBe("STAGING_VERSION");
+  });
+
+  it("parses flattened generated configs for their selected environment", () => {
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "my-worker-staging",
+        targetEnvironment: "staging",
+        cache: { enabled: true, cross_version_cache: false },
+        version_metadata: { binding: "VINEXT_VERSION_METADATA" },
+      }),
+    );
+
+    expect(parseWranglerConfig(tmpDir, "dist/server/wrangler.json")).toMatchObject({
+      name: "my-worker-staging",
+      targetEnvironment: "staging",
+      cache: { enabled: true, crossVersionCache: false },
+      versionMetadataBinding: "VINEXT_VERSION_METADATA",
+    });
   });
 
   it("parses TOML cross-version cache settings and environment overrides", () => {
@@ -3538,6 +3574,23 @@ staging.cache.cross_version_cache = true
     expect(config?.env?.staging?.cache).toEqual({
       enabled: true,
       crossVersionCache: true,
+    });
+  });
+
+  it("preserves quoted dots in environment names for dotted TOML settings", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `[env]
+"staging.eu".cache.enabled = true
+"staging.eu".cache.cross_version_cache = true
+"staging.eu".version_metadata.binding = "CUSTOM_VERSION"
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)?.env?.["staging.eu"]).toEqual({
+      cache: { enabled: true, crossVersionCache: true },
+      versionMetadataBinding: "CUSTOM_VERSION",
     });
   });
 

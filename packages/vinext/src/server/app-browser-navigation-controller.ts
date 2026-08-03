@@ -249,6 +249,27 @@ export function createBasePathStrippedPathAndSearch(url: URL, basePath: string):
   return query === "" ? pathname : `${pathname}?${query}`;
 }
 
+/**
+ * Resolve the source identity sent as `Next-Url` for a navigation request.
+ *
+ * `previousNextUrl` may come from history/interception state and therefore use
+ * the browser-visible, basePath-prefixed shape. Link prefetches derive the same
+ * identity from the App Router's basePath-free route state. Normalize at the
+ * request boundary so a prefetched contextual payload and the click that
+ * consumes it address the same request variant.
+ */
+export function resolveNavigationRequestNextUrl(options: {
+  basePath: string;
+  previousNextUrl: string | null;
+  sourceUrl: URL;
+}): string {
+  const sourceIdentity =
+    options.previousNextUrl === null
+      ? options.sourceUrl
+      : new URL(options.previousNextUrl, options.sourceUrl);
+  return stripBasePath(sourceIdentity.pathname, options.basePath) + sourceIdentity.search;
+}
+
 function isSnapshotTargetHref(
   basePath: string,
   snapshot: ClientNavigationRenderSnapshot,

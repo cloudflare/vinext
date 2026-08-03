@@ -1785,6 +1785,71 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
   });
 
+  it.each([
+    {
+      expectedNextUrl: null,
+      expectedVary: VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
+      interceptable: false,
+    },
+    {
+      expectedNextUrl: "/source",
+      expectedVary: VINEXT_RSC_VARY_HEADER,
+      interceptable: true,
+    },
+  ])(
+    "exposes Next-Url to route handlers only when the resolved target is interceptable ($interceptable)",
+    async ({ expectedNextUrl, expectedVary, interceptable }) => {
+      // Next.js deletes Next-Url from req.headers at the same resolved-route
+      // boundary where it omits Next-Url from Vary. Middleware has already run
+      // at that point and therefore still observes the transport header.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts#L2070-L2110
+      const route = createPageRoute({
+        page: null,
+        pattern: "/api/inspect",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "inspect"],
+      });
+      let middlewareNextUrl: string | null = null;
+      let requestNextUrl: string | null = null;
+      let headersNextUrl: string | null = null;
+      const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+        async ({ request }) => {
+          requestNextUrl = request.headers.get(NEXT_URL_HEADER);
+          headersNextUrl = (await requestHeaders()).get(NEXT_URL_HEADER);
+          return new Response("route", { status: 200 });
+        },
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname: string) =>
+          pathname === "/api/inspect" ? { params: {}, route } : null,
+        middlewareModule: {
+          default: (request: NextRequest) => {
+            middlewareNextUrl = request.headers.get(NEXT_URL_HEADER);
+          },
+        },
+        pathCouldBeIntercepted: (pathname) => interceptable && pathname === "/api/inspect",
+      });
+      const headers = createRscRequestHeaders({ nextUrl: "/source" });
+      const requestPath = await createRscRequestUrl("/docs/api/inspect", headers);
+
+      const response = await handler(
+        new Request(`https://example.test${requestPath}`, { headers }),
+        null,
+      );
+
+      // A 200 response also proves cache-busting validation used the untouched
+      // transport request before the userland header was conditionally hidden.
+      expect(response.status).toBe(200);
+      expect(response.headers.has("location")).toBe(false);
+      expect(middlewareNextUrl).toBe("/source");
+      expect(requestNextUrl).toBe(expectedNextUrl);
+      expect(headersNextUrl).toBe(expectedNextUrl);
+      expect(response.headers.get("vary")).toBe(expectedVary);
+    },
+  );
+
   it("uses the rewritten resolved pathname for Next-Url visibility and Vary", async () => {
     let userlandNextUrl: string | null = null;
     const dispatchMatchedPage = vi.fn(async () => {

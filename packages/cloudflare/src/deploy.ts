@@ -577,12 +577,17 @@ export async function deployWithCdnWarmup(
 ): Promise<string> {
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const targetEnv = getWranglerTargetEnv(options);
+  const isFlattenedTargetConfig =
+    targetEnv !== undefined && wranglerConfig?.targetEnvironment === targetEnv;
   // Wrangler does not inherit version_metadata into named environments.
   // Inspect only the selected scope so an unrelated root binding cannot make
   // an environment deploy fail validation (or appear to have the binding).
-  const versionMetadataBinding = targetEnv
-    ? wranglerConfig?.env?.[targetEnv]?.versionMetadataBinding
-    : wranglerConfig?.versionMetadataBinding;
+  // Generated deploy configs are already flattened to targetEnvironment, so
+  // their root is the selected scope and must not be looked up under env again.
+  const versionMetadataBinding =
+    targetEnv && !isFlattenedTargetConfig
+      ? wranglerConfig?.env?.[targetEnv]?.versionMetadataBinding
+      : wranglerConfig?.versionMetadataBinding;
   if (versionMetadataBinding && versionMetadataBinding !== "VINEXT_VERSION_METADATA") {
     throw new Error(
       `CDN warming requires the version metadata binding to be named "VINEXT_VERSION_METADATA", but Wrangler config uses "${versionMetadataBinding}"${targetEnv ? ` for env ${targetEnv}` : ""}. Run vinext init and update the binding before deploying.`,
@@ -590,9 +595,10 @@ export async function deployWithCdnWarmup(
   }
   // Wrangler inherits cache as a whole object, unlike version_metadata. An
   // environment-local cache object replaces the root cache object.
-  const effectiveCache = targetEnv
-    ? (wranglerConfig?.env?.[targetEnv]?.cache ?? wranglerConfig?.cache)
-    : wranglerConfig?.cache;
+  const effectiveCache =
+    targetEnv && !isFlattenedTargetConfig
+      ? (wranglerConfig?.env?.[targetEnv]?.cache ?? wranglerConfig?.cache)
+      : wranglerConfig?.cache;
   const crossVersionCache = effectiveCache?.crossVersionCache === true;
   if (crossVersionCache && options.warmCdnStrict) {
     throw new Error(
@@ -814,6 +820,7 @@ export function resolveWorkerNameForVersionOverride(
   if (options.name) return options.name;
   const env = getWranglerTargetEnv(options);
   if (!env) return config?.name;
+  if (config?.targetEnvironment === env) return config.name;
   if (config?.legacyEnv === false) return config.name;
   return config?.env?.[env]?.name ?? (config?.name ? `${config.name}-${env}` : undefined);
 }

@@ -83,6 +83,7 @@ type WranglerConfig = {
   customDomain?: string;
   name?: string;
   legacyEnv?: boolean;
+  targetEnvironment?: string;
   versionMetadataBinding?: string;
   env?: Record<string, WranglerEnvironmentConfig>;
 };
@@ -150,15 +151,18 @@ export function parseWranglerConfig(root: string, configPath?: string): Wrangler
  * while preserving strings that contain comment-like text or commas.
  */
 function stripJsonCommentsAndTrailingCommas(str: string): string {
+  // Wrangler accepts UTF-8 BOM-prefixed JSON/JSONC configs. Keep this
+  // preflight parser aligned so a valid config cannot bypass deploy guards.
+  const source = str.charCodeAt(0) === 0xfeff ? str.slice(1) : str;
   let result = "";
   let inString = false;
   let inSingleLine = false;
   let inMultiLine = false;
   let escapeNext = false;
 
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
-    const next = str[i + 1];
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
 
     if (escapeNext) {
       if (!inSingleLine && !inMultiLine) result += ch;
@@ -212,7 +216,7 @@ function stripJsonCommentsAndTrailingCommas(str: string): string {
       continue;
     }
 
-    if (!inString && ch === "," && isJsonTrailingComma(str, i + 1)) {
+    if (!inString && ch === "," && isJsonTrailingComma(source, i + 1)) {
       continue;
     }
 
@@ -263,6 +267,10 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
 
   if (typeof config.legacy_env === "boolean") {
     result.legacyEnv = config.legacy_env;
+  }
+
+  if (typeof config.targetEnvironment === "string" && config.targetEnvironment.length > 0) {
+    result.targetEnvironment = config.targetEnvironment;
   }
 
   // account_id
@@ -562,7 +570,7 @@ function extractEnvConfigsFromTOML(
 
     if (headerPath.length === 1 && headerPath[0] === "env") {
       for (const assignment of parseTomlAssignments(section.body)) {
-        const assignmentPath = assignment.key.split(".");
+        const assignmentPath = assignment.keyPath;
         if (
           assignmentPath.length === 3 &&
           assignmentPath[1] === "cache" &&
@@ -583,6 +591,21 @@ function extractEnvConfigsFromTOML(
           }
           continue;
         }
+        if (
+          assignmentPath.length === 3 &&
+          assignmentPath[1] === "version_metadata" &&
+          assignmentPath[2] === "binding"
+        ) {
+          const binding = parseTomlString(assignment.value);
+          if (binding) {
+            const envName = assignmentPath[0]!;
+            result[envName] = {
+              ...result[envName],
+              versionMetadataBinding: binding,
+            };
+          }
+          continue;
+        }
         const inlineEnv = unwrapTomlInlineTable(assignment.value);
         if (!inlineEnv) continue;
         const inlineCache = extractTomlInlineTable(inlineEnv, "cache");
@@ -598,8 +621,9 @@ function extractEnvConfigsFromTOML(
         const customDomain =
           extractTomlRouteDomain(inlineEnv) ?? extractTomlRoutesArrayDomain(inlineEnv) ?? undefined;
         if (!name && !customDomain && !cache && !versionMetadataBinding) continue;
-        result[assignment.key] = {
-          ...result[assignment.key],
+        const envName = assignmentPath[0]!;
+        result[envName] = {
+          ...result[envName],
           ...(name ? { name } : {}),
           ...(customDomain ? { customDomain } : {}),
           ...(cache ? { cache } : {}),
@@ -703,7 +727,9 @@ function isTomlSectionPath(header: string, ...expected: string[]): boolean {
   return path.length === expected.length && path.every((part, index) => part === expected[index]);
 }
 
-function parseTomlAssignments(source: string): Array<{ key: string; value: string }> {
+function parseTomlAssignments(
+  source: string,
+): Array<{ key: string; keyPath: string[]; value: string }> {
   const statements: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
@@ -763,7 +789,7 @@ function parseTomlAssignments(source: string): Array<{ key: string; value: strin
     const keyPath = parseTomlDottedKey(statement.slice(0, equals));
     const key = keyPath.length > 0 ? keyPath.join(".") : null;
     const value = statement.slice(equals + 1).trim();
-    return key && value ? [{ key, value }] : [];
+    return key && value ? [{ key, keyPath, value }] : [];
   });
 }
 

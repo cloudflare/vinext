@@ -72,6 +72,61 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("rejects an incompatible binding from UTF-8 BOM-prefixed JSONC before uploading", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      `\uFEFF${JSON.stringify({ version_metadata: { binding: "CUSTOM_VERSION" } })}`,
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deployWithCdnWarmup(tmpDir, ["/"], { warmCdnConcurrency: 1 })).rejects.toThrow(
+      'Wrangler config uses "CUSTOM_VERSION"',
+    );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects an incompatible binding for a quoted dotted TOML environment before uploading", async () => {
+    writeFile(
+      "wrangler.toml",
+      `[env]
+"staging.eu".version_metadata.binding = "CUSTOM_VERSION"
+`,
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        env: "staging.eu",
+        warmCdnConcurrency: 1,
+      }),
+    ).rejects.toThrow('Wrangler config uses "CUSTOM_VERSION" for env staging.eu');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects an incompatible binding from a flattened selected environment before uploading", async () => {
+    writeFile(
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "my-worker-staging",
+        targetEnvironment: "staging",
+        version_metadata: { binding: "CUSTOM_VERSION" },
+      }),
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        config: "dist/server/wrangler.json",
+        env: "staging",
+        warmCdnConcurrency: 1,
+      }),
+    ).rejects.toThrow('Wrangler config uses "CUSTOM_VERSION" for env staging');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("warms HTML and RSC entries through a 0% staged version override", async () => {
     const events: string[] = [];
     writeFile(
@@ -388,7 +443,16 @@ name = "my-worker-staging"
 
   it.each([
     {
+      name: "UTF-8 BOM-prefixed JSONC",
+      filename: "wrangler.jsonc",
+      config: `\uFEFF${JSON.stringify({
+        cache: { enabled: true, cross_version_cache: true },
+      })}`,
+      options: { warmCdnConcurrency: 1, warmCdnStrict: true },
+    },
+    {
       name: "a quoted root cache table",
+      filename: "wrangler.toml",
       config: `["cache"]
 cross_version_cache = true
 `,
@@ -396,21 +460,48 @@ cross_version_cache = true
     },
     {
       name: "a dotted cache setting below the env table",
+      filename: "wrangler.toml",
       config: `[env]
 staging.cache.cross_version_cache = true
 `,
       options: { env: "staging", warmCdnConcurrency: 1, warmCdnStrict: true },
     },
-  ])("protects cross-version cache warming configured with $name", async ({ config, options }) => {
-    writeFile("wrangler.toml", config);
-    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+    {
+      name: "a quoted dotted environment name",
+      filename: "wrangler.toml",
+      config: `[env]
+"staging.eu".cache.cross_version_cache = true
+`,
+      options: { env: "staging.eu", warmCdnConcurrency: 1, warmCdnStrict: true },
+    },
+    {
+      name: "a flattened selected environment",
+      filename: "dist/server/wrangler.json",
+      config: JSON.stringify({
+        name: "my-worker-staging",
+        targetEnvironment: "staging",
+        cache: { enabled: true, cross_version_cache: true },
+      }),
+      options: {
+        config: "dist/server/wrangler.json",
+        env: "staging",
+        warmCdnConcurrency: 1,
+        warmCdnStrict: true,
+      },
+    },
+  ])(
+    "protects cross-version cache warming configured with $name",
+    async ({ filename, config, options }) => {
+      writeFile(filename, config);
+      const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
-    await expect(deployWithCdnWarmup(tmpDir, ["/"], options)).rejects.toThrow(
-      "cannot safely refresh cache.cross_version_cache entries",
-    );
-    expect(execFileSyncMock).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  });
+      await expect(deployWithCdnWarmup(tmpDir, ["/"], options)).rejects.toThrow(
+        "cannot safely refresh cache.cross_version_cache entries",
+      );
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses the env Worker name and env custom domain for version override warmup", async () => {
     writeFile(
@@ -463,6 +554,60 @@ staging.cache.cross_version_cache = true
     );
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
       expect(args).toEqual(expect.arrayContaining(["--env", "staging"]));
+    }
+  });
+
+  it("uses the already-suffixed Worker name from a flattened selected environment", async () => {
+    writeFile(
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "my-worker-staging",
+        topLevelName: "my-worker",
+        targetEnvironment: "staging",
+        definedEnvironments: ["staging"],
+        legacy_env: true,
+        custom_domains: ["staging.example.com"],
+        cache: { enabled: true, cross_version_cache: false },
+        version_metadata: { binding: "VINEXT_VERSION_METADATA" },
+      }),
+    );
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/"], {
+      config: "dist/server/wrangler.json",
+      env: "staging",
+      warmCdnConcurrency: 1,
+    });
+
+    expect(fetch).toHaveBeenCalledWith(new URL("https://staging.example.com/"), expect.any(Object));
+    const firstInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
+    expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
+      'my-worker-staging="22222222-2222-4222-8222-222222222222"',
+    );
+    for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
+      expect(args).toEqual(
+        expect.arrayContaining(["--config", "dist/server/wrangler.json", "--env", "staging"]),
+      );
     }
   });
 

@@ -1623,6 +1623,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     for (const internalRscValue of internalRscValues) {
       routeHandlerUrl.searchParams.append(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM, internalRscValue);
     }
+    const routedRequest = new Request(routeHandlerUrl, routeHandlerRequest);
+    // Middleware must receive the transport-level Next-Url before the resolved
+    // route is known. Once routing proves that this target cannot be
+    // intercepted, match Next.js' setVaryHeader boundary: remove Next-Url from
+    // the userland Request alongside headers(), because the response does not
+    // vary on it. Cache-busting validation has already consumed the original
+    // request above, so hiding it here cannot weaken request authentication.
+    if (!middlewareObservation.resolvedPathCouldBeIntercepted) {
+      routedRequest.headers.delete(NEXT_URL_HEADER);
+    }
     return options.dispatchMatchedRouteHandler({
       cleanPathname,
       middlewareContext,
@@ -1631,7 +1641,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
-      request: new Request(routeHandlerUrl, routeHandlerRequest),
+      request: routedRequest,
       route,
       searchParams: resolvedSearchParams,
     });

@@ -82,6 +82,7 @@ import {
   createAppBrowserNavigationController,
   createBasePathStrippedPathAndSearch,
   createSnapshotPathAndSearch,
+  resolveNavigationRequestNextUrl,
   type HistoryUpdateMode,
   type NavigationPayloadOutcome,
   type PendingBrowserRouterState,
@@ -1788,7 +1789,11 @@ function bootstrapHydration(
           navigationInitiationState.navigationSnapshot,
         );
         const sourceUrl = new URL(sourceHref, window.location.origin);
-        const requestNextUrl = requestPreviousNextUrl ?? sourceUrl.pathname + sourceUrl.search;
+        const requestNextUrl = resolveNavigationRequestNextUrl({
+          basePath: __basePath,
+          previousNextUrl: requestPreviousNextUrl,
+          sourceUrl,
+        });
         const requestHeaders = createRscRequestHeaders({
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,

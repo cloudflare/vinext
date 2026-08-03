@@ -16,6 +16,7 @@ import {
   createRscRequestHeaders,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { resolveNavigationRequestNextUrl } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
@@ -796,6 +797,68 @@ describe("prefetch cache eviction", () => {
         requestVariantKey: sourceBKey,
       }),
     ).toBe(false);
+  });
+
+  it("reuses a basePath contextual prefetch when the intercepted Link is clicked", async () => {
+    const routerState = {
+      pathAndSearch: "/feed?view=photo%20grid",
+      routeId: "route:/feed",
+    };
+    const prefetchHeaders = createRscRequestHeaders({
+      includePrefetchHeader: false,
+      interceptionContext: "/feed",
+      nextUrl: "/feed?view=photo%20grid",
+      prefetchRouterState: routerState,
+    });
+    const clickNextUrl = resolveNavigationRequestNextUrl({
+      basePath: "/docs",
+      previousNextUrl: "/docs/feed?view=photo%20grid",
+      sourceUrl: new URL("https://example.test/docs/feed?view=photo%20grid"),
+    });
+    const clickHeaders = createRscRequestHeaders({
+      includePrefetchHeader: false,
+      interceptionContext: "/feed",
+      nextUrl: clickNextUrl,
+      prefetchRouterState: routerState,
+    });
+    const prefetchVariantKey = createRscClientCacheVariantKey(prefetchHeaders);
+    const clickVariantKey = createRscClientCacheVariantKey(clickHeaders);
+    const prefetchedUrl = "/docs/photos/42?_rsc=prefetch";
+
+    expect(clickNextUrl).toBe("/feed?view=photo%20grid");
+    expect(clickVariantKey).toBe(prefetchVariantKey);
+
+    prefetchRscResponse(
+      prefetchedUrl,
+      Promise.resolve(
+        new Response("intercepted flight", {
+          headers: {
+            "content-type": "text/x-component",
+            Vary: "RSC, Next-Url",
+          },
+        }),
+      ),
+      "/feed",
+      null,
+      undefined,
+      { cacheForNavigation: true, requestVariantKey: prefetchVariantKey },
+    );
+    await waitForPrefetchSetup(
+      () =>
+        getPrefetchCache().get(AppElementsWire.encodeCacheKey(prefetchedUrl, "/feed"))?.outcome ===
+        "cache-seeded",
+    );
+
+    const consumed = await consumePrefetchResponseForNavigation(
+      "/docs/photos/42?_rsc=click",
+      "/feed",
+      null,
+      { requestVariantKey: clickVariantKey },
+    );
+
+    expect(consumed?.variesOnNextUrl).toBe(true);
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("intercepted flight");
   });
 
   it("aliases settled legacy variants only when the response is source-independent", () => {
