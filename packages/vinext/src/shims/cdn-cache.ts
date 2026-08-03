@@ -99,6 +99,15 @@ export type CdnCacheAdapter = {
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
 
   /**
+   * Whether existing response headers explicitly opt out of storage. Adapters
+   * that split browser and provider cache policy should implement this so they
+   * can interpret the provider-specific headers they own.
+   *
+   * When omitted, core inspects only the generic `Cache-Control` header.
+   */
+  hasExplicitNonCacheableResponsePolicy?(headers: Headers): boolean;
+
+  /**
    * Whether the **origin** runs in-process background regeneration when a stale
    * entry is served. Edge adapters set this to `false` because the CDN
    * revalidates by re-requesting the origin.
@@ -141,8 +150,6 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
-    // This adapter itself owns only Cache-Control. The framework-level header
-    // utility clears conflicting shared-cache overrides before invoking it.
     if (input.pendingDynamicCheck) {
       // Until the stream proves the render was non-dynamic, browsers and shared
       // caches must not store it. The origin serves subsequent requests from the

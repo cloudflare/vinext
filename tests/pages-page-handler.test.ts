@@ -20,6 +20,7 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
@@ -233,15 +234,22 @@ describe("createPagesPageHandler — route miss", () => {
         if (/(?:private|no-store|no-cache)/i.test(input.cacheControl)) {
           return {
             "Cache-Control": "no-store",
-            "CDN-Cache-Control": null,
-            "Cache-Tag": null,
+            "X-Example-Edge-Policy": null,
+            "X-Example-Cache-Tag": null,
           };
         }
         return {
           "Cache-Control": "no-store",
-          "CDN-Cache-Control": input.cacheControl,
-          "Cache-Tag": input.tags?.join(",") ?? null,
+          "X-Example-Edge-Policy": input.cacheControl,
+          "X-Example-Cache-Tag": input.tags?.join(",") ?? null,
         };
+      },
+      hasExplicitNonCacheableResponsePolicy(headers) {
+        const edgePolicy = headers.get("X-Example-Edge-Policy");
+        if (edgePolicy && /(?:private|no-store|no-cache)/i.test(edgePolicy)) return true;
+        return Boolean(
+          !edgePolicy && /(?:private|no-store|no-cache)/i.test(headers.get("Cache-Control") ?? ""),
+        );
       },
     };
     setCdnCacheAdapter(edgeAdapter);
@@ -260,15 +268,15 @@ describe("createPagesPageHandler — route miss", () => {
 
       const sourceResponse = await handler(makeRequest("/source"), "/source", null, null, null);
       expect(sourceResponse.headers.get("cache-control")).toBe("no-store");
-      expect(sourceResponse.headers.get("cdn-cache-control")).toBe(
+      expect(sourceResponse.headers.get("x-example-edge-policy")).toBe(
         "s-maxage=7, stale-while-revalidate",
       );
-      expect(sourceResponse.headers.get("cache-tag")).toBe("_N_T_/source");
+      expect(sourceResponse.headers.get("x-example-cache-tag")).toBe("_N_T_/source");
 
       const genericResponse = await handler(makeRequest("/missing"), "/missing", null, null, null);
       expect(genericResponse.headers.get("cache-control")).toBe("no-store");
-      expect(genericResponse.headers.get("cdn-cache-control")).toBeNull();
-      expect(genericResponse.headers.get("cache-tag")).toBeNull();
+      expect(genericResponse.headers.get("x-example-edge-policy")).toBeNull();
+      expect(genericResponse.headers.get("x-example-cache-tag")).toBeNull();
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }
@@ -700,6 +708,7 @@ describe("createPagesPageHandler — preview responses", () => {
   });
 
   it("does not expose preview notFound responses to shared CDN caching", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const pageRoute = makeRoute(
       "/missing",
       makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
@@ -718,13 +727,17 @@ describe("createPagesPageHandler — preview responses", () => {
       "Cache-Tag": "draft-404",
     });
 
-    const response = await handler(request, "/missing", null, middlewareHeaders, null);
+    try {
+      const response = await handler(request, "/missing", null, middlewareHeaders, null);
 
-    expect(response.status).toBe(404);
-    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
-    expect(response.headers.get("cdn-cache-control")).toBeNull();
-    expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
-    expect(response.headers.get("cache-tag")).toBeNull();
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-tag")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("keeps nonce-bearing source notFound HTML out of shared caches", async () => {

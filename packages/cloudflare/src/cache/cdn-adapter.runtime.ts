@@ -66,6 +66,10 @@ const NO_STORE = "no-store";
  */
 const BROWSER_REVALIDATE = "public, max-age=0, must-revalidate";
 
+const NON_CACHEABLE_DIRECTIVE_RE = /\b(?:private|no-store|no-cache)\b/i;
+const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
+const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
+
 /**
  * A concrete stale window (1 year) substituted for a value-less
  * `stale-while-revalidate`. The framework emits a bare `stale-while-revalidate`
@@ -175,6 +179,21 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     };
 
     return headers;
+  }
+
+  hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
+    const edgePolicies = EDGE_POLICY_HEADERS.map((name) => headers.get(name));
+    if (edgePolicies.some((value) => value && NON_CACHEABLE_DIRECTIVE_RE.test(value))) {
+      return true;
+    }
+
+    const hasCacheableEdgePolicy = edgePolicies.some(
+      (value) => value && CACHEABLE_EDGE_DIRECTIVE_RE.test(value),
+    );
+    const browserPolicy = headers.get("Cache-Control");
+    return Boolean(
+      !hasCacheableEdgePolicy && browserPolicy && NON_CACHEABLE_DIRECTIVE_RE.test(browserPolicy),
+    );
   }
 
   /** Purge edge-cached responses by tag via the request context's `cache.purge`. */

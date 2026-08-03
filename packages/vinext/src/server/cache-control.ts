@@ -13,13 +13,6 @@ export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
 const NON_CACHEABLE_DIRECTIVE_RE = /(?:private|no-store|no-cache)/i;
 
-// RFC 9213 shared-cache policy plus the provider override and invalidation
-// metadata already supported by vinext's built-in Cloudflare adapter. Whenever
-// the framework replaces cache policy, none of these may survive from an older
-// middleware or render policy unless the active adapter deliberately re-adds it.
-const SHARED_CACHE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
-const SHARED_CACHE_OVERRIDE_HEADERS = [...SHARED_CACHE_POLICY_HEADERS, "Cache-Tag"] as const;
-
 export function shouldUseNextDeployCacheControl(): boolean {
   return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";
 }
@@ -29,23 +22,17 @@ function isSharedCacheControl(cacheControl: string): boolean {
 }
 
 /**
- * Whether an existing response explicitly opted out of storage. A browser
- * no-store only wins when no shared-cache header independently makes the
- * response cacheable; an explicit shared-cache no-store always wins.
+ * Whether an existing response explicitly opted out of storage. Adapters may
+ * inspect the provider-specific policy headers they own; the generic fallback
+ * only understands the framework-owned `Cache-Control` header.
  */
 export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
-  const sharedPolicies = SHARED_CACHE_POLICY_HEADERS.map((name) => headers.get(name));
-  if (sharedPolicies.some((value) => value && NON_CACHEABLE_DIRECTIVE_RE.test(value))) {
-    return true;
+  const adapter = getCdnCacheAdapter();
+  if (adapter.hasExplicitNonCacheableResponsePolicy) {
+    return adapter.hasExplicitNonCacheableResponsePolicy(headers);
   }
-
-  const hasCacheableSharedPolicy = sharedPolicies.some(
-    (value) => value && SHARED_CACHE_DIRECTIVE_RE.test(value),
-  );
-  const browserPolicy = headers.get("Cache-Control");
-  return Boolean(
-    !hasCacheableSharedPolicy && browserPolicy && NON_CACHEABLE_DIRECTIVE_RE.test(browserPolicy),
-  );
+  const cacheControl = headers.get("Cache-Control");
+  return Boolean(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl));
 }
 
 /**
@@ -54,20 +41,19 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
  * `Cache-Control` identical to `input.cacheControl` (no behavior change); edge
  * adapters may instead emit provider-specific cache and invalidation headers.
  *
- * Existing shared-cache overrides are cleared before applying the new policy,
- * so a middleware-provided edge directive cannot contradict a framework
- * no-store decision. The adapter then owns its provider-specific output:
- * returning a value sets it, while returning `null` removes it.
+ * The adapter owns its provider-specific output: returning a value sets it,
+ * while returning `null` removes it. Core only clears the generic header it
+ * owns before applying that map.
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");
-  for (const name of SHARED_CACHE_OVERRIDE_HEADERS) headers.delete(name);
-  if (shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl)) {
-    headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
-    return;
-  }
-
-  const map = getCdnCacheAdapter().buildResponseHeaders(input);
+  const useNextDeployPolicy =
+    shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl);
+  // An empty policy tells the adapter to remove any provider-specific cache
+  // metadata it owns before core applies the deployment-specific browser policy.
+  const map = getCdnCacheAdapter().buildResponseHeaders(
+    useNextDeployPolicy ? { ...input, cacheControl: "" } : input,
+  );
   for (const [name, value] of Object.entries(map)) {
     if (value === null) {
       headers.delete(name);
@@ -79,6 +65,9 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
     // rather than being emitted as a blank value.
     if (value === "") continue;
     headers.set(name, value);
+  }
+  if (useNextDeployPolicy) {
+    headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
   }
 }
 

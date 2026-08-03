@@ -1214,9 +1214,6 @@ describe("app page cache helpers", () => {
         headers: {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "s-maxage=60, stale-while-revalidate",
-          "Cache-Tag": "/dynamic-html",
-          "CDN-Cache-Control": "public, max-age=60",
-          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
           Vary: "RSC, Accept",
           "X-Vinext-Cache": "MISS",
         },
@@ -1225,9 +1222,6 @@ describe("app page cache helpers", () => {
     );
 
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cache-Tag")).toBeNull();
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     await expect(response.text()).resolves.toBe("<h1>personalized</h1>");
     expect(pendingCacheWrites).toHaveLength(1);

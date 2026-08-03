@@ -112,6 +112,22 @@ describe("CloudflareCdnCacheAdapter", () => {
     }
   });
 
+  it("interprets its own edge policy when checking whether a response opted out", () => {
+    expect(
+      adapter.hasExplicitNonCacheableResponsePolicy(
+        new Headers({
+          "Cache-Control": "no-store",
+          "CDN-Cache-Control": "public, max-age=60",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      adapter.hasExplicitNonCacheableResponsePolicy(
+        new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
+      ),
+    ).toBe(true);
+  });
+
   it.each(["MISS", "STATIC"] as const)(
     "keeps mounted-slot %s RSC responses out of the edge cache",
     async (cacheState) => {
@@ -157,8 +173,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     },
   );
 
-  it("clears shared-cache overrides for mounted slots with the default adapter", async () => {
-    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+  it("clears Cloudflare cache overrides for mounted slots", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
 
     const response = finalizeAppPageRscCacheResponse(
       new Response("slot-specific-flight", {
@@ -199,7 +215,7 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("keeps mounted dynamic responses headerless while clearing CDN overrides", async () => {
-    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
 
     const response = finalizeAppPageRscCacheResponse(
       new Response("dynamic-slot-flight", {
@@ -237,8 +253,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(response.text()).resolves.toBe("dynamic-slot-flight");
   });
 
-  it("clears shared-cache overrides for pending dynamic misses", async () => {
-    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+  it("replaces stale Cloudflare cache overrides for pending dynamic misses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
 
     const response = finalizeAppPageRscCacheResponse(
       new Response("pending-dynamic-flight", {
@@ -267,10 +283,10 @@ describe("CloudflareCdnCacheAdapter", () => {
       },
     );
 
-    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBe("/dashboard");
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     await expect(response.text()).resolves.toBe("pending-dynamic-flight");
   });

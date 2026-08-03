@@ -72,21 +72,35 @@ describe("applyCdnResponseHeaders", () => {
     const headers = new Headers();
     applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60, stale-while-revalidate" });
     expect(headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate");
-    expect(headers.get("CDN-Cache-Control")).toBeNull();
   });
 
-  it("uses browser revalidation Cache-Control for shared cache policies in Next deploy mode", () => {
+  it("uses browser revalidation Cache-Control and adapter-owned cleanup in Next deploy mode", () => {
     process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
-    const headers = new Headers();
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": input.cacheControl,
+          "X-Example-Edge-Policy": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+    const headers = new Headers({ "X-Example-Edge-Policy": "stale" });
 
     applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60, stale-while-revalidate" });
 
     expect(shouldUseNextDeployCacheControl()).toBe(true);
     expect(headers.get("Cache-Control")).toBe(BROWSER_REVALIDATE_CACHE_CONTROL);
-    expect(headers.get("CDN-Cache-Control")).toBeNull();
+    expect(headers.get("X-Example-Edge-Policy")).toBeNull();
   });
 
-  it("routes through the active adapter (edge: CDN-Cache-Control + Cache-Tag) and clears stale headers", () => {
+  it("routes response policy and tags through the active adapter", () => {
     // Minimal edge adapter that splits headers and emits a tag header.
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
@@ -97,20 +111,23 @@ describe("applyCdnResponseHeaders", () => {
       buildResponseHeaders(input: CdnCacheableHeaderInput) {
         return {
           "Cache-Control": "no-store",
-          "CDN-Cache-Control": input.cacheControl,
-          ...(input.tags?.length ? { "Cache-Tag": input.tags.join(",") } : {}),
+          "X-Example-Edge-Policy": input.cacheControl,
+          ...(input.tags?.length ? { "X-Example-Cache-Tag": input.tags.join(",") } : {}),
         };
       },
       async revalidateTag() {},
     };
     setCdnCacheAdapter(edge);
 
-    const headers = new Headers({ "Cache-Control": "stale", "CDN-Cache-Control": "stale" });
+    const headers = new Headers({
+      "Cache-Control": "stale",
+      "X-Example-Edge-Policy": "stale",
+    });
     applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60", tags: ["a", "b"] });
 
     expect(headers.get("Cache-Control")).toBe("no-store");
-    expect(headers.get("CDN-Cache-Control")).toBe("s-maxage=60");
-    expect(headers.get("Cache-Tag")).toBe("a,b");
+    expect(headers.get("X-Example-Edge-Policy")).toBe("s-maxage=60");
+    expect(headers.get("X-Example-Cache-Tag")).toBe("a,b");
   });
 
   it("applies adapter-owned header removals without knowing their names", () => {
@@ -160,38 +177,42 @@ describe("applyCdnResponseHeaders", () => {
     expect(headers.get("X-Example-Edge-Policy")).toBe("public, max-age=60");
   });
 
-  it("clears conflicting shared-cache overrides with the default adapter", () => {
-    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
-    const headers = new Headers({
-      "CDN-Cache-Control": "public, max-age=60",
-      "Cloudflare-CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "stale",
-    });
-
-    applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
-
-    expect(headers.get("Cache-Control")).toBe("no-store");
-    expect(headers.get("CDN-Cache-Control")).toBeNull();
-    expect(headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(headers.get("Cache-Tag")).toBeNull();
-  });
-
-  it("detects explicit no-store unless a shared policy remains cacheable", () => {
+  it("detects explicit no-store from the generic Cache-Control fallback", () => {
     expect(
       hasExplicitNonCacheableResponsePolicy(new Headers({ "Cache-Control": "no-store" })),
     ).toBe(true);
     expect(
+      hasExplicitNonCacheableResponsePolicy(new Headers({ "Cache-Control": "public, max-age=0" })),
+    ).toBe(false);
+  });
+
+  it("delegates provider-specific policy interpretation to the active adapter", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      hasExplicitNonCacheableResponsePolicy(headers) {
+        return headers.get("X-Example-Edge-Policy") === "no-store";
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+
+    expect(
       hasExplicitNonCacheableResponsePolicy(
         new Headers({
           "Cache-Control": "no-store",
-          "CDN-Cache-Control": "s-maxage=60",
+          "X-Example-Edge-Policy": "public, max-age=60",
         }),
       ),
     ).toBe(false);
     expect(
-      hasExplicitNonCacheableResponsePolicy(
-        new Headers({ "CDN-Cache-Control": "private, no-store" }),
-      ),
+      hasExplicitNonCacheableResponsePolicy(new Headers({ "X-Example-Edge-Policy": "no-store" })),
     ).toBe(true);
   });
 });
