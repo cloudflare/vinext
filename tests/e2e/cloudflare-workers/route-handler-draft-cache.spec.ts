@@ -375,6 +375,44 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(cookieResponse.headers()["cdn-cache-control"]).toBeUndefined();
   });
 
+  test("waits for prewarm eligibility before an immediate no-prefetch navigation", async ({
+    page,
+  }) => {
+    await page.route(/\/vinext-rsc-prewarm-[a-f0-9]{16}\.json$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.continue();
+    });
+    const navigationRequestPromise = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.pathname === "/blog/hello-world" && url.searchParams.has("_rsc");
+    });
+
+    await page.goto(BASE_URL);
+    await page.click("#cdn-navigation-link");
+    const navigationRequest = await navigationRequestPromise;
+    const url = new URL(navigationRequest.url());
+    const headers = navigationRequest.headers();
+
+    expect(url.search).toBe("?_rsc");
+    expect(headers.accept).toBe("text/x-component");
+    expect(headers.rsc).toBe("1");
+    expect(headers["next-url"]).toBeUndefined();
+    expect(headers["next-router-state-tree"]).toBeUndefined();
+    await expect(page.locator("h1")).toHaveText("Blog post");
+  });
+
+  test("handles staged-version probes through the generated Worker entry", async ({ request }) => {
+    const response = await request.post(`${BASE_URL}/?__vinext_version_probe=expected`, {
+      headers: { "X-Vinext-Version-Probe": "1" },
+    });
+
+    expect(response.status()).toBe(204);
+    expect(response.headers()["cache-control"]).toBe("no-store");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["x-vinext-worker-version"]).toBeTruthy();
+    expect(response.headers()["x-vinext-worker-version"]).not.toBe("unavailable");
+  });
+
   test("keeps source-specific headers and hashed URLs for force-dynamic RSC requests", async ({
     page,
   }) => {

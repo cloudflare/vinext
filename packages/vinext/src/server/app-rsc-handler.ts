@@ -157,6 +157,7 @@ const CANONICALIZED_RSC_REQUEST_HEADERS = new Set(
     NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
     NEXT_ROUTER_STATE_TREE_HEADER,
     NEXT_URL_HEADER,
+    "Host",
   ].map((name) => name.toLowerCase()),
 );
 
@@ -786,8 +787,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     pathname: string,
     matches: (matchPathname: string) => boolean,
   ): boolean => {
-    const outcomes = new Set(domainLocaleMatchPathnames(pathname).map(matches));
-    return outcomes.size > 1;
+    const domainPathnames = domainLocaleMatchPathnames(pathname);
+    // Equal match booleans are not enough: locale captures can still produce
+    // different header values or rewrite/redirect destinations. If host-based
+    // locale normalization changes the pathname, fail closed for any rule that
+    // can reach at least one of those domain-specific paths.
+    return new Set(domainPathnames).size > 1 && domainPathnames.some(matches);
   };
 
   const observeConditionalConfig =

@@ -125,6 +125,19 @@ function isCloudflareKvDataAdapterPath(adapter: string): boolean {
   );
 }
 
+/** Whether deploy-time cache warming can rely on the Workers Cache adapter protocol. */
+export function hasCloudflareCdnAdapter(cache: VinextCacheConfig | null | undefined): boolean {
+  const adapter = cache?.cdn?.adapter;
+  if (!adapter) return false;
+  const normalized = adapter.replace(/\\/g, "/");
+  return (
+    normalized === "@vinext/cloudflare/cache/cdn-adapter.runtime" ||
+    normalized === "@vinext/cloudflare/cache/cdn-adapter.runtime.js" ||
+    normalized.endsWith("/cache/cdn-adapter.runtime.js") ||
+    normalized.endsWith("/cache/cdn-adapter.runtime.ts")
+  );
+}
+
 function readPositiveNumberOption(
   options: KvDataAdapterOptions | undefined,
   field: "ttlSeconds",

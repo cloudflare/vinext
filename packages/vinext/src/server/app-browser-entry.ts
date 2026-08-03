@@ -168,7 +168,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
-  isLoadedRscPrewarmEligibleHref,
+  isRscPrewarmEligibleHref,
   preloadRscPrewarmManifest,
   getVinextRscCompatibilityId,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -1804,7 +1804,7 @@ function bootstrapHydration(
         });
         const usesCanonicalSharedRequest =
           getRscCacheKeyMode() === "response-vary" &&
-          isLoadedRscPrewarmEligibleHref(currentHref, __basePath) &&
+          (await isRscPrewarmEligibleHref(currentHref, __basePath)) &&
           canonicalizeFullRscRequestHeaders(requestHeaders);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
         const requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
@@ -2135,6 +2135,10 @@ function bootstrapHydration(
               createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
             if (clientReuseManifestHeader !== null) {
               requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+              // The contextual reuse header is part of the request digest.
+              // Discard any URL computed during cache probing before the header
+              // was added so the live request cannot alias another payload.
+              liveRscUrl = null;
             }
           }
           activeRscUrl = await getLiveRscUrl();

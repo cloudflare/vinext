@@ -38,6 +38,7 @@ import {
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
+  hasCloudflareCdnAdapter,
   resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
@@ -1150,6 +1151,31 @@ describe("resolveKvDataAdapterConfig", () => {
         data: { adapter: "/x/cache/kv-data-adapter.runtime.js" },
       }),
     ).toEqual({ binding: "VINEXT_KV_CACHE" });
+  });
+});
+
+describe("hasCloudflareCdnAdapter", () => {
+  it("accepts Cloudflare CDN runtime descriptors", () => {
+    expect(
+      hasCloudflareCdnAdapter({
+        cdn: {
+          adapter: "/project/node_modules/@vinext/cloudflare/dist/cache/cdn-adapter.runtime.js",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      hasCloudflareCdnAdapter({
+        cdn: { adapter: "/workspace/packages/cloudflare/src/cache/cdn-adapter.runtime.ts" },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects missing, data-only, and arbitrary CDN adapters", () => {
+    expect(hasCloudflareCdnAdapter(undefined)).toBe(false);
+    expect(
+      hasCloudflareCdnAdapter({ data: { adapter: "/cache/kv-data-adapter.runtime.js" } }),
+    ).toBe(false);
+    expect(hasCloudflareCdnAdapter({ cdn: { adapter: "custom-cdn-adapter" } })).toBe(false);
   });
 });
 
@@ -3353,6 +3379,34 @@ describe("domainCandidates", () => {
 // ─── parseWranglerConfig — TPR fields ────────────────────────────────────────
 
 describe("resolveWranglerCommandConfig", () => {
+  it("uses a custom generated user config for redirect-unaware control-plane commands", () => {
+    writeFile(
+      tmpDir,
+      ".wrangler/deploy/config.json",
+      JSON.stringify({ configPath: "../../dist/server/wrangler.json" }),
+    );
+    writeFile(tmpDir, "custom.wrangler.jsonc", JSON.stringify({ name: "source-worker" }));
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "source-worker-staging",
+        targetEnvironment: "staging",
+        userConfigPath: path.join(tmpDir, "custom.wrangler.jsonc"),
+      }),
+    );
+
+    expect(resolveWranglerCommandConfig(tmpDir, {})).toEqual({
+      commandOptions: { env: "staging" },
+      controlPlaneCommandOptions: {
+        config: "custom.wrangler.jsonc",
+        env: "staging",
+        name: "source-worker-staging",
+      },
+      inspectionConfig: "dist/server/wrangler.json",
+    });
+  });
+
   it("pins a generated config's target environment and final name over ambient state", async () => {
     writeFile(
       tmpDir,

@@ -12,6 +12,9 @@ import {
   readPrerenderWarmPaths,
   warmCdnCacheFromPrerender,
 } from "../packages/cloudflare/src/cdn-warm.js";
+import { VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+
+const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization`;
 
 let tmpDir: string;
 
@@ -718,7 +721,11 @@ describe("Cloudflare CDN warmup", () => {
       new Headers(init?.headers).get("RSC") === "1"
         ? new Response("flight", {
             status: 200,
-            headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/x-component" },
+            headers: {
+              "CF-Cache-Status": "MISS",
+              "Content-Type": "text/x-component",
+              Vary: CANONICAL_RSC_VARY,
+            },
           })
         : new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } }),
     );
@@ -769,6 +776,7 @@ describe("Cloudflare CDN warmup", () => {
             headers: {
               "CF-Cache-Status": "MISS",
               "Content-Type": "text/x-component; charset=utf-8",
+              Vary: CANONICAL_RSC_VARY,
             },
           })
         : new Response("html", {
@@ -854,7 +862,11 @@ describe("Cloudflare CDN warmup", () => {
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", {
           status: 200,
-          headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/x-component" },
+          headers: {
+            "CF-Cache-Status": "MISS",
+            "Content-Type": "text/x-component",
+            Vary: CANONICAL_RSC_VARY,
+          },
         }),
     );
 
@@ -886,6 +898,7 @@ describe("Cloudflare CDN warmup", () => {
           headers: {
             "CF-Cache-Status": cacheStatus,
             "Content-Type": isRsc ? "text/x-component" : "text/html",
+            ...(isRsc ? { Vary: CANONICAL_RSC_VARY } : {}),
           },
         });
       });
@@ -941,13 +954,33 @@ describe("Cloudflare CDN warmup", () => {
           headers: {
             "CF-Cache-Status": "MISS",
             "Content-Type": "text/x-component",
-            Vary: "RSC, Accept, Cookie, Authorization",
+            Vary: CANONICAL_RSC_VARY,
           },
         });
       },
     });
 
     expect(result).toMatchObject({ total: 1, warmed: 1, failed: 0 });
+  });
+
+  it("rejects RSC entries without every required Vary isolation field", async () => {
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: [],
+      rscPaths: ["/app"],
+      rscCacheKeyMode: "response-vary",
+      fetchImpl: async () =>
+        new Response("flight", {
+          status: 200,
+          headers: {
+            "CF-Cache-Status": "MISS",
+            "Content-Type": "text/x-component",
+          },
+        }),
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 0, failed: 1 });
+    expect(result.failures[0]?.error).toBe("missing required Vary field: rsc");
   });
 
   it("rejects host-partitioned RSC entries as not reusable across ingress hosts", async () => {

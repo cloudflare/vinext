@@ -114,7 +114,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       cacheControl: "s-maxage=60",
       tags: ["/blog", "_N_T_/blog", "posts"],
     });
-    expect(headers["Cache-Tag"]).toBe("/blog,_N_T_/blog,posts");
+    expect(headers["Cache-Tag"]).toBe("%2Fblog,_N_T_%2Fblog,posts");
     expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
     expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60");
   });
@@ -133,7 +133,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
     await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "/blog,posts",
+      "Cache-Tag": "%2Fblog,posts",
     });
 
     const variantHeaders: HeadersInit[] = [
@@ -183,7 +183,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     const baseResponse = await buildFor({ RSC: "1", Accept: "text/x-component" });
     expect(baseResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
-    expect(baseResponse.headers.get("Cache-Tag")).toBe("/blog,posts");
+    expect(baseResponse.headers.get("Cache-Tag")).toBe("%2Fblog,posts");
     expect(baseResponse.headers.get("Vary")).toContain("RSC");
     expect(baseResponse.headers.get("Vary")).toContain("Cookie");
 
@@ -446,12 +446,26 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
   });
 
-  it("skips tags containing the comma separator or that are too long", () => {
+  it("encodes tags that Cloudflare cannot represent verbatim", () => {
     const headers = adapter.buildResponseHeaders({
       cacheControl: "s-maxage=60",
-      tags: ["a,b", "x".repeat(2000), "ok"],
+      tags: ["a,b", "tag with space", "ok"],
     });
-    expect(headers["Cache-Tag"]).toBe("ok");
+    expect(headers["Cache-Tag"]).toBe("a%2Cb,tag%20with%20space,ok");
+  });
+
+  it("does not cache precise-tag responses when the full tag set is unrepresentable", () => {
+    expect(
+      adapter.buildResponseHeaders({
+        cacheControl: "s-maxage=60",
+        tags: ["x".repeat(2000), "ok"],
+      }),
+    ).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
   });
 
   it("returns only no-store (no CDN-Cache-Control) when there is no cacheable policy", () => {
@@ -658,7 +672,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       await adapter.revalidateTag(["posts", "_N_T_/blog"]);
     });
     expect(purge).toHaveBeenCalledWith({
-      tags: ["posts", "_N_T_/blog", "__vinext_html"],
+      tags: ["posts", "_N_T_%2Fblog", "__vinext_html"],
     });
   });
 

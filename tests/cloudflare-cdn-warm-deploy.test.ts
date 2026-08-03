@@ -5,6 +5,9 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
+import { VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+
+const CANONICAL_RSC_VARY = `${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, Cookie, Authorization`;
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -184,7 +187,11 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
       return new Headers(init?.headers).get("RSC") === "1"
         ? new Response("flight", {
             status: 200,
-            headers: { "CF-Cache-Status": "MISS", "Content-Type": "text/x-component" },
+            headers: {
+              "CF-Cache-Status": "MISS",
+              "Content-Type": "text/x-component",
+              Vary: CANONICAL_RSC_VARY,
+            },
           })
         : new Response("ok", { status: 200, headers: { "CF-Cache-Status": "MISS" } });
     });

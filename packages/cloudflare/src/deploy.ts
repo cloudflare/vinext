@@ -56,6 +56,7 @@ import {
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
+  hasCloudflareCdnAdapter,
   resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
@@ -641,6 +642,16 @@ export function resolveWranglerCommandConfig(
     // CLOUDFLARE_ENV cannot retarget the command.
     return {
       commandOptions: { ...options, env: selectedEnv ?? generatedConfig?.targetEnvironment },
+      ...(generatedUserPath
+        ? {
+            controlPlaneCommandOptions: {
+              ...options,
+              config: path.relative(root, generatedUserPath),
+              env: selectedEnv ?? generatedConfig?.targetEnvironment,
+              ...(!options.name && generatedConfig?.name ? { name: generatedConfig.name } : {}),
+            },
+          }
+        : {}),
       inspectionConfig: generatedRelativePath,
     };
   }
@@ -1091,6 +1102,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
     !workerEntryHasCacheHandler(root)
   ) {
     throw new Error(formatMissingCacheAdapterError({}));
+  }
+  if (options.warmCdnCache && !hasCloudflareCdnAdapter(viteConfigMetadata.cacheConfig)) {
+    throw new Error(
+      "--experimental-warm-cdn-cache requires the Cloudflare Workers CDN adapter. " +
+        'Configure vinext({ cache: { cdn: cdnAdapter() } }) from "@vinext/cloudflare/cache/cdn-adapter" before deploying.',
+    );
   }
 
   if (!viteConfigHasImageAdapter(root)) {

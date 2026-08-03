@@ -47,6 +47,8 @@ const VINEXT_RSC_BASE_VARY_HEADERS = [
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  "Accept",
 ] as const;
 
 /** RSC response identity for requests without active interception context. */
@@ -227,6 +229,7 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 }
 
 type CreateCacheBustingInputOptions = {
+  includeClientReuseManifestHeader?: boolean;
   includePrefetchHeaders?: boolean;
   includeRenderModeHeader?: boolean;
 };
@@ -251,6 +254,9 @@ function createCacheBustingInput(
     ...(options.includeRenderModeHeader === false
       ? []
       : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
+    ...(options.includeClientReuseManifestHeader === false
+      ? []
+      : [headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)]),
   ];
 
   if (values.every((value) => value === null)) {
@@ -291,7 +297,10 @@ async function computeRscCacheBustingSearchParamWithOptions(
 }
 
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeClientReuseManifestHeader: false,
+    includeRenderModeHeader: false,
+  });
   if (input === null) {
     return null;
   }
@@ -300,7 +309,24 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
 }
 
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeClientReuseManifestHeader: false,
+    includeRenderModeHeader: false,
+  });
+  return input === null ? null : fnv1a64(input);
+}
+
+async function computePreviousClientReuseRscCacheBustingSearchParam(
+  headers: Headers,
+): Promise<string | null> {
+  const input = createCacheBustingInput(headers, { includeClientReuseManifestHeader: false });
+  return input === null ? null : sha256CacheBustingHash(input);
+}
+
+function computePreviousClientReuseLegacyRscCacheBustingSearchParam(
+  headers: Headers,
+): string | null {
+  const input = createCacheBustingInput(headers, { includeClientReuseManifestHeader: false });
   return input === null ? null : fnv1a64(input);
 }
 
@@ -606,6 +632,15 @@ export async function resolveInvalidRscCacheBustingRequest(
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
+    const previousClientReuseHash = await computePreviousClientReuseRscCacheBustingSearchParam(
+      options.request.headers,
+    );
+    const previousClientReuseLegacyHash =
+      computePreviousClientReuseLegacyRscCacheBustingSearchParam(options.request.headers);
+    if (previousClientReuseHash !== null) acceptedHashes.add(previousClientReuseHash);
+    if (previousClientReuseLegacyHash !== null) {
+      acceptedHashes.add(previousClientReuseLegacyHash);
+    }
     if (
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
       null

@@ -143,6 +143,21 @@ cookie_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
 cookie_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
 cookie_cache_control=$(awk 'BEGIN { IGNORECASE=1 } /^cache-control:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
 
+invalid_accept_failure=""
+for invalid_accept in "application/json" "text/x-component, */*" "TEXT/X-COMPONENT"; do
+  invalid_status=$(curl -sS -o "$tmpfile" -D "$rsc_headers" -w "%{http_code}" \
+    -H "Accept: ${invalid_accept}" \
+    -H "RSC: 1" \
+    --max-time 10 \
+    "$rsc_url" || echo "000")
+  invalid_cache_status=$(awk 'BEGIN { IGNORECASE=1 } /^cf-cache-status:/ { gsub("\r", "", $2); print toupper($2) }' "$rsc_headers" | tail -1)
+  invalid_cache_control=$(awk 'BEGIN { IGNORECASE=1 } /^cache-control:/ { sub(/^[^:]+:[[:space:]]*/, ""); gsub("\r", ""); print tolower($0) }' "$rsc_headers" | tail -1)
+  if [[ "$invalid_status" != "307" || "$invalid_cache_status" == "HIT" || "$invalid_cache_control" != *"no-store"* ]]; then
+    invalid_accept_failure="Accept ${invalid_accept}: HTTP ${invalid_status}, CF-Cache-Status ${invalid_cache_status:-missing}, Cache-Control ${invalid_cache_control:-missing}"
+    break
+  fi
+done
+
 if [[ "$first_status" != "200" || -n "$first_location" ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (canonical request returned HTTP ${first_status}${first_location:+, location ${first_location}})"
   errors+=("canonical RSC request was not served directly")
@@ -159,6 +174,10 @@ elif [[ "$second_content_type" != *"text/x-component"* ]]; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (HIT Content-Type: ${second_content_type:-missing})"
   errors+=("warmed Workers Cache entry was not an RSC payload")
   failed=$((failed + 1))
+elif [[ -n "$invalid_accept_failure" ]]; then
+  echo "FAIL  workers-cache/cached/intro?_rsc  (${invalid_accept_failure})"
+  errors+=("invalid Accept request reused or populated the canonical RSC cache entry")
+  failed=$((failed + 1))
 elif ! grep -qiE '(^|,)[[:space:]]*Cookie([[:space:]]*,|$)' <<< "$second_vary"; then
   echo "FAIL  workers-cache/cached/intro?_rsc  (Vary is missing Cookie)"
   errors+=("canonical RSC response did not vary the anonymous entry on Cookie")
@@ -168,7 +187,7 @@ elif [[ "$cookie_status" != "200" || "$cookie_cache_status" == "HIT" || "$cookie
   errors+=("cookie-bearing RSC request reused or populated the anonymous cache entry")
   failed=$((failed + 1))
 else
-  echo "  OK  workers-cache/cached/intro?_rsc  (warm ${first_cache_status} -> reuse HIT; cookie ${cookie_cache_status})"
+  echo "  OK  workers-cache/cached/intro?_rsc  (warm ${first_cache_status} -> reuse HIT; invalid Accept isolated; cookie ${cookie_cache_status})"
   passed=$((passed + 1))
 fi
 

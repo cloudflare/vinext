@@ -197,18 +197,28 @@ const MAX_SINGLE_TAG_BYTES = 1024;
  * comma (the header separator) or exceeding the per-tag size are skipped, and
  * the whole value is bounded to stay within Cloudflare's limit.
  */
-function formatCacheTag(tags: readonly string[]): string | null {
+function encodeWorkersCacheTag(tag: string): string | null {
+  try {
+    const encoded = encodeURIComponent(tag);
+    return encoded.length > 0 && encoded.length <= MAX_SINGLE_TAG_BYTES ? encoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatCacheTag(tags: readonly string[]): { complete: boolean; value: string | null } {
   const parts: string[] = [];
   let total = 0;
   for (const tag of tags) {
-    if (!tag || tag.includes(",") || tag.length > MAX_SINGLE_TAG_BYTES) continue;
+    const encoded = encodeWorkersCacheTag(tag);
+    if (encoded === null) return { complete: false, value: null };
     // +1 accounts for the joining comma.
-    const next = total + tag.length + (parts.length > 0 ? 1 : 0);
-    if (next > MAX_CACHE_TAG_BYTES) break;
-    parts.push(tag);
+    const next = total + encoded.length + (parts.length > 0 ? 1 : 0);
+    if (next > MAX_CACHE_TAG_BYTES) return { complete: false, value: null };
+    parts.push(encoded);
     total = next;
   }
-  return parts.length > 0 ? parts.join(",") : null;
+  return { complete: true, value: parts.length > 0 ? parts.join(",") : null };
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
@@ -330,7 +340,15 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const responseTags = requestKind === "html" ? [HTML_CACHE_TAG] : input.tags;
     if (responseTags && responseTags.length > 0) {
       const cacheTag = formatCacheTag(responseTags);
-      if (cacheTag) headers["Cache-Tag"] = cacheTag;
+      if (!cacheTag.complete && requestKind !== "html") {
+        return {
+          "Cache-Control": NO_STORE,
+          "CDN-Cache-Control": null,
+          "Cloudflare-CDN-Cache-Control": null,
+          "Cache-Tag": null,
+        };
+      }
+      if (cacheTag.value) headers["Cache-Tag"] = cacheTag.value;
     }
 
     return headers;
@@ -341,10 +359,13 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const cache = getWorkersCache();
     if (!cache) return; // no host cache in the request context (e.g. Node dev)
 
-    const tagList = (Array.isArray(tags) ? [...tags] : [tags]).filter(
+    const sourceTags = (Array.isArray(tags) ? [...tags] : [tags]).filter(
       (t): t is string => typeof t === "string" && t.length > 0,
     );
-    if (tagList.length === 0) return;
+    if (sourceTags.length === 0) return;
+    const tagList = sourceTags
+      .map(encodeWorkersCacheTag)
+      .filter((tag): tag is string => tag !== null);
     if (!tagList.includes(HTML_CACHE_TAG)) tagList.push(HTML_CACHE_TAG);
 
     await cache.purge({ tags: tagList });

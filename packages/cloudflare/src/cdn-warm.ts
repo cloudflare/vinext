@@ -16,6 +16,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
@@ -380,6 +381,11 @@ const CANONICAL_RSC_VARY_FIELDS = new Set(
     field.trim().toLowerCase(),
   ),
 );
+const REQUIRED_CANONICAL_RSC_VARY_FIELDS = new Set(
+  [...VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER.split(","), "Cookie", "Authorization"].map((field) =>
+    field.trim().toLowerCase(),
+  ),
+);
 
 function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"): string | null {
   const vary = response.headers.get("Vary");
@@ -395,6 +401,20 @@ function findUnsupportedWarmVaryField(response: Response, kind: "html" | "rsc"):
     ) {
       return token.trim() || "*";
     }
+  }
+  return null;
+}
+
+function findMissingWarmVaryField(response: Response, kind: "html" | "rsc"): string | null {
+  if (kind !== "rsc") return null;
+  const present = new Set(
+    (response.headers.get("Vary") ?? "")
+      .split(",")
+      .map((field) => field.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  for (const field of REQUIRED_CANONICAL_RSC_VARY_FIELDS) {
+    if (!present.has(field)) return field;
   }
   return null;
 }
@@ -510,6 +530,11 @@ async function warmOnePath(
         const unsupportedVaryField = findUnsupportedWarmVaryField(response, target.kind);
         if (unsupportedVaryField !== null) {
           lastError = `unsupported Vary field: ${unsupportedVaryField}`;
+          break;
+        }
+        const missingVaryField = findMissingWarmVaryField(response, target.kind);
+        if (missingVaryField !== null) {
+          lastError = `missing required Vary field: ${missingVaryField}`;
           break;
         }
         const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "";

@@ -87,10 +87,7 @@ export async function isRscPrewarmEligibleHref(href: string, basePath = ""): Pro
   return paths.has(pathname);
 }
 
-/**
- * Synchronous navigation-time check. A pending manifest fails closed so an
- * optimization asset can never delay a user-initiated navigation.
- */
+/** Synchronous check for callers that cannot await the manifest preload. */
 export function isLoadedRscPrewarmEligibleHref(href: string, basePath = ""): boolean {
   if (loadedManifestPaths === null) return false;
   const pathname = resolveEligibleHrefPathname(href, basePath);
