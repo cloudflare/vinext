@@ -408,29 +408,29 @@ function extractFromTOML(content: string): WranglerConfig {
   const result: WranglerConfig = {};
   const rootBody = getTomlRootBody(content);
 
-  const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m);
-  if (nameMatch) result.name = nameMatch[1];
+  const name = findTomlStringAssignment(rootBody, "name");
+  if (name) result.name = name;
 
   const legacyEnvMatch = content.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
   if (legacyEnvMatch) result.legacyEnv = legacyEnvMatch[1] === "true";
 
   // account_id = "..."
-  const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
-  if (accountMatch) result.accountId = accountMatch[1];
+  const accountId = findTomlStringAssignment(rootBody, "account_id");
+  if (accountId) result.accountId = accountId;
 
   // KV namespace with binding = "VINEXT_KV_CACHE"
   // Look for [[kv_namespaces]] blocks
   const kvBlocks = content.split(/\[\[kv_namespaces\]\]/);
   for (let i = 1; i < kvBlocks.length; i++) {
     const block = kvBlocks[i].split(/\[\[/)[0]; // Take until next section
-    const bindingMatch = block.match(/binding\s*=\s*"([^"]+)"/);
-    const idMatch = block.match(/\bid\s*=\s*"([^"]+)"/);
+    const binding = findTomlStringAssignment(block, "binding");
+    const id = findTomlStringAssignment(block, "id");
     if (
-      (bindingMatch?.[1] === "VINEXT_KV_CACHE" || bindingMatch?.[1] === "VINEXT_CACHE") &&
-      idMatch?.[1] &&
-      idMatch[1] !== "<your-kv-namespace-id>"
+      (binding === "VINEXT_KV_CACHE" || binding === "VINEXT_CACHE") &&
+      id &&
+      id !== "<your-kv-namespace-id>"
     ) {
-      result.kvNamespaceId = idMatch[1];
+      result.kvNamespaceId = id;
     }
   }
 
@@ -442,7 +442,7 @@ function extractFromTOML(content: string): WranglerConfig {
   // [[routes]] blocks
   if (!result.customDomain) {
     for (const section of getTomlSections(content)) {
-      if (section.header !== "routes") continue;
+      if (section.header !== "route" && section.header !== "routes") continue;
       const domain = extractTomlRouteBlockDomain(section.body);
       if (domain) {
         result.customDomain = domain;
@@ -458,9 +458,11 @@ function extractFromTOML(content: string): WranglerConfig {
     (section) => section.header === "version_metadata",
   );
   const inlineVersionMetadata = extractTomlInlineTable(rootBody, "version_metadata");
-  const versionMetadataBinding = extractTomlVersionMetadataBinding(
-    versionMetadataSection?.body ?? inlineVersionMetadata ?? "",
-  );
+  const versionMetadataBinding = versionMetadataSection
+    ? extractTomlVersionMetadataBinding(versionMetadataSection.body)
+    : inlineVersionMetadata
+      ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
+      : extractTomlDottedVersionMetadataBinding(rootBody);
   if (versionMetadataBinding) result.versionMetadataBinding = versionMetadataBinding;
 
   const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
@@ -469,7 +471,7 @@ function extractFromTOML(content: string): WranglerConfig {
     ? extractTomlCacheConfig(cacheSection.body)
     : inlineCache
       ? extractTomlCacheConfig(inlineCache)
-      : undefined;
+      : extractTomlDottedCacheConfig(rootBody);
   if (cache) result.cache = cache;
 
   // This reader intentionally extracts only the small Wrangler subset used by
@@ -493,8 +495,8 @@ function extractEnvConfigsFromTOML(
     const envName = headerPath.length === 2 && headerPath[0] === "env" ? headerPath[1] : undefined;
     if (envName) {
       const envConfig = result[envName] ?? {};
-      const nameMatch = section.body.match(/^name\s*=\s*"([^"]+)"/m);
-      if (nameMatch) envConfig.name = nameMatch[1];
+      const name = findTomlStringAssignment(section.body, "name");
+      if (name) envConfig.name = name;
       const domain =
         extractTomlRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
@@ -504,9 +506,9 @@ function extractEnvConfigsFromTOML(
         : extractTomlDottedCacheConfig(section.body);
       if (cache) envConfig.cache = cache;
       const inlineVersionMetadata = extractTomlInlineTable(section.body, "version_metadata");
-      if (inlineVersionMetadata) {
-        envConfig.versionMetadataBinding = extractTomlVersionMetadataBinding(inlineVersionMetadata);
-      }
+      envConfig.versionMetadataBinding = inlineVersionMetadata
+        ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
+        : extractTomlDottedVersionMetadataBinding(section.body);
       if (
         envConfig.name ||
         envConfig.customDomain ||
@@ -519,7 +521,9 @@ function extractEnvConfigsFromTOML(
     }
 
     const routesEnvName =
-      headerPath.length === 3 && headerPath[0] === "env" && headerPath[2] === "routes"
+      headerPath.length === 3 &&
+      headerPath[0] === "env" &&
+      (headerPath[2] === "route" || headerPath[2] === "routes")
         ? headerPath[1]
         : undefined;
     if (routesEnvName) {
@@ -567,7 +571,7 @@ function extractEnvConfigsFromTOML(
         const nameAssignment = parseTomlAssignments(inlineEnv).find(
           (candidate) => candidate.key === "name",
         );
-        const name = nameAssignment?.value.match(/^"([^"]+)"$/)?.[1];
+        const name = nameAssignment ? parseTomlString(nameAssignment.value) : null;
         const customDomain =
           extractTomlRouteDomain(inlineEnv) ?? extractTomlRoutesArrayDomain(inlineEnv) ?? undefined;
         if (!name && !customDomain && !cache && !versionMetadataBinding) continue;
@@ -588,10 +592,17 @@ function extractEnvConfigsFromTOML(
 function extractTomlVersionMetadataBinding(section: string): string | undefined {
   for (const assignment of parseTomlAssignments(section)) {
     if (assignment.key !== "binding") continue;
-    const match = assignment.value.trim().match(/^"([^"]+)"$/);
-    if (match) return match[1];
+    const value = parseTomlString(assignment.value);
+    if (value) return value;
   }
   return undefined;
+}
+
+function extractTomlDottedVersionMetadataBinding(section: string): string | undefined {
+  const assignment = parseTomlAssignments(section).find(
+    (candidate) => candidate.key === "version_metadata.binding",
+  );
+  return assignment ? (parseTomlString(assignment.value) ?? undefined) : undefined;
 }
 
 function extractTomlCacheConfig(section: string): WranglerCacheConfig | undefined {
@@ -733,6 +744,26 @@ function unwrapTomlInlineTable(value: string): string | null {
   return trimmed.startsWith("{") && trimmed.endsWith("}") ? trimmed.slice(1, -1) : null;
 }
 
+function parseTomlString(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return null;
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1);
+  }
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function findTomlStringAssignment(source: string, key: string): string | null {
+  const assignment = parseTomlAssignments(source).find((candidate) => candidate.key === key);
+  return assignment ? parseTomlString(assignment.value) : null;
+}
+
 function extractTomlInlineTable(source: string, key: string): string | null {
   const assignment = parseTomlAssignments(source).find((candidate) => candidate.key === key);
   return assignment ? unwrapTomlInlineTable(assignment.value) : null;
@@ -778,31 +809,78 @@ function parseTomlSectionHeader(line: string): string | null {
 function extractTomlRouteDomain(section: string): string | null {
   const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "route");
   if (!assignment) return null;
-  const scalarMatch = assignment.value.match(/^"([^"]+)"$/);
+  const scalar = parseTomlString(assignment.value);
   const inline = unwrapTomlInlineTable(assignment.value);
-  const patternMatch = inline?.match(/(?:^|,)\s*pattern\s*=\s*"([^"]+)"/);
-  const pattern = scalarMatch?.[1] ?? patternMatch?.[1];
+  const pattern = scalar ?? (inline ? findTomlStringAssignment(inline, "pattern") : null);
   if (!pattern) return null;
   const domain = cleanDomain(pattern);
   return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
 function extractTomlRoutesArrayDomain(section: string): string | null {
-  const routesMatch = section.match(/^routes\s*=\s*\[([\s\S]*?)\]/m);
-  if (!routesMatch) return null;
-  const routes = routesMatch[1] ?? "";
-  const patternMatch = routes.match(/\bpattern\s*=\s*"([^"]+)"/) ?? routes.match(/"([^"]+)"/);
-  if (!patternMatch) return null;
-  const domain = cleanDomain(patternMatch[1]);
-  return domain && !domain.includes("workers.dev") ? domain : null;
+  const assignment = parseTomlAssignments(section).find((candidate) => candidate.key === "routes");
+  if (!assignment) return null;
+  const value = assignment.value.trim();
+  if (!value.startsWith("[") || !value.endsWith("]")) return null;
+  for (const item of splitTomlTopLevelItems(value.slice(1, -1))) {
+    const inline = unwrapTomlInlineTable(item);
+    const pattern = inline
+      ? (findTomlStringAssignment(inline, "pattern") ??
+        findTomlStringAssignment(inline, "zone_name"))
+      : parseTomlString(item);
+    if (!pattern) continue;
+    const domain = cleanDomain(pattern);
+    if (domain && !domain.includes("workers.dev")) return domain;
+  }
+  return null;
 }
 
 function extractTomlRouteBlockDomain(section: string): string | null {
-  const patternMatch =
-    section.match(/^pattern\s*=\s*"([^"]+)"/m) ?? section.match(/^zone_name\s*=\s*"([^"]+)"/m);
-  if (!patternMatch) return null;
-  const domain = cleanDomain(patternMatch[1]);
+  const pattern =
+    findTomlStringAssignment(section, "pattern") ?? findTomlStringAssignment(section, "zone_name");
+  if (!pattern) return null;
+  const domain = cleanDomain(pattern);
   return domain && !domain.includes("workers.dev") ? domain : null;
+}
+
+function splitTomlTopLevelItems(source: string): string[] {
+  const items: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let depth = 0;
+  for (const character of source) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === "{" || character === "[") depth++;
+    if (character === "}" || character === "]") depth = Math.max(0, depth - 1);
+    if (character === "," && depth === 0) {
+      if (current.trim()) items.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) items.push(current.trim());
+  return items;
 }
 
 // ─── Cloudflare API ──────────────────────────────────────────────────────────

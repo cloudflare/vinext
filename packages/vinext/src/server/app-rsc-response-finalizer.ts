@@ -1,15 +1,22 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { RSC_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import {
+  NEXT_URL_HEADER,
+  RSC_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_STATIC_FILE_HEADER,
+} from "./headers.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import {
   VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
+  VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
+import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -71,6 +78,34 @@ function reapplyNonCacheableCdnPolicy(headers: Headers): void {
   }
 }
 
+function applyAppRscVaryHeader(headers: Headers, request: Request): void {
+  const hasInterceptionContext =
+    normalizeInterceptionContextHeader(request.headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)) !==
+    null;
+
+  if (!hasInterceptionContext) {
+    const current = headers.get("Vary");
+    if (current !== null && current !== "*") {
+      const withoutNextUrl = current
+        .split(",")
+        .map((token) => token.trim())
+        .filter(
+          (token) => token.length > 0 && token.toLowerCase() !== NEXT_URL_HEADER.toLowerCase(),
+        );
+      if (withoutNextUrl.length === 0) {
+        headers.delete("Vary");
+      } else {
+        headers.set("Vary", withoutNextUrl.join(", "));
+      }
+    }
+  }
+
+  mergeVaryHeader(
+    headers,
+    hasInterceptionContext ? VINEXT_RSC_VARY_HEADER : VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
+  );
+}
+
 /**
  * Apply App Router response finalization that must happen outside individual
  * route dispatchers.
@@ -97,7 +132,7 @@ export async function finalizeAppRscResponse(
 
     const headers = new Headers(response.headers);
     headers.delete(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER);
-    mergeVaryHeader(headers, VINEXT_RSC_VARY_HEADER);
+    applyAppRscVaryHeader(headers, request);
     applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
     return new Response(response.body, {
       headers,
@@ -107,12 +142,7 @@ export async function finalizeAppRscResponse(
   }
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
-    const varyHeader = response.headers.get("Vary");
-    if (varyHeader === null) {
-      response.headers.set("Vary", VINEXT_RSC_VARY_HEADER);
-    } else if (varyHeader !== VINEXT_RSC_VARY_HEADER) {
-      mergeVaryHeader(response.headers, VINEXT_RSC_VARY_HEADER);
-    }
+    applyAppRscVaryHeader(response.headers, request);
   }
 
   // The CDN cache adapter owns the *default* Cache-Control. If no route path
@@ -132,6 +162,13 @@ export async function finalizeAppRscResponse(
     return response;
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
+
+  // Config headers run after framework response shaping and may contribute
+  // their own Vary fields. Reconcile once more so custom fields survive while
+  // a non-contextual response cannot reintroduce Next-Url.
+  if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
+    applyAppRscVaryHeader(response.headers, request);
+  }
 
   // A route/runtime no-store decision is authoritative over next.config
   // headers. Re-run that generic policy through the active adapter after

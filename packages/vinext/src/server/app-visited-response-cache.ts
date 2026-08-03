@@ -95,6 +95,7 @@ export function findVisitedResponseCacheEntry(
   if (normalizedTarget === null) return null;
 
   for (const [cacheKey, entry] of cache) {
+    if (entry.response.variesOnNextUrl === true) continue;
     const source = parseVisitedResponseCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeVisitedResponseCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;

@@ -39,15 +39,24 @@ export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 // Re-export so existing consumers that import from this module keep working.
 export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 
-export const VINEXT_RSC_VARY_HEADER = [
+const VINEXT_RSC_BASE_VARY_HEADERS = [
   RSC_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-  NEXT_URL_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+] as const;
+
+/** RSC response identity for requests without active interception context. */
+export const VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER = VINEXT_RSC_BASE_VARY_HEADERS.join(", ");
+
+/** RSC response identity for requests whose interception context can affect the payload. */
+export const VINEXT_RSC_VARY_HEADER = [
+  ...VINEXT_RSC_BASE_VARY_HEADERS.slice(0, 4),
+  NEXT_URL_HEADER,
+  ...VINEXT_RSC_BASE_VARY_HEADERS.slice(4),
 ].join(", ");
 
 const SHARED_RSC_VARIANT_HEADERS = [
@@ -241,6 +250,15 @@ function createCacheBustingInput(
   }
 
   return values.map(normalizeHeaderValue).join(",");
+}
+
+/**
+ * Browser-local identity for a navigation-reusable RSC payload. Prefetch-only
+ * headers do not change the eventual page payload, while source/router/slot
+ * context does and must remain part of the identity.
+ */
+export function createRscClientCacheVariantKey(headers: Headers): string | null {
+  return createCacheBustingInput(headers, { includePrefetchHeaders: false });
 }
 
 async function sha256CacheBustingHash(input: string): Promise<string> {

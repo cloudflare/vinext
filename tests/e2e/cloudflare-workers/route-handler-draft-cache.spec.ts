@@ -382,4 +382,46 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       expect(headers["cache-tag"]).toBeUndefined();
     }
   });
+
+  // Next.js keeps Next-Url in the client route-cache identity when the RSC
+  // response varies by source route. See vercel/next.js#88863.
+  test("does not reuse force-dynamic RSC payloads across source routes", async ({ page }) => {
+    const sourceAPrefetchPromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/force-dynamic/prefetch" && url.searchParams.has("_rsc");
+    });
+    await page.goto(`${BASE_URL}/force-dynamic-source`);
+    const sourceAPrefetch = await sourceAPrefetchPromise;
+    expect(sourceAPrefetch.request().headers()["next-url"]).toBe("/force-dynamic-source");
+    expect(sourceAPrefetch.headers().vary?.toLowerCase().split(/,\s*/)).toContain("next-url");
+
+    await page.click("#cdn-dynamic-prefetch-link");
+    await expect(
+      page.getByRole("heading", { name: "Force dynamic prefetch", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator("#cdn-dynamic-next-url")).toHaveText(
+      "Next URL: /force-dynamic-source",
+    );
+
+    const sourceBPrefetchPromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/force-dynamic/prefetch" && url.searchParams.has("_rsc");
+    });
+    await page.click("#cdn-dynamic-source-b-link");
+    await expect(page).toHaveURL(`${BASE_URL}/force-dynamic-source-b`);
+    const sourceBPrefetch = await sourceBPrefetchPromise;
+    expect(sourceBPrefetch.request().headers()["next-url"]).toBe("/force-dynamic-source-b");
+    expect(sourceBPrefetch.headers().vary?.toLowerCase().split(/,\s*/)).toContain("next-url");
+    expect(new URL(sourceBPrefetch.url()).searchParams.get("_rsc")).not.toBe(
+      new URL(sourceAPrefetch.url()).searchParams.get("_rsc"),
+    );
+
+    await page.click("#cdn-dynamic-prefetch-link");
+    await expect(
+      page.getByRole("heading", { name: "Force dynamic prefetch", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator("#cdn-dynamic-next-url")).toHaveText(
+      "Next URL: /force-dynamic-source-b",
+    );
+  });
 });

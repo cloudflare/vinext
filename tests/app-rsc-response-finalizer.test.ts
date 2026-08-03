@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
+  VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
@@ -75,7 +76,7 @@ describe("finalizeAppRscResponse — config header application", () => {
 
     expect(result).toBe(response);
     expect(result.headers.get("x-existing")).toBe("keep");
-    expect(result.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+    expect(result.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
   });
 
   it("does not apply config headers when source pattern does not match", async () => {
@@ -159,7 +160,9 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
       requestContext: makeRequestContext(),
     });
 
-    expect(response.headers.get("vary")).toBe(`User-Agent, ${VINEXT_RSC_VARY_HEADER}`);
+    expect(response.headers.get("vary")).toBe(
+      `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+    );
   });
 
   it("does not duplicate RSC vary tokens already set by app page helpers", async () => {
@@ -176,7 +179,76 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
       requestContext: makeRequestContext(),
     });
 
-    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+  });
+
+  it("includes Next-Url only when a validated interception context is active", async () => {
+    // Mirrors Next.js AppPageRouteModule.getVaryHeader(), which only adds
+    // Next-Url when interception can affect the rendered response.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
+    const response = new Response("body", { status: 200, headers: { Vary: "User-Agent" } });
+    const request = new Request("http://example.com/photos/1?_rsc=contextual", {
+      headers: {
+        "Next-Url": "/feed",
+        RSC: "1",
+        "X-Vinext-Interception-Context": "/feed",
+      },
+    });
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(request.headers),
+    });
+
+    expect(response.headers.get("vary")).toBe(`User-Agent, ${VINEXT_RSC_VARY_HEADER}`);
+  });
+
+  it("does not let a malformed interception context activate Next-Url Vary", async () => {
+    const response = new Response("body", {
+      status: 200,
+      headers: { Vary: VINEXT_RSC_VARY_HEADER },
+    });
+    const request = new Request("http://example.com/photos/1?_rsc=invalid", {
+      headers: {
+        "Next-Url": "/feed",
+        RSC: "1",
+        "X-Vinext-Interception-Context": "not-a-path",
+      },
+    });
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(request.headers),
+    });
+
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+  });
+
+  it("removes Next-Url contributed by config while preserving its other Vary fields", async () => {
+    const response = new Response("body", { status: 200, headers: { Vary: "User-Agent" } });
+    const request = new Request("http://example.com/about", {
+      headers: { "Next-Url": "/source", RSC: "1" },
+    });
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Vary", value: "Next-Url, X-Auth-State" }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(request.headers),
+    });
+
+    expect(response.headers.get("vary")).toBe(
+      `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}, X-Auth-State`,
+    );
   });
 
   it("preserves wildcard Vary semantics", async () => {
@@ -244,7 +316,7 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     expect(result).not.toBe(response);
     expect(result.status).toBe(307);
     expect(result.headers.get("location")).toBe("http://example.com/new");
-    expect(result.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+    expect(result.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
     expect(result.headers.get("cache-control")).toContain("no-store");
     expect(result.headers.get("x-added")).toBeNull();
   });
@@ -266,7 +338,7 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     expect(result).not.toBe(response);
     expect(result.status).toBe(307);
     expect(result.headers.get("location")).toBe("/old");
-    expect(result.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+    expect(result.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
     expect(result.headers.get("cache-control")).toContain("no-store");
     expect(result.headers.get(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER)).toBeNull();
     expect(result.headers.get("x-added")).toBeNull();

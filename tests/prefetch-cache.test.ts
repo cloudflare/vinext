@@ -11,7 +11,11 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
-import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  createRscClientCacheVariantKey,
+  createRscRequestHeaders,
+  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
@@ -435,6 +439,18 @@ describe("prefetch cache eviction", () => {
     await expect(restored.text()).resolves.toBe("flight");
   });
 
+  it("records whether the response varies on Next-Url", async () => {
+    const contextual = await snapshotRscResponse(
+      new Response("contextual", { headers: { Vary: "RSC, nExT-uRl" } }),
+    );
+    const sourceIndependent = await snapshotRscResponse(
+      new Response("shared", { headers: { Vary: "RSC, Next-Router-State-Tree" } }),
+    );
+
+    expect(contextual.variesOnNextUrl).toBe(true);
+    expect(sourceIndependent.variesOnNextUrl).toBeUndefined();
+  });
+
   it("carries the server-resolved cacheLife stale time through snapshot and replay", async () => {
     const response = new Response("flight", {
       headers: {
@@ -719,7 +735,12 @@ describe("prefetch cache eviction", () => {
       null,
       null,
       undefined,
-      { cacheForNavigation: true },
+      {
+        cacheForNavigation: true,
+        requestVariantKey: createRscClientCacheVariantKey(
+          createRscRequestHeaders({ nextUrl: "/" }),
+        ),
+      },
     );
     await waitForPrefetchSetup(
       () => getPrefetchCache().get(aliasRscUrl)?.outcome === "cache-seeded",
@@ -744,6 +765,37 @@ describe("prefetch cache eviction", () => {
 
     invalidatePrefetchCache();
     expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("aliases prefetch-only _rsc variants but not different source-route variants", async () => {
+    const sourceAKey = createRscClientCacheVariantKey(
+      createRscRequestHeaders({ nextUrl: "/source-a" }),
+    );
+    const sourceBKey = createRscClientCacheVariantKey(
+      createRscRequestHeaders({ nextUrl: "/source-b" }),
+    );
+    prefetchRscResponse(
+      "/target?_rsc=prefetch-a",
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: true, requestVariantKey: sourceAKey },
+    );
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get("/target?_rsc=prefetch-a")?.outcome === "cache-seeded",
+    );
+
+    expect(
+      hasPrefetchCacheEntryForNavigation("/target?_rsc=navigate-a", null, null, {
+        requestVariantKey: sourceAKey,
+      }),
+    ).toBe(true);
+    expect(
+      hasPrefetchCacheEntryForNavigation("/target?_rsc=navigate-b", null, null, {
+        requestVariantKey: sourceBKey,
+      }),
+    ).toBe(false);
   });
 
   it("notifies onInvalidate when a learning-only prefetch is superseded (#2707)", async () => {

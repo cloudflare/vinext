@@ -3,17 +3,16 @@ import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
-export default async function ForceDynamicPage({ params }: { params: Promise<{ mode: string }> }) {
-  const { mode } = await params;
+export default async function InterceptedForceDynamicPage() {
   const nextUrl = (await headers()).get("next-url") ?? "none";
 
   return (
-    <main>
-      <h1>Force dynamic {mode}</h1>
+    <aside>
+      <h1>Force dynamic prefetch</h1>
       <p id="cdn-dynamic-next-url">Next URL: {nextUrl}</p>
       <Link id="cdn-dynamic-source-b-link" href="/force-dynamic-source-b" prefetch={false}>
         Source B
       </Link>
-    </main>
+    </aside>
   );
 }

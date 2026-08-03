@@ -260,7 +260,7 @@ describe("visited response cache freshness", () => {
     ).toBe(false);
   });
 
-  it("deletes a normalized _rsc variant after failed visited reuse so navigation can fall through", () => {
+  it("reuses and deletes a normalized _rsc variant when the response does not vary on Next-Url", () => {
     const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
     const entry = createVisitedResponseCacheEntry({
       now: 1_000_000,
@@ -296,5 +296,35 @@ describe("visited response cache freshness", () => {
         null,
       ),
     ).toBeNull();
+  });
+
+  it("does not reuse or delete a visited response from a different Next-Url variant", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse({ variesOnNextUrl: true }),
+    });
+    const storedKey = AppElementsWire.encodeCacheKey(
+      "/nextjs-compat/client-cache/1?tab=latest&_rsc=source-a",
+      null,
+    );
+    cache.set(storedKey, entry);
+
+    expect(
+      findVisitedResponseCacheEntry(
+        cache,
+        "/nextjs-compat/client-cache/1?tab=latest&_rsc=source-b",
+        null,
+      ),
+    ).toBeNull();
+    expect(
+      deleteVisitedResponseCacheEntry(
+        cache,
+        "/nextjs-compat/client-cache/1?tab=latest&_rsc=source-b",
+        null,
+      ),
+    ).toBe(false);
+    expect(cache.has(storedKey)).toBe(true);
   });
 });

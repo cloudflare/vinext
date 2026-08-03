@@ -6,6 +6,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
+  VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
@@ -19,6 +20,7 @@ import {
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_URL_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -1683,6 +1685,54 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(200);
     expect(response.headers.get("x-test-header")).toBe("applied");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+  });
+
+  it("hides non-contextual Next-Url from headers() without changing cache-busting validation", async () => {
+    let transportNextUrl: string | null = null;
+    let userlandNextUrl: string | null = null;
+    const dispatchMatchedPage = vi.fn(async ({ request }: { request: Request }) => {
+      transportNextUrl = request.headers.get(NEXT_URL_HEADER);
+      userlandNextUrl = (await requestHeaders()).get(NEXT_URL_HEADER);
+      return new Response("page", { status: 200 });
+    });
+    const handler = createHandler({ configHeaders: [], dispatchMatchedPage });
+    const headers = createRscRequestHeaders({ nextUrl: "/source" });
+    const requestPath = await createRscRequestUrl("/docs/about", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${requestPath}`, { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has("location")).toBe(false);
+    expect(transportNextUrl).toBe("/source");
+    expect(userlandNextUrl).toBeNull();
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+  });
+
+  it("keeps Next-Url in headers() and Vary for validated interception context", async () => {
+    let userlandNextUrl: string | null = null;
+    const dispatchMatchedPage = vi.fn(async () => {
+      userlandNextUrl = (await requestHeaders()).get(NEXT_URL_HEADER);
+      return new Response("page", { status: 200 });
+    });
+    const handler = createHandler({ configHeaders: [], dispatchMatchedPage });
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/source",
+      nextUrl: "/source",
+    });
+    const requestPath = await createRscRequestUrl("/docs/about", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${requestPath}`, { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has("location")).toBe(false);
+    expect(userlandNextUrl).toBe("/source");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
   });
 
@@ -4458,7 +4508,9 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request("https://example.test/docs/api/123"), null);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("vary")).toBe(`User-Agent, ${VINEXT_RSC_VARY_HEADER}`);
+    expect(response.headers.get("vary")).toBe(
+      `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+    );
   });
 
   it("clears request context before returning the plain 404 fallback", async () => {

@@ -17,6 +17,7 @@ import {
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
   NEXT_ACTION_HEADER,
+  NEXT_URL_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -609,6 +610,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     clientReuseManifest,
     hadBasePath,
   } = normalized;
+  // Next-Url only affects an interception render. Keep it on the transport
+  // request for `_rsc` cache-busting validation, but hide it from userland
+  // `headers()` when there is no validated interception context.
+  if (interceptionContextHeader === null) {
+    getHeadersContext()?.headers.delete(NEXT_URL_HEADER);
+  }
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
   // Final prerender validation must exercise the same bare `?_rsc` URL that

@@ -8,6 +8,7 @@ export function peekSettledPrefetchResponseForNavigation(options: {
   mountedSlotsHeader: string | null;
   navigationKind: "navigate" | "refresh" | "traverse";
   peek?: typeof peekPrefetchResponseForNavigation;
+  requestVariantKey: string | null;
   targetPathAndSearch: string;
 }): CachedRscResponse | null {
   if (options.navigationKind !== "navigate" || options.bypassNavigationCache) {
@@ -17,7 +18,10 @@ export function peekSettledPrefetchResponseForNavigation(options: {
     options.targetPathAndSearch,
     options.interceptionContext,
     options.mountedSlotsHeader,
-    { additionalRscUrls: options.additionalRscUrls },
+    {
+      additionalRscUrls: options.additionalRscUrls,
+      requestVariantKey: options.requestVariantKey,
+    },
   );
 }
 

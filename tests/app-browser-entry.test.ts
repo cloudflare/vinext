@@ -859,11 +859,13 @@ describe("app browser entry navigation scheduling", () => {
         mountedSlotsHeader: "slot:children:/target",
         navigationKind: "navigate",
         peek,
+        requestVariantKey: "source-variant",
         targetPathAndSearch: "/target",
       }),
     ).toBe(snapshot);
     expect(peek).toHaveBeenCalledWith("/target", "/parent", "slot:children:/target", {
       additionalRscUrls: ["/source"],
+      requestVariantKey: "source-variant",
     });
   });
 

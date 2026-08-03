@@ -456,6 +456,7 @@ function prefetchUrl(
         } = navigation;
         const {
           canonicalizeFullRscRequestHeaders,
+          createRscClientCacheVariantKey,
           createRscClientRequestIdentity,
           createRscRequestUrl,
           getRscCacheKeyMode,
@@ -542,6 +543,7 @@ function prefetchUrl(
         const usesCanonicalSharedRequest =
           cacheForNavigation && isPrewarmEligible && canonicalizeFullRscRequestHeaders(headers);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
+        const requestVariantKey = createRscClientCacheVariantKey(headers);
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const { requestUrl: rscUrl, cacheKeyUrl: rscCacheKeyUrl } =
@@ -553,7 +555,7 @@ function prefetchUrl(
         const cacheKey = AppElementsWire.encodeCacheKey(rscCacheKeyUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (cacheForNavigation) {
-          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
+          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext, requestVariantKey);
         }
         if (prefetched.has(cacheKey)) {
           if (!cacheForNavigation) {
@@ -615,6 +617,7 @@ function prefetchUrl(
                 cacheForNavigation: false,
                 optimisticRouteShell: true,
                 prefetchKind: "loading-shell",
+                requestVariantKey: createRscClientCacheVariantKey(shellHeaders),
               },
             );
             shellEntry = shellCache.get(shellCacheKey);
@@ -644,12 +647,15 @@ function prefetchUrl(
         };
         const hasExactNavigationCacheEntry =
           cacheForNavigation &&
-          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {});
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
+            requestVariantKey,
+          });
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
           (cacheForNavigation &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
+              requestVariantKey,
             }));
         // A single freshness-aware gate covers both an exact prior prefetch and
         // an equivalent `_rsc` variant; the helper also deletes any stale exact
@@ -728,6 +734,7 @@ function prefetchUrl(
                       cacheForNavigation: false,
                       optimisticRouteShell: false,
                       prefetchKind: "route-tree",
+                      requestVariantKey: createRscClientCacheVariantKey(shellHeaders),
                     },
                   );
                   shellEntry = shellCache.get(shellCacheKey);
@@ -744,6 +751,7 @@ function prefetchUrl(
                     renderedRscUrl,
                     interceptionContext,
                     mountedSlotsHeader,
+                    { requestVariantKey },
                   );
                   if (cachedRenderedResponse) {
                     return restoreRscResponse(cachedRenderedResponse);
@@ -789,6 +797,7 @@ function prefetchUrl(
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
             prepareSnapshot: cacheForNavigation ? prepareNavigationPrefetchSnapshot : undefined,
+            requestVariantKey,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
           },
         );

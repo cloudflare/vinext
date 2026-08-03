@@ -15,6 +15,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
+  VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
@@ -547,9 +548,12 @@ describe("App Router RSC cache-busting", () => {
     }
   });
 
-  it("exports the full Vary value for RSC-bearing App Router responses", () => {
-    // Mirrors Next.js App Router's base Vary header:
+  it("exports contextual and non-contextual App Router RSC Vary values", () => {
+    // Mirrors Next.js App Router's conditional Next-Url Vary behavior:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
+    expect(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER).toBe(
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+    );
     expect(VINEXT_RSC_VARY_HEADER).toBe(
       "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
     );

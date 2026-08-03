@@ -163,6 +163,7 @@ import {
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
   canonicalizeFullRscRequestHeaders,
+  createRscClientCacheVariantKey,
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
@@ -1787,12 +1788,13 @@ function bootstrapHydration(
           navigationInitiationState.navigationSnapshot,
         );
         const sourceUrl = new URL(sourceHref, window.location.origin);
+        const requestNextUrl = requestPreviousNextUrl ?? sourceUrl.pathname + sourceUrl.search;
         const requestHeaders = createRscRequestHeaders({
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
           includePrefetchHeader: false,
-          nextUrl: sourceUrl.pathname + sourceUrl.search,
+          nextUrl: requestNextUrl,
           prefetchRouterState: getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null,
         });
         const usesCanonicalSharedRequest =
@@ -1800,6 +1802,7 @@ function bootstrapHydration(
           isLoadedRscPrewarmEligibleHref(currentHref, __basePath) &&
           canonicalizeFullRscRequestHeaders(requestHeaders);
         const requestCacheKeyMode = usesCanonicalSharedRequest ? "response-vary" : "header-digest";
+        const requestVariantKey = createRscClientCacheVariantKey(requestHeaders);
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
@@ -1819,6 +1822,7 @@ function bootstrapHydration(
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
           navigationKind,
+          requestVariantKey,
           targetPathAndSearch,
         });
         let liveRscUrl: string | null = null;
@@ -1885,6 +1889,7 @@ function bootstrapHydration(
               {
                 additionalRscUrls: additionalPrefetchRscUrls,
                 notifyInvalidation: false,
+                requestVariantKey,
               },
             ));
         const reuseDecision = navigationPlanner.classifyNavigationReuse({
@@ -2005,6 +2010,7 @@ function bootstrapHydration(
                 mountedSlotsHeader,
                 {
                   additionalRscUrls: additionalPrefetchPathAndSearch,
+                  requestVariantKey,
                 },
               )
             : await consumePrefetchResponseForNavigation(
@@ -2013,6 +2019,7 @@ function bootstrapHydration(
                 mountedSlotsHeader,
                 {
                   additionalRscUrls: additionalPrefetchRscUrls,
+                  requestVariantKey,
                   shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
                 },
               );

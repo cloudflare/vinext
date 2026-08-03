@@ -3690,6 +3690,62 @@ staging = { name = "custom-staging", route = { pattern = "staging.example.com/*"
     });
   });
 
+  it("parses singular TOML route tables at root and environment scope", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "root-worker"
+
+[route]
+pattern = "app.example.com/*"
+custom_domain = true
+
+[env.staging]
+name = "staging-worker"
+
+[env.staging.route]
+pattern = "staging.example.com/*"
+custom_domain = true
+`,
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("app.example.com");
+    expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
+  });
+
+  it("parses TOML literal strings for deploy target fields", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = 'literal-worker'
+account_id = 'literal-account'
+route = 'app.example.com/*'
+version_metadata = { binding = 'VINEXT_VERSION_METADATA' }
+`,
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      accountId: "literal-account",
+      customDomain: "app.example.com",
+      name: "literal-worker",
+      versionMetadataBinding: "VINEXT_VERSION_METADATA",
+    });
+  });
+
+  it("parses dotted version metadata bindings at root and environment scope", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `version_metadata.binding = "ROOT_VERSION"
+
+[env.staging]
+version_metadata.binding = 'STAGING_VERSION'
+`,
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.versionMetadataBinding).toBe("ROOT_VERSION");
+    expect(config?.env?.staging?.versionMetadataBinding).toBe("STAGING_VERSION");
+  });
+
   it("does not treat wildcard route hosts as deployable warmup origins", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ route: "*.example.com/*" }));
     expect(parseWranglerConfig(tmpDir)?.customDomain).toBeUndefined();
