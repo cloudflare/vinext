@@ -122,12 +122,15 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         imageSizes: [16],
         qualities: [60, 75],
       },
+      deploymentId: "deploy-1",
     });
     expect(code).toContain("const __runtimeImageConfig");
     expect(code).toContain("export const __imageConfig");
+    expect(code).toContain('export const __deploymentId = "deploy-1"');
     expect(code).toContain('"deviceSizes":[320,640]');
     expect(code).toContain('"qualities":[60,75]');
     expect(code).toContain("imageConfig: __runtimeImageConfig");
+    expect(code).toContain("deploymentId: __deploymentId");
     expect(code).toContain('isDev: process.env.NODE_ENV !== "production"');
   });
 

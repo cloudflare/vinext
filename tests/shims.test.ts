@@ -23078,6 +23078,23 @@ describe("image optimization request parsing", () => {
     ).toBeNull();
   });
 
+  it("parseImageParams accepts only the canonical configured deployment ID", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = (deploymentId: string) =>
+      new URL(`http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75&dpl=${deploymentId}`);
+    const options = { deploymentId: "deploy-1" };
+
+    expect(parseImageParams(request("deploy-1"), undefined, undefined, options)).toEqual({
+      imageUrl: "/img.jpg",
+      width: 640,
+      quality: 75,
+    });
+    expect(parseImageParams(request("other-deploy"), undefined, undefined, options)).toBeNull();
+    expect(parseImageParams(request("%64eploy-1"), undefined, undefined, options)).toBeNull();
+    expect(parseImageParams(request("deploy-1&&"), undefined, undefined, options)).toBeNull();
+  });
+
   it("parseImageParams rejects source URLs longer than 3072 characters", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
@@ -23476,6 +23493,27 @@ describe("handleImageOptimization", () => {
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(400);
+  });
+
+  it("rejects unrecognized deployment IDs before fetching the source", async () => {
+    vi.stubEnv("__VINEXT_DEPLOYMENT_ID", "deploy-1");
+    try {
+      const { handleImageOptimization } =
+        await import("../packages/vinext/src/server/image-optimization.js");
+      const fetchAsset = vi.fn(async () => new Response("source"));
+
+      for (const deploymentId of ["other-deploy", "%64eploy-1"]) {
+        const request = new Request(
+          `http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75&dpl=${deploymentId}`,
+        );
+        const response = await handleImageOptimization(request, { fetchAsset });
+        expect(response.status).toBe(400);
+      }
+
+      expect(fetchAsset).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("returns 404 when fetchAsset fails", async () => {

@@ -3790,6 +3790,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 htmlLimitedBots: nextConfig?.htmlLimitedBots,
                 clientTraceMetadata: nextConfig?.clientTraceMetadata,
                 assetPrefix: nextConfig?.assetPrefix,
+                deploymentId: nextConfig?.deploymentId,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
                 cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
@@ -5035,6 +5036,7 @@ export const loadServerActionClient = ${
                   imageRequestUrl,
                   allowedWidths,
                   nextConfig.images?.qualities,
+                  { isDev: true, deploymentId: nextConfig.deploymentId },
                 );
                 if (!encodedLocation) {
                   res.writeHead(400);

@@ -172,6 +172,8 @@ type AppRouterConfig = {
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   imageConfig?: ImageConfig;
+  /** Build-time deployment ID emitted in managed image URLs. */
+  deploymentId?: string;
   /**
    * Absolute path to `app/global-not-found.{tsx,ts,js,jsx}` when present.
    * When provided, route-miss 404s render this module standalone (it owns its
@@ -225,6 +227,7 @@ export function generateRscEntry(
   const htmlLimitedBots = config?.htmlLimitedBots;
   const clientTraceMetadata = config?.clientTraceMetadata;
   const assetPrefix = config?.assetPrefix ?? "";
+  const deploymentId = config?.deploymentId;
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const reactMaxHeadersLength = config?.reactMaxHeadersLength ?? DEFAULT_REACT_MAX_HEADERS_LENGTH;
   const cacheMaxMemorySize = config?.cacheMaxMemorySize;
@@ -669,6 +672,7 @@ const __reactMaxHeadersLength = ${JSON.stringify(reactMaxHeadersLength)};
 // mirrors the embedded \`__basePath\` pattern (and Pages Router's
 // \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
+export const __deploymentId = ${JSON.stringify(deploymentId)};
 export const __imageAllowedWidths = ${JSON.stringify(imageAllowedWidths)};
 export const __imageConfig = ${JSON.stringify(imageConfig)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};
@@ -739,6 +743,7 @@ export default createAppRscHandler({
   }
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
+  deploymentId: __deploymentId,
   imageConfig: __runtimeImageConfig,
   isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,

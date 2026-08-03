@@ -1572,6 +1572,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     typeof rscModule.__assetPrefix === "string" ? rscModule.__assetPrefix : "";
   const appRouterBasePath: string =
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
+  const appRouterDeploymentId: string | undefined =
+    typeof rscModule.__deploymentId === "string" ? rscModule.__deploymentId : undefined;
   const appRouterInlineCss = rscModule.__inlineCss === true;
   const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
   const appRouterI18nConfig: NextI18nConfig | null = rscModule.__i18nConfig ?? null;
@@ -1715,7 +1717,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // serves the original file with cache headers and security headers)
     if (isImageOptimizationPath(pathname)) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
+      const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities, {
+        deploymentId: appRouterDeploymentId,
+      });
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");
@@ -2068,7 +2072,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // ── Image optimization passthrough ──────────────────────────────
     if (isImageOptimizationPath(pathname) || isImageOptimizationPath(staticLookupPath)) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, allowedImageWidths, pagesImageConfig?.qualities);
+      const params = parseImageParams(parsedUrl, allowedImageWidths, pagesImageConfig?.qualities, {
+        deploymentId: vinextConfig?.deploymentId,
+      });
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");

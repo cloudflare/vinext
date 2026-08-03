@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { request, type IncomingHttpHeaders, type Server } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { build, createBuilder } from "vite";
+import { build, createBuilder, createServer } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
@@ -366,7 +366,8 @@ async function assertStaticImageProductionParity(
   servers.push(started.server);
   const address = started.server.address();
   if (!address || typeof address === "string") throw new Error("Production server did not bind");
-  const response = await fetch(`http://127.0.0.1:${address.port}${options.basePath ?? ""}/`);
+  const serverOrigin = `http://127.0.0.1:${address.port}`;
+  const response = await fetch(`${serverOrigin}${options.basePath ?? ""}/`);
   const html = await response.text();
   expect(response.status, html).toBe(200);
 
@@ -390,6 +391,10 @@ async function assertStaticImageProductionParity(
     expect(srcset).toContain(`url=${encodeURIComponent(managedUrl)}`);
     if (options.deploymentId) expect(srcset).toContain(`dpl=${options.deploymentId}`);
     expect(srcset).not.toContain("data%3Aimage");
+    if (options.deploymentId) {
+      const optimizedResponse = await fetch(new URL(src, serverOrigin));
+      expect(optimizedResponse.status, await optimizedResponse.text()).toBe(200);
+    }
   }
 
   expect(getAttribute(html, "ordinary-asset", "src")).toMatch(/^data:image\/png/);
@@ -399,7 +404,7 @@ async function assertStaticImageProductionParity(
   expect(getAttribute(html, "static-svg", "src")).toBe(managedSvgUrl);
   expect(getAttribute(html, "static-svg", "src")).not.toContain("/_next/image?");
   const assetResponse = await fetch(
-    `http://127.0.0.1:${address.port}${effectiveAssetPrefix}/_next/static/media/${emittedImage}`,
+    `${serverOrigin}${effectiveAssetPrefix}/_next/static/media/${emittedImage}`,
   );
   expect(assetResponse.status).toBe(200);
   expect(assetResponse.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
@@ -411,7 +416,7 @@ async function assertStaticImageProductionParity(
   // validators. Use the lower-level client so this exercises a plain
   // If-None-Match request; no-cache revalidation is covered separately.
   const conditionalResponse = await rawHttpRequest(
-    `http://127.0.0.1:${address.port}${effectiveAssetPrefix}/_next/static/media/${emittedImage}`,
+    `${serverOrigin}${effectiveAssetPrefix}/_next/static/media/${emittedImage}`,
     { "if-none-match": etag! },
   );
   expect(conditionalResponse.statusCode).toBe(304);
@@ -444,6 +449,48 @@ describe("static image import production emission", () => {
       deploymentId: "static-image-test",
     });
   }, 60_000);
+
+  it("serves Pages Router managed image URLs with a deployment ID", async () => {
+    await assertStaticImageProductionParity("pages", {
+      deploymentId: "static-pages-image-test",
+    });
+  }, 60_000);
+
+  it.each(["app", "pages"] as const)(
+    "accepts the configured deployment ID in the %s dev image optimizer",
+    async (router) => {
+      const deploymentId = `static-${router}-dev-image-test`;
+      const root = await createFixture(router);
+      const server = await createServer({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            appDir: router === "app" ? root : undefined,
+            nextConfig: () => ({ deploymentId }),
+          }),
+        ],
+        optimizeDeps: { holdUntilCrawlEnd: true },
+        server: { port: 0, cors: false },
+        logLevel: "silent",
+      });
+      await server.listen();
+
+      try {
+        const address = server.httpServer?.address();
+        if (!address || typeof address === "string") throw new Error("Dev server did not bind");
+        const response = await fetch(
+          `http://localhost:${address.port}/_next/image?url=%2Ftest.png&w=640&q=75&dpl=${deploymentId}`,
+          { redirect: "manual" },
+        );
+        expect(response.status).toBe(302);
+        expect(new URL(response.headers.get("location")!, response.url).pathname).toBe("/test.png");
+      } finally {
+        await server.close();
+      }
+    },
+    60_000,
+  );
 
   it("emits matching SSR and client image URLs in Cloudflare builds", async () => {
     const root = await createFixture("app");

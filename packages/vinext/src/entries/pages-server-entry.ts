@@ -118,6 +118,7 @@ export async function generateServerEntry(
   const vinextConfigJson = JSON.stringify({
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
+    deploymentId: nextConfig?.deploymentId,
     trailingSlash: nextConfig?.trailingSlash ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },

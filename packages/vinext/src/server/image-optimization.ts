@@ -18,6 +18,7 @@
  */
 
 import { badRequestResponse } from "./http-error-responses.js";
+import { getDeploymentId } from "../utils/deployment-id.js";
 
 /** The pathname that triggers image optimization (matches Next.js). */
 export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
@@ -94,6 +95,8 @@ const DEV_BLUR_QUALITY = 70;
 
 export type ParseImageParamsOptions = {
   isDev?: boolean;
+  /** Deployment ID accepted by the optimizer. Defaults to the configured runtime value. */
+  deploymentId?: string;
 };
 
 export function resolveDevImageRedirect(
@@ -133,9 +136,27 @@ export function parseImageParams(
   // Intentional hardening divergence from Next.js: reject duplicate and unknown
   // parameters so semantically identical transforms cannot occupy distinct
   // cache keys and amplify image transformation work.
+  const rawParamSegments = url.search.slice(1).split("&");
+  if (rawParamSegments.some((segment) => segment.length === 0)) return null;
+
   const allowedParamNames = new Set(["url", "w", "q", "dpl"]);
   for (const name of url.searchParams.keys()) {
     if (!allowedParamNames.has(name) || url.searchParams.getAll(name).length !== 1) return null;
+  }
+
+  const deploymentId = url.searchParams.get("dpl");
+  if (deploymentId !== null) {
+    const expectedDeploymentId = options.deploymentId ?? getDeploymentId();
+    // The deployment ID affects platform routing before the optimizer runs. A
+    // different or percent-encoded value reaches the same local transform in
+    // vinext, so accept only the configured ID in its canonical emitted form.
+    if (
+      !expectedDeploymentId ||
+      deploymentId !== expectedDeploymentId ||
+      !rawParamSegments.includes(`dpl=${expectedDeploymentId}`)
+    ) {
+      return null;
+    }
   }
 
   const imageUrl = url.searchParams.get("url");

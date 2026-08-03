@@ -166,7 +166,9 @@ describe("image deployment query parity", () => {
       "http://vinext.test/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Ftest.hash.png&w=828&q=85&dpl=deploy-1",
     );
 
-    expect(parseImageParams(requestUrl)).toEqual({
+    expect(
+      parseImageParams(requestUrl, undefined, undefined, { deploymentId: "deploy-1" }),
+    ).toEqual({
       imageUrl: "/_next/static/media/test.hash.png",
       width: 828,
       quality: 85,
