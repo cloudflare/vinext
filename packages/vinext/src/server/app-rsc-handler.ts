@@ -60,7 +60,11 @@ import {
   stripRscSuffix,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
-import { applyAppRscConfigHeaders, finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
+import {
+  applyAppRscConfigHeaders,
+  finalizeAppRscResponse,
+  markAppRouteHandlerResponseVaryProvenance,
+} from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
@@ -347,6 +351,8 @@ type RenderPagesFallbackOptions = {
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppRscMiddlewareContext;
+  /** Called after Pages wins route arbitration but before Pages userland runs. */
+  onPagesRouteMatch?: () => void;
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
@@ -621,8 +627,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
   let hiddenNextUrl: string | null = null;
-  const syncNextUrlHeaderVisibility = (resolvedPathname: string): void => {
-    const pathCouldBeIntercepted = options.pathCouldBeIntercepted?.(resolvedPathname) === true;
+  const setNextUrlHeaderVisibility = (pathCouldBeIntercepted: boolean): void => {
     middlewareObservation.resolvedPathCouldBeIntercepted = pathCouldBeIntercepted;
 
     const headersContext = getHeadersContext();
@@ -637,6 +642,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       headersContext.headers.delete(NEXT_URL_HEADER);
       headersContext.readonlyHeaders = undefined;
     }
+  };
+  const syncNextUrlHeaderVisibility = (resolvedPathname: string): void => {
+    setNextUrlHeaderVisibility(options.pathCouldBeIntercepted?.(resolvedPathname) === true);
   };
   middlewareObservation.resolvedPathCouldBeIntercepted =
     options.pathCouldBeIntercepted?.(cleanPathname) === true;
@@ -1362,6 +1370,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible) return null;
     syncNextUrlHeaderVisibility(cleanPathname);
+    let pagesRouteMatched = false;
     const response =
       !isInterceptionMatch && (match === null || match.route.isDynamic)
         ? ((await options.renderPagesFallback?.({
@@ -1372,12 +1381,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             isRscRequest,
             matchKind,
             middlewareContext,
+            onPagesRouteMatch() {
+              pagesRouteMatched = true;
+              setNextUrlHeaderVisibility(false);
+            },
             pathname: resolvedUrl,
             pagesDataRequest,
             request,
             url,
           })) ?? null)
         : null;
+    if (response) {
+      // Custom/older bridge implementations may not call onPagesRouteMatch,
+      // but a returned response still proves that Pages won arbitration.
+      setNextUrlHeaderVisibility(false);
+    } else if (pagesRouteMatched) {
+      // A Pages renderer without a matcher may render a 404 probe and return
+      // null so App routing can continue. Restore the App target topology.
+      syncNextUrlHeaderVisibility(cleanPathname);
+    }
     if (!response || !pagesDataRequest || resolvedUrl === originalResolvedUrl) return response;
 
     const headers = new Headers(response.headers);
@@ -1633,18 +1655,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!middlewareObservation.resolvedPathCouldBeIntercepted) {
       routedRequest.headers.delete(NEXT_URL_HEADER);
     }
-    return options.dispatchMatchedRouteHandler({
-      cleanPathname,
-      middlewareContext,
-      // Non-dynamic routes report params as `null` to match Next.js. Internal
-      // bookkeeping above (navigation context, root params) keeps the matched
-      // object (always `{}` for non-dynamic) so `useParams()` etc. still see
-      // an object shape; only the user-facing handler context surfaces null.
-      params: route.isDynamic ? renderParams : null,
-      request: routedRequest,
-      route,
-      searchParams: resolvedSearchParams,
-    });
+    return markAppRouteHandlerResponseVaryProvenance(
+      await options.dispatchMatchedRouteHandler({
+        cleanPathname,
+        middlewareContext,
+        // Non-dynamic routes report params as `null` to match Next.js. Internal
+        // bookkeeping above (navigation context, root params) keeps the matched
+        // object (always `{}` for non-dynamic) so `useParams()` etc. still see
+        // an object shape; only the user-facing handler context surfaces null.
+        params: route.isDynamic ? renderParams : null,
+        request: routedRequest,
+        route,
+        searchParams: resolvedSearchParams,
+      }),
+    );
   }
 
   const pageResponse = await options.dispatchMatchedPage({

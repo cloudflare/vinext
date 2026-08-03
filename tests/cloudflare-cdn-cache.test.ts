@@ -17,6 +17,10 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import {
   headersContextFromRequest,
   runWithHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
@@ -60,7 +64,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     ).toEqual({
       "Cache-Control": "public, max-age=0, must-revalidate",
       "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
-      Vary: "Cookie",
+      Vary: "Cookie, Authorization, Host",
     });
   });
 
@@ -94,10 +98,16 @@ describe("CloudflareCdnCacheAdapter", () => {
       );
 
     expect((await buildFor({}))["CDN-Cache-Control"]).toBe("public, max-age=60");
-    expect((await buildFor({ RSC: "1" }))["CDN-Cache-Control"]).toBe("public, max-age=60");
+    expect((await buildFor({ RSC: "1", Accept: "text/x-component" }))["CDN-Cache-Control"]).toBe(
+      "public, max-age=60",
+    );
 
     const variantHeaders: HeadersInit[] = [
       { RSC: "unexpected" },
+      { RSC: "1" },
+      { RSC: "1", Accept: "application/json" },
+      { RSC: "1", Accept: "text/x-component, */*" },
+      { RSC: "1", Accept: "TEXT/X-COMPONENT" },
       { RSC: "1", "Next-Router-State-Tree": "state-a" },
       { RSC: "1", "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell" },
       { RSC: "1", "X-Vinext-Client-Reuse-Manifest": "source-state" },
@@ -137,7 +147,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       );
     };
 
-    const baseResponse = await buildFor({ RSC: "1" });
+    const baseResponse = await buildFor({ RSC: "1", Accept: "text/x-component" });
     expect(baseResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
     expect(baseResponse.headers.get("Cache-Tag")).toBe("/blog,posts");
     expect(baseResponse.headers.get("Vary")).toContain("RSC");
@@ -240,7 +250,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
   });
 
-  it("varies anonymous entries on Cookie and never stores cookie-bearing requests", async () => {
+  it("varies anonymous entries on credentials and never stores credential-bearing requests", async () => {
     const buildFor = async (headers: HeadersInit) =>
       runWithHeadersContext(
         headersContextFromRequest(new Request("https://example.com/blog?_rsc", { headers })),
@@ -251,13 +261,77 @@ describe("CloudflareCdnCacheAdapter", () => {
           }),
       );
 
-    await expect(buildFor({ RSC: "1" })).resolves.toMatchObject({
+    await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      Vary: "Cookie",
+      Vary: "Cookie, Authorization, Host",
     });
     await expect(
-      buildFor({ RSC: "1", Cookie: "__prerender_bypass=draft-secret" }),
+      buildFor({
+        RSC: "1",
+        Accept: "text/x-component",
+        Cookie: "__prerender_bypass=draft-secret",
+      }),
     ).resolves.toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
+    await expect(
+      buildFor({
+        RSC: "1",
+        Accept: "text/x-component",
+        Authorization: "Bearer user-token",
+      }),
+    ).resolves.toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
+  });
+
+  it("partitions cacheable entries by request host", () => {
+    const buildForHost = (host: string) =>
+      runWithHeadersContext(
+        headersContextFromRequest(
+          new Request("https://cache-entrypoint.invalid/blog?_rsc", {
+            headers: { Host: host },
+          }),
+        ),
+        () => adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog"] }),
+      );
+
+    for (const host of ["tenant-a.example.com", "tenant-b.example.com"]) {
+      expect(buildForHost(host)).toMatchObject({
+        "CDN-Cache-Control": "public, max-age=60",
+        Vary: "Cookie, Authorization, Host",
+      });
+    }
+  });
+
+  it("uses original unified request Authorization after force-static hides request APIs", async () => {
+    const requestHeaders = new Headers({
+      Accept: "text/x-component",
+      Authorization: "Bearer user-token",
+      RSC: "1",
+    });
+    const requestContext = createRequestContext({
+      cdnCacheRequestHeaders: requestHeaders,
+      cdnCacheRequestUrl: "https://example.com/blog?_rsc",
+      headersContext: createStaticGenerationHeadersContext({
+        dynamicConfig: "force-static",
+        originalRequestHeaders: requestHeaders,
+        routeKind: "page",
+      }),
+    });
+
+    expect(Array.from(requestContext.headersContext!.headers)).toEqual([]);
+    expect(
+      runWithRequestContext(requestContext, () =>
+        adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog"] }),
+      ),
+    ).toEqual({
       "Cache-Control": "no-store",
       "CDN-Cache-Control": null,
       "Cloudflare-CDN-Cache-Control": null,

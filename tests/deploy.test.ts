@@ -15,6 +15,7 @@ import {
   buildWranglerDeployArgs,
   parseDeployArgs,
   resolveCdnWarmupTargetUrl,
+  resolveWranglerCommandConfig,
   resolveWranglerBin,
   runWranglerKVBulkPut,
   runWranglerDeploy,
@@ -182,6 +183,19 @@ describe("buildWranglerDeployArgs", () => {
     expect(buildWranglerDeployArgs({ config: "dist/server/wrangler.json" })).toEqual({
       args: ["deploy", "--config", "dist/server/wrangler.json"],
       env: undefined,
+    });
+  });
+
+  it("does not forward a named env already flattened into the config", () => {
+    expect(
+      buildWranglerDeployArgs({
+        config: "dist/server/wrangler.json",
+        env: "staging",
+        omitEnvArg: true,
+      }),
+    ).toEqual({
+      args: ["deploy", "--config", "dist/server/wrangler.json"],
+      env: "staging",
     });
   });
 
@@ -3388,6 +3402,50 @@ describe("domainCandidates", () => {
 
 // ─── parseWranglerConfig — TPR fields ────────────────────────────────────────
 
+describe("resolveWranglerCommandConfig", () => {
+  it("preserves an unrelated explicit custom config when a deploy redirect exists", () => {
+    writeFile(
+      tmpDir,
+      ".wrangler/deploy/config.json",
+      JSON.stringify({ configPath: "../../dist/server/wrangler.json" }),
+    );
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "generated-worker",
+        userConfigPath: path.join(tmpDir, "wrangler.jsonc"),
+      }),
+    );
+    writeFile(tmpDir, "custom.toml", `name = "custom-worker"\n`);
+
+    expect(resolveWranglerCommandConfig(tmpDir, { config: "custom.toml", env: "staging" })).toEqual(
+      {
+        commandOptions: {
+          config: "custom.toml",
+          env: "staging",
+          omitEnvArg: false,
+        },
+        inspectionConfig: "custom.toml",
+      },
+    );
+  });
+
+  it("rejects an explicit generated config built for another environment", () => {
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({ name: "preview-worker", targetEnvironment: "preview" }),
+    );
+    expect(() =>
+      resolveWranglerCommandConfig(tmpDir, {
+        config: "dist/server/wrangler.json",
+        env: "staging",
+      }),
+    ).toThrow("built for env preview, but deploy selected env staging");
+  });
+});
+
 describe("parseWranglerConfig — custom domain extraction", () => {
   it("extracts Worker name", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
@@ -3591,6 +3649,51 @@ staging.cache.cross_version_cache = true
     expect(parseWranglerConfig(tmpDir)?.env?.["staging.eu"]).toEqual({
       cache: { enabled: true, crossVersionCache: true },
       versionMetadataBinding: "CUSTOM_VERSION",
+    });
+  });
+
+  it("parses root-level dotted TOML environment declarations", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "root-worker"
+env."staging.eu".name = "custom-worker"
+env."staging.eu".route = "staging.example.com/*"
+env."staging.eu".cache.enabled = true
+env."staging.eu".cache.cross_version_cache = true
+env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)?.env?.["staging.eu"]).toEqual({
+      name: "custom-worker",
+      customDomain: "staging.example.com",
+      cache: { enabled: true, crossVersionCache: true },
+      versionMetadataBinding: "CUSTOM_VERSION",
+    });
+  });
+
+  it("parses inline root-level TOML environment declarations", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `env.staging = { name = "custom-worker", route = "staging.example.com/*", cache = { enabled = true, cross_version_cache = false }, version_metadata = { binding = "VINEXT_VERSION_METADATA" } }
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)?.env?.staging).toEqual({
+      name: "custom-worker",
+      customDomain: "staging.example.com",
+      cache: { enabled: true, crossVersionCache: false },
+      versionMetadataBinding: "VINEXT_VERSION_METADATA",
+    });
+  });
+
+  it("parses quoted and BOM-prefixed TOML legacy_env assignments", () => {
+    writeFile(tmpDir, "wrangler.toml", `\uFEFF"legacy_env" = false\nname = "my-worker"\n`);
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      name: "my-worker",
+      legacyEnv: false,
     });
   });
 

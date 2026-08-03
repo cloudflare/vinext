@@ -60,6 +60,42 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("keeps a flattened target env for logs without forwarding --env", () => {
+    const options = {
+      config: "dist/server/wrangler.json",
+      env: "staging",
+      omitEnvArg: true,
+    };
+    expect(buildWranglerVersionUploadArgs(options)).toEqual({
+      args: ["versions", "upload", "--config", "dist/server/wrangler.json"],
+      env: "staging",
+    });
+    expect(buildWranglerDeploymentsStatusArgs(options)).toEqual({
+      args: ["deployments", "status", "--json", "--config", "dist/server/wrangler.json"],
+      env: "staging",
+    });
+    expect(
+      buildWranglerVersionDeployArgs(
+        [{ versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22", percentage: 100 }],
+        options,
+      ),
+    ).toEqual({
+      args: [
+        "versions",
+        "deploy",
+        "095f00a7-23a7-43b7-a227-e4c97cab5f22@100%",
+        "--yes",
+        "--config",
+        "dist/server/wrangler.json",
+      ],
+      env: "staging",
+    });
+    expect(buildWranglerTriggersDeployArgs(options)).toEqual({
+      args: ["triggers", "deploy", "--config", "dist/server/wrangler.json"],
+      env: "staging",
+    });
+  });
+
   it("builds non-interactive version deploy args for the uploaded version", () => {
     expect(
       buildWranglerVersionDeployArgs(

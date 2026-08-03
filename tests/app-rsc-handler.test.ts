@@ -10,6 +10,10 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import {
+  renderPagesFallback as renderHybridPagesFallback,
+  type PagesEntry,
+} from "../packages/vinext/src/server/app-pages-bridge.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
@@ -39,6 +43,7 @@ import {
   getHeadersContext,
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
+import { withEnvVar } from "./env-test-helpers.js";
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -189,6 +194,41 @@ describe("createAppRscHandler", () => {
     const response = await runRscPrewarmProbe(createHandler({ configHeaders: [] }));
 
     expect(response.headers.get(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe("1");
+  });
+
+  it("keeps Accept-conditional prerenders shareable only for the canonical RSC media type", async () => {
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/about",
+          has: [{ type: "header", key: "Accept", value: "text/x-component" }],
+          headers: [{ key: "x-rsc-media", value: "canonical" }],
+        },
+      ],
+    });
+    const probeResponse = await runRscPrewarmProbe(handler);
+    expect(probeResponse.headers.get("x-rsc-media")).toBe("canonical");
+    expect(probeResponse.headers.get(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe("1");
+
+    globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/about"];
+    try {
+      const invalidAcceptResponse = await withEnvVar(
+        "__VINEXT_RSC_CACHE_KEY_MODE",
+        "response-vary",
+        () =>
+          handler(
+            new Request("https://example.test/docs/about?_rsc", {
+              headers: { Accept: "application/json", RSC: "1" },
+            }),
+            null,
+          ),
+      );
+
+      expect(invalidAcceptResponse.status).toBe(307);
+      expect(invalidAcceptResponse.headers.get("Location")).toBe("/docs/about.rsc?_rsc");
+    } finally {
+      delete globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
+    }
   });
 
   // Next.js matcher conditions can distinguish a normal client RSC navigation
@@ -3704,6 +3744,56 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("clears App interception topology when a concrete Pages route wins", async () => {
+    const dynamicAppRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/:path+",
+      routeSegments: ["[...path]"],
+    });
+    let requestNextUrl: string | null | undefined;
+    let headersNextUrl: string | null | undefined;
+    const renderPage = vi.fn(async (pagesRequest: Request) => {
+      requestNextUrl = pagesRequest.headers.get(NEXT_URL_HEADER);
+      headersNextUrl = (await requestHeaders()).get(NEXT_URL_HEADER);
+      return new Response("pages:/about");
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => ({ params: { path: ["about"] }, route: dynamicAppRoute }),
+      pathCouldBeIntercepted: (pathname) => pathname === "/about",
+      renderPagesFallback: (options) =>
+        renderHybridPagesFallback(options, {
+          loadPagesEntry: () =>
+            ({
+              matchPageRoute: () => ({
+                route: { isDynamic: false, pattern: "/about" },
+              }),
+              renderPage,
+            }) satisfies PagesEntry,
+          buildRequestHeaders: (requestHeaders, middlewareRequestHeaders) => {
+            const headers = new Headers(requestHeaders);
+            for (const [name, value] of middlewareRequestHeaders) headers.set(name, value);
+            return headers;
+          },
+          decodePathParams: decodeURIComponent,
+          applyRouteHandlerMiddlewareContext: (response) => response,
+          getDraftModeCookieHeader: () => null,
+        }),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { [NEXT_URL_HEADER]: "/feed" },
+      }),
+      null,
+    );
+
+    expect(await response.text()).toBe("pages:/about");
+    expect(requestNextUrl).toBeNull();
+    expect(headersNextUrl).toBeNull();
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER);
+  });
+
   it("normalizes hybrid Pages data requests before middleware", async () => {
     let middlewarePathname: string | null = null;
     let middlewareIsData: boolean | undefined;
@@ -4745,6 +4835,29 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("vary")).toBe(
       `User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+    );
+  });
+
+  it("preserves an App Route Handler's explicit Vary: Next-Url", async () => {
+    const route = createPageRoute({
+      isDynamic: true,
+      page: null,
+      pattern: "/api/:id",
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["api", "[id]"],
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler: async () =>
+        new Response("route", { headers: { Vary: "Next-Url, User-Agent" } }),
+      matchRoute: (pathname: string) =>
+        pathname === "/api/123" ? { params: { id: "123" }, route } : null,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/api/123"), null);
+
+    expect(response.headers.get("vary")).toBe(
+      `Next-Url, User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
     );
   });
 

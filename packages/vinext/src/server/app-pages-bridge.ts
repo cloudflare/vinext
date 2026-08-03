@@ -4,6 +4,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
+import { NEXT_URL_HEADER } from "./headers.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
@@ -75,6 +76,8 @@ type RenderPagesFallbackOptions = {
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppMiddlewareContext;
+  /** Called after Pages wins route arbitration but before Pages userland runs. */
+  onPagesRouteMatch?: () => void;
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
@@ -119,6 +122,7 @@ export async function renderPagesFallback(
     isRscRequest,
     matchKind,
     middlewareContext,
+    onPagesRouteMatch,
     pathname = options.url.pathname,
     pagesDataRequest = null,
     request,
@@ -145,6 +149,19 @@ export async function renderPagesFallback(
     pagesRequest = cloneRequestWithHeaders(request, pagesRequestHeaders);
   }
 
+  const preparePagesWinnerRequest = (): Headers | null => {
+    onPagesRouteMatch?.();
+    if (pagesRequest.headers.has(NEXT_URL_HEADER)) {
+      const headers = new Headers(pagesRequest.headers);
+      headers.delete(NEXT_URL_HEADER);
+      pagesRequest = cloneRequestWithHeaders(pagesRequest, headers);
+    }
+    if (!middlewareContext.requestHeaders) return null;
+    const middlewareRequestHeaders = new Headers(middlewareContext.requestHeaders);
+    middlewareRequestHeaders.delete(NEXT_URL_HEADER);
+    return middlewareRequestHeaders;
+  };
+
   const queryIndex = pathname.indexOf("?");
   const pagesPathname = queryIndex === -1 ? pathname : pathname.slice(0, queryIndex);
   const pagesSearch = queryIndex === -1 ? url.search || "" : pathname.slice(queryIndex);
@@ -166,6 +183,7 @@ export async function renderPagesFallback(
         return null;
       }
     }
+    preparePagesWinnerRequest();
     const executionContext = getRequestExecutionContext();
     const pagesApiResponse = await pagesEntry.handleApiRoute(
       pagesRequest,
@@ -195,6 +213,7 @@ export async function renderPagesFallback(
   ) {
     return null;
   }
+  const pagesMiddlewareRequestHeaders = preparePagesWinnerRequest();
   const renderRequest = pagesDataRequest
     ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)
     : pagesRequest;
@@ -204,7 +223,7 @@ export async function renderPagesFallback(
         pagesUrl,
         {},
         undefined,
-        middlewareContext.requestHeaders,
+        pagesMiddlewareRequestHeaders,
         { isDataReq: true },
       )
     : await pagesEntry.renderPage(
@@ -212,7 +231,7 @@ export async function renderPagesFallback(
         pagesUrl,
         {},
         undefined,
-        middlewareContext.requestHeaders,
+        pagesMiddlewareRequestHeaders,
       );
   if (pagesRes.status === 404 && pageMatch === null) return null;
   return applyDraftModeCookie(

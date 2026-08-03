@@ -928,7 +928,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(result.failures[0]?.error).toBe("unsupported Vary field: User-Agent");
   });
 
-  it("accepts the adapter-controlled Cookie variance for reusable RSC entries", async () => {
+  it("accepts adapter-controlled identity variance for reusable RSC entries", async () => {
     const result = await warmCdnCache({
       targetUrl: "https://app.example.com",
       paths: [],
@@ -941,7 +941,7 @@ describe("Cloudflare CDN warmup", () => {
           headers: {
             "CF-Cache-Status": "MISS",
             "Content-Type": "text/x-component",
-            Vary: "RSC, Cookie",
+            Vary: "RSC, Cookie, Authorization, Host",
           },
         });
       },

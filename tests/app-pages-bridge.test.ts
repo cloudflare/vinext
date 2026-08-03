@@ -447,6 +447,57 @@ describe("renderPagesFallback", () => {
     expect(forwardedReq.headers.get("x-middleware")).toBe("injected");
   });
 
+  it("strips Next-Url after a Pages route wins and before Pages userland runs", async () => {
+    const onPagesRouteMatch = vi.fn();
+    const matchPageRoute = vi.fn(() => ({
+      route: { isDynamic: false, pattern: "/about" },
+    }));
+    let renderedNextUrl: string | null | undefined;
+    let middlewareNextUrl: string | null | undefined;
+    const renderPage = vi.fn(
+      (
+        renderedRequest: Request,
+        _url: string,
+        _query: Record<string, unknown>,
+        _parsedUrl: unknown,
+        middlewareRequestHeaders?: Headers | null,
+      ) => {
+        renderedNextUrl = renderedRequest.headers.get("Next-Url");
+        middlewareNextUrl = middlewareRequestHeaders?.get("Next-Url");
+        return new Response("pages");
+      },
+    );
+    const request = new Request("http://localhost/about", {
+      headers: { "Next-Url": "/feed" },
+    });
+
+    await renderPagesFallback(
+      {
+        appRouteMatch: {
+          route: { isDynamic: true, pattern: "/[...slug]" },
+        },
+        isRscRequest: false,
+        middlewareContext: {
+          headers: null,
+          requestHeaders: new Headers({ "Next-Url": "/middleware-source" }),
+          status: null,
+        },
+        onPagesRouteMatch,
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({ matchPageRoute, renderPage }),
+      },
+    );
+
+    expect(matchPageRoute).toHaveBeenCalledWith("/about", expect.any(Request));
+    expect(onPagesRouteMatch).toHaveBeenCalledOnce();
+    expect(renderedNextUrl).toBeNull();
+    expect(middlewareNextUrl).toBeNull();
+  });
+
   it("forwards the original request unchanged when buildRequestHeaders returns null", async () => {
     const handleApiRoute = vi.fn((_req: Request, _url: string) => new Response("api"));
     const buildRequestHeaders = vi.fn((_req: Headers, _mw: Headers): Headers | null => null);

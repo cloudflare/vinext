@@ -376,7 +376,7 @@ const ADMITTED_CF_CACHE_STATUSES = new Set([
   "STALE",
 ]);
 const CANONICAL_RSC_VARY_FIELDS = new Set(
-  ["accept", "cookie", ...VINEXT_RSC_VARY_HEADER.split(",")].map((field) =>
+  ["accept", "cookie", "authorization", "host", ...VINEXT_RSC_VARY_HEADER.split(",")].map((field) =>
     field.trim().toLowerCase(),
   ),
 );

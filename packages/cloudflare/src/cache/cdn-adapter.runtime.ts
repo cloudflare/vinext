@@ -54,7 +54,10 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "vinext/internal/server/headers";
-import { stripRscSuffix } from "vinext/internal/server/app-rsc-cache-busting";
+import {
+  stripRscSuffix,
+  VINEXT_RSC_CONTENT_TYPE,
+} from "vinext/internal/server/app-rsc-cache-busting";
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
@@ -118,12 +121,18 @@ function hasNonCanonicalWorkersCacheVariant(): boolean {
     return true;
   }
   if (rsc !== null && rsc !== "1") return true;
+  if (rsc === "1" && headers.get("Accept") !== VINEXT_RSC_CONTENT_TYPE) return true;
   return RSC_VARIANT_HEADERS.some((header) => headers.has(header));
 }
 
 function hasRequestCookies(): boolean {
   const { headers } = getCacheRequestMetadata();
   return headers?.has("Cookie") === true;
+}
+
+function hasRequestAuthorization(): boolean {
+  const { headers } = getCacheRequestMetadata();
+  return headers?.has("Authorization") === true;
 }
 
 /**
@@ -241,12 +250,13 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       };
     }
 
-    // Workers Caching excludes Cookie from its base key. Cached anonymous HTML
-    // or Flight must therefore vary on Cookie so a cookie-bearing request
-    // reaches vinext, where draft mode and other request-specific behavior can
-    // make the response no-store. Do not store cookie-bearing variants: the
-    // framework cannot prove arbitrary application cookies are shareable.
-    if (hasRequestCookies()) {
+    // Workers Caching excludes Cookie, Authorization, and the request host from
+    // its base key. Cached HTML or Flight must therefore vary on all three so a
+    // credential-bearing request reaches vinext and one custom domain cannot
+    // consume another domain's response. Do not store credential-bearing
+    // variants: the framework cannot prove arbitrary application credentials
+    // are shareable.
+    if (hasRequestCookies() || hasRequestAuthorization()) {
       return {
         "Cache-Control": NO_STORE,
         "CDN-Cache-Control": null,
@@ -269,7 +279,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const headers: CdnResponseHeaders = {
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
-      Vary: "Cookie",
+      Vary: "Cookie, Authorization, Host",
     };
 
     if (input.tags && input.tags.length > 0) {

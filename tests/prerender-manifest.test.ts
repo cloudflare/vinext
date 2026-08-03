@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   getPrewarmableAppPaths,
+  hasNonCacheablePrewarmHeaders,
   type PrerenderManifest,
 } from "../packages/vinext/src/server/prerender-manifest.js";
 
 describe("getPrewarmableAppPaths", () => {
+  it("accepts adapter-owned request identity Vary fields", () => {
+    expect(
+      hasNonCacheablePrewarmHeaders({
+        Vary: "RSC, Cookie, Authorization, Host",
+      }),
+    ).toBe(false);
+  });
+
   it("selects only exact cacheable App paths proven by the final prerender", () => {
     const manifest: PrerenderManifest = {
       routes: [

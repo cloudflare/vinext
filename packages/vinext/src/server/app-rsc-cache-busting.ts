@@ -67,6 +67,7 @@ const SHARED_RSC_VARIANT_HEADERS = [
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 ] as const;
 
 const CACHE_BUSTING_DIGEST_BYTES = 12;
@@ -102,10 +103,17 @@ export function getRscCacheKeyMode(): RscCacheKeyMode {
     : "header-digest";
 }
 
-export function isCanonicalSharedRscRequestHeaders(headers: Headers): boolean {
+function hasCanonicalSharedRscVariantHeaders(headers: Headers): boolean {
   return (
     headers.get(RSC_HEADER) === "1" &&
     !SHARED_RSC_VARIANT_HEADERS.some((header) => headers.has(header))
+  );
+}
+
+export function isCanonicalSharedRscRequestHeaders(headers: Headers): boolean {
+  return (
+    headers.get("Accept") === VINEXT_RSC_CONTENT_TYPE &&
+    hasCanonicalSharedRscVariantHeaders(headers)
   );
 }
 
@@ -578,8 +586,8 @@ export async function resolveInvalidRscCacheBustingRequest(
 
   if (
     cacheKeyMode === "response-vary" &&
-    !isPrewarmEligibleUrl &&
-    isCanonicalSharedRscRequestHeaders(options.request.headers) &&
+    hasCanonicalSharedRscVariantHeaders(options.request.headers) &&
+    (!isPrewarmEligibleUrl || !isCanonicalSharedRscRequestHeaders(options.request.headers)) &&
     stripRscSuffix(url.pathname) === url.pathname
   ) {
     const compatibilityUrl = new URL(url);

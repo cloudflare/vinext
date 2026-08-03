@@ -7,6 +7,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   createServerActionRequestUrl,
+  isCanonicalSharedRscRequestHeaders,
   isRscCompatibilityIdCompatible,
   resolveInvalidRscCacheBustingRequest,
   setRscCacheBustingSearchParam,
@@ -152,6 +153,21 @@ describe("App Router RSC cache-busting", () => {
       accept: "text/x-component",
       rsc: "1",
     });
+  });
+
+  it("recognizes only the exact warmed RSC request header shape as canonical", () => {
+    const canonical = createRscRequestHeaders();
+    expect(isCanonicalSharedRscRequestHeaders(canonical)).toBe(true);
+
+    for (const accept of [null, "application/json", "text/x-component, */*", "TEXT/X-COMPONENT"]) {
+      const headers = createRscRequestHeaders();
+      if (accept === null) headers.delete("Accept");
+      else headers.set("Accept", accept);
+      expect(isCanonicalSharedRscRequestHeaders(headers)).toBe(false);
+    }
+
+    const clientReuse = createRscRequestHeaders({ clientReuseManifestHeader: '{"entries":[]}' });
+    expect(isCanonicalSharedRscRequestHeaders(clientReuse)).toBe(false);
   });
 
   it("does not canonicalize contextual or partial RSC requests", () => {
@@ -418,6 +434,32 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.status).toBe(307);
     expect(response?.headers.get("Location")).toBe("/photos/42.rsc?_rsc");
   });
+
+  it.each([null, "application/json", "text/x-component, */*", "TEXT/X-COMPONENT"])(
+    "moves eligible bare RSC requests with non-canonical Accept %s off the shared URL",
+    async (accept) => {
+      globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/photos/42"];
+      const headers = createRscRequestHeaders();
+      if (accept === null) headers.delete("Accept");
+      else headers.set("Accept", accept);
+
+      const response = await resolveInvalidRscCacheBustingRequest({
+        cacheKeyMode: "response-vary",
+        isRscRequest: true,
+        request: new Request("https://example.com/photos/42?_rsc", { headers }),
+      });
+
+      expect(response?.status).toBe(307);
+      expect(response?.headers.get("Location")).toBe("/photos/42.rsc?_rsc");
+      await expect(
+        resolveInvalidRscCacheBustingRequest({
+          cacheKeyMode: "response-vary",
+          isRscRequest: true,
+          request: new Request("https://example.com/photos/42.rsc?_rsc", { headers }),
+        }),
+      ).resolves.toBeNull();
+    },
+  );
 
   it("canonicalizes encoded .rsc transport suffixes without decoding path delimiters", async () => {
     globalThis.__VINEXT_RSC_PREWARMABLE_PATHS = ["/photos%2Farchive/42"];

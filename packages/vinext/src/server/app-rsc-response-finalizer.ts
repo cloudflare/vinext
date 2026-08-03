@@ -38,6 +38,25 @@ type FinalizeAppRscResponseOptions = {
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
 const preserveAppliedNextUrlVary = new WeakSet<Response>();
+const routeHandlerExplicitNextUrlVary = new WeakSet<Response>();
+
+function varyIncludesHeader(vary: string | null, headerName: string): boolean {
+  if (vary === null) return false;
+  return vary.split(",").some((token) => token.trim().toLowerCase() === headerName.toLowerCase());
+}
+
+/**
+ * Preserve a Next-Url Vary token that came from an App Route Handler's own
+ * Response. Next.js establishes the framework Vary value before dispatch and
+ * then appends the handler response's Vary during sendResponse, so userland can
+ * explicitly add Next-Url even when interception topology did not require it.
+ */
+export function markAppRouteHandlerResponseVaryProvenance(response: Response): Response {
+  if (varyIncludesHeader(response.headers.get("Vary"), NEXT_URL_HEADER)) {
+    routeHandlerExplicitNextUrlVary.add(response);
+  }
+  return response;
+}
 
 /** Mark a response whose final target pipeline has already applied config headers. */
 export function markAppRscResponseConfigHeadersApplied(response: Response): Response {
@@ -129,7 +148,9 @@ export async function finalizeAppRscResponse(
   const varyOptions = {
     pathCouldBeIntercepted: options.pathCouldBeIntercepted === true,
     preserveNextUrlVary:
-      options.preserveNextUrlVary === true || preserveAppliedNextUrlVary.has(response),
+      options.preserveNextUrlVary === true ||
+      preserveAppliedNextUrlVary.has(response) ||
+      routeHandlerExplicitNextUrlVary.has(response),
   };
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.

@@ -131,6 +131,15 @@ export type DeployOptions = {
   tprWindow?: number;
 };
 
+export type WranglerCommandOptions = Pick<DeployOptions, "preview" | "env" | "name" | "config"> & {
+  /**
+   * The selected environment has already been flattened into a generated
+   * Wrangler config. Keep the environment for logging and target resolution,
+   * but do not pass `--env` or Wrangler will suffix legacy Worker names again.
+   */
+  omitEnvArg?: boolean;
+};
+
 type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
 
 export type DeployViteConfigMetadata = {
@@ -380,9 +389,7 @@ export function validateWranglerEnvName(env: string): string {
   return env;
 }
 
-export function buildWranglerDeployArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
-): WranglerDeployArgs {
+export function buildWranglerDeployArgs(options: WranglerCommandOptions): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
   if (options.config) {
@@ -391,7 +398,7 @@ export function buildWranglerDeployArgs(
   if (options.name) {
     args.push("--name", options.name);
   }
-  if (env) {
+  if (env && !options.omitEnvArg) {
     args.push("--env", validateWranglerEnvName(env));
   }
   return { args, env };
@@ -448,7 +455,7 @@ export function buildNodeCliInvocation(
 
 export function buildWranglerInvocation(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerCommandOptions,
   nodeExecutable: string = process.execPath,
 ): { file: string; args: string[]; env: string | undefined } {
   const wranglerBin = resolveWranglerBin(root);
@@ -510,7 +517,7 @@ export async function runWranglerKVBulkPut(
 
 export async function runWranglerDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerCommandOptions,
   execute: typeof spawn = spawn,
 ): Promise<string> {
   const spawnOptions: SpawnOptions = {
@@ -559,6 +566,109 @@ export async function runWranglerDeploy(
   return deployedUrl ?? "(URL not detected in wrangler output)";
 }
 
+type ResolvedWranglerCommandConfig = {
+  commandOptions: WranglerCommandOptions;
+  inspectionConfig?: string;
+};
+
+function readGeneratedWranglerConfigPath(root: string): string | null {
+  const redirectPath = path.join(root, ".wrangler", "deploy", "config.json");
+  try {
+    const redirect = JSON.parse(fs.readFileSync(redirectPath, "utf-8")) as {
+      configPath?: unknown;
+    };
+    if (typeof redirect.configPath !== "string" || redirect.configPath.length === 0) return null;
+    const generatedPath = path.resolve(path.dirname(redirectPath), redirect.configPath);
+    return fs.existsSync(generatedPath) ? generatedPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the config that Wrangler will actually execute after the Cloudflare
+ * Vite plugin has emitted its deploy redirect.
+ *
+ * Passing a source config through `--config` disables Wrangler's redirect. If
+ * that source produced the generated config, invoke the generated config
+ * directly instead. Generated configs already contain the selected named
+ * environment, so forwarding `--env` would make Wrangler append the legacy
+ * environment suffix a second time.
+ */
+export function resolveWranglerCommandConfig(
+  root: string,
+  options: WranglerCommandOptions,
+): ResolvedWranglerCommandConfig {
+  const generatedPath = readGeneratedWranglerConfigPath(root);
+  const selectedEnv = options.env || (options.preview ? "preview" : undefined);
+
+  if (!generatedPath) {
+    const explicitConfig = options.config ? parseWranglerConfig(root, options.config) : null;
+    const flattenedEnv = explicitConfig?.targetEnvironment;
+    if (flattenedEnv && selectedEnv && flattenedEnv !== selectedEnv) {
+      throw new Error(
+        `Wrangler config was built for env ${flattenedEnv}, but deploy selected env ${selectedEnv}. Rebuild for the selected environment before deploying.`,
+      );
+    }
+    return {
+      commandOptions: {
+        ...options,
+        omitEnvArg: Boolean(flattenedEnv && selectedEnv === flattenedEnv),
+      },
+      inspectionConfig: options.config,
+    };
+  }
+
+  const generatedRelativePath = path.relative(root, generatedPath);
+  const generatedConfig = parseWranglerConfig(root, generatedRelativePath);
+  const explicitPath = options.config ? path.resolve(root, options.config) : null;
+  const generatedUserPath = generatedConfig?.userConfigPath
+    ? path.resolve(root, generatedConfig.userConfigPath)
+    : null;
+  const explicitSelectsGeneratedBuild =
+    explicitPath !== null &&
+    (explicitPath === generatedPath ||
+      (generatedUserPath !== null && explicitPath === generatedUserPath));
+
+  if (!options.config) {
+    // Leave argv untouched so Wrangler performs and validates its own redirect,
+    // but inspect the generated config because that is the deployed artifact.
+    return { commandOptions: options, inspectionConfig: generatedRelativePath };
+  }
+
+  if (!explicitSelectsGeneratedBuild) {
+    const explicitConfig = parseWranglerConfig(root, options.config);
+    const flattenedEnv = explicitConfig?.targetEnvironment;
+    if (flattenedEnv && selectedEnv && flattenedEnv !== selectedEnv) {
+      throw new Error(
+        `Wrangler config was built for env ${flattenedEnv}, but deploy selected env ${selectedEnv}. Rebuild for the selected environment before deploying.`,
+      );
+    }
+    return {
+      commandOptions: {
+        ...options,
+        omitEnvArg: Boolean(flattenedEnv && selectedEnv === flattenedEnv),
+      },
+      inspectionConfig: options.config,
+    };
+  }
+
+  const flattenedEnv = generatedConfig?.targetEnvironment;
+  if (flattenedEnv && selectedEnv && flattenedEnv !== selectedEnv) {
+    throw new Error(
+      `Generated Wrangler config was built for env ${flattenedEnv}, but deploy selected env ${selectedEnv}. Rebuild for the selected environment before deploying.`,
+    );
+  }
+  return {
+    commandOptions: {
+      ...options,
+      config: generatedRelativePath,
+      omitEnvArg: Boolean(flattenedEnv && selectedEnv === flattenedEnv),
+    },
+    inspectionConfig: generatedRelativePath,
+  };
+}
+
 export async function deployWithCdnWarmup(
   root: string,
   paths: readonly string[],
@@ -575,7 +685,13 @@ export async function deployWithCdnWarmup(
   > &
     Pick<CdnWarmOptions, "deploymentId" | "rscCacheKeyMode" | "rscPaths">,
 ): Promise<string> {
-  const wranglerConfig = parseWranglerConfig(root, options.config);
+  const resolvedWrangler = resolveWranglerCommandConfig(root, options);
+  const wranglerOptions = { ...options, ...resolvedWrangler.commandOptions };
+  const targetResolutionOptions = {
+    ...wranglerOptions,
+    config: resolvedWrangler.inspectionConfig,
+  };
+  const wranglerConfig = parseWranglerConfig(root, resolvedWrangler.inspectionConfig);
   const targetEnv = getWranglerTargetEnv(options);
   const isFlattenedTargetConfig =
     targetEnv !== undefined && wranglerConfig?.targetEnvironment === targetEnv;
@@ -606,8 +722,8 @@ export async function deployWithCdnWarmup(
     );
   }
 
-  const upload = runWranglerVersionUpload(root, options);
-  const deploymentStatus = readWranglerDeploymentStatus(root, options);
+  const upload = runWranglerVersionUpload(root, wranglerOptions);
+  const deploymentStatus = readWranglerDeploymentStatus(root, wranglerOptions);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
@@ -616,7 +732,7 @@ export async function deployWithCdnWarmup(
 
   function applyTriggers(): void {
     if (triggersApplied) return;
-    triggersDeployedUrl = runWranglerTriggersDeploy(root, options).deployedUrl;
+    triggersDeployedUrl = runWranglerTriggersDeploy(root, wranglerOptions).deployedUrl;
     triggersApplied = true;
   }
 
@@ -625,7 +741,7 @@ export async function deployWithCdnWarmup(
       "  CDN warmup skipped: cache.cross_version_cache may serve the previous version's entry, and warming cannot safely replace it without a purge.",
     );
   } else if (stagingTraffic) {
-    staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
+    staged = runWranglerVersionDeploy(root, stagingTraffic, wranglerOptions, "stage");
     try {
       applyTriggers();
     } catch (error) {
@@ -634,9 +750,9 @@ export async function deployWithCdnWarmup(
     const targetUrl = resolveCdnWarmupTargetUrl(
       root,
       staged.deployedUrl ?? triggersDeployedUrl,
-      options,
+      targetResolutionOptions,
     );
-    const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
+    const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, wranglerOptions);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
       const probePath = paths[0] ?? options.rscPaths?.[0];
@@ -697,7 +813,7 @@ export async function deployWithCdnWarmup(
   const deployed = runWranglerVersionDeploy(
     root,
     [{ versionId: upload.versionId, percentage: 100 }],
-    options,
+    wranglerOptions,
     warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
   );
   if (!warmedBeforePromotion) {
@@ -711,7 +827,7 @@ export async function deployWithCdnWarmup(
     const targetUrl = resolveCdnWarmupTargetUrl(
       root,
       deployed.deployedUrl ?? triggersDeployedUrl,
-      options,
+      targetResolutionOptions,
     );
     if (targetUrl) {
       const probePath = paths[0] ?? options.rscPaths?.[0];
@@ -1082,10 +1198,16 @@ export async function deploy(options: DeployOptions): Promise<void> {
       });
     } else {
       console.log("\n  CDN warmup skipped: no build-discovered paths found.");
-      url = await runWranglerDeploy(root, wranglerOptions);
+      url = await runWranglerDeploy(
+        root,
+        resolveWranglerCommandConfig(root, wranglerOptions).commandOptions,
+      );
     }
   } else {
-    url = await runWranglerDeploy(root, wranglerOptions);
+    url = await runWranglerDeploy(
+      root,
+      resolveWranglerCommandConfig(root, wranglerOptions).commandOptions,
+    );
   }
 
   console.log("\n  ─────────────────────────────────────────");

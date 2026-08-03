@@ -97,6 +97,47 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     }
   });
 
+  test("keeps Authorization-bearing and anonymous route-handler ISR responses isolated", async ({
+    request,
+  }) => {
+    const readScenario = async (scenario: string, authorization?: string) => {
+      const response = await request.get(
+        `${BASE_URL}/api/draft-isr/${scenario}`,
+        authorization ? { headers: { Authorization: authorization } } : undefined,
+      );
+      expect(response.status()).toBe(200);
+      return {
+        headers: response.headers(),
+        payload: (await response.json()) as { draftMode: boolean; token: string },
+      };
+    };
+    const expectAnonymousCachePolicy = (headers: Record<string, string>) => {
+      expect(headers["cache-control"]).not.toContain("no-store");
+      expect(headers["cdn-cache-control"]).toContain("max-age=");
+      expect(headers.vary?.toLowerCase().split(/,\s*/)).toContain("authorization");
+    };
+    const expectAuthorizedNoStore = (headers: Record<string, string>) => {
+      expect(headers["cache-control"]).toContain("no-store");
+      expect(headers["cdn-cache-control"]).toBeUndefined();
+      expect(headers["cloudflare-cdn-cache-control"]).toBeUndefined();
+      expect(headers["cache-tag"]).toBeUndefined();
+    };
+
+    const authorizedFirstScenario = `authorized-first-${Date.now()}`;
+    const authorizedFirst = await readScenario(authorizedFirstScenario, "Bearer user-a");
+    const anonymousAfterAuthorized = await readScenario(authorizedFirstScenario);
+    expectAuthorizedNoStore(authorizedFirst.headers);
+    expectAnonymousCachePolicy(anonymousAfterAuthorized.headers);
+    expect(anonymousAfterAuthorized.payload.token).not.toBe(authorizedFirst.payload.token);
+
+    const anonymousFirstScenario = `anonymous-first-${Date.now()}`;
+    const anonymousFirst = await readScenario(anonymousFirstScenario);
+    const authorizedAfterAnonymous = await readScenario(anonymousFirstScenario, "Bearer user-b");
+    expectAnonymousCachePolicy(anonymousFirst.headers);
+    expectAuthorizedNoStore(authorizedAfterAnonymous.headers);
+    expect(authorizedAfterAnonymous.payload.token).not.toBe(anonymousFirst.payload.token);
+  });
+
   test("does not cache a middleware draft transition on an ISR MISS", async ({ request }) => {
     await setDraftMode(request, false);
     const scenario = `middleware-miss-${Date.now()}`;
@@ -307,7 +348,10 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       const headers = response.headers();
       expect(headers["cache-control"]).not.toContain("no-store");
       expect(headers["cdn-cache-control"]).toContain("max-age=");
-      expect(headers.vary?.split(",").map((token) => token.trim())).toContain("Cookie");
+      const vary = headers.vary?.split(",").map((token) => token.trim());
+      expect(vary).toContain("Cookie");
+      expect(vary).toContain("Authorization");
+      expect(vary).toContain("Host");
     }
 
     const cookieResponse = await page.request.get(`${BASE_URL}/about?_rsc`, {

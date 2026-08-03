@@ -84,6 +84,7 @@ type WranglerConfig = {
   name?: string;
   legacyEnv?: boolean;
   targetEnvironment?: string;
+  userConfigPath?: string;
   versionMetadataBinding?: string;
   env?: Record<string, WranglerEnvironmentConfig>;
 };
@@ -273,6 +274,10 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     result.targetEnvironment = config.targetEnvironment;
   }
 
+  if (typeof config.userConfigPath === "string" && config.userConfigPath.length > 0) {
+    result.userConfigPath = config.userConfigPath;
+  }
+
   // account_id
   if (typeof config.account_id === "string") {
     result.accountId = config.account_id;
@@ -419,8 +424,12 @@ function extractFromTOML(content: string): WranglerConfig {
   const name = findTomlStringAssignment(rootBody, "name");
   if (name) result.name = name;
 
-  const legacyEnvMatch = content.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
-  if (legacyEnvMatch) result.legacyEnv = legacyEnvMatch[1] === "true";
+  const legacyEnvAssignment = parseTomlAssignments(rootBody).find(
+    (assignment) => assignment.keyPath.length === 1 && assignment.keyPath[0] === "legacy_env",
+  );
+  if (legacyEnvAssignment && /^(?:true|false)$/.test(legacyEnvAssignment.value.trim())) {
+    result.legacyEnv = legacyEnvAssignment.value.trim() === "true";
+  }
 
   // account_id = "..."
   const accountId = findTomlStringAssignment(rootBody, "account_id");
@@ -495,10 +504,108 @@ function extractFromTOML(content: string): WranglerConfig {
   return result;
 }
 
+function applyTomlEnvironmentAssignment(
+  result: Record<string, WranglerEnvironmentConfig>,
+  envName: string,
+  fieldPath: string[],
+  value: string,
+): void {
+  const envConfig = result[envName] ?? {};
+  let changed = false;
+
+  if (fieldPath.length === 0) {
+    const inlineEnv = unwrapTomlInlineTable(value);
+    if (inlineEnv) {
+      const name = findTomlStringAssignment(inlineEnv, "name");
+      const customDomain =
+        extractTomlRouteDomain(inlineEnv) ?? extractTomlRoutesArrayDomain(inlineEnv) ?? undefined;
+      const inlineCache = extractTomlInlineTable(inlineEnv, "cache");
+      const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
+      const inlineVersionMetadata = extractTomlInlineTable(inlineEnv, "version_metadata");
+      const versionMetadataBinding = inlineVersionMetadata
+        ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
+        : undefined;
+      if (name) envConfig.name = name;
+      if (customDomain) envConfig.customDomain = customDomain;
+      if (cache) envConfig.cache = { ...envConfig.cache, ...cache };
+      if (versionMetadataBinding) envConfig.versionMetadataBinding = versionMetadataBinding;
+      changed = Boolean(name || customDomain || cache || versionMetadataBinding);
+    }
+  } else if (fieldPath.length === 1 && fieldPath[0] === "name") {
+    const name = parseTomlString(value);
+    if (name) {
+      envConfig.name = name;
+      changed = true;
+    }
+  } else if (fieldPath.length === 1 && (fieldPath[0] === "route" || fieldPath[0] === "routes")) {
+    const customDomain =
+      fieldPath[0] === "route"
+        ? extractTomlRouteDomain(`route = ${value}`)
+        : extractTomlRoutesArrayDomain(`routes = ${value}`);
+    if (customDomain) {
+      envConfig.customDomain = customDomain;
+      changed = true;
+    }
+  } else if (fieldPath.length === 1 && fieldPath[0] === "cache") {
+    const inlineCache = unwrapTomlInlineTable(value);
+    const cache = inlineCache ? extractTomlCacheConfig(inlineCache) : undefined;
+    if (cache) {
+      envConfig.cache = { ...envConfig.cache, ...cache };
+      changed = true;
+    }
+  } else if (
+    fieldPath.length === 2 &&
+    fieldPath[0] === "cache" &&
+    (fieldPath[1] === "enabled" || fieldPath[1] === "cross_version_cache")
+  ) {
+    const booleanValue = value.trim();
+    if (/^(?:true|false)$/.test(booleanValue)) {
+      envConfig.cache = {
+        ...envConfig.cache,
+        ...(fieldPath[1] === "enabled" ? { enabled: booleanValue === "true" } : {}),
+        ...(fieldPath[1] === "cross_version_cache"
+          ? { crossVersionCache: booleanValue === "true" }
+          : {}),
+      };
+      changed = true;
+    }
+  } else if (fieldPath.length === 1 && fieldPath[0] === "version_metadata") {
+    const inlineVersionMetadata = unwrapTomlInlineTable(value);
+    const binding = inlineVersionMetadata
+      ? extractTomlVersionMetadataBinding(inlineVersionMetadata)
+      : undefined;
+    if (binding) {
+      envConfig.versionMetadataBinding = binding;
+      changed = true;
+    }
+  } else if (
+    fieldPath.length === 2 &&
+    fieldPath[0] === "version_metadata" &&
+    fieldPath[1] === "binding"
+  ) {
+    const binding = parseTomlString(value);
+    if (binding) {
+      envConfig.versionMetadataBinding = binding;
+      changed = true;
+    }
+  }
+
+  if (changed) result[envName] = envConfig;
+}
+
 function extractEnvConfigsFromTOML(
   content: string,
 ): Record<string, WranglerEnvironmentConfig> | undefined {
   const result: Record<string, WranglerEnvironmentConfig> = {};
+
+  // TOML dotted keys can declare named environments without an `[env]`
+  // table, for example `env."staging.eu".name = "worker"`.
+  for (const assignment of parseTomlAssignments(getTomlRootBody(content))) {
+    if (assignment.keyPath[0] !== "env" || assignment.keyPath.length < 2) continue;
+    const envName = assignment.keyPath[1];
+    if (!envName) continue;
+    applyTomlEnvironmentAssignment(result, envName, assignment.keyPath.slice(2), assignment.value);
+  }
 
   for (const section of getTomlSections(content)) {
     const headerPath = parseTomlDottedKey(section.header);
