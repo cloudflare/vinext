@@ -8860,6 +8860,12 @@ describe("middleware matcher patterns", () => {
       }),
     ).toBe(true);
     expect(
+      matchesMiddleware("/FR/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
       matchesMiddleware("/", "/", undefined, {
         locales: ["en", "fr"],
         defaultLocale: "en",
