@@ -351,6 +351,18 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain("<script");
   });
 
+  it("keeps source-page paths and cache observations out of document HTML", async () => {
+    const res = await fetch(`${baseUrl}/features`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("route group");
+    expect(html).not.toContain("__sourcePage");
+    expect(html).not.toContain("/(marketing)/features/page");
+    expect(html).not.toContain("__renderObservation");
+    expect(html).not.toContain("_N_T_/(marketing)");
+  });
+
   it("bundles a static CommonJS request encoded with String.fromCharCode", async () => {
     const res = await fetch(`${baseUrl}/char-code-require`);
     expect(res.status).toBe(200);

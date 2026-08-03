@@ -1276,7 +1276,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           // whether the source route may render; it does not contribute headers
           // or status to the target's response, which belongs to another route.
           context: sourceMiddlewareContext,
-          externalRewriteRequest: sourceMiddlewareRequest,
+          externalRewriteRequest: normalizedUserlandRequest,
           hadBasePath,
           isDataRequest: isMiddlewareDataRequest,
           request: sourceMiddlewareRequest,
