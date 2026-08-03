@@ -131,14 +131,7 @@ export type DeployOptions = {
   tprWindow?: number;
 };
 
-export type WranglerCommandOptions = Pick<DeployOptions, "preview" | "env" | "name" | "config"> & {
-  /**
-   * The selected environment has already been flattened into a generated
-   * Wrangler config. Keep the environment for logging and target resolution,
-   * but do not pass `--env` or Wrangler will suffix legacy Worker names again.
-   */
-  omitEnvArg?: boolean;
-};
+export type WranglerCommandOptions = Pick<DeployOptions, "preview" | "env" | "name" | "config">;
 
 type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
 
@@ -398,7 +391,7 @@ export function buildWranglerDeployArgs(options: WranglerCommandOptions): Wrangl
   if (options.name) {
     args.push("--name", options.name);
   }
-  if (env && !options.omitEnvArg) {
+  if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
   return { args, env };
@@ -591,9 +584,9 @@ function readGeneratedWranglerConfigPath(root: string): string | null {
  *
  * Passing a source config through `--config` disables Wrangler's redirect. If
  * that source produced the generated config, invoke the generated config
- * directly instead. Generated configs already contain the selected named
- * environment, so forwarding `--env` would make Wrangler append the legacy
- * environment suffix a second time.
+ * directly instead. Pin the generated config's environment and final Worker
+ * name on the CLI so ambient environment state cannot retarget it and Wrangler
+ * cannot append the environment suffix to an already-flattened name.
  */
 export function resolveWranglerCommandConfig(
   root: string,
@@ -613,7 +606,10 @@ export function resolveWranglerCommandConfig(
     return {
       commandOptions: {
         ...options,
-        omitEnvArg: Boolean(flattenedEnv && selectedEnv === flattenedEnv),
+        env: selectedEnv ?? flattenedEnv,
+        ...(flattenedEnv && !options.name && explicitConfig?.name
+          ? { name: explicitConfig.name }
+          : {}),
       },
       inspectionConfig: options.config,
     };
@@ -633,7 +629,12 @@ export function resolveWranglerCommandConfig(
   if (!options.config) {
     // Leave argv untouched so Wrangler performs and validates its own redirect,
     // but inspect the generated config because that is the deployed artifact.
-    return { commandOptions: options, inspectionConfig: generatedRelativePath };
+    // Pin its build-selected environment on the CLI so an unrelated ambient
+    // CLOUDFLARE_ENV cannot retarget the command.
+    return {
+      commandOptions: { ...options, env: selectedEnv ?? generatedConfig?.targetEnvironment },
+      inspectionConfig: generatedRelativePath,
+    };
   }
 
   if (!explicitSelectsGeneratedBuild) {
@@ -647,7 +648,10 @@ export function resolveWranglerCommandConfig(
     return {
       commandOptions: {
         ...options,
-        omitEnvArg: Boolean(flattenedEnv && selectedEnv === flattenedEnv),
+        env: selectedEnv ?? flattenedEnv,
+        ...(flattenedEnv && !options.name && explicitConfig?.name
+          ? { name: explicitConfig.name }
+          : {}),
       },
       inspectionConfig: options.config,
     };
@@ -663,7 +667,10 @@ export function resolveWranglerCommandConfig(
     commandOptions: {
       ...options,
       config: generatedRelativePath,
-      omitEnvArg: Boolean(flattenedEnv && selectedEnv === flattenedEnv),
+      env: selectedEnv ?? flattenedEnv,
+      ...(flattenedEnv && !options.name && generatedConfig?.name
+        ? { name: generatedConfig.name }
+        : {}),
     },
     inspectionConfig: generatedRelativePath,
   };
@@ -692,7 +699,7 @@ export async function deployWithCdnWarmup(
     config: resolvedWrangler.inspectionConfig,
   };
   const wranglerConfig = parseWranglerConfig(root, resolvedWrangler.inspectionConfig);
-  const targetEnv = getWranglerTargetEnv(options);
+  const targetEnv = getWranglerTargetEnv(wranglerOptions);
   const isFlattenedTargetConfig =
     targetEnv !== undefined && wranglerConfig?.targetEnvironment === targetEnv;
   // Wrangler does not inherit version_metadata into named environments.
@@ -722,6 +729,18 @@ export async function deployWithCdnWarmup(
     );
   }
 
+  // Wrangler's Versions API commands address script versions and do not
+  // support named service environments (`legacy_env = false`). Keep ordinary
+  // deploy semantics for those environments instead of staging the wrong
+  // Worker. Strict mode fails closed because it cannot provide pre-traffic
+  // warming for that target.
+  if (targetEnv && wranglerConfig?.legacyEnv === false) {
+    const message = `CDN warmup cannot stage named service environment ${targetEnv}; Wrangler versions commands do not support service-environment deployments.`;
+    if (options.warmCdnStrict) throw new Error(message);
+    console.warn(`  ${message} Falling back to ordinary deployment without CDN warming.`);
+    return runWranglerDeploy(root, wranglerOptions);
+  }
+
   const upload = runWranglerVersionUpload(root, wranglerOptions);
   const deploymentStatus = readWranglerDeploymentStatus(root, wranglerOptions);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
@@ -742,16 +761,7 @@ export async function deployWithCdnWarmup(
     );
   } else if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, wranglerOptions, "stage");
-    try {
-      applyTriggers();
-    } catch (error) {
-      throw withStagedVersionCleanupNote(error);
-    }
-    const targetUrl = resolveCdnWarmupTargetUrl(
-      root,
-      staged.deployedUrl ?? triggersDeployedUrl,
-      targetResolutionOptions,
-    );
+    const targetUrl = resolveCdnWarmupTargetUrl(root, staged.deployedUrl, targetResolutionOptions);
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, wranglerOptions);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
@@ -816,12 +826,14 @@ export async function deployWithCdnWarmup(
     wranglerOptions,
     warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
   );
-  if (!warmedBeforePromotion) {
-    try {
-      applyTriggers();
-    } catch (error) {
-      throw withPromotedVersionTriggerNote(error);
-    }
+  try {
+    // Full trigger deployment also mutates crons, queue consumers, workflows,
+    // routes, and workers.dev state. Apply it only after promotion so new
+    // triggers can never invoke the previous 100%-traffic version, and a
+    // failed strict prewarm leaves triggers untouched.
+    applyTriggers();
+  } catch (error) {
+    throw withPromotedVersionTriggerNote(error);
   }
   if (!warmedBeforePromotion && !crossVersionCache) {
     const targetUrl = resolveCdnWarmupTargetUrl(

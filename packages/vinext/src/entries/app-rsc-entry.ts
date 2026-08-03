@@ -1248,11 +1248,12 @@ export default createAppRscHandler({
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, middlewareRequest, request }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
       context,
+      externalRewriteRequest,
       hadBasePath,
       filePath: ${JSON.stringify(middlewarePath ? toSlash(middlewarePath) : "")},
       i18nConfig: __i18nConfig,
@@ -1262,6 +1263,7 @@ export default createAppRscHandler({
       module: middlewareModule,
       request,
       trailingSlash: __trailingSlash,
+      validateExternalRewriteRequest,
     });
   },`
       : ""

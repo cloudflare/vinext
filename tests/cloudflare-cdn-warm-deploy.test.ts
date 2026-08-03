@@ -2,18 +2,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { ChildProcess } from "node:child_process";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
+const spawnMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     execFileSync: execFileSyncMock,
+    spawn: spawnMock,
   };
 });
 
 let tmpDir: string;
+
+function createMockChildProcess(output = "", code = 0): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  Object.assign(child, { stdout, stderr });
+  queueMicrotask(() => {
+    stdout.end(output);
+    stderr.end();
+    child.emit("close", code, null);
+  });
+  return child;
+}
 
 function writeFile(relativePath: string, content: string): void {
   const fullPath = path.join(tmpDir, relativePath);
@@ -43,6 +61,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
     execFileSyncMock.mockReset();
+    spawnMock.mockReset();
+    spawnMock.mockImplementation(() => createMockChildProcess("https://staging.example.com\n"));
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -271,24 +291,24 @@ env."staging.eu".version_metadata.binding = "CUSTOM_VERSION"
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
       4,
       process.execPath,
-      expect.arrayContaining(["triggers", "deploy"]),
+      expect.arrayContaining(["versions", "deploy", "22222222-2222-4222-8222-222222222222@100%"]),
       expect.any(Object),
     );
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
       5,
       process.execPath,
-      expect.arrayContaining(["versions", "deploy", "22222222-2222-4222-8222-222222222222@100%"]),
+      expect.arrayContaining(["triggers", "deploy"]),
       expect.any(Object),
     );
     expect(events).toEqual([
       "upload",
       "status",
       "stage",
-      "triggers",
       "fetch:https://app.example.com/",
       "fetch:https://app.example.com/about",
       "fetch:https://app.example.com/?_rsc",
       "promote",
+      "triggers",
     ]);
   });
 
@@ -383,9 +403,9 @@ name = "my-worker-staging"
       "upload",
       "status",
       "stage",
-      "triggers",
       "probe-unavailable",
       "promote",
+      "triggers",
       "probe-unavailable",
     ]);
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -437,7 +457,7 @@ name = "my-worker-staging"
       }),
     ).rejects.toThrow("may remain staged at 0%");
 
-    expect(events).toEqual(["upload", "status", "stage", "triggers", "probe-unavailable"]);
+    expect(events).toEqual(["upload", "status", "stage", "probe-unavailable"]);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -627,7 +647,7 @@ env."staging.eu".version_metadata.binding = "VINEXT_VERSION_METADATA"
     );
   });
 
-  it("uses quoted BOM-prefixed service-environment naming for the Worker override", async () => {
+  it("falls back to ordinary deploy for a quoted BOM-prefixed service environment", async () => {
     writeFile(
       "wrangler.toml",
       `\uFEFF"legacy_env" = false
@@ -663,10 +683,35 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       warmCdnConcurrency: 1,
     });
 
-    const firstInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
-    expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
-      'service-worker="22222222-2222-4222-8222-222222222222"',
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledWith(
+      process.execPath,
+      expect.arrayContaining(["deploy", "--env", "staging"]),
+      expect.any(Object),
     );
+  });
+
+  it("rejects strict warming for a named service environment before upload", async () => {
+    writeFile(
+      "wrangler.toml",
+      `legacy_env = false
+name = "service-worker"
+
+[env.staging]
+version_metadata = { binding = "VINEXT_VERSION_METADATA" }
+`,
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        env: "staging",
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow("cannot stage named service environment staging");
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("uses the already-suffixed Worker name from a flattened selected environment", async () => {
@@ -718,7 +763,8 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
     );
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
       expect(args).toEqual(expect.arrayContaining(["--config", "dist/server/wrangler.json"]));
-      expect(args).not.toContain("--env");
+      expect(args).toEqual(expect.arrayContaining(["--env", "staging"]));
+      expect(args).toEqual(expect.arrayContaining(["--name", "my-worker-staging"]));
     }
   });
 
@@ -778,7 +824,8 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
       expect(args).toEqual(expect.arrayContaining(["--config", "dist/server/wrangler.json"]));
       expect(args).not.toContain("wrangler.jsonc");
-      expect(args).not.toContain("--env");
+      expect(args).toEqual(expect.arrayContaining(["--env", "staging"]));
+      expect(args).toEqual(expect.arrayContaining(["--name", "my-worker-staging"]));
     }
     const firstInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
@@ -980,9 +1027,12 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
         warmCdnStrict: true,
       }),
     ).rejects.toThrow("may remain staged at 0%");
+    expect(
+      execFileSyncMock.mock.calls.some((call) => (call[1] as string[]).includes("triggers")),
+    ).toBe(false);
   });
 
-  it("explains staged version cleanup when trigger deployment fails after staging", async () => {
+  it("explains promoted version state when trigger deployment fails after prewarming", async () => {
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({
@@ -1002,6 +1052,9 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
         return "Staged version\nhttps://stable.example.workers.dev\n";
       }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
       if (args.includes("triggers")) {
         throw new Error("trigger deploy failed");
       }
@@ -1013,8 +1066,8 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       deployWithCdnWarmup(tmpDir, ["/"], {
         warmCdnConcurrency: 1,
       }),
-    ).rejects.toThrow("may remain staged at 0%");
-    expect(fetch).not.toHaveBeenCalled();
+    ).rejects.toThrow("may already be promoted to 100%");
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("explains promoted version state when fallback trigger deployment fails", async () => {

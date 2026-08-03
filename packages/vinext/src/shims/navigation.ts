@@ -498,7 +498,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   timestamp: number,
   cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt" | "serverStaleTime">,
   fallbackTtlMs: number,
-  minimumTtlMs: number = MIN_PREFETCH_STALE_TIME_MS,
+  honorDynamicStaleTime: boolean,
 ): number {
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
@@ -507,17 +507,26 @@ function resolvePrefetchedRscResponseExpiresAt(
   // claim. `staleTimes.dynamic` independently bounds visited/BFCache reuse and
   // is only the prefetch fallback when the render made no cacheLife claim.
   const serverSeconds = serverStaleTimeSeconds(cached.serverStaleTime);
-  const seconds =
-    serverSeconds ??
-    (isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
-      ? cached.dynamicStaleTimeSeconds
-      : undefined);
-  if (seconds === undefined) {
-    return timestamp + Math.max(fallbackTtlMs, minimumTtlMs);
+  if (serverSeconds !== undefined) {
+    return timestamp + serverSeconds * 1000;
   }
-  // The cacheLife signal is floored inside the resolver; this outer floor
-  // covers the prefetch-only dimensions (config bound and fallback TTL).
-  return timestamp + Math.max(seconds * 1000, minimumTtlMs);
+  const seconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
+    ? cached.dynamicStaleTimeSeconds
+    : undefined;
+  // No signal: the static prefetch window, floored like Next's
+  // `STATIC_STALETIME_MS = getStaleTimeMs(config)`.
+  if (seconds === undefined) {
+    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
+  }
+  // An automatic prefetch takes a dynamic render's bound verbatim, including
+  // below the 30s floor: Next's `computeDynamicStaleAt` never floors it, so a
+  // `0` must expire the entry now rather than license 30s of credentialed
+  // reuse. `prefetch={true}` is an explicit opt-in to caching dynamic content,
+  // and Next reuses a `full` prefetch for the floored static window, so it
+  // keeps the floor.
+  return honorDynamicStaleTime
+    ? timestamp + seconds * 1000
+    : timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
@@ -1352,7 +1361,7 @@ export function prefetchRscResponse(
   behavior: {
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
-    minimumTtlMs?: number;
+    honorDynamicStaleTime?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1398,7 +1407,7 @@ export function prefetchRscResponse(
           entry.timestamp,
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
-          behavior.minimumTtlMs,
+          behavior.honorDynamicStaleTime !== false,
         );
         if (behavior.prepareSnapshot) {
           try {
@@ -2821,7 +2830,7 @@ const _appRouter: AppRouterInstance = {
                 policy.fallbackTtl === "dynamic"
                   ? DYNAMIC_NAVIGATION_CACHE_TTL
                   : PREFETCH_CACHE_TTL,
-              minimumTtlMs: policy.minimumTtlMs,
+              honorDynamicStaleTime: policy.honorDynamicStaleTime,
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,

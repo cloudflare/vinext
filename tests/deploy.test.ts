@@ -186,19 +186,6 @@ describe("buildWranglerDeployArgs", () => {
     });
   });
 
-  it("does not forward a named env already flattened into the config", () => {
-    expect(
-      buildWranglerDeployArgs({
-        config: "dist/server/wrangler.json",
-        env: "staging",
-        omitEnvArg: true,
-      }),
-    ).toEqual({
-      args: ["deploy", "--config", "dist/server/wrangler.json"],
-      env: "staging",
-    });
-  });
-
   it("prefers explicit env over --preview shorthand", () => {
     expect(buildWranglerDeployArgs({ preview: true, env: "qa" })).toEqual({
       args: ["deploy", "--env", "qa"],
@@ -3403,6 +3390,35 @@ describe("domainCandidates", () => {
 // ─── parseWranglerConfig — TPR fields ────────────────────────────────────────
 
 describe("resolveWranglerCommandConfig", () => {
+  it("pins a generated config's target environment and final name over ambient state", async () => {
+    writeFile(
+      tmpDir,
+      ".wrangler/deploy/config.json",
+      JSON.stringify({ configPath: "../../dist/server/wrangler.json" }),
+    );
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "source-worker" }));
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "source-worker-staging",
+        targetEnvironment: "staging",
+        userConfigPath: path.join(tmpDir, "wrangler.jsonc"),
+      }),
+    );
+
+    await withCloudflareEnv("qa", async () => {
+      expect(resolveWranglerCommandConfig(tmpDir, { config: "wrangler.jsonc" })).toEqual({
+        commandOptions: {
+          config: "dist/server/wrangler.json",
+          env: "staging",
+          name: "source-worker-staging",
+        },
+        inspectionConfig: "dist/server/wrangler.json",
+      });
+    });
+  });
+
   it("preserves an unrelated explicit custom config when a deploy redirect exists", () => {
     writeFile(
       tmpDir,
@@ -3424,7 +3440,6 @@ describe("resolveWranglerCommandConfig", () => {
         commandOptions: {
           config: "custom.toml",
           env: "staging",
-          omitEnvArg: false,
         },
         inspectionConfig: "custom.toml",
       },

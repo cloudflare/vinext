@@ -2958,6 +2958,195 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "validates out-of-basePath RSC requests before %s external rewrite proxies",
+    async (phase) => {
+      const receivedUrls: string[] = [];
+      const server = createServer((req, res) => {
+        receivedUrls.push(req.url ?? "");
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      const upstreamBase = `http://127.0.0.1:${address.port}`;
+
+      try {
+        const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+        const expectedHash = await computeRscCacheBustingSearchParam(headers);
+        const rewrite = {
+          source: "/outside",
+          destination: `${upstreamBase}/proxy`,
+          basePath: false as const,
+        };
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            beforeFiles: phase === "beforeFiles" ? [rewrite] : [],
+            afterFiles: phase === "afterFiles" ? [rewrite] : [],
+            fallback: phase === "fallback" ? [rewrite] : [],
+          },
+          matchRoute: () => null,
+        });
+
+        for (const method of ["GET", "HEAD"] as const) {
+          const response = await handler(
+            new Request("https://example.test/outside.rsc?tab=latest", { headers, method }),
+            null,
+          );
+
+          expect(response.status).toBe(307);
+          expect(response.headers.get("location")).toBe(
+            `/outside.rsc?tab=latest&_rsc=${expectedHash}`,
+          );
+        }
+        expect(receivedUrls).toEqual([]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(["middleware", "forwarded"] as const)(
+    "validates out-of-basePath RSC requests before %s external rewrite proxies",
+    async (mode) => {
+      const receivedUrls: string[] = [];
+      const server = createServer((req, res) => {
+        receivedUrls.push(req.url ?? "");
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      const upstreamUrl = `http://127.0.0.1:${address.port}/proxy`;
+
+      try {
+        const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+        const expectedHash = await computeRscCacheBustingSearchParam(headers);
+        if (mode === "forwarded") {
+          headers.set(
+            VINEXT_MW_CTX_HEADER,
+            JSON.stringify({
+              h: [
+                ["location", "/middleware-location"],
+                ["set-cookie", "session=forwarded"],
+              ],
+              r: upstreamUrl,
+            }),
+          );
+        }
+        const handler = createHandler({
+          configHeaders: [],
+          middlewareModule: {
+            default: () =>
+              new Response(null, {
+                headers: {
+                  location: "/middleware-location",
+                  "set-cookie": "session=middleware",
+                  "x-middleware-rewrite": upstreamUrl,
+                },
+              }),
+          },
+          matchRoute: () => null,
+        });
+
+        for (const method of ["GET", "HEAD"] as const) {
+          const response = await handler(
+            new Request("https://example.test/outside.rsc?tab=latest", { headers, method }),
+            null,
+          );
+
+          expect(response.status).toBe(307);
+          expect(response.headers.get("location")).toBe(
+            `/outside.rsc?tab=latest&_rsc=${expectedHash}`,
+          );
+          expect(response.headers.get("set-cookie")).toBe(`session=${mode}`);
+        }
+        expect(receivedUrls).toEqual([]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(["middleware", "forwarded"] as const)(
+    "forwards valid RSC cache-busting params to %s external rewrite proxies",
+    async (mode) => {
+      const receivedRequests: Array<{
+        headers: import("node:http").IncomingHttpHeaders;
+        url: string;
+      }> = [];
+      const server = createServer((req, res) => {
+        receivedRequests.push({ headers: req.headers, url: req.url ?? "" });
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      const upstreamUrl = `http://127.0.0.1:${address.port}/proxy`;
+
+      try {
+        const headers = createRscRequestHeaders({
+          mountedSlotsHeader: "slot:modal:/",
+          prefetchRouterState: { pathAndSearch: "/outside?tab=latest", routeId: "/outside" },
+        });
+        const routerState = headers.get("next-router-state-tree");
+        expect(routerState).not.toBeNull();
+        if (mode === "forwarded") {
+          headers.set(
+            VINEXT_MW_CTX_HEADER,
+            JSON.stringify({
+              h: [
+                [
+                  "x-middleware-override-headers",
+                  "rsc,next-router-prefetch,next-router-state-tree",
+                ],
+                ["x-middleware-request-next-router-prefetch", "0"],
+                ["x-middleware-request-next-router-state-tree", "tampered"],
+                ["x-middleware-request-rsc", "0"],
+              ],
+              r: upstreamUrl,
+            }),
+          );
+        }
+        const requestUrl = await createRscRequestUrl("/outside?tab=latest", headers);
+        const handler = createHandler({
+          configHeaders: [],
+          middlewareModule: {
+            default: () =>
+              new Response(null, {
+                headers: {
+                  "x-middleware-override-headers":
+                    "rsc,next-router-prefetch,next-router-state-tree",
+                  "x-middleware-request-next-router-prefetch": "0",
+                  "x-middleware-request-next-router-state-tree": "tampered",
+                  "x-middleware-request-rsc": "0",
+                  "x-middleware-rewrite": upstreamUrl,
+                },
+              }),
+          },
+          matchRoute: () => null,
+        });
+
+        const response = await handler(
+          new Request(`https://example.test${requestUrl}`, { headers }),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(receivedRequests).toHaveLength(1);
+        const [received] = receivedRequests;
+        const forwardedUrl = new URL(`http://vinext.local${received.url}`);
+        expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(true);
+        expect(received.headers[RSC_HEADER.toLowerCase()]).toBe("1");
+        expect(received.headers[NEXT_ROUTER_PREFETCH_HEADER.toLowerCase()]).toBe("1");
+        expect(received.headers["next-router-state-tree"]).toBe(routerState);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   it("applies basePath false rewrites before rejecting outside-basePath requests", async () => {
     // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
@@ -4855,6 +5044,24 @@ describe("createAppRscHandler", () => {
     });
 
     const response = await handler(new Request("https://example.test/docs/api/123"), null);
+
+    expect(response.headers.get("vary")).toBe(
+      `Next-Url, User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,
+    );
+  });
+
+  it.each([
+    ["page", "/docs/legacy"],
+    ["API route", "/docs/api/legacy"],
+  ])("preserves a hybrid Pages %s response's explicit Vary: Next-Url", async (_kind, pathname) => {
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => null,
+      renderPagesFallback: async () =>
+        new Response("pages", { headers: { Vary: "Next-Url, User-Agent" } }),
+    });
+
+    const response = await handler(new Request(`https://example.test${pathname}`), null);
 
     expect(response.headers.get("vary")).toBe(
       `Next-Url, User-Agent, ${VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER}`,

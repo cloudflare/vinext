@@ -63,7 +63,7 @@ import {
 import {
   applyAppRscConfigHeaders,
   finalizeAppRscResponse,
-  markAppRouteHandlerResponseVaryProvenance,
+  markAppUserlandResponseVaryProvenance,
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
@@ -184,10 +184,12 @@ function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolea
 type RunAppMiddlewareOptions = {
   cleanPathname: string;
   context: AppRscMiddlewareContext;
+  externalRewriteRequest: Request;
   hadBasePath: boolean;
   isDataRequest: boolean;
   middlewareRequest?: Request;
   request: Request;
+  validateExternalRewriteRequest: () => Promise<Response | null>;
 };
 
 type AppRscHandlerRoute = {
@@ -480,6 +482,7 @@ async function applyRewrite(
     rewrites: NextRewrite[];
     /** Raw pathname identity used for config source matching and capture substitution. */
     paramsPathname?: string;
+    validateExternalRewriteRequest: () => Promise<Response | null>;
   },
   cleanPathname: string,
 ): Promise<Response | string | null> {
@@ -497,6 +500,8 @@ async function applyRewrite(
   if (!rewritten) return null;
 
   if (isExternalUrl(rewritten)) {
+    const validationResponse = await options.validateExternalRewriteRequest();
+    if (validationResponse) return validationResponse;
     options.clearRequestContext();
     return configMatchers.proxyExternalRequest(options.request, rewritten);
   }
@@ -789,6 +794,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     : null;
   if (rscCacheBustingRedirect) return rscCacheBustingRedirect;
 
+  let filesystemRouteEligible = hadBasePath;
+  const validateClaimedOutsideBasePathRsc = async (
+    routeClaimed = filesystemRouteEligible,
+  ): Promise<Response | null> => {
+    if (hadBasePath || !routeClaimed) return null;
+    return resolveInvalidRscCacheBustingRequest({
+      allowUnlistedPrewarmProbe,
+      isRscRequest,
+      request,
+      validateDocumentRequest: false,
+    });
+  };
+
   const runMiddleware = isOnDemandRevalidateRequest(
     request.headers.get(PRERENDER_REVALIDATE_HEADER),
   )
@@ -820,10 +838,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const middlewareResult = await runMiddleware({
       cleanPathname,
       context: middlewareContext,
+      externalRewriteRequest: normalizedUserlandRequest,
       hadBasePath,
       isDataRequest: isMiddlewareDataRequest,
       middlewareRequest: isolatedMiddlewareRequest,
       request: userlandRequest,
+      validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
     });
     middlewareObservation.explicitNextUrlVary ||= varyIncludesHeader(
       middlewareContext.headers?.get("Vary") ?? null,
@@ -868,16 +888,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareContext.headers);
   const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);
-  let filesystemRouteEligible = hadBasePath || didMiddlewareRewrite;
-  const validateClaimedOutsideBasePathRsc = async (): Promise<Response | null> => {
-    if (hadBasePath || !filesystemRouteEligible) return null;
-    return resolveInvalidRscCacheBustingRequest({
-      allowUnlistedPrewarmProbe,
-      isRscRequest,
-      request,
-      validateDocumentRequest: false,
-    });
-  };
+  filesystemRouteEligible ||= didMiddlewareRewrite;
 
   // Rewrites (beforeFiles, afterFiles, fallback) use `matchPathname` from
   // above to splice in the default locale before matching. Route matching
@@ -902,6 +913,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         ),
         rewrites: [rewrite],
+        validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
       },
       matchPathname(cleanPathname),
     );
@@ -942,6 +954,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
           rewrites: [rewrite],
+          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
       );
@@ -971,6 +984,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
             ),
             rewrites: [rewrite],
+            validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           },
           matchPathname(cleanPathname),
         );
@@ -1158,9 +1172,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           // whether the source route may render; it does not contribute headers
           // or status to the target's response, which belongs to another route.
           context: sourceMiddlewareContext,
+          externalRewriteRequest: sourceMiddlewareRequest,
           hadBasePath,
           isDataRequest: isMiddlewareDataRequest,
           request: sourceMiddlewareRequest,
+          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         }),
       );
     } finally {
@@ -1400,15 +1416,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // null so App routing can continue. Restore the App target topology.
       syncNextUrlHeaderVisibility(cleanPathname);
     }
-    if (!response || !pagesDataRequest || resolvedUrl === originalResolvedUrl) return response;
+    if (!response) return response;
+    const pagesResponse = markAppUserlandResponseVaryProvenance(response);
+    if (!pagesDataRequest || resolvedUrl === originalResolvedUrl) return pagesResponse;
 
-    const headers = new Headers(response.headers);
+    const headers = new Headers(pagesResponse.headers);
     headers.set("x-nextjs-rewrite", resolvedUrl);
-    return new Response(response.body, {
-      headers,
-      status: response.status,
-      statusText: response.statusText,
-    });
+    return markAppUserlandResponseVaryProvenance(
+      new Response(pagesResponse.body, {
+        headers,
+        status: pagesResponse.status,
+        statusText: pagesResponse.statusText,
+      }),
+    );
   };
   const staticPagesFallbackResponse = await renderPagesForMatchKind("static");
   if (staticPagesFallbackResponse) {
@@ -1433,6 +1453,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
           rewrites: [rewrite],
+          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
       );
@@ -1483,6 +1504,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
           rewrites: [rewrite],
+          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
       );
@@ -1655,7 +1677,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!middlewareObservation.resolvedPathCouldBeIntercepted) {
       routedRequest.headers.delete(NEXT_URL_HEADER);
     }
-    return markAppRouteHandlerResponseVaryProvenance(
+    return markAppUserlandResponseVaryProvenance(
       await options.dispatchMatchedRouteHandler({
         cleanPathname,
         middlewareContext,

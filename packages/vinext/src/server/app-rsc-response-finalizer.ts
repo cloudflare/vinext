@@ -38,7 +38,7 @@ type FinalizeAppRscResponseOptions = {
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
 const preserveAppliedNextUrlVary = new WeakSet<Response>();
-const routeHandlerExplicitNextUrlVary = new WeakSet<Response>();
+const userlandExplicitNextUrlVary = new WeakSet<Response>();
 
 function varyIncludesHeader(vary: string | null, headerName: string): boolean {
   if (vary === null) return false;
@@ -46,14 +46,15 @@ function varyIncludesHeader(vary: string | null, headerName: string): boolean {
 }
 
 /**
- * Preserve a Next-Url Vary token that came from an App Route Handler's own
- * Response. Next.js establishes the framework Vary value before dispatch and
- * then appends the handler response's Vary during sendResponse, so userland can
- * explicitly add Next-Url even when interception topology did not require it.
+ * Preserve a Next-Url Vary token that came from an App Route Handler or Pages
+ * Router response. Next.js establishes the framework Vary value before
+ * dispatch/render and then preserves response headers contributed by userland,
+ * so userland can explicitly add Next-Url even when interception topology did
+ * not require it.
  */
-export function markAppRouteHandlerResponseVaryProvenance(response: Response): Response {
+export function markAppUserlandResponseVaryProvenance(response: Response): Response {
   if (varyIncludesHeader(response.headers.get("Vary"), NEXT_URL_HEADER)) {
-    routeHandlerExplicitNextUrlVary.add(response);
+    userlandExplicitNextUrlVary.add(response);
   }
   return response;
 }
@@ -150,7 +151,7 @@ export async function finalizeAppRscResponse(
     preserveNextUrlVary:
       options.preserveNextUrlVary === true ||
       preserveAppliedNextUrlVary.has(response) ||
-      routeHandlerExplicitNextUrlVary.has(response),
+      userlandExplicitNextUrlVary.has(response),
   };
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.

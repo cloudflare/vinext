@@ -110,7 +110,7 @@ export function buildWranglerVersionUploadArgs(
   if (options.name) {
     args.push("--name", options.name);
   }
-  if (env && !options.omitEnvArg) {
+  if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
   if (options.previewAlias) {
@@ -136,7 +136,7 @@ export function buildWranglerVersionDeployArgs(
   if (options.name) {
     args.push("--name", options.name);
   }
-  if (env && !options.omitEnvArg) {
+  if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
   return { args, env };
@@ -153,7 +153,7 @@ export function buildWranglerDeploymentsStatusArgs(
   if (options.name) {
     args.push("--name", options.name);
   }
-  if (env && !options.omitEnvArg) {
+  if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
   return { args, env };
@@ -170,7 +170,7 @@ export function buildWranglerTriggersDeployArgs(
   if (options.name) {
     args.push("--name", options.name);
   }
-  if (env && !options.omitEnvArg) {
+  if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
   return { args, env };

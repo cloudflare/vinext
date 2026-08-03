@@ -793,7 +793,7 @@ function prefetchUrl(
               autoPrefetch.fallbackTtl === "dynamic"
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
                 : PREFETCH_CACHE_TTL,
-            minimumTtlMs: autoPrefetch.minimumTtlMs,
+            honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
             prepareSnapshot: cacheForNavigation ? prepareNavigationPrefetchSnapshot : undefined,

@@ -60,18 +60,25 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
-  it("keeps a flattened target env for logs without forwarding --env", () => {
+  it("pins a flattened target env on every Wrangler command", () => {
     const options = {
       config: "dist/server/wrangler.json",
       env: "staging",
-      omitEnvArg: true,
     };
     expect(buildWranglerVersionUploadArgs(options)).toEqual({
-      args: ["versions", "upload", "--config", "dist/server/wrangler.json"],
+      args: ["versions", "upload", "--config", "dist/server/wrangler.json", "--env", "staging"],
       env: "staging",
     });
     expect(buildWranglerDeploymentsStatusArgs(options)).toEqual({
-      args: ["deployments", "status", "--json", "--config", "dist/server/wrangler.json"],
+      args: [
+        "deployments",
+        "status",
+        "--json",
+        "--config",
+        "dist/server/wrangler.json",
+        "--env",
+        "staging",
+      ],
       env: "staging",
     });
     expect(
@@ -87,11 +94,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
         "--yes",
         "--config",
         "dist/server/wrangler.json",
+        "--env",
+        "staging",
       ],
       env: "staging",
     });
     expect(buildWranglerTriggersDeployArgs(options)).toEqual({
-      args: ["triggers", "deploy", "--config", "dist/server/wrangler.json"],
+      args: ["triggers", "deploy", "--config", "dist/server/wrangler.json", "--env", "staging"],
       env: "staging",
     });
   });
