@@ -41,6 +41,10 @@ import type {
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import {
+  clearCloudflareCdnResponseHeaders,
+  hasExplicitCloudflareNonCacheableResponsePolicy,
+} from "./cdn-response-headers.js";
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
@@ -65,10 +69,6 @@ const NO_STORE = "no-store";
  * always sees edge-fresh content while still permitting conditional 304s.
  */
 const BROWSER_REVALIDATE = "public, max-age=0, must-revalidate";
-
-const NON_CACHEABLE_DIRECTIVE_RE = /\b(?:private|no-store|no-cache)\b/i;
-const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
-const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
 
 /**
  * A concrete stale window (1 year) substituted for a value-less
@@ -149,24 +149,14 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
-      return {
-        "Cache-Control": NO_STORE,
-        "CDN-Cache-Control": null,
-        "Cloudflare-CDN-Cache-Control": null,
-        "Cache-Tag": null,
-      };
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
     }
 
     // A non-cacheable policy (no-store / no-cache / private) must never be
     // promoted to an edge cache. Clear any cacheable headers this adapter owns
     // in case middleware stamped them before the final policy was known.
     if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
-      return {
-        "Cache-Control": input.cacheControl,
-        "CDN-Cache-Control": null,
-        "Cloudflare-CDN-Cache-Control": null,
-        "Cache-Tag": null,
-      };
+      return clearCloudflareCdnResponseHeaders(input.cacheControl);
     }
 
     // SWR policy on CDN-Cache-Control (edge caches + revalidates); the browser
@@ -182,18 +172,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
-    const edgePolicies = EDGE_POLICY_HEADERS.map((name) => headers.get(name));
-    if (edgePolicies.some((value) => value && NON_CACHEABLE_DIRECTIVE_RE.test(value))) {
-      return true;
-    }
-
-    const hasCacheableEdgePolicy = edgePolicies.some(
-      (value) => value && CACHEABLE_EDGE_DIRECTIVE_RE.test(value),
-    );
-    const browserPolicy = headers.get("Cache-Control");
-    return Boolean(
-      !hasCacheableEdgePolicy && browserPolicy && NON_CACHEABLE_DIRECTIVE_RE.test(browserPolicy),
-    );
+    return hasExplicitCloudflareNonCacheableResponsePolicy(headers);
   }
 
   /** Purge edge-cached responses by tag via the request context's `cache.purge`. */

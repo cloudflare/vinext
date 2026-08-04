@@ -191,7 +191,10 @@ describe("optimizeDeps: JSX in plain .js files", () => {
     const tmpDir = await setupPagesProject();
     try {
       const getConfig = async (plugins: unknown[]): Promise<VinextConfigResult> => {
-        const vinextPlugins = vinext({ appDir: tmpDir }) as VinextPlugin[];
+        const vinextPlugins = vinext({
+          appDir: tmpDir,
+          cache: { cdn: { adapter: "test-cdn-adapter" } },
+        }) as VinextPlugin[];
         const mainPlugin = vinextPlugins.find(
           (p) => p.name === "vinext:config" && typeof p.config === "function",
         );

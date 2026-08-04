@@ -8,6 +8,7 @@
     "preview": "vp preview"
   },
   "dependencies": {
+    "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

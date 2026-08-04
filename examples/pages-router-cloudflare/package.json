@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "catalog:",
+    "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

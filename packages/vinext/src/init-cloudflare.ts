@@ -468,6 +468,8 @@ function cacheImports(options: CloudflareInitOptions): string[] {
   }
   if (options.cdnCache === "workers-cache") {
     imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
+  } else {
+    imports.push('import { originCdnAdapter } from "@vinext/cloudflare/cache/origin-cdn-adapter";');
   }
   if (options.imageOptimization === "cloudflare-images") {
     imports.push('import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";');
@@ -486,7 +488,9 @@ function vinextExpression(
   if (options.dataCache === "kv") {
     cacheEntries.push("data: kvDataAdapter()");
   }
-  if (options.cdnCache === "workers-cache") cacheEntries.push("cdn: cdnAdapter()");
+  cacheEntries.push(
+    options.cdnCache === "workers-cache" ? "cdn: cdnAdapter()" : "cdn: originCdnAdapter()",
+  );
   const optionEntries: string[] = [];
   if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
@@ -1504,13 +1508,12 @@ export function updateViteConfigForCloudflare(
         );
     cacheAdditions.push({ name: "data", expression: `${binding}()` });
   }
-  if (
-    configureCaches &&
-    cacheOptions.cdnCache === "workers-cache" &&
-    !hasVinextCacheSlot(existingVinextCall, "cdn")
-  ) {
-    const imported = "cdnAdapter";
-    const source = "@vinext/cloudflare/cache/cdn-adapter";
+  if (configureCaches && !hasVinextCacheSlot(existingVinextCall, "cdn")) {
+    const edgeManaged = cacheOptions.cdnCache === "workers-cache";
+    const imported = edgeManaged ? "cdnAdapter" : "originCdnAdapter";
+    const source = edgeManaged
+      ? "@vinext/cloudflare/cache/cdn-adapter"
+      : "@vinext/cloudflare/cache/origin-cdn-adapter";
     const existing = commonJs
       ? findRequiredBinding(program, source, imported)
       : findImportedBinding(program, source, imported);

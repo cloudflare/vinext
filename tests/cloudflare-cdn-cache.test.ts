@@ -10,11 +10,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { CloudflareOriginCdnCacheAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.runtime.js";
 import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,
   DefaultCdnCacheAdapter,
-  type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
@@ -26,27 +26,6 @@ const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
 function resetActiveAdapter(): void {
   delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
-}
-
-function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
-  return {
-    ownsBackgroundRevalidation: false,
-    async get() {
-      return null;
-    },
-    async set() {},
-    buildResponseHeaders(input) {
-      return {
-        "Cache-Control": input.pendingDynamicCheck
-          ? "no-store, must-revalidate"
-          : input.cacheControl,
-        "CDN-Cache-Control": null,
-        "Cloudflare-CDN-Cache-Control": null,
-        "Cache-Tag": null,
-      };
-    },
-    async revalidateTag() {},
-  };
 }
 
 function finalizePendingDynamicRscResponse(): Response {
@@ -356,8 +335,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(response.text()).resolves.toBe("dynamic-slot-flight");
   });
 
-  it("clears adapter-owned headers for pending dynamic misses", async () => {
-    setCdnCacheAdapter(createHeaderClearingCdnAdapter());
+  it("clears Cloudflare-owned headers for origin-managed pending dynamic misses", async () => {
+    setCdnCacheAdapter(new CloudflareOriginCdnCacheAdapter());
     const response = finalizePendingDynamicRscResponse();
 
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");

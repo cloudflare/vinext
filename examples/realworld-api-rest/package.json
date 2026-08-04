@@ -8,6 +8,7 @@
     "start": "node dist/server/entry.js"
   },
   "dependencies": {
+    "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

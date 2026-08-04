@@ -16,6 +16,7 @@
     "react-server-dom-webpack": "catalog:",
     "@cloudflare/vite-plugin": "catalog:",
     "@cloudflare/kumo": "catalog:",
+    "@vinext/cloudflare": "workspace:*",
     "@phosphor-icons/react": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "wrangler": "catalog:",

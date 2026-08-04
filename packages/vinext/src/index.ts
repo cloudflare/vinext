@@ -2533,6 +2533,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             typeof p.name === "string" &&
             (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
         );
+        if (hasCloudflarePlugin && !options.cache?.cdn?.adapter) {
+          throw new Error(
+            "[vinext] Cloudflare deployments must configure a CDN cache adapter so " +
+              "platform-specific response headers have an explicit owner. Configure " +
+              "`cache.cdn` with `originCdnAdapter()` to preserve origin-managed ISR, or " +
+              "`cdnAdapter()` to use Cloudflare edge-managed ISR.",
+          );
+        }
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
             p &&

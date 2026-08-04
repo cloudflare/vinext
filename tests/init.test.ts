@@ -689,7 +689,7 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "cloudflare.config.ts")).toBe("export default {};\n");
   });
 
-  it("supports CDN fallthrough with no data cache or image optimization", async () => {
+  it("supports origin-managed CDN policy with no data cache or image optimization", async () => {
     setupProject(tmpDir, { router: "app" });
 
     await runInit(tmpDir, {
@@ -699,7 +699,7 @@ describe("init — basic functionality", () => {
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).not.toContain("data:");
-    expect(config).not.toContain("cdn:");
+    expect(config).toContain("cdn: originCdnAdapter()");
     expect(config).not.toContain("imagesOptimizer");
     const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
     expect(wrangler.kv_namespaces).toBeUndefined();
@@ -773,7 +773,8 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     });
 
     const config = readFile(tmpDir, "vite.config.ts");
-    expect(config).toContain("cache: { data: customData() }");
+    expect(config).toContain("data: customData()");
+    expect(config).toContain("cdn: originCdnAdapter()");
     expect(config).toContain('prerender: { routes: "*" }');
   });
 

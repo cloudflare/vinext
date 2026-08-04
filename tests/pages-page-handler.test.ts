@@ -21,7 +21,7 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { CloudflareOriginCdnCacheAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.runtime.js";
 import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
@@ -729,7 +729,7 @@ describe("createPagesPageHandler — preview responses", () => {
   });
 
   it("clears Cloudflare-owned headers on preview responses", () => {
-    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    setCdnCacheAdapter(new CloudflareOriginCdnCacheAdapter());
     const response = finalizePagesPreviewResponse(
       new Response("preview", {
         headers: {
