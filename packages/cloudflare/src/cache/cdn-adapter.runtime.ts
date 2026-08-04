@@ -28,10 +28,6 @@
  * adapter's `revalidateTag`, so a purge targets exactly the responses that
  * carried the tag.
  *
- * With `mode: "data-cache"`, the same public adapter keeps vinext's default
- * origin-managed storage and only takes ownership of Cloudflare response-cache
- * headers and policy interpretation.
- *
  * The default export is the adapter factory the generated
  * `virtual:vinext-cache-adapters` registration imports; configure it from
  * vite.config via the {@link cdnAdapter} builder in `./cdn-adapter.ts` (which
@@ -43,10 +39,8 @@ import type {
   CdnCacheableHeaderInput,
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
-import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import type { CloudflareCdnAdapterOptions } from "./cdn-adapter.js";
 import {
   clearCloudflareCdnResponseHeaders,
   hasExplicitCloudflareNonCacheableResponsePolicy,
@@ -195,25 +189,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 }
 
-class CloudflareDataCacheCdnAdapter extends DefaultCdnCacheAdapter {
-  override buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
-    const cacheControl = super.buildResponseHeaders(input)["Cache-Control"] ?? "";
-    return clearCloudflareCdnResponseHeaders(cacheControl);
-  }
-
-  hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
-    return hasExplicitCloudflareNonCacheableResponsePolicy(headers);
-  }
-}
-
 // Config-driven adapter factory (default export).
-const createCloudflareCdnCacheAdapter = ({
-  options,
-}: {
-  options?: CloudflareCdnAdapterOptions;
-} = {}): CdnCacheAdapter =>
-  options?.mode === "data-cache"
-    ? new CloudflareDataCacheCdnAdapter()
-    : new CloudflareCdnCacheAdapter();
+const createCloudflareCdnCacheAdapter = (): CdnCacheAdapter => new CloudflareCdnCacheAdapter();
 
 export default createCloudflareCdnCacheAdapter;

@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { createBuilder, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/middleware-matcher-auth");
@@ -345,7 +344,7 @@ describe("valid middleware matcher auth guards", () => {
         root,
         configFile: false,
         plugins: [
-          vinext({ appDir: root, cache: { cdn: cdnAdapter({ mode: "data-cache" }) } }),
+          vinext({ appDir: root }),
           cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
         ],
         logLevel: "silent",

@@ -9,9 +9,7 @@
  *    explicitly configured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
-import createCloudflareCdnCacheAdapter, {
-  CloudflareCdnCacheAdapter,
-} from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -334,18 +332,6 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(response.headers.get("X-Vinext-Cache")).toBeNull();
     expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
     await expect(response.text()).resolves.toBe("dynamic-slot-flight");
-  });
-
-  it("clears Cloudflare-owned headers for origin-managed pending dynamic misses", async () => {
-    setCdnCacheAdapter(createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } }));
-    const response = finalizePendingDynamicRscResponse();
-
-    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cache-Tag")).toBeNull();
-    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
-    await expect(response.text()).resolves.toBe("pending-dynamic-flight");
   });
 
   it("applies the Cloudflare pending edge policy in a separate adapter case", async () => {

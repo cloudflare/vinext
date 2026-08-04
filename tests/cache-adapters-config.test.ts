@@ -12,7 +12,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
-import vinext, { type VinextOptions } from "../packages/vinext/src/index.js";
 import {
   findVinextCacheConfigInPlugins,
   loadVinextCacheConfigFromViteConfig,
@@ -25,7 +24,6 @@ import { generateServerEntry } from "../packages/vinext/src/entries/pages-server
 import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
-import { DefaultCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import createKvDataCacheAdapter, {
@@ -285,99 +283,5 @@ describe("cdnAdapter builder + factory", () => {
     expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
     // Edge adapter does not own in-process background regeneration.
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
-  });
-});
-
-describe("cdnAdapter data-cache mode", () => {
-  it("uses the existing CDN adapter descriptor", () => {
-    const descriptor = cdnAdapter({ mode: "data-cache" });
-    expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
-    expect(descriptor.options).toEqual({ mode: "data-cache" });
-  });
-
-  it("preserves origin-managed ISR behavior", () => {
-    const adapter = createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } });
-    expect(adapter).toBeInstanceOf(DefaultCdnCacheAdapter);
-    expect(adapter.ownsBackgroundRevalidation).toBe(true);
-  });
-
-  it("preserves generic Cache-Control while clearing Cloudflare-owned headers", () => {
-    const adapter = createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } });
-    expect(adapter.buildResponseHeaders({ cacheControl: "s-maxage=60" })).toEqual({
-      "Cache-Control": "s-maxage=60",
-      "CDN-Cache-Control": null,
-      "Cloudflare-CDN-Cache-Control": null,
-      "Cache-Tag": null,
-    });
-    expect(
-      adapter.buildResponseHeaders({
-        cacheControl: "s-maxage=60",
-        pendingDynamicCheck: true,
-      }),
-    ).toEqual({
-      "Cache-Control": "no-store, must-revalidate",
-      "CDN-Cache-Control": null,
-      "Cloudflare-CDN-Cache-Control": null,
-      "Cache-Tag": null,
-    });
-  });
-
-  it("interprets Cloudflare-owned cache policy", () => {
-    const adapter = createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } });
-    expect(
-      adapter.hasExplicitNonCacheableResponsePolicy?.(
-        new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
-      ),
-    ).toBe(true);
-    expect(
-      adapter.hasExplicitNonCacheableResponsePolicy?.(
-        new Headers({
-          "Cache-Control": "no-store",
-          "CDN-Cache-Control": "public, max-age=60",
-        }),
-      ),
-    ).toBe(false);
-  });
-});
-
-describe("Cloudflare adapter requirement", () => {
-  async function runCloudflareConfig(cache?: VinextOptions["cache"]): Promise<unknown> {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cloudflare-cache-config-"));
-    try {
-      fs.mkdirSync(path.join(tmpDir, "pages"));
-      fs.writeFileSync(path.join(tmpDir, "pages", "index.tsx"), "export default () => null;");
-      const plugin = (vinext({ cache }) as import("vite").Plugin[]).find(
-        (candidate) => candidate.name === "vinext:config",
-      );
-      if (!plugin || typeof plugin.config !== "function") {
-        throw new Error("vinext:config plugin hook not found");
-      }
-      const configHook = plugin.config as (
-        config: Record<string, unknown>,
-        env: { command: "build"; mode: string },
-      ) => unknown;
-      return await configHook(
-        {
-          root: tmpDir,
-          plugins: [{ name: "vite-plugin-cloudflare" }],
-        },
-        { command: "build", mode: "test" },
-      );
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  }
-
-  it("rejects a Cloudflare deployment without an owning CDN adapter", async () => {
-    await expect(runCloudflareConfig()).rejects.toThrow(
-      /Cloudflare deployments must configure a CDN cache adapter/,
-    );
-  });
-
-  it.each([
-    ["data-cache mode", cdnAdapter({ mode: "data-cache" })],
-    ["Workers Cache mode", cdnAdapter()],
-  ])("accepts the %s Cloudflare adapter", async (_label, adapter) => {
-    await expect(runCloudflareConfig({ cdn: adapter })).resolves.toBeDefined();
   });
 });

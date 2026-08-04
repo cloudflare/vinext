@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",
-    "@vinext/cloudflare": "workspace:*",
     "sanitize-html": "catalog:",
     "ms": "catalog:",
     "react": "catalog:",

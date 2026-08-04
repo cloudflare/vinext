@@ -28,7 +28,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
-import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import { restoreDedupedCssAssetReferences } from "../packages/vinext/src/build/css-url-assets.js";
 import { createIsolatedFixture } from "./helpers.js";
 
@@ -327,14 +326,7 @@ describe.each(["plain", "cloudflare"] as const)(
         undefined,
         path.join(CLOUDFLARE_FIXTURE_DIR, "node_modules"),
       );
-      const plugins: import("vite").PluginOption[] = [
-        vinext({
-          appDir: tmpDir,
-          ...(buildTarget === "cloudflare"
-            ? { cache: { cdn: cdnAdapter({ mode: "data-cache" }) } }
-            : {}),
-        }),
-      ];
+      const plugins: import("vite").PluginOption[] = [vinext({ appDir: tmpDir })];
       if (buildTarget === "cloudflare") {
         await fs.mkdir(path.join(tmpDir, "worker"), { recursive: true });
         await fs.writeFile(

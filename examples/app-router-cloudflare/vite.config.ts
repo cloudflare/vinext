@@ -1,16 +1,12 @@
 import { defineConfig } from "vite";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import path from "node:path";
 
 export default defineConfig({
   plugins: [
-    vinext({
-      cache: { cdn: cdnAdapter({ mode: "data-cache" }) },
-      images: { optimizer: imagesOptimizer() },
-    }),
+    vinext({ images: { optimizer: imagesOptimizer() } }),
     cloudflare({
       // The worker entry runs in the RSC environment, with SSR as a child.
       viteEnvironment: {

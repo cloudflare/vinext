@@ -436,7 +436,7 @@ describe("optimizeDeps.exclude for vinext", () => {
 
   async function setupAppRouterConfigTest(prefix: string) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const mainPlugin = vinext({ cache: { cdn: { adapter: "test-cdn-adapter" } } }).find(
+    const mainPlugin = vinext().find(
       (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
     );
     expect(mainPlugin).toBeDefined();
@@ -659,7 +659,7 @@ describe("optimizeDeps.exclude for vinext", () => {
 
   it("seeds Cloudflare Pages Router worker optimizer entries during dev", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext({ cache: { cdn: { adapter: "test-cdn-adapter" } } });
+    const plugins = vinext();
     const mainPlugin = plugins.find(
       (p: any) =>
         p.name === "vinext:config" &&
@@ -717,7 +717,7 @@ describe("optimizeDeps.exclude for vinext", () => {
 
   it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext({ cache: { cdn: { adapter: "test-cdn-adapter" } } });
+    const plugins = vinext();
     const mainPlugin = plugins.find(
       (p: any) =>
         p.name === "vinext:config" &&
@@ -1236,7 +1236,7 @@ describe("treeshake config integration", () => {
     // hints. Cloudflare builds also read it during closeBundle to inject those
     // globals into the Worker entry.
     const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext({ cache: { cdn: { adapter: "test-cdn-adapter" } } });
+    const plugins = vinext();
 
     const mainPlugin = plugins.find(
       (p: any) => p.name === "vinext:config" && typeof p.config === "function",

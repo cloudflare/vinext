@@ -2,7 +2,6 @@ import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 import mdx from "@mdx-js/rollup";
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 
 export default defineConfig({
   plugins: [
@@ -10,7 +9,7 @@ export default defineConfig({
     mdx(),
 
     // vinext plugin (provides all next/* shims, routing, SSR, RSC)
-    vinext({ cache: { cdn: cdnAdapter({ mode: "data-cache" }) } }),
+    vinext(),
 
     // Cloudflare Workers plugin — builds for workerd runtime
     cloudflare({

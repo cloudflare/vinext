@@ -121,7 +121,7 @@ export default { plugins: [vinext(), cloudflare({ viteEnvironment: {} })] };
     ).toThrow('viteEnvironment option must statically set name: "rsc"');
   });
 
-  it("preserves a complete existing viteEnvironment while adding the origin CDN adapter", () => {
+  it("preserves a complete existing viteEnvironment", () => {
     const input = `import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
 export default { plugins: [vinext(), cloudflare({
@@ -129,20 +129,17 @@ export default { plugins: [vinext(), cloudflare({
 })] };
 `;
 
-    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
-      isAppRouter: true,
-      nativeModulesToStub: [],
-      cache: {
-        dataCache: "none",
-        cdnCache: "data-cache",
-        imageOptimization: "none",
-      },
-    });
-    expectValidConfig(output);
-    expect(output).toContain(
-      'viteEnvironment: { name: "rsc", childEnvironments: ["ssr", "other"] }',
-    );
-    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
+    expect(
+      updateViteConfigForCloudflare("vite.config.ts", input, {
+        isAppRouter: true,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "data-cache",
+          imageOptimization: "none",
+        },
+      }),
+    ).toBe(input);
   });
 
   it("leaves an existing cloudflare() call alone for the Pages Router", () => {
@@ -221,7 +218,7 @@ export default { plugins: [first(), /* keep second */ second()] };
     });
     expectValidConfig(output);
     expect(output).toContain(
-      'plugins: [\n  first(),\n  /* keep second */\n  second(),\n  vinext({\n    cache: { cdn: cdnAdapter({ mode: "data-cache" }) },\n  }),\n  cloudflare(),\n]',
+      "plugins: [\n  first(),\n  /* keep second */\n  second(),\n  vinext(),\n  cloudflare(),\n]",
     );
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
@@ -396,8 +393,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
       },
     );
     expectValidConfig(output);
-    expect(output).toContain("data: customData()");
-    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
+    expect(output).toContain("cache: { data: customData() }");
     expect(output).toContain('prerender: { routes: "*" }');
   });
 
@@ -512,7 +508,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     expect(output).not.toContain("kvDataAdapter");
   });
 
-  it("configures origin-managed caching and omits image optimization", () => {
+  it("falls through to the data cache and omits image optimization", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
       nativeModulesToStub: [],
@@ -520,12 +516,12 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     });
     expectValidConfig(output);
     expect(output).not.toContain("data:");
-    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
+    expect(output).not.toContain("cdn:");
     expect(output).not.toContain("imagesOptimizer");
     expect(output).not.toContain("images:");
   });
 
-  it("configures image optimization with the required origin CDN adapter", () => {
+  it("configures image optimization independently of cache adapters", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
       nativeModulesToStub: [],
@@ -536,11 +532,11 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
       },
     });
     expectValidConfig(output);
-    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
+    expect(output).not.toContain("cache:");
     expect(output).toContain("images: { optimizer: imagesOptimizer() }");
   });
 
-  it("adds the origin CDN adapter without replacing existing image config", () => {
+  it("omits a CDN adapter without replacing existing image config", () => {
     const input = `import vinext from "vinext";
 export default { plugins: [vinext({ imageOptimization: true })] };
 `;
@@ -550,7 +546,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
-    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
+    expect(output).not.toContain("cdn:");
     expect(output).toContain("imageOptimization: true");
     expect(output).not.toContain("imagesOptimizer");
   });

@@ -21,7 +21,7 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import createCloudflareCdnCacheAdapter from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
@@ -729,7 +729,7 @@ describe("createPagesPageHandler — preview responses", () => {
   });
 
   it("does not expose preview notFound responses to shared Cloudflare caching", async () => {
-    setCdnCacheAdapter(createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } }));
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const pageRoute = makeRoute(
       "/missing",
       makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),

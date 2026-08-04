@@ -9,9 +9,8 @@ This package provides Cloudflare-specific cache and image backends for vinext:
   data cache (`fetch`, `"use cache"`, `unstable_cache`) with a Workers KV
   namespace.
 - **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — delegates
-  page-level ISR serving and revalidation to Cloudflare Workers Cache. Pass
-  `{ mode: "data-cache" }` to retain origin-managed page storage while keeping
-  Cloudflare response headers adapter-owned.
+  page-level ISR serving and revalidation to Cloudflare Workers Cache. This is
+  opt-in and requires Workers Cache to be enabled in Wrangler config.
 - **`imagesOptimizer()`** (`@vinext/cloudflare/images/images-optimizer`) — backs
   `next/image` transformations with a Cloudflare Images binding.
 
@@ -21,14 +20,12 @@ Declare the adapters on the `vinext()` plugin in your Vite config:
 
 ```ts
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 
 export default defineConfig({
   plugins: [
     vinext({
       cache: {
-        cdn: cdnAdapter(), // Required for Cloudflare
         data: kvDataAdapter(), // KV-backed data cache (binding: VINEXT_KV_CACHE)
       },
       images: { optimizer: imagesOptimizer() }, // Cloudflare Images binding: IMAGES
@@ -36,6 +33,25 @@ export default defineConfig({
     cloudflare(),
   ],
 });
+```
+
+### Workers Cache
+
+`cdnAdapter()` is optional. Only configure it when Workers Cache is enabled in
+`wrangler.jsonc`:
+
+```jsonc
+{
+  "cache": {
+    "enabled": true,
+  },
+}
+```
+
+```ts
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+
+vinext({ cache: { cdn: cdnAdapter() } });
 ```
 
 ## Deploy

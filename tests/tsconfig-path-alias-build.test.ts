@@ -5,7 +5,6 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 
 const tmpDirs: string[] = [];
 const workerEntryPath = path
@@ -145,7 +144,7 @@ async function buildCloudflareAppFixture(root: string) {
     root,
     configFile: false,
     plugins: [
-      vinext({ appDir: root, cache: { cdn: cdnAdapter({ mode: "data-cache" }) } }),
+      vinext({ appDir: root }),
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
     ],
     logLevel: "silent",

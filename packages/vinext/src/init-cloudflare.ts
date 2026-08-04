@@ -466,7 +466,9 @@ function cacheImports(options: CloudflareInitOptions): string[] {
   if (options.dataCache === "kv") {
     imports.push('import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";');
   }
-  imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
+  if (options.cdnCache === "workers-cache") {
+    imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
+  }
   if (options.imageOptimization === "cloudflare-images") {
     imports.push('import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";');
   }
@@ -484,11 +486,7 @@ function vinextExpression(
   if (options.dataCache === "kv") {
     cacheEntries.push("data: kvDataAdapter()");
   }
-  cacheEntries.push(
-    options.cdnCache === "workers-cache"
-      ? "cdn: cdnAdapter()"
-      : 'cdn: cdnAdapter({ mode: "data-cache" })',
-  );
+  if (options.cdnCache === "workers-cache") cacheEntries.push("cdn: cdnAdapter()");
   const optionEntries: string[] = [];
   if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
@@ -1506,7 +1504,11 @@ export function updateViteConfigForCloudflare(
         );
     cacheAdditions.push({ name: "data", expression: `${binding}()` });
   }
-  if (configureCaches && !hasVinextCacheSlot(existingVinextCall, "cdn")) {
+  if (
+    configureCaches &&
+    cacheOptions.cdnCache === "workers-cache" &&
+    !hasVinextCacheSlot(existingVinextCall, "cdn")
+  ) {
     const imported = "cdnAdapter";
     const source = "@vinext/cloudflare/cache/cdn-adapter";
     const existing = commonJs
@@ -1516,11 +1518,7 @@ export function updateViteConfigForCloudflare(
     const binding = commonJs
       ? ensureNamedRequire(program, output, source, imported, local)
       : ensureNamedImport(program, output, source, imported, local);
-    const expression =
-      cacheOptions.cdnCache === "workers-cache"
-        ? `${binding}()`
-        : `${binding}({ mode: "data-cache" })`;
-    cacheAdditions.push({ name: "cdn", expression });
+    cacheAdditions.push({ name: "cdn", expression: `${binding}()` });
   }
   let imageOptimizerExpression: string | undefined;
   if (cacheOptions.imageOptimization === "cloudflare-images") {
