@@ -354,7 +354,12 @@ export async function executeMiddleware(
   // match, while preserving encoded delimiters misses matchers that Next.js
   // evaluates against their decoded path structure.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/next-server.ts
-  const encodedRequestPathname = normalizePath(requestPathname);
+  // Next.js removes the request pathname's terminal slash before evaluating
+  // the compiled middleware matcher. The matcher compiler still appends its
+  // own optional terminal delimiter, so a source without a slash matches both
+  // request spellings while a source that includes a slash remains distinct.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/next-server.ts
+  const encodedRequestPathname = removeTrailingSlash(normalizePath(requestPathname));
   const matcher = middlewareMatcher(options.module);
   const prepareMatcherPathname = (candidate: string): string | null => {
     if (!options.basePath) return candidate;
