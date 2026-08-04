@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { originCdnAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.js";
+import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 
 const tmpDirs: string[] = [];
 const workerEntryPath = path
@@ -179,7 +179,7 @@ export default createAdapter;
         vinext({
           appDir: root,
           cache: {
-            cdn: originCdnAdapter(),
+            cdn: cdnAdapter({ mode: "data-cache" }),
             data: { adapter: adapterAbsPath },
           },
         }),

@@ -142,7 +142,7 @@ export default { plugins: [vinext(), cloudflare({
     expect(output).toContain(
       'viteEnvironment: { name: "rsc", childEnvironments: ["ssr", "other"] }',
     );
-    expect(output).toContain("cdn: originCdnAdapter()");
+    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
   });
 
   it("leaves an existing cloudflare() call alone for the Pages Router", () => {
@@ -221,7 +221,7 @@ export default { plugins: [first(), /* keep second */ second()] };
     });
     expectValidConfig(output);
     expect(output).toContain(
-      "plugins: [\n  first(),\n  /* keep second */\n  second(),\n  vinext({\n    cache: { cdn: originCdnAdapter() },\n  }),\n  cloudflare(),\n]",
+      'plugins: [\n  first(),\n  /* keep second */\n  second(),\n  vinext({\n    cache: { cdn: cdnAdapter({ mode: "data-cache" }) },\n  }),\n  cloudflare(),\n]',
     );
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
@@ -397,7 +397,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     );
     expectValidConfig(output);
     expect(output).toContain("data: customData()");
-    expect(output).toContain("cdn: originCdnAdapter()");
+    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
     expect(output).toContain('prerender: { routes: "*" }');
   });
 
@@ -520,7 +520,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     });
     expectValidConfig(output);
     expect(output).not.toContain("data:");
-    expect(output).toContain("cdn: originCdnAdapter()");
+    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
     expect(output).not.toContain("imagesOptimizer");
     expect(output).not.toContain("images:");
   });
@@ -536,7 +536,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
       },
     });
     expectValidConfig(output);
-    expect(output).toContain("cdn: originCdnAdapter()");
+    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
     expect(output).toContain("images: { optimizer: imagesOptimizer() }");
   });
 
@@ -550,7 +550,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
-    expect(output).toContain("cdn: originCdnAdapter()");
+    expect(output).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
     expect(output).toContain("imageOptimization: true");
     expect(output).not.toContain("imagesOptimizer");
   });

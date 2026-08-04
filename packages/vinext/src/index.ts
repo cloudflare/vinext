@@ -2537,8 +2537,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           throw new Error(
             "[vinext] Cloudflare deployments must configure a CDN cache adapter so " +
               "platform-specific response headers have an explicit owner. Configure " +
-              "`cache.cdn` with `originCdnAdapter()` to preserve origin-managed ISR, or " +
-              "`cdnAdapter()` to use Cloudflare edge-managed ISR.",
+              "`cache.cdn` with `cdnAdapter()` from `@vinext/cloudflare`.",
           );
         }
         hasNitroPlugin = pluginsFlat.some(

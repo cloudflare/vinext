@@ -9,8 +9,9 @@
  *    explicitly configured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
-import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import { CloudflareOriginCdnCacheAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.runtime.js";
+import createCloudflareCdnCacheAdapter, {
+  CloudflareCdnCacheAdapter,
+} from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -336,7 +337,7 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("clears Cloudflare-owned headers for origin-managed pending dynamic misses", async () => {
-    setCdnCacheAdapter(new CloudflareOriginCdnCacheAdapter());
+    setCdnCacheAdapter(createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } }));
     const response = finalizePendingDynamicRscResponse();
 
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");

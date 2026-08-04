@@ -28,16 +28,12 @@ import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matc
 import { DefaultCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
-import { originCdnAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.js";
 import createKvDataCacheAdapter, {
   KVCacheHandler,
 } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
 import createCloudflareCdnCacheAdapter, {
   CloudflareCdnCacheAdapter,
 } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import createCloudflareOriginCdnCacheAdapter, {
-  CloudflareOriginCdnCacheAdapter,
-} from "../packages/cloudflare/src/cache/origin-cdn-adapter.runtime.js";
 
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
@@ -292,23 +288,21 @@ describe("cdnAdapter builder + factory", () => {
   });
 });
 
-describe("originCdnAdapter builder + factory", () => {
-  it("builder resolves the runtime factory to an absolute path", () => {
-    const descriptor = originCdnAdapter();
-    expect(path.isAbsolute(descriptor.adapter)).toBe(true);
-    expect(descriptor.adapter.endsWith("origin-cdn-adapter.runtime.js")).toBe(true);
-    expect(descriptor.options).toBeUndefined();
+describe("cdnAdapter data-cache mode", () => {
+  it("uses the existing CDN adapter descriptor", () => {
+    const descriptor = cdnAdapter({ mode: "data-cache" });
+    expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
+    expect(descriptor.options).toEqual({ mode: "data-cache" });
   });
 
-  it("factory preserves origin-managed ISR behavior", () => {
-    const adapter = createCloudflareOriginCdnCacheAdapter();
-    expect(adapter).toBeInstanceOf(CloudflareOriginCdnCacheAdapter);
+  it("preserves origin-managed ISR behavior", () => {
+    const adapter = createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } });
     expect(adapter).toBeInstanceOf(DefaultCdnCacheAdapter);
     expect(adapter.ownsBackgroundRevalidation).toBe(true);
   });
 
   it("preserves generic Cache-Control while clearing Cloudflare-owned headers", () => {
-    const adapter = createCloudflareOriginCdnCacheAdapter();
+    const adapter = createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } });
     expect(adapter.buildResponseHeaders({ cacheControl: "s-maxage=60" })).toEqual({
       "Cache-Control": "s-maxage=60",
       "CDN-Cache-Control": null,
@@ -329,14 +323,14 @@ describe("originCdnAdapter builder + factory", () => {
   });
 
   it("interprets Cloudflare-owned cache policy", () => {
-    const adapter = new CloudflareOriginCdnCacheAdapter();
+    const adapter = createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } });
     expect(
-      adapter.hasExplicitNonCacheableResponsePolicy(
+      adapter.hasExplicitNonCacheableResponsePolicy?.(
         new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
       ),
     ).toBe(true);
     expect(
-      adapter.hasExplicitNonCacheableResponsePolicy(
+      adapter.hasExplicitNonCacheableResponsePolicy?.(
         new Headers({
           "Cache-Control": "no-store",
           "CDN-Cache-Control": "public, max-age=60",
@@ -381,8 +375,8 @@ describe("Cloudflare adapter requirement", () => {
   });
 
   it.each([
-    ["origin-managed", originCdnAdapter()],
-    ["edge-managed", cdnAdapter()],
+    ["data-cache mode", cdnAdapter({ mode: "data-cache" })],
+    ["Workers Cache mode", cdnAdapter()],
   ])("accepts the %s Cloudflare adapter", async (_label, adapter) => {
     await expect(runCloudflareConfig({ cdn: adapter })).resolves.toBeDefined();
   });

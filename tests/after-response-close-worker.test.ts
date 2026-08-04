@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { originCdnAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.js";
+import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
@@ -102,7 +102,7 @@ export const config = { matcher: ["/robots.txt"] };
       root,
       configFile: false,
       plugins: [
-        vinext({ appDir: root, cache: { cdn: originCdnAdapter() } }),
+        vinext({ appDir: root, cache: { cdn: cdnAdapter({ mode: "data-cache" }) } }),
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
       logLevel: "silent",

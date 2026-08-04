@@ -21,7 +21,7 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { CloudflareOriginCdnCacheAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.runtime.js";
+import createCloudflareCdnCacheAdapter from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
@@ -728,20 +728,29 @@ describe("createPagesPageHandler — preview responses", () => {
     expect(response.headers.get("x-example-cache-tag")).toBe("draft-404");
   });
 
-  it("clears Cloudflare-owned headers on preview responses", () => {
-    setCdnCacheAdapter(new CloudflareOriginCdnCacheAdapter());
-    const response = finalizePagesPreviewResponse(
-      new Response("preview", {
-        headers: {
-          "Cache-Control": "s-maxage=6000",
-          "CDN-Cache-Control": "s-maxage=6000",
-          "Cloudflare-CDN-Cache-Control": "s-maxage=6000",
-          "Cache-Tag": "draft-404",
-        },
-      }),
-      { data: { draft: true }, shouldClear: false },
+  it("does not expose preview notFound responses to shared Cloudflare caching", async () => {
+    setCdnCacheAdapter(createCloudflareCdnCacheAdapter({ options: { mode: "data-cache" } }));
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
     );
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+    const request = new Request("http://localhost/missing", {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+    const middlewareHeaders = new Headers({
+      "CDN-Cache-Control": "s-maxage=6000",
+      "Cloudflare-CDN-Cache-Control": "s-maxage=6000",
+      "Cache-Tag": "draft-404",
+    });
 
+    const response = await handler(request, "/missing", null, middlewareHeaders, null);
+
+    expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
     expect(response.headers.get("cdn-cache-control")).toBeNull();
     expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();

@@ -28,7 +28,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
-import { originCdnAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.js";
+import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import { restoreDedupedCssAssetReferences } from "../packages/vinext/src/build/css-url-assets.js";
 import { createIsolatedFixture } from "./helpers.js";
 
@@ -330,7 +330,9 @@ describe.each(["plain", "cloudflare"] as const)(
       const plugins: import("vite").PluginOption[] = [
         vinext({
           appDir: tmpDir,
-          ...(buildTarget === "cloudflare" ? { cache: { cdn: originCdnAdapter() } } : {}),
+          ...(buildTarget === "cloudflare"
+            ? { cache: { cdn: cdnAdapter({ mode: "data-cache" }) } }
+            : {}),
         }),
       ];
       if (buildTarget === "cloudflare") {

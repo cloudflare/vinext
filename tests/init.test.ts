@@ -699,7 +699,7 @@ describe("init — basic functionality", () => {
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).not.toContain("data:");
-    expect(config).toContain("cdn: originCdnAdapter()");
+    expect(config).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
     expect(config).not.toContain("imagesOptimizer");
     const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
     expect(wrangler.kv_namespaces).toBeUndefined();
@@ -774,7 +774,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("data: customData()");
-    expect(config).toContain("cdn: originCdnAdapter()");
+    expect(config).toContain('cdn: cdnAdapter({ mode: "data-cache" })');
     expect(config).toContain('prerender: { routes: "*" }');
   });
 
