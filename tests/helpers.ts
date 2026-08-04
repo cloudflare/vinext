@@ -13,6 +13,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { originCdnAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.js";
 import path from "node:path";
 
 // ── Fixture paths ─────────────────────────────────────────────
@@ -341,7 +342,7 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
     root: tmpDir,
     configFile: false,
     plugins: [
-      vinext({ appDir: tmpDir }),
+      vinext({ appDir: tmpDir, cache: { cdn: originCdnAdapter() } }),
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
     ],
     logLevel: "silent",

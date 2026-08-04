@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { build, createBuilder } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { originCdnAdapter } from "../packages/cloudflare/src/cache/origin-cdn-adapter.js";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
 
 const PNG_1X1 = Buffer.from(
@@ -231,7 +232,7 @@ async function buildCloudflareFixture(root: string): Promise<void> {
     configFile: false,
     logLevel: "silent",
     plugins: [
-      vinext({ appDir: root }),
+      vinext({ appDir: root, cache: { cdn: originCdnAdapter() } }),
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
     ],
   });
