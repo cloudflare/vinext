@@ -46,21 +46,23 @@ type ForwardServerActionOptions = {
 };
 
 function deletesCookie(setCookie: string, now: number): boolean {
+  let maxAge: number | null = null;
+  let expiresAt: number | null = null;
   for (const attribute of setCookie.split(";").slice(1)) {
     const equalsIndex = attribute.indexOf("=");
     if (equalsIndex === -1) continue;
     const name = attribute.slice(0, equalsIndex).trim().toLowerCase();
     const value = attribute.slice(equalsIndex + 1).trim();
     if (name === "max-age") {
-      const maxAge = Number(value);
-      if (Number.isFinite(maxAge) && maxAge <= 0) return true;
+      const parsedMaxAge = Number(value);
+      if (Number.isFinite(parsedMaxAge)) maxAge = parsedMaxAge;
     }
     if (name === "expires") {
-      const expiresAt = Date.parse(value);
-      if (Number.isFinite(expiresAt) && expiresAt <= now) return true;
+      const parsedExpiresAt = Date.parse(value);
+      if (Number.isFinite(parsedExpiresAt)) expiresAt = parsedExpiresAt;
     }
   }
-  return false;
+  return maxAge !== null ? maxAge <= 0 : expiresAt !== null && expiresAt <= now;
 }
 
 function mergeActionForwardCookies(requestHeaders: Headers, responseHeaders: Headers): void {

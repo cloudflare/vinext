@@ -543,6 +543,35 @@ describe("app server action execution helpers", () => {
     expect(decodeAction).not.toHaveBeenCalled();
   });
 
+  it("rejects outlined action metadata before decoding its module", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify("$1"));
+    body.set("$ACTION_1:1", JSON.stringify({ id: "protected-action", bound: null }));
+    const decodeAction = vi.fn();
+    const forwardAction = vi.fn();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            decodeAction,
+            forwardAction,
+            readFormDataWithLimit: async () => body,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(decodeAction).not.toHaveBeenCalled();
+      expect(forwardAction).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("enforces content-length and stream body limits", async () => {
     const clearContext = vi.fn();
     const lengthResponse = requireProgressiveActionResponse(

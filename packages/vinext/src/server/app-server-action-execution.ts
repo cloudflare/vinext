@@ -1090,6 +1090,7 @@ export async function handleProgressiveServerActionRequest(
       if (key.startsWith("$ACTION_ID_") || key.startsWith("$ACTION_REF_")) actionKey = key;
     }
     let directActionId: string | null = null;
+    let invalidDirectActionReference = false;
     if (actionKey?.startsWith("$ACTION_ID_")) {
       directActionId = actionKey.slice("$ACTION_ID_".length);
     } else if (actionKey?.startsWith("$ACTION_REF_")) {
@@ -1104,9 +1105,21 @@ export async function handleProgressiveServerActionRequest(
             typeof Reflect.get(parsedMetadata, "id") === "string"
           ) {
             directActionId = Reflect.get(parsedMetadata, "id");
+          } else {
+            invalidDirectActionReference = true;
           }
-        } catch {}
+        } catch {
+          invalidDirectActionReference = true;
+        }
+      } else {
+        invalidDirectActionReference = true;
       }
+    }
+    if (invalidDirectActionReference) {
+      return createActionNotFoundResponse(null, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
     }
     if (directActionId && options.forwardAction) {
       const forwardResponse = await options.forwardAction(directActionId);
