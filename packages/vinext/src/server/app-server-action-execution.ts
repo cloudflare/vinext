@@ -1086,7 +1086,8 @@ export async function handleProgressiveServerActionRequest(
     }
 
     const directActionId = [...body.keys()]
-      .find((key) => key.startsWith("$ACTION_ID_"))
+      .filter((key) => key.startsWith("$ACTION_ID_"))
+      .at(-1)
       ?.slice("$ACTION_ID_".length);
     if (directActionId && options.forwardAction) {
       const forwardResponse = await options.forwardAction(directActionId);
@@ -1111,7 +1112,11 @@ export async function handleProgressiveServerActionRequest(
     }
 
     const decodedActionId = Reflect.get(action, "$$id");
-    if (!directActionId && typeof decodedActionId === "string" && options.forwardAction) {
+    if (
+      typeof decodedActionId === "string" &&
+      decodedActionId !== directActionId &&
+      options.forwardAction
+    ) {
       const forwardResponse = await options.forwardAction(decodedActionId);
       if (forwardResponse) return forwardResponse;
     }

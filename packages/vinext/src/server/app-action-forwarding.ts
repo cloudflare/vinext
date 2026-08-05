@@ -116,15 +116,19 @@ function filterActionForwardResponse(
       headers.set(key, value);
     }
   }
+  const isActionNotFound = response.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1";
   return new Response(response.body, {
     headers,
-    status: sourceMiddlewareStatus ?? response.status,
+    status: isActionNotFound ? response.status : (sourceMiddlewareStatus ?? response.status),
     statusText: response.statusText,
   });
 }
 
-function emptyActionForwardResponse(): Response {
-  return new Response("{}", { headers: { "content-type": "application/json" } });
+function emptyActionForwardResponse(middlewareContext: AppMiddlewareContext): Response {
+  const headers = new Headers(middlewareContext.headers ?? undefined);
+  processMiddlewareHeaders(headers);
+  headers.set("content-type", "application/json");
+  return new Response("{}", { headers, status: middlewareContext.status ?? 200 });
 }
 
 function actionOwnerPatterns(
@@ -158,11 +162,15 @@ export async function forwardServerActionIfNeeded(
   if (!ownerPath) {
     console.warn(getServerActionNotFoundMessage(options.actionId));
     options.clearRequestContext();
-    return createServerActionNotFoundResponse();
+    return filterActionForwardResponse(
+      createServerActionNotFoundResponse(),
+      options.middlewareContext.headers,
+      options.middlewareContext.status,
+    );
   }
   if (options.request.headers.get(ACTION_FORWARDED_HEADER)) {
     options.clearRequestContext();
-    return emptyActionForwardResponse();
+    return emptyActionForwardResponse(options.middlewareContext);
   }
 
   const forwardUrl = new URL(options.request.url);
@@ -187,7 +195,7 @@ export async function forwardServerActionIfNeeded(
   } catch (error) {
     console.error("[vinext] Failed to forward server action:", error);
     options.clearRequestContext();
-    return emptyActionForwardResponse();
+    return emptyActionForwardResponse(options.middlewareContext);
   }
 
   if (
@@ -201,5 +209,5 @@ export async function forwardServerActionIfNeeded(
     );
   }
   void forwardResponse.body?.cancel().catch(() => {});
-  return emptyActionForwardResponse();
+  return emptyActionForwardResponse(options.middlewareContext);
 }

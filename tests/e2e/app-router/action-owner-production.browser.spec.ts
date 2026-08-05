@@ -187,16 +187,24 @@ async function postRawAction(
   );
 }
 
-async function postProgressiveAction(page: Page, pathname: string, actionId: string) {
+async function postProgressiveAction(
+  page: Page,
+  pathname: string,
+  actionId: string,
+  earlierActionIds: string[] = [],
+) {
   await page.goto(`${app.baseUrl}${pathname}`);
   return page.evaluate(
-    async ({ actionId, pathname }) => {
+    async ({ actionId, earlierActionIds, pathname }) => {
       const body = new FormData();
+      for (const earlierActionId of earlierActionIds) {
+        body.append(`$ACTION_ID_${earlierActionId}`, "");
+      }
       body.set(`$ACTION_ID_${actionId}`, "");
       const response = await fetch(pathname, { body, method: "POST" });
       return { body: await response.text(), status: response.status };
     },
-    { actionId, pathname },
+    { actionId, earlierActionIds, pathname },
   );
 }
 
@@ -296,6 +304,17 @@ test.describe("production server action ownership", () => {
       page,
       "/ownership/report/public",
       app.actionIds.adminOnly,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).not.toContain("ADMIN_ONLY_EXECUTED");
+  });
+
+  test("routes progressive actions using React's last action field", async ({ page }) => {
+    const response = await postProgressiveAction(
+      page,
+      "/ownership/report/public",
+      app.actionIds.adminOnly,
+      [app.actionIds.redirectTo],
     );
     expect(response.status).toBe(200);
     expect(response.body).not.toContain("ADMIN_ONLY_EXECUTED");

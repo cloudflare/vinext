@@ -250,11 +250,18 @@ describe("server action forwarding", () => {
         async dispatch() {
           return createServerActionNotFoundResponse();
         },
+        middlewareContext: {
+          headers: new Headers({ "set-cookie": "source=1", "x-source": "kept" }),
+          requestHeaders: null,
+          status: 418,
+        },
       }),
     );
 
     expect(response?.status).toBe(404);
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(response?.headers.get("x-source")).toBe("kept");
+    expect(response?.headers.getSetCookie()).toEqual(["source=1"]);
     expect(await response?.text()).toBe("Server action not found.");
   });
 
