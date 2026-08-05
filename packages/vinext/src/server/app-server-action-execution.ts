@@ -277,8 +277,10 @@ function parseBoundProgressiveActionReference(
       const value = values.pop();
       if (typeof value === "string") {
         if (!value.startsWith("$h")) continue;
-        const [chunkId, ...path] = value.slice(2).split(":");
-        let metadata = chunks.get(chunkId);
+        const [encodedChunkId, ...path] = value.slice(2).split(":");
+        const chunkId = Number.parseInt(encodedChunkId, 16);
+        if (!Number.isSafeInteger(chunkId) || chunkId < 0) return null;
+        let metadata = chunks.get(String(chunkId));
         for (const segment of path) {
           if (
             typeof metadata !== "object" ||

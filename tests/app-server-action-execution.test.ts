@@ -576,8 +576,8 @@ describe("app server action execution helpers", () => {
     const body = new FormData();
     body.set("$ACTION_REF_1", "");
     body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
-    body.set("$ACTION_1:1", JSON.stringify(["$h2"]));
-    body.set("$ACTION_1:2", JSON.stringify({ id: "nested-action", bound: null }));
+    body.set("$ACTION_1:1", JSON.stringify(["$ha"]));
+    body.set("$ACTION_1:10", JSON.stringify({ id: "nested-action", bound: null }));
     const decodeAction = vi.fn();
     const validateActionReferences = vi.fn(() => false);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
