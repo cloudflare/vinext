@@ -1085,10 +1085,29 @@ export async function handleProgressiveServerActionRequest(
       return payloadResponse;
     }
 
-    const directActionId = [...body.keys()]
-      .filter((key) => key.startsWith("$ACTION_ID_"))
-      .at(-1)
-      ?.slice("$ACTION_ID_".length);
+    let actionKey: string | null = null;
+    for (const key of body.keys()) {
+      if (key.startsWith("$ACTION_ID_") || key.startsWith("$ACTION_REF_")) actionKey = key;
+    }
+    let directActionId: string | null = null;
+    if (actionKey?.startsWith("$ACTION_ID_")) {
+      directActionId = actionKey.slice("$ACTION_ID_".length);
+    } else if (actionKey?.startsWith("$ACTION_REF_")) {
+      const referencePrefix = actionKey.slice("$ACTION_REF_".length);
+      const referenceMetadata = body.get(`$ACTION_${referencePrefix}:0`);
+      if (typeof referenceMetadata === "string") {
+        try {
+          const parsedMetadata: unknown = JSON.parse(referenceMetadata);
+          if (
+            typeof parsedMetadata === "object" &&
+            parsedMetadata !== null &&
+            typeof Reflect.get(parsedMetadata, "id") === "string"
+          ) {
+            directActionId = Reflect.get(parsedMetadata, "id");
+          }
+        } catch {}
+      }
+    }
     if (directActionId && options.forwardAction) {
       const forwardResponse = await options.forwardAction(directActionId);
       if (forwardResponse) return forwardResponse;

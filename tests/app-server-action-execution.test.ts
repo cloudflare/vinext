@@ -520,6 +520,29 @@ describe("app server action execution helpers", () => {
     expect((await request.formData()).get("field")).toBe("value");
   });
 
+  it("routes bound progressive actions before decoding their modules", async () => {
+    const body = new FormData();
+    body.set("$ACTION_ID_earlier-action", "");
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "bound-action", bound: "$@1" }));
+    const decodeAction = vi.fn();
+    const forwardAction = vi.fn(async () => new Response("forwarded"));
+
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          decodeAction,
+          forwardAction,
+          readFormDataWithLimit: async () => body,
+        }),
+      ),
+    );
+
+    expect(await response.text()).toBe("forwarded");
+    expect(forwardAction).toHaveBeenCalledWith("bound-action");
+    expect(decodeAction).not.toHaveBeenCalled();
+  });
+
   it("enforces content-length and stream body limits", async () => {
     const clearContext = vi.fn();
     const lengthResponse = requireProgressiveActionResponse(

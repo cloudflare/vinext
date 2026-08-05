@@ -208,6 +208,20 @@ async function postProgressiveAction(
   );
 }
 
+async function postRenderedProgressiveForm(
+  page: Page,
+  sourcePathname: string,
+  targetPathname: string,
+) {
+  await page.goto(`${app.baseUrl}${sourcePathname}`);
+  return page.evaluate(async (targetPathname) => {
+    const form = document.querySelector("form");
+    if (!(form instanceof HTMLFormElement)) throw new Error("Missing progressive action form");
+    const response = await fetch(targetPathname, { body: new FormData(form), method: "POST" });
+    return { body: await response.text(), status: response.status };
+  }, targetPathname);
+}
+
 let app: ProductionApp;
 
 test.beforeAll(async () => {
@@ -318,6 +332,17 @@ test.describe("production server action ownership", () => {
     );
     expect(response.status).toBe(200);
     expect(response.body).not.toContain("ADMIN_ONLY_EXECUTED");
+  });
+
+  test("routes bound progressive actions before loading their modules", async ({ page }) => {
+    const response = await postRenderedProgressiveForm(
+      page,
+      "/ownership/same-name/action-owner",
+      "/ownership/same-name/helper-only",
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toBe("{}");
+    expect(response.body).not.toContain("SAME_NAME_ACTION_OK");
   });
 
   test("retains protected ownership through client component boundaries", async ({ page }) => {

@@ -61,19 +61,16 @@ function deletesCookie(setCookie: string, now: number): boolean {
 
 function mergeActionForwardCookies(requestHeaders: Headers, responseHeaders: Headers): void {
   const requestCookies = new RequestCookies(requestHeaders);
-  const deletedCookieNames = new Set<string>();
   const now = Date.now();
   for (const setCookie of responseHeaders.getSetCookie()) {
     const name = getSetCookieName(setCookie);
     if (!name) continue;
     if (deletesCookie(setCookie, now)) {
-      deletedCookieNames.add(name);
       requestCookies.delete(name);
+      continue;
     }
-  }
-  const responseCookies = new ResponseCookies(responseHeaders);
-  for (const cookie of responseCookies.getAll()) {
-    if (!deletedCookieNames.has(cookie.name)) requestCookies.set(cookie);
+    const [cookie] = new ResponseCookies(new Headers({ "set-cookie": setCookie })).getAll();
+    if (cookie) requestCookies.set(cookie);
   }
   requestHeaders.set("cookie", requestCookies.toString());
 }

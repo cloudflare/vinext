@@ -199,6 +199,33 @@ describe("server action forwarding", () => {
     expect(forwardedCookie).toContain("theme=dark");
   });
 
+  it("applies middleware cookie mutations in response order", async () => {
+    const middlewareHeaders = new Headers();
+    middlewareHeaders.append("set-cookie", "session=; Path=/; Max-Age=0");
+    middlewareHeaders.append("set-cookie", "session=rotated; Path=/");
+    let forwardedCookie = "";
+
+    await forwardServerActionIfNeeded(
+      options({
+        async dispatch(nextRequest: Request) {
+          forwardedCookie = nextRequest.headers.get("cookie") ?? "";
+          return new Response("flight", {
+            headers: { "content-type": "text/x-component" },
+          });
+        },
+        middlewareContext: {
+          headers: middlewareHeaders,
+          requestHeaders: null,
+          status: null,
+        },
+        request: request({ cookie: "session=old; theme=dark" }),
+      }),
+    );
+
+    expect(forwardedCookie).toContain("session=rotated");
+    expect(forwardedCookie).toContain("theme=dark");
+  });
+
   it.each([
     "session=; Path=/; Max-Age=-1",
     "session=; Path=/; Expires=Wed, 01 Jan 2020 00:00:00 GMT",
