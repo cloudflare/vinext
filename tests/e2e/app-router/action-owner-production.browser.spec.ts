@@ -468,6 +468,12 @@ test.describe("production server action ownership", () => {
     );
     expect(response.status).toBe(200);
     expect(response.body).toContain("trusted:present");
+    expect(await page.context().cookies(app.baseUrl)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "forwarded-cookie", value: "present" }),
+        expect.objectContaining({ name: "owner-action", value: "present" }),
+      ]),
+    );
   });
 
   test("stops recursive forwarding after an owner rewrite", async ({ page }) => {

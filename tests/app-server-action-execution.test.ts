@@ -572,6 +572,36 @@ describe("app server action execution helpers", () => {
     }
   });
 
+  it("validates nested bound server references before decoding modules", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
+    body.set("$ACTION_1:1", JSON.stringify(["$h2"]));
+    body.set("$ACTION_1:2", JSON.stringify({ id: "nested-action", bound: null }));
+    const decodeAction = vi.fn();
+    const validateActionReferences = vi.fn(() => false);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            decodeAction,
+            forwardAction: async () => null,
+            readFormDataWithLimit: async () => body,
+            validateActionReferences,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(validateActionReferences).toHaveBeenCalledWith(["selected-action", "nested-action"]);
+      expect(decodeAction).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("enforces content-length and stream body limits", async () => {
     const clearContext = vi.fn();
     const lengthResponse = requireProgressiveActionResponse(

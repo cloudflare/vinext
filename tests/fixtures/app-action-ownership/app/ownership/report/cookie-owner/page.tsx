@@ -5,7 +5,9 @@ export default function Page() {
   const readForwardedCredentials = async () => {
     "use server";
     const auth = (await headers()).get("x-forwarded-auth") ?? "missing";
-    const cookie = (await cookies()).get("forwarded-cookie")?.value ?? "missing";
+    const cookieStore = await cookies();
+    const cookie = cookieStore.get("forwarded-cookie")?.value ?? "missing";
+    cookieStore.set("owner-action", "present");
     return `${auth}:${cookie}`;
   };
 

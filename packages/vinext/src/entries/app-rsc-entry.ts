@@ -1033,8 +1033,10 @@ const __appRscHandler = createAppRscHandler({
       isProgressiveServerActionRequest: __isProgressiveServerActionRequest,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
-    const { forwardServerActionIfNeeded: __forwardServerActionIfNeeded } =
-      await __loadAppActionForwarding();
+    const {
+      areServerActionsOwnedByRoute: __areServerActionsOwnedByRoute,
+      forwardServerActionIfNeeded: __forwardServerActionIfNeeded,
+    } = await __loadAppActionForwarding();
     // A multipart form POST to a page is always a server-action attempt, so a
     // body that decodes to no action must surface as 404 action-not-found
     // (#1340). Route handlers run after this dispatch and accept raw multipart
@@ -1092,6 +1094,13 @@ const __appRscHandler = createAppRscHandler({
           middlewareContext,
           request,
         });
+      },
+      validateActionReferences(__progressiveActionIds) {
+        return __areServerActionsOwnedByRoute(
+          __VINEXT_ACTION_OWNERS(),
+          __progressiveActionIds,
+          routeMatch?.route.pattern ?? null,
+        );
       },
       hasPageRoute: __hasPageRoute,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,

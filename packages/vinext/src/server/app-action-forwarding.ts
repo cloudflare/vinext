@@ -119,6 +119,9 @@ function filterActionForwardResponse(
       headers.set(key, value);
     }
   }
+  for (const setCookie of response.headers.getSetCookie()) {
+    headers.append("set-cookie", setCookie);
+  }
   const preserveResponseStatus =
     response.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
     response.headers.has(ACTION_REDIRECT_HEADER);
@@ -143,6 +146,21 @@ function actionOwnerPatterns(
   if (Object.hasOwn(actionOwners, actionId)) return actionOwners[actionId];
   const moduleId = actionId.split("#", 1)[0]!;
   return Object.hasOwn(actionOwners, moduleId) ? actionOwners[moduleId] : undefined;
+}
+
+export function areServerActionsOwnedByRoute(
+  actionOwners: ActionOwnerManifest | null,
+  actionIds: readonly string[],
+  currentRoutePattern: string | null,
+): boolean {
+  if (!actionOwners) return true;
+  return actionIds.every((actionId) => {
+    const ownerPatterns = actionOwnerPatterns(actionOwners, actionId);
+    return (
+      ownerPatterns?.includes("*") === true ||
+      (currentRoutePattern !== null && ownerPatterns?.includes(currentRoutePattern) === true)
+    );
+  });
 }
 
 export async function forwardServerActionIfNeeded(

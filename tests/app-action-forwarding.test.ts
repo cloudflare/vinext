@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { forwardServerActionIfNeeded } from "../packages/vinext/src/server/app-action-forwarding.js";
+import {
+  areServerActionsOwnedByRoute,
+  forwardServerActionIfNeeded,
+} from "../packages/vinext/src/server/app-action-forwarding.js";
 import {
   ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
@@ -40,6 +43,20 @@ function options(overrides: Record<string, unknown> = {}) {
 }
 
 describe("server action forwarding", () => {
+  it("validates decoded references against the current owner route", () => {
+    const owners = {
+      "module-a#selected": ["/selected"],
+      "module-b#bound": ["/selected", "/other"],
+    };
+
+    expect(
+      areServerActionsOwnedByRoute(owners, ["module-a#selected", "module-b#bound"], "/selected"),
+    ).toBe(true);
+    expect(
+      areServerActionsOwnedByRoute(owners, ["module-a#selected", "module-c#unknown"], "/selected"),
+    ).toBe(false);
+  });
+
   it("does nothing when ownership is unavailable or the current route owns the action", async () => {
     expect(await forwardServerActionIfNeeded(options({ actionOwners: null }))).toBeNull();
     expect(
@@ -71,7 +88,7 @@ describe("server action forwarding", () => {
     expect(await capturedRequest.text()).toBe("payload");
     expect(response?.headers.get("x-result")).toBe("ok");
     expect(response?.headers.has("content-encoding")).toBe(false);
-    expect(response?.headers.has("set-cookie")).toBe(false);
+    expect(response?.headers.getSetCookie()).toEqual(["ignored=1"]);
     expect(await response?.text()).toBe("flight");
   });
 
@@ -350,6 +367,30 @@ describe("server action forwarding", () => {
     expect(response?.headers.get(ACTION_REDIRECT_TYPE_HEADER)).toBe("push");
     expect(response?.headers.get("x-source")).toBe("kept");
     expect(response?.headers.getSetCookie()).toEqual(["source=1"]);
+  });
+
+  it("preserves action cookies from the forwarded owner", async () => {
+    const response = await forwardServerActionIfNeeded(
+      options({
+        async dispatch() {
+          const headers = new Headers({ "content-type": "text/x-component" });
+          headers.append("set-cookie", "owner=one; Path=/");
+          headers.append("set-cookie", "owner-two=two; Path=/");
+          return new Response("flight", { headers });
+        },
+        middlewareContext: {
+          headers: new Headers({ "set-cookie": "source=1; Path=/" }),
+          requestHeaders: null,
+          status: null,
+        },
+      }),
+    );
+
+    expect(response?.headers.getSetCookie()).toEqual([
+      "source=1; Path=/",
+      "owner=one; Path=/",
+      "owner-two=two; Path=/",
+    ]);
   });
 
   it.each(["constructor#x", "__proto__#x", "prototype#x"])(
