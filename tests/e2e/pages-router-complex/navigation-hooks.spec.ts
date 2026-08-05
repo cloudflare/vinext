@@ -25,7 +25,7 @@ test.describe("next/navigation hooks in the pages router", () => {
     );
   });
 
-  test.fixme("filter changes update the URL via history.replaceState without navigating", async ({
+  test("filter changes update the URL via history.replaceState without navigating", async ({
     page,
   }) => {
     await page.goto("/gallery/directory/a-z");

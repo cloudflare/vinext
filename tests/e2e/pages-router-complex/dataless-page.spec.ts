@@ -13,7 +13,7 @@ test.describe("data-function-less page", () => {
     await expect(page.locator('[data-testid="frame-masthead"]')).toBeVisible();
   });
 
-  test.fixme("radio toggles pin and clear the backend cookie", async ({ page }) => {
+  test("radio toggles pin and clear the backend cookie", async ({ page }) => {
     await page.goto("/detail-tools/client-flags");
 
     await page.getByLabel("canary").check();

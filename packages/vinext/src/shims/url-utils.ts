@@ -216,7 +216,22 @@ export function isHashOnlyBrowserUrlChange(
     // Keep this raw comparison distinct from the App Router planner's parsed
     // search-param comparison until their separate navigation lifecycles are
     // deliberately unified.
-    return currentPathname === nextPathname && current.search === next.search && next.hash !== "";
+    if (currentPathname !== nextPathname || current.search !== next.search) return false;
+
+    // URL.hash cannot distinguish an absent fragment from an explicitly empty
+    // fragment (`/page` vs `/page#`), but Next.js's onlyAHashChange does. Keep
+    // the delimiter while comparing so `<Link href="#">` takes the hash-only
+    // history path instead of fetching and remounting the current page.
+    const currentHashIndex = currentHref.indexOf("#");
+    const nextHashIndex = next.href.indexOf("#");
+    const currentHash =
+      currentHashIndex === -1 ? undefined : currentHref.slice(currentHashIndex + 1);
+    const nextHash = nextHashIndex === -1 ? undefined : next.href.slice(nextHashIndex + 1);
+
+    // Mirrors Next.js: navigating repeatedly to the same non-empty hash still
+    // scrolls to it, while identical absent/empty hashes are no-ops.
+    if (nextHash && currentHash === nextHash) return true;
+    return currentHash !== nextHash;
   } catch {
     return false;
   }

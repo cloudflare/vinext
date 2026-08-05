@@ -39,6 +39,7 @@ export type DiagnosticsProps = {
 const Diagnostics = ({ settingsDump, memoStamp }: DiagnosticsProps) => {
   const [isPrimaryFlyoutOpen, setPrimaryFlyoutOpen] = useState(false);
   const [isSecondaryFlyoutOpen, setSecondaryFlyoutOpen] = useState(false);
+  const [hydrationProbeCount, setHydrationProbeCount] = useState(0);
 
   const launchTimerArm = useTrialArm(LAUNCH_TIMER_FLAG);
 
@@ -65,6 +66,13 @@ const Diagnostics = ({ settingsDump, memoStamp }: DiagnosticsProps) => {
       </ServerHtmlOnly>
 
       <h1>Atlas quick links</h1>
+      <button
+        type="button"
+        data-testid="hydration-readiness-probe"
+        onClick={() => setHydrationProbeCount((count) => count + 1)}
+      >
+        Hydration readiness: {hydrationProbeCount}
+      </button>
       <ul>
         <li>
           <Link href="/gallery/skies/clips" prefetch={false} legacyBehavior>

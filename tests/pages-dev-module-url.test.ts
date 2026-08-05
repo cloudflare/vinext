@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createPagesDevModuleUrl } from "../packages/vinext/src/server/pages-dev-module-url.js";
+import path from "node:path";
+import {
+  createPagesDevAssetUrl,
+  createPagesDevModuleUrl,
+} from "../packages/vinext/src/server/pages-dev-module-url.js";
 
 describe("createPagesDevModuleUrl", () => {
   it("uses Vite's configured base without applying assetPrefix", () => {
@@ -11,6 +15,33 @@ describe("createPagesDevModuleUrl", () => {
   it("preserves root-base behavior", () => {
     expect(createPagesDevModuleUrl("/repo", "/repo/pages/about.tsx", "/")).toBe("/pages/about.tsx");
   });
+
+  it("prefixes virtual development assets with Vite's configured base", () => {
+    expect(createPagesDevAssetUrl("/@id/__x00__virtual:vinext-client-entry", "/docs/")).toBe(
+      "/docs/@id/__x00__virtual:vinext-client-entry",
+    );
+  });
+
+  it("uses Vite's filesystem URL for modules outside the app root", () => {
+    expect(
+      createPagesDevModuleUrl(
+        "/repo/examples/app",
+        "/repo/packages/vinext/src/client/dev-error-overlay.tsx",
+        "/docs/",
+      ),
+    ).toBe("/docs/@fs//repo/packages/vinext/src/client/dev-error-overlay.tsx");
+  });
+
+  it.runIf(process.platform === "win32")(
+    "uses Vite's filesystem URL for modules on another Windows drive",
+    () => {
+      const appRoot = path.resolve("D:\\repo\\app");
+      const modulePath = path.resolve("C:\\repo\\vinext\\dev-error-overlay.tsx");
+      expect(createPagesDevModuleUrl(appRoot, modulePath, "/docs/")).toBe(
+        "/docs/@fs/C:/repo/vinext/dev-error-overlay.tsx",
+      );
+    },
+  );
 
   it("normalizes Windows paths", () => {
     expect(createPagesDevModuleUrl("C:\\repo", "C:\\repo\\pages\\about.tsx", "/docs/")).toBe(

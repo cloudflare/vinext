@@ -98,14 +98,12 @@ PLAYWRIGHT_PROJECT=pages-router-complex pnpm run test:e2e
   degrades under it, so the `@atlas/*` alias is wired into both bundlers
   explicitly (webpack hook + Vite `resolve.alias`); tsconfig `paths` (without
   the removed `baseUrl`) stays authoritative for the type checker.
-- **vinext dev (Cloudflare plugin): 65/73 specs pass; the 8 known gaps are
-  marked `test.fixme` so the passing surface runs in CI.** Known gaps:
-  `generateBuildId` is invoked at dev startup (Next.js only calls it at build
-  time — the e2e server exports `RELEASE_TAG` to compensate), shallow routing
-  + `router.events` (including a hydration knock-on that breaks page
-  interactivity), the `next/image` custom-loader/`fill` path, the
-  `history.replaceState`-beside-the-router hybrid, and the purge endpoint's
-  unauthorized-POST response.
+- **vinext dev (Cloudflare plugin): 72/74 specs pass; the 2 known gaps are
+  marked `test.fixme` so the passing surface runs in CI.** Known gaps are the
+  `next/image` custom-loader/`fill` path and the purge endpoint's
+  unauthorized-POST response. `generateBuildId` is also invoked at dev startup
+  (Next.js only calls it at build time), so the e2e server exports `RELEASE_TAG`
+  to compensate.
 - The pinned workerd binary caps `compatibility_date` at 2026-04-08, so
   `wrangler.jsonc` pins 2026-04-01 rather than the scaffold's "today".
 

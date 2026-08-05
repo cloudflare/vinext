@@ -1,5 +1,9 @@
 export type PagesClientAssets = {
   clientEntry?: string;
+  devErrorOverlay?: string;
+  devModuleUrls?: Record<string, string>;
+  instrumentationClient?: string;
+  reactPreamble?: string;
   appBootstrapPreinitModules?: string[];
   ssrManifest?: Record<string, string[]>;
   lazyChunks?: string[];

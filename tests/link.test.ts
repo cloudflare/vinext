@@ -22,6 +22,7 @@ import Link, {
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
 import { RouterContext } from "../packages/vinext/src/shims/internal/router-context.js";
+import { registerPagesRouterSSRContextAccessor } from "../packages/vinext/src/shims/internal/pages-router-ssr-context.js";
 import {
   navigatePagesRouterLink,
   navigatePagesRouterLinkWithFallback,
@@ -40,6 +41,7 @@ import { addLocalePrefix } from "../packages/vinext/src/utils/domain-locale.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
   isAbsoluteUrl,
+  isHashOnlyBrowserUrlChange,
   normalizePathTrailingSlash,
   resolveRelativeHref,
   toBrowserNavigationHref,
@@ -88,6 +90,33 @@ describe("Link rendering", () => {
       React.createElement(Link, { href: { query: { tab: "settings" } } }, "Settings"),
     );
     expect(html).toContain('href="?tab=settings"');
+  });
+
+  // Ported from Next.js: test/e2e/basepath/pages/hello.js and
+  // test/e2e/basepath/router-events.test.ts. Hash-only Pages Links render
+  // against the current asPath and navigate without a document reload.
+  it("renders hash-only Pages Links against router.asPath during SSR", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        RouterContext.Provider,
+        { value: { asPath: "/diagnostics" } as never },
+        React.createElement(Link, { href: "#" }, "Flyout"),
+      ),
+    );
+
+    expect(html).toContain('href="/diagnostics#"');
+  });
+
+  it("renders hash-only Pages Links from request state when the router context is split", () => {
+    const restore = registerPagesRouterSSRContextAccessor(() => ({ asPath: "/diagnostics" }));
+    try {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(Link, { href: "#" }, "Flyout"),
+      );
+      expect(html).toContain('href="/diagnostics#"');
+    } finally {
+      restore();
+    }
   });
 
   it("renders with as prop overriding href", () => {
@@ -625,6 +654,13 @@ describe("Link resolveHref", () => {
         locales: ["en", "fr"],
       }),
     ).toBe("/about?tab=details#newhash");
+    expect(
+      resolvePagesRouterQueryOnlyHref("#", {
+        asPath: "/diagnostics",
+        basePath: "",
+        fallbackHref: "http://localhost/diagnostics",
+      }),
+    ).toBe("/diagnostics#");
   });
 });
 
@@ -665,6 +701,22 @@ describe("isHashOnlyChange", () => {
   // Server-side (no window) — should return false for non-hash-only
   it("returns false for absolute paths on server", () => {
     expect(isHashOnlyChange("/other")).toBe(false);
+  });
+
+  // Ported from Next.js: packages/next/src/shared/lib/router/router.ts
+  // (`onlyAHashChange`). URL.hash alone cannot represent the empty delimiter.
+  it("distinguishes an empty hash from an absent hash on the same browser URL", () => {
+    expect(isHashOnlyBrowserUrlChange("/diagnostics#", "http://localhost/diagnostics")).toBe(true);
+    expect(isHashOnlyBrowserUrlChange("/diagnostics#", "http://localhost/diagnostics#")).toBe(
+      false,
+    );
+    expect(
+      isHashOnlyBrowserUrlChange("/diagnostics#details", "http://localhost/diagnostics#details"),
+    ).toBe(true);
+    expect(
+      isHashOnlyBrowserUrlChange("/diagnostics#next", "http://localhost/diagnostics#details"),
+    ).toBe(true);
+    expect(isHashOnlyBrowserUrlChange("/diagnostics", "http://localhost/diagnostics")).toBe(false);
   });
 });
 

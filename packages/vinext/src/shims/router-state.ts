@@ -10,6 +10,7 @@
 
 import { _registerRouterStateAccessors } from "./router.js";
 import { registerRoutePatternForWarningAccessor } from "./internal/route-pattern-for-warning.js";
+import { registerPagesRouterSSRContextAccessor } from "./internal/pages-router-ssr-context.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
@@ -91,3 +92,4 @@ _registerRouterStateAccessors({
 // in its "in page: '...'" message without importing router.ts (which would
 // pull a browser-only `installWindowNext()` side effect into the Link bundle).
 registerRoutePatternForWarningAccessor(() => _getState().ssrContext?.pathname ?? null);
+registerPagesRouterSSRContextAccessor(() => _getState().ssrContext);

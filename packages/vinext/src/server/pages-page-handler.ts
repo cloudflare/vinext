@@ -1050,6 +1050,10 @@ export function createPagesPageHandler(
         const assetTags = collectAssetTags({
           manifest,
           moduleIds: pageModuleIds,
+          devInitialModules: {
+            app: appAssetPath,
+            page: route.filePath,
+          },
           scriptNonce,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           basePath: vinextConfig.basePath,
