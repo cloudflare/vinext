@@ -17,8 +17,10 @@ type ProductionApp = {
   actionIds: {
     adminOnly: string;
     adminShared: string;
+    boundaryOnly: string;
     cookieOwner: string;
     dynamicProtected: string;
+    globalErrorOnly: string;
     loop: string;
     protected: string;
     protectedClient: string;
@@ -100,8 +102,10 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
     actionIds: {
       adminOnly: findActionId(builtSource, "$$hoist_0_adminOnly"),
       adminShared: findActionId(builtSource, "adminSharedAction"),
+      boundaryOnly: findActionId(builtSource, "boundaryOnlyAction"),
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
+      globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),
       loop: findActionId(builtSource, "$$hoist_0_loopAction"),
       protected: findActionId(builtSource, "protectedAction"),
       protectedClient: findActionId(builtSource, "protectedClientAction"),
@@ -422,5 +426,21 @@ test.describe("production server action ownership", () => {
     );
     expect(response.status).toBe(200);
     expect(response.body).toContain("SIDE_EFFECT_SECRET_EXECUTED");
+  });
+
+  test("includes server references reached only through route boundaries", async ({ page }) => {
+    const response = await postAction(page, "/ownership/report/public", app.actionIds.boundaryOnly);
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("BOUNDARY_ONLY_ACTION_EXECUTED");
+  });
+
+  test("associates global error actions with every route", async ({ page }) => {
+    const response = await postAction(
+      page,
+      "/ownership/report/public",
+      app.actionIds.globalErrorOnly,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("GLOBAL_ERROR_ONLY_ACTION_EXECUTED");
   });
 });

@@ -11,6 +11,7 @@ type ActionOwnerRoute = Pick<
   | "layoutErrorPaths"
   | "layouts"
   | "loadingPath"
+  | "loadingPaths"
   | "notFoundPath"
   | "notFoundPaths"
   | "pagePath"
@@ -43,6 +44,7 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
     ...route.layouts,
     ...route.templates,
     route.loadingPath,
+    ...(route.loadingPaths ?? []),
     route.errorPath,
     ...(route.layoutErrorPaths ?? []),
     ...(route.errorPaths ?? []),
@@ -58,15 +60,21 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       slot.layoutPath,
       ...(slot.configLayoutPaths ?? []),
       slot.loadingPath,
+      ...(slot.loadingPaths ?? []),
       slot.errorPath,
+      slot.notFoundPath,
       ...slot.interceptingRoutes.flatMap((intercept) => [
         intercept.pagePath,
         ...intercept.layoutPaths,
+        ...(intercept.loadingPaths ?? []),
+        intercept.notFoundPath,
       ]),
     ]),
     ...route.siblingIntercepts.flatMap((intercept) => [
       intercept.pagePath,
       ...intercept.layoutPaths,
+      ...(intercept.loadingPaths ?? []),
+      intercept.notFoundPath,
     ]),
   ].filter((value): value is string => typeof value === "string");
 }
@@ -121,6 +129,7 @@ export function collectRscActionReachability(
     canonicalizeModuleId?: (id: string) => string;
     getModuleInfo: (id: string) => ActionOwnerModuleInfo | null;
     routes: readonly ActionOwnerRoute[];
+    sharedRoots?: readonly string[];
   } & ActionOwnerReferenceMaps,
 ): ActionOwnerRouteReachability {
   return new Map(
@@ -130,7 +139,7 @@ export function collectRscActionReachability(
         canonicalizeModuleId: options.canonicalizeModuleId,
         clientReferenceMetaMap: options.clientReferenceMetaMap,
         getModuleInfo: options.getModuleInfo,
-        roots: actionOwnerRouteEntryIds(route),
+        roots: [...actionOwnerRouteEntryIds(route), ...(options.sharedRoots ?? [])],
         serverReferenceMetaMap: options.serverReferenceMetaMap,
       }),
     ]),

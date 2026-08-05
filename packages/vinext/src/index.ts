@@ -1481,6 +1481,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let rscActionOwnerSharedRoots: string[] = [];
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
   const shimsDir = path.resolve(__dirname, "shims");
@@ -3777,6 +3778,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             rscClassificationManifest = collectRouteClassificationManifest(routes);
             rscActionOwnerRoutes =
               this.environment.config.command === "build" && hasServerActions ? routes : null;
+            rscActionOwnerSharedRoots = globalErrorPath ? [globalErrorPath] : [];
             return generateRscEntry(
               appDir,
               routes,
@@ -7027,8 +7029,10 @@ export const loadServerActionClient = ${
           return rscPluginModule?.getPluginApi(config)?.manager;
         },
         getRoutes: () => rscActionOwnerRoutes ?? [],
+        getSharedRoots: () => rscActionOwnerSharedRoots,
         onComplete() {
           rscActionOwnerRoutes = null;
+          rscActionOwnerSharedRoots = [];
         },
       }),
     );

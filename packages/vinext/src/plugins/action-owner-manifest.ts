@@ -29,6 +29,7 @@ export function createActionOwnerManifestPlugin(options: {
   canonicalizeModuleId: (id: string) => string;
   getManager: (config: ResolvedConfig) => Promise<RscPluginManager | undefined>;
   getRoutes: () => readonly AppRoute[];
+  getSharedRoots: () => readonly string[];
   onComplete?: () => void;
 }): Plugin {
   let config: ResolvedConfig;
@@ -63,6 +64,7 @@ export function createActionOwnerManifestPlugin(options: {
           getModuleInfo: (id) => getModuleInfo(this, id),
           routes: options.getRoutes(),
           serverReferenceMetaMap: manager.serverReferences.metaMap,
+          sharedRoots: options.getSharedRoots(),
         });
       } else if (this.environment.name === "client") {
         addClientActionReachability({

@@ -75,6 +75,26 @@ describe("server action owner manifest", () => {
     });
   });
 
+  it("associates shared render roots with every route", () => {
+    const routeReachability = collectRscActionReachability({
+      getModuleInfo: moduleInfo({}),
+      ...referenceMaps({
+        servers: {
+          "/app/global-error.tsx": {
+            exportNames: ["globalErrorAction"],
+            referenceKey: "global-error",
+          },
+        },
+      }),
+      routes: [route("/a", "/app/a/page.tsx"), route("/b", "/app/b/page.tsx")],
+      sharedRoots: ["/app/global-error.tsx"],
+    });
+
+    expect(buildActionOwnerManifest(routeReachability)).toEqual({
+      "global-error#globalErrorAction": ["/a", "/b"],
+    });
+  });
+
   it("joins RSC Client Component reachability with the final client graph", () => {
     const routeReachability = collectRscActionReachability({
       getModuleInfo: moduleInfo({
@@ -158,6 +178,7 @@ describe("server action owner manifest", () => {
         layoutErrorPaths: ["/app/layout-error.tsx"],
         layouts: ["/app/layout.tsx"],
         loadingPath: "/app/loading.tsx",
+        loadingPaths: ["/app/nested-loading.tsx"],
         notFoundPath: "/app/not-found.tsx",
         notFoundPaths: ["/app/nested-not-found.tsx"],
         parallelSlots: [
@@ -170,6 +191,8 @@ describe("server action owner manifest", () => {
               {
                 convention: ".",
                 layoutPaths: ["/app/@slot/(.)item/layout.tsx"],
+                loadingPaths: ["/app/@slot/(.)item/loading.tsx"],
+                notFoundPath: "/app/@slot/(.)item/not-found.tsx",
                 pagePath: "/app/@slot/(.)item/page.tsx",
                 params: [],
                 sourceMatchPattern: "/dashboard",
@@ -180,7 +203,9 @@ describe("server action owner manifest", () => {
             layoutIndex: 0,
             layoutPath: "/app/@slot/layout.tsx",
             loadingPath: "/app/@slot/loading.tsx",
+            loadingPaths: ["/app/@slot/nested-loading.tsx"],
             name: "slot",
+            notFoundPath: "/app/@slot/not-found.tsx",
             ownerDir: "/app",
             ownerTreePath: "/app",
             pagePath: "/app/@slot/page.tsx",
@@ -191,6 +216,8 @@ describe("server action owner manifest", () => {
           {
             convention: ".",
             layoutPaths: ["/app/(.)modal/layout.tsx"],
+            loadingPaths: ["/app/(.)modal/loading.tsx"],
+            notFoundPath: "/app/(.)modal/not-found.tsx",
             pagePath: "/app/(.)modal/page.tsx",
             params: [],
             sourceMatchPattern: "/dashboard",
@@ -201,16 +228,37 @@ describe("server action owner manifest", () => {
         unauthorizedPath: "/app/unauthorized.tsx",
         unauthorizedPaths: ["/app/nested-unauthorized.tsx"],
       }),
-    ).toEqual(
-      expect.arrayContaining([
-        "/app/dashboard/page.tsx",
-        "/app/layout.tsx",
-        "/app/template.tsx",
-        "/app/error.tsx",
-        "/app/@slot/page.tsx",
-        "/app/@slot/(.)item/page.tsx",
-        "/app/(.)modal/page.tsx",
-      ]),
-    );
+    ).toEqual([
+      "/app/dashboard/page.tsx",
+      "/app/layout.tsx",
+      "/app/template.tsx",
+      "/app/loading.tsx",
+      "/app/nested-loading.tsx",
+      "/app/error.tsx",
+      "/app/layout-error.tsx",
+      "/app/nested-error.tsx",
+      "/app/not-found.tsx",
+      "/app/nested-not-found.tsx",
+      "/app/forbidden.tsx",
+      "/app/nested-forbidden.tsx",
+      "/app/unauthorized.tsx",
+      "/app/nested-unauthorized.tsx",
+      "/app/@slot/page.tsx",
+      "/app/@slot/default.tsx",
+      "/app/@slot/layout.tsx",
+      "/app/@slot/config-layout.tsx",
+      "/app/@slot/loading.tsx",
+      "/app/@slot/nested-loading.tsx",
+      "/app/@slot/error.tsx",
+      "/app/@slot/not-found.tsx",
+      "/app/@slot/(.)item/page.tsx",
+      "/app/@slot/(.)item/layout.tsx",
+      "/app/@slot/(.)item/loading.tsx",
+      "/app/@slot/(.)item/not-found.tsx",
+      "/app/(.)modal/page.tsx",
+      "/app/(.)modal/layout.tsx",
+      "/app/(.)modal/loading.tsx",
+      "/app/(.)modal/not-found.tsx",
+    ]);
   });
 });

@@ -101,16 +101,17 @@ describe("server action forwarding", () => {
     });
     const middlewareHeaders = new Headers({
       "set-cookie": "session=rotated; Path=/",
-      "x-response": "kept",
+      "x-response": "source",
+      "x-source-only": "kept",
     });
     let forwardedHeaders: Headers | null = null;
 
-    await forwardServerActionIfNeeded(
+    const response = await forwardServerActionIfNeeded(
       options({
         async dispatch(nextRequest: Request) {
           forwardedHeaders = nextRequest.headers;
           return new Response("flight", {
-            headers: { "content-type": "text/x-component" },
+            headers: { "content-type": "text/x-component", "x-response": "owner" },
           });
         },
         middlewareContext: {
@@ -128,8 +129,35 @@ describe("server action forwarding", () => {
     expect(capturedHeaders.get("cookie")).toContain("session=rotated");
     expect(capturedHeaders.get("cookie")).toContain("theme=dark");
     expect(capturedHeaders.get("x-role")).toBe("admin");
-    expect(capturedHeaders.get("x-response")).toBe("kept");
+    expect(capturedHeaders.get("x-response")).toBe("source");
     expect(capturedHeaders.has("set-cookie")).toBe(false);
+    expect(response?.headers.get("x-response")).toBe("owner");
+    expect(response?.headers.get("x-source-only")).toBe("kept");
+    expect(response?.headers.getSetCookie()).toEqual(["session=rotated; Path=/"]);
+  });
+
+  it("preserves Workers request metadata when forwarding", async () => {
+    const sourceRequest = request();
+    Object.defineProperty(sourceRequest, "cf", {
+      value: { country: "AU" },
+      enumerable: true,
+      configurable: true,
+    });
+    let forwardedCf: unknown;
+
+    await forwardServerActionIfNeeded(
+      options({
+        async dispatch(nextRequest: Request) {
+          forwardedCf = Reflect.get(nextRequest, "cf");
+          return new Response("flight", {
+            headers: { "content-type": "text/x-component" },
+          });
+        },
+        request: sourceRequest,
+      }),
+    );
+
+    expect(forwardedCf).toEqual({ country: "AU" });
   });
 
   it("applies middleware cookie deletions to the forwarded request", async () => {
@@ -245,5 +273,31 @@ describe("server action forwarding", () => {
     expect(clearRequestContext).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledOnce();
     error.mockRestore();
+  });
+
+  it("does not await cancellation of a non-Flight streaming response", async () => {
+    let cancelCalled = false;
+    const body = new ReadableStream({
+      cancel() {
+        cancelCalled = true;
+        return new Promise<void>(() => {});
+      },
+    });
+
+    const response = await Promise.race([
+      forwardServerActionIfNeeded(
+        options({
+          async dispatch() {
+            return new Response(body, { headers: { "content-type": "text/html" } });
+          },
+        }),
+      ),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("forwarding waited for stream cancellation")), 100);
+      }),
+    ]);
+
+    expect(cancelCalled).toBe(true);
+    expect(await response?.json()).toEqual({});
   });
 });

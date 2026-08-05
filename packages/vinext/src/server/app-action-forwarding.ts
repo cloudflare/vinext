@@ -4,11 +4,16 @@ import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-r
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import { ACTION_FORWARDED_HEADER } from "./headers.js";
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
 } from "./server-action-not-found.js";
-import { validateCsrfOrigin } from "./request-pipeline.js";
+import {
+  attachRequestCfMetadata,
+  processMiddlewareHeaders,
+  validateCsrfOrigin,
+} from "./request-pipeline.js";
 
 const ACTION_FORWARD_FORBIDDEN_HEADERS = new Set([
   "accept-encoding",
@@ -95,8 +100,16 @@ function buildActionForwardHeaders(
   return headers;
 }
 
-function filterActionForwardResponse(response: Response): Response {
+function filterActionForwardResponse(
+  response: Response,
+  sourceMiddlewareHeaders: Headers | null,
+): Response {
   const headers = new Headers();
+  if (sourceMiddlewareHeaders) {
+    const processedSourceHeaders = new Headers(sourceMiddlewareHeaders);
+    processMiddlewareHeaders(processedSourceHeaders);
+    mergeMiddlewareResponseHeaders(headers, processedSourceHeaders);
+  }
   for (const [key, value] of response.headers) {
     if (!ACTION_FORWARD_FORBIDDEN_HEADERS.has(key.toLowerCase())) {
       headers.set(key, value);
@@ -156,12 +169,15 @@ export async function forwardServerActionIfNeeded(
   // Match Next.js createForwardedActionResponse(): forwarding targets only the
   // owner worker pathname, not the caller's query string.
   forwardUrl.search = "";
-  const forwardRequest = new Request(forwardUrl, {
-    body: options.request.body,
-    duplex: "half",
-    headers: buildActionForwardHeaders(options.request, options.middlewareContext),
-    method: "POST",
-  } as RequestInit & { duplex: "half" });
+  const forwardRequest = attachRequestCfMetadata(
+    new Request(forwardUrl, {
+      body: options.request.body,
+      duplex: "half",
+      headers: buildActionForwardHeaders(options.request, options.middlewareContext),
+      method: "POST",
+    } as RequestInit & { duplex: "half" }),
+    options.request,
+  );
 
   let forwardResponse: Response;
   try {
@@ -173,8 +189,8 @@ export async function forwardServerActionIfNeeded(
   }
 
   if (forwardResponse.headers.get("content-type")?.startsWith("text/x-component")) {
-    return filterActionForwardResponse(forwardResponse);
+    return filterActionForwardResponse(forwardResponse, options.middlewareContext.headers);
   }
-  await forwardResponse.body?.cancel();
+  void forwardResponse.body?.cancel().catch(() => {});
   return emptyActionForwardResponse();
 }
