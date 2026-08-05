@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { forwardServerActionIfNeeded } from "../packages/vinext/src/server/app-action-forwarding.js";
 import { ACTION_FORWARDED_HEADER } from "../packages/vinext/src/server/headers.js";
+import { createServerActionNotFoundResponse } from "../packages/vinext/src/server/server-action-not-found.js";
 import {
   MIDDLEWARE_OVERRIDE_HEADERS,
   MIDDLEWARE_REQUEST_HEADER_PREFIX,
@@ -230,6 +231,20 @@ describe("server action forwarding", () => {
     expect(clearRequestContext).toHaveBeenCalledTimes(2);
     expect(warning).toHaveBeenCalledTimes(1);
     warning.mockRestore();
+  });
+
+  it("preserves marked action-not-found responses from the owner", async () => {
+    const response = await forwardServerActionIfNeeded(
+      options({
+        async dispatch() {
+          return createServerActionNotFoundResponse();
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response?.text()).toBe("Server action not found.");
   });
 
   it.each(["constructor#x", "__proto__#x", "prototype#x"])(

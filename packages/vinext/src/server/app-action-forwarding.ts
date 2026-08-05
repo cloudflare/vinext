@@ -3,7 +3,7 @@ import { patternToNextFormat } from "../routing/route-validation.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import { ACTION_FORWARDED_HEADER } from "./headers.js";
+import { ACTION_FORWARDED_HEADER, NEXTJS_ACTION_NOT_FOUND_HEADER } from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   createServerActionNotFoundResponse,
@@ -188,7 +188,10 @@ export async function forwardServerActionIfNeeded(
     return emptyActionForwardResponse();
   }
 
-  if (forwardResponse.headers.get("content-type")?.startsWith("text/x-component")) {
+  if (
+    forwardResponse.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
+    forwardResponse.headers.get("content-type")?.startsWith("text/x-component")
+  ) {
     return filterActionForwardResponse(forwardResponse, options.middlewareContext.headers);
   }
   void forwardResponse.body?.cancel().catch(() => {});
