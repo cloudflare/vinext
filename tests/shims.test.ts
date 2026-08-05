@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { PAGES_FIXTURE_DIR, aliasEntriesToRecord } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
+import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
 import vinext from "../packages/vinext/src/index.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
@@ -4832,7 +4833,7 @@ describe("next/server shim", () => {
     expect(req.cookies.has("missing")).toBe(false);
   });
 
-  it("NextRequest copies a Request body without disturbing the source request", async () => {
+  it("NextRequest transfers a Request body instead of teeing it", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     const source = new Request("https://example.com/api/echo", {
       body: JSON.stringify({ ok: true }),
@@ -4843,8 +4844,10 @@ describe("next/server shim", () => {
     const req = new NextRequest(source);
 
     await expect(req.json()).resolves.toEqual({ ok: true });
-    expect(source.bodyUsed).toBe(false);
-    await expect(source.json()).resolves.toEqual({ ok: true });
+    // Next.js parity (`super(input, init)`), and the reason it matters: cloning
+    // here would tee the body, and the branch left on `source` would buffer the
+    // whole request in memory because nothing reads or cancels it.
+    expect(source.bodyUsed).toBe(true);
   });
 
   it("NextResponse.json() creates a JSON response", async () => {
@@ -8857,6 +8860,12 @@ describe("middleware matcher patterns", () => {
       }),
     ).toBe(true);
     expect(
+      matchesMiddleware("/FR/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
       matchesMiddleware("/", "/", undefined, {
         locales: ["en", "fr"],
         defaultLocale: "en",
@@ -8889,13 +8898,19 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/other", matcher)).toBe(false);
   });
 
-  it("matchesMiddleware: trailing slashes in matcher sources are optional", async () => {
+  it("matchesMiddleware: preserves source slashes and allows one terminal delimiter", async () => {
     const { matchPattern, matchesMiddleware } =
       await import("../packages/vinext/src/server/middleware.js");
 
     // Next.js compiles middleware sources with an optional terminal delimiter.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
     expect(matchPattern("/api/admin/", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin//", "/api/admin")).toBe(false);
+    expect(matchPattern("/api/admin//", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin/?", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin/#", "/api/admin/")).toBe(true);
+    expect(matchPattern("/?", "/")).toBe(false);
+    expect(matchPattern("/#", "/")).toBe(false);
     expect(matchPattern("/api/admin/", "/api/admin\\/")).toBe(true);
     expect(matchPattern("/api/admin", "/api/admin\\/")).toBe(false);
     expect(matchPattern("/blog/post/", "/(.*)/")).toBe(true);
@@ -8905,9 +8920,9 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/api/123", "/api/:id/")).toBe(false);
     expect(matchPattern("/foo/", "/:path(.*\\/)")).toBe(true);
     expect(matchPattern("/foo", "/:path(.*\\/)")).toBe(false);
-    expect(matchesMiddleware("/api/admin", "/api/admin/")).toBe(true);
-    expect(matchesMiddleware("/api/admin", ["/api/admin/"])).toBe(true);
-    expect(matchesMiddleware("/api/admin", [{ source: "/api/admin/" }])).toBe(true);
+    expect(matchesMiddleware("/api/admin", "/api/admin/")).toBe(false);
+    expect(matchesMiddleware("/api/admin", ["/api/admin/"])).toBe(false);
+    expect(matchesMiddleware("/api/admin", [{ source: "/api/admin/" }])).toBe(false);
     expect(
       matchesMiddleware("/fr/api/admin/", "/api/admin\\/", undefined, {
         locales: ["en", "fr"],
@@ -9564,6 +9579,63 @@ describe("double-encoded path handling in middleware", () => {
     expect(middlewareBody).toEqual({ message: "hello" });
     expect(request.bodyUsed).toBe(false);
     await expect(request.json()).resolves.toEqual({ message: "hello" });
+  });
+
+  it("App Router middleware cancels its unread body branch in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    try {
+      const { applyAppMiddleware } =
+        await import("../packages/vinext/src/server/app-middleware.js");
+      const request = new Request("http://localhost:3000/actions", {
+        body: "action-payload",
+        method: "POST",
+      });
+      let middlewareRequest: Request | undefined;
+
+      const result = await applyAppMiddleware({
+        cleanPathname: "/actions",
+        context: { headers: null, requestHeaders: null, status: null },
+        isProxy: false,
+        module: {
+          default: (request: Request) => {
+            middlewareRequest = request;
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+        request,
+      });
+
+      expect(result.kind).toBe("continue");
+      await vi.waitFor(() => expect(middlewareRequest?.bodyUsed).toBe(true));
+      await expect(request.text()).resolves.toBe("action-payload");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("App Router middleware cancels the downstream body branch when it returns a response", async () => {
+    const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
+    const sourceCancel = vi.fn();
+    const request = new Request("http://localhost:3000/upload", {
+      body: new ReadableStream<Uint8Array>({
+        cancel: sourceCancel,
+      }),
+      duplex: "half",
+      method: "POST",
+    } as RequestInit & { duplex: "half" });
+
+    const result = await applyAppMiddleware({
+      cleanPathname: "/upload",
+      context: { headers: null, requestHeaders: null, status: null },
+      isProxy: false,
+      module: {
+        default: () => new Response("blocked", { status: 403 }),
+      },
+      request,
+    });
+
+    expect(result.kind).toBe("response");
+    await vi.waitFor(() => expect(sourceCancel).toHaveBeenCalledOnce());
   });
 
   it("external middleware rewrite proxy strips upstream x-middleware headers without middleware context", async () => {
@@ -18871,6 +18943,57 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("preserves the origin for same-host double-slash middleware data redirects", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, replaceState, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const target = "http://localhost//evil.example/steal?token=secret#fragment";
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/old-home.json") {
+        return new Response("{}", {
+          headers: { "x-nextjs-redirect": target },
+          status: 200,
+        });
+      }
+      if (href === target) {
+        return new Response(buildNavHtml("//evil.example/steal", pageModuleUrl));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/old-home");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenNthCalledWith(2, target, expect.any(Object));
+      expect(replaceState).toHaveBeenLastCalledWith({}, "", target);
+      expect(win.location.href).toBe(target);
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("hydrates middleware rewrites to fallback pages from the data response", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -20979,6 +21102,57 @@ describe("Pages Router _next/data client navigation", () => {
         query: { id: "0" },
         props: { pageProps: {} },
       });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    [
+      "an HttpOnly cookie",
+      { type: "cookie", key: "internal-access", value: "cookie-secret" } as const,
+    ],
+    [
+      "a server-added header",
+      { type: "header", key: "x-origin-auth", value: "header-secret" } as const,
+    ],
+  ])("hands a rewrite requiring %s to a document navigation", async (_label, condition) => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/conditional": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    const hrefAssignments = trackHrefAssignmentsLocal(win);
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [{ source: "/conditional", destination: "/private", has: [condition] }],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/conditional");
+
+      expect(result).toBe(false);
+      expect(hrefAssignments).toContain("/conditional");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(destinationLoader).not.toHaveBeenCalled();
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;

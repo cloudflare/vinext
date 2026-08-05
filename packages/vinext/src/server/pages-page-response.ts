@@ -485,7 +485,9 @@ function applyGsspHeaders(
       headers.set(key, String(value));
     }
   }
-  headers.set("Content-Type", "text/html; charset=utf-8");
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "text/html; charset=utf-8");
+  }
   return statusCode ?? gsspRes.statusCode;
 }
 

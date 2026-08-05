@@ -1,21 +1,10 @@
 import fs from "node:fs";
 import path from "pathslash";
-import type { NextRewrite, ResolvedNextConfig } from "../config/next-config.js";
-
-type ClientRuntimeRewrite = {
-  source: string;
-  destination?: string;
-  has?: NextRewrite["has"];
-};
-
-type ClientRuntimeRewrites = {
-  beforeFiles: ClientRuntimeRewrite[];
-  afterFiles: ClientRuntimeRewrite[];
-  fallback: ClientRuntimeRewrite[];
-};
+import { toClientRewrites, type ClientRewrites } from "../client/client-rewrites.js";
+import type { ResolvedNextConfig } from "../config/next-config.js";
 
 type ClientRuntimeBuildManifest = {
-  __rewrites: ClientRuntimeRewrites;
+  __rewrites: ClientRewrites;
   sortedPages: string[];
 };
 
@@ -26,29 +15,11 @@ type EmitNextClientRuntimeManifestsOptions = {
   rewrites: ResolvedNextConfig["rewrites"];
 };
 
-function normalizeRewriteForClientManifest(rewrite: NextRewrite): ClientRuntimeRewrite {
-  if (rewrite.destination.startsWith("/")) {
-    return { has: rewrite.has, source: rewrite.source, destination: rewrite.destination };
-  }
-
-  return { has: rewrite.has, source: rewrite.source };
-}
-
-function normalizeRewritesForClientManifest(
-  rewrites: ResolvedNextConfig["rewrites"],
-): ClientRuntimeRewrites {
-  return {
-    beforeFiles: rewrites.beforeFiles.map(normalizeRewriteForClientManifest),
-    afterFiles: rewrites.afterFiles.map(normalizeRewriteForClientManifest),
-    fallback: rewrites.fallback.map(normalizeRewriteForClientManifest),
-  };
-}
-
 export function buildNextClientBuildManifestContent(
   rewrites: ResolvedNextConfig["rewrites"],
 ): string {
   const manifest: ClientRuntimeBuildManifest = {
-    __rewrites: normalizeRewritesForClientManifest(rewrites),
+    __rewrites: toClientRewrites(rewrites),
     sortedPages: [],
   };
   return `self.__BUILD_MANIFEST = ${JSON.stringify(manifest)};self.__BUILD_MANIFEST_CB && self.__BUILD_MANIFEST_CB()`;

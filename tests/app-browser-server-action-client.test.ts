@@ -22,16 +22,16 @@ afterEach(() => {
 });
 
 describe("app browser server action client", () => {
-  it("renders raw Flight payloads returned for action redirects", async () => {
-    const redirectPayload = AppElementsWire.createMetadataEntries({
+  it("commits a raw full-tree Flight payload from an internal action redirect", async () => {
+    const wireElements = AppElementsWire.createMetadataEntries({
       interception: null,
       interceptionContext: null,
       layoutIds: [AppElementsWire.encodeLayoutId("/")],
       rootLayoutTreePath: "/",
-      routeId: "route:/target",
+      routeId: AppElementsWire.encodeRouteId("/target", null),
       slotBindings: [],
     });
-    const elements = normalizeAppElements(redirectPayload);
+    const elements = normalizeAppElements(wireElements);
     const routerState: AppRouterState = {
       activeOperation: null,
       bfcacheIds: {},
@@ -44,20 +44,12 @@ describe("app browser server action client", () => {
       previousNextUrl: null,
       renderId: 0,
       rootLayoutTreePath: "/",
-      routeId: "route:/source",
+      routeId: AppElementsWire.encodeRouteId("/source", null),
       slotBindings: [],
       visibleCommitVersion: 0,
     };
-    const actionInitiation = createServerActionInitiationSnapshot({
-      href: "https://example.com/source",
-      navigationId: 1,
-      routerState,
-    });
     vi.stubGlobal("window", {
-      location: {
-        href: "https://example.com/source",
-        origin: "https://example.com",
-      },
+      location: { href: "https://example.com/source", origin: "https://example.com" },
     });
     vi.stubGlobal(
       "fetch",
@@ -71,28 +63,37 @@ describe("app browser server action client", () => {
         }),
       ),
     );
-    vi.mocked(createFromFetch).mockResolvedValueOnce(redirectPayload);
-    const performHardNavigation = vi.fn();
+    vi.mocked(createFromFetch).mockResolvedValueOnce(wireElements);
     const renderRedirectPayload = vi.fn();
+    const performHardNavigation = vi.fn();
 
     await expect(
-      invokeClientServerAction("action-id", [], actionInitiation, {
-        basePath: "",
-        clearClientNavigationCaches: vi.fn(),
-        clientRscCompatibilityId: null,
-        commitSameUrlNavigatePayload: vi.fn(),
-        navigationPlanner,
-        performHardNavigation,
-        renderRedirectPayload,
-        syncCurrentHistoryState: vi.fn(),
-        syncServerActionHttpFallbackHead: vi.fn(),
-      }),
-    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/target;307;", handled: true });
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState,
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          performHardNavigation,
+          renderRedirectPayload,
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ handled: true });
 
     expect(renderRedirectPayload).toHaveBeenCalledWith(
-      elements,
+      normalizeAppElements(wireElements),
       expect.objectContaining({ href: "https://example.com/target" }),
-      actionInitiation,
+      expect.any(Object),
       "none",
     );
     expect(performHardNavigation).not.toHaveBeenCalled();

@@ -487,7 +487,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   timestamp: number,
   cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt" | "serverStaleTime">,
   fallbackTtlMs: number,
-  minimumTtlMs: number = MIN_PREFETCH_STALE_TIME_MS,
+  honorDynamicStaleTime: boolean,
 ): number {
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
@@ -496,17 +496,26 @@ function resolvePrefetchedRscResponseExpiresAt(
   // claim. `staleTimes.dynamic` independently bounds visited/BFCache reuse and
   // is only the prefetch fallback when the render made no cacheLife claim.
   const serverSeconds = serverStaleTimeSeconds(cached.serverStaleTime);
-  const seconds =
-    serverSeconds ??
-    (isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
-      ? cached.dynamicStaleTimeSeconds
-      : undefined);
-  if (seconds === undefined) {
-    return timestamp + Math.max(fallbackTtlMs, minimumTtlMs);
+  if (serverSeconds !== undefined) {
+    return timestamp + serverSeconds * 1000;
   }
-  // The cacheLife signal is floored inside the resolver; this outer floor
-  // covers the prefetch-only dimensions (config bound and fallback TTL).
-  return timestamp + Math.max(seconds * 1000, minimumTtlMs);
+  const seconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
+    ? cached.dynamicStaleTimeSeconds
+    : undefined;
+  // No signal: the static prefetch window, floored like Next's
+  // `STATIC_STALETIME_MS = getStaleTimeMs(config)`.
+  if (seconds === undefined) {
+    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
+  }
+  // An automatic prefetch takes a dynamic render's bound verbatim, including
+  // below the 30s floor: Next's `computeDynamicStaleAt` never floors it, so a
+  // `0` must expire the entry now rather than license 30s of credentialed
+  // reuse. `prefetch={true}` is an explicit opt-in to caching dynamic content,
+  // and Next reuses a `full` prefetch for the floored static window, so it
+  // keeps the floor.
+  return honorDynamicStaleTime
+    ? timestamp + seconds * 1000
+    : timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
@@ -1309,7 +1318,7 @@ export function prefetchRscResponse(
   behavior: {
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
-    minimumTtlMs?: number;
+    honorDynamicStaleTime?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1353,7 +1362,11 @@ export function prefetchRscResponse(
           entry.timestamp,
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
-          behavior.minimumTtlMs,
+          // A search-agnostic PPR shell contains no query-dependent dynamic
+          // data and is never navigation-consumable. Keep it on the prefetch
+          // freshness lattice so another search string can reuse the shell;
+          // the later navigation response still honors dynamicStaleTime.
+          behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
         );
         if (behavior.prepareSnapshot) {
           try {
@@ -1489,6 +1502,7 @@ function consumeMatchedPrefetchResponse(
   cacheKey: string,
   entry: PrefetchCacheEntry,
   mountedSlotsHeader: string | null,
+  allowExpiredInFlightHandoff: boolean = false,
 ): CachedRscResponse | null {
   const cache = getPrefetchCache();
   // Skip in-flight snapshots and error-path residue where pending cleared
@@ -1502,7 +1516,7 @@ function consumeMatchedPrefetchResponse(
       // be safely reused.
       return null;
     }
-    if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
+    if (!allowExpiredInFlightHandoff && resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
       // The entry aged out before navigation reached it — that *is* the
       // invalidation `onInvalidate` subscribers are waiting for.
       deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
@@ -1565,6 +1579,11 @@ export async function consumePrefetchResponseForNavigation(
   // concurrency cap, where it would compete with the current navigation.
   if (options?.shouldConsume?.() === false) return null;
 
+  // Claim only a request that was still in flight when this navigation began.
+  // A zero dynamic stale time may expire the completed entry immediately, but
+  // Next still lets the navigation already waiting on that request finish with
+  // it. Settled zero-stale entries remain unavailable to later navigations.
+  const allowExpiredInFlightHandoff = entry.pending !== undefined;
   if (entry.pending !== undefined) {
     // This navigation is about to wait on the prefetch's request. If that
     // request is still queued behind the low-priority concurrency cap, waiting
@@ -1577,7 +1596,12 @@ export async function consumePrefetchResponseForNavigation(
     if (options?.shouldConsume?.() === false) return null;
   }
 
-  return consumeMatchedPrefetchResponse(cacheKey, entry, mountedSlotsHeader);
+  return consumeMatchedPrefetchResponse(
+    cacheKey,
+    entry,
+    mountedSlotsHeader,
+    allowExpiredInFlightHandoff,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2757,7 +2781,7 @@ const _appRouter: AppRouterInstance = {
                 policy.fallbackTtl === "dynamic"
                   ? DYNAMIC_NAVIGATION_CACHE_TTL
                   : PREFETCH_CACHE_TTL,
-              minimumTtlMs: policy.minimumTtlMs,
+              honorDynamicStaleTime: policy.honorDynamicStaleTime,
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,

@@ -1,9 +1,21 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   ensureAppRouteModulesLoaded,
+  loadAppInterceptNotFound,
+  loadAppInterceptPage,
   loadAppInterceptLayouts,
   type LazyLoadableRoute,
 } from "../packages/vinext/src/server/app-route-module-loader.js";
+import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import {
+  getRequestExecutionContext,
+  runWithExecutionContext,
+} from "../packages/vinext/src/shims/request-context.js";
+import { after } from "../packages/vinext/src/shims/server.js";
 
 describe("ensureAppRouteModulesLoaded", () => {
   it("returns the route synchronously when there are no lazy thunks (eager route)", () => {
@@ -227,5 +239,124 @@ describe("loadAppInterceptLayouts", () => {
 
     // No loaders → returns a resolved promise wrapping the same array, no imports.
     return expect(loadAppInterceptLayouts(intercept)).resolves.toBe(intercept.interceptLayouts);
+  });
+});
+
+describe.each([
+  ["page", "__pageLoader", "pageLoading", loadAppInterceptPage],
+  ["notFound", "__loadNotFound", "notFoundLoading", loadAppInterceptNotFound],
+] as const)("loadAppIntercept%s", (field, loaderField, loadingField, load) => {
+  it("publishes a shared concurrent load onto every request-local intercept clone", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const module = { default: () => null };
+    const loader = vi.fn(async () => {
+      await gate;
+      return module;
+    });
+    const loadState = {
+      page: null,
+      pageLoading: null,
+      notFound: null,
+      notFoundLoading: null,
+      interceptLayoutsLoading: null,
+    };
+    const first = {
+      [field]: null,
+      [loaderField]: loader,
+      __loadState: loadState,
+    };
+    const second = {
+      [field]: null,
+      [loaderField]: loader,
+      __loadState: loadState,
+    };
+
+    const firstLoad = load(first);
+    const secondLoad = load(second);
+    expect(loadState[loadingField]).not.toBeNull();
+    release();
+    await Promise.all([firstLoad, secondLoad]);
+
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(first[field]).toBe(module);
+    expect(second[field]).toBe(module);
+    expect(loadState[field]).toBe(module);
+    expect(loadState[loadingField]).toBeNull();
+  });
+});
+
+describe("lazy hydration request-context isolation", () => {
+  it("evaluates a lazy module outside the request context that triggered hydration", async () => {
+    const request = new Request("https://example.com/dashboard", {
+      headers: { cookie: "session=victim-secret" },
+    });
+    const requestContext = createRequestContext({
+      headersContext: headersContextFromRequest(request),
+    });
+    const route: LazyLoadableRoute = {
+      page: null,
+      __loadPage: () => import("./fixtures/module-scope-request-capture.js"),
+    };
+
+    const liveCookie = await runWithRequestContext(requestContext, async () => {
+      // Read first: proves the request context really is active at the
+      // hydration call site, so the assertion below is isolation rather than
+      // an absent context.
+      const live = (await cookies()).get("session")?.value;
+      await ensureAppRouteModulesLoaded(route);
+      return live;
+    });
+
+    expect(liveCookie).toBe("victim-secret");
+    // Module scope must see no request at all — matching Next.js, which loads
+    // components before entering the request store. Anything else would be
+    // cached on `route.page` and reused for every later visitor.
+    expect((route.page as { moduleScopeCookieAccess: string }).moduleScopeCookieAccess).toBe(
+      "rejected-no-request-context",
+    );
+  });
+
+  it("also escapes the execution-context scope the Cloudflare entry enters outside the request context", async () => {
+    // app-router-entry.ts wraps the whole handler in runWithExecutionContext()
+    // before app-rsc-handler.ts opens the unified request context, so the two
+    // stores nest at different depths. Exiting only the unified one would leave
+    // the worker's ExecutionContext visible — and after() takes its
+    // getRequestExecutionContext() fallback precisely when the unified store is
+    // absent, so a partial exit enables that path instead of closing it.
+    const waitUntil = vi.fn();
+    const executionContext = { waitUntil, passThroughOnException() {} };
+    let moduleScopeExecutionContext: unknown = "loader-not-called";
+    let moduleScopeAfter = "loader-not-called";
+
+    const route: LazyLoadableRoute = {
+      page: null,
+      __loadPage: async () => {
+        moduleScopeExecutionContext = getRequestExecutionContext();
+        try {
+          after(() => {});
+          moduleScopeAfter = "registered";
+        } catch (error) {
+          moduleScopeAfter = (error as Error).message;
+        }
+        return { default: () => null };
+      },
+    };
+
+    const requestContext = createRequestContext({
+      headersContext: headersContextFromRequest(new Request("https://example.com/dashboard")),
+      executionContext,
+    });
+
+    await runWithExecutionContext(executionContext, () =>
+      runWithRequestContext(requestContext, () => ensureAppRouteModulesLoaded(route)),
+    );
+
+    expect(moduleScopeExecutionContext).toBeNull();
+    expect(moduleScopeAfter).toBe("`after()` was called outside a request scope");
+    // Nothing was attached to the first request's lifecycle.
+    expect(waitUntil).not.toHaveBeenCalled();
   });
 });

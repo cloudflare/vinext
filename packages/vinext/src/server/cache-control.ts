@@ -28,8 +28,9 @@ function isSharedCacheControl(cacheControl: string): boolean {
  *
  * We only clear `Cache-Control` — the one header vinext stamps internally — so
  * a stale vinext value never lingers if an adapter chooses not to emit one. The
- * adapter's own headers are applied via `set()`, which overrides any prior value
- * for the same name, so there's no need to pre-clear adapter-specific headers.
+ * adapter's own headers are applied via `set()`, which overrides prior values
+ * for names it emits. Callers that must also discard provider-specific headers
+ * before the adapter recomputes policy clear those explicitly.
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");

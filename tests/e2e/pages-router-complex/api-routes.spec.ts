@@ -18,7 +18,7 @@ test.describe("service routes", () => {
     expect(unauthorised.status()).toBe(401);
   });
 
-  test.fixme("purge validates its payload and evicts by prefix", async ({ request }) => {
+  test("purge validates its payload and evicts by prefix", async ({ request }) => {
     const badPayload = await request.post("/api/purge", {
       headers: { authorization: PURGE_BEARER },
       data: { registry: "" },

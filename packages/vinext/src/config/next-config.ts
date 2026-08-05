@@ -178,6 +178,10 @@ export type NextConfig = {
   crossOrigin?: "anonymous" | "use-credentials";
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /** Keep the original request URL visible to middleware/proxy. */
+  skipProxyUrlNormalize?: boolean;
+  /** @deprecated Use `skipProxyUrlNormalize` instead. */
+  skipMiddlewareUrlNormalize?: boolean;
   /** TypeScript build settings. */
   typescript?: {
     /** Project-relative path to the TypeScript configuration file. */
@@ -400,6 +404,7 @@ export type ResolvedNextConfig = {
    */
   assetPrefix: string;
   trailingSlash: boolean;
+  skipProxyUrlNormalize: boolean;
   typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
   pageExtensions: string[];
@@ -1549,6 +1554,7 @@ export async function resolveNextConfig(
       basePath: "",
       assetPrefix: "",
       trailingSlash: false,
+      skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
       pageExtensions: normalizePageExtensions(),
@@ -1613,6 +1619,15 @@ export async function resolveNextConfig(
       "Invalid next.config options detected:\n" +
         '    Invalid option at "crossOrigin": expected "anonymous" or "use-credentials"\n' +
         "See more info here: https://nextjs.org/docs/messages/invalid-next-config",
+    );
+  }
+
+  if (
+    config.skipProxyUrlNormalize !== undefined &&
+    config.skipMiddlewareUrlNormalize !== undefined
+  ) {
+    throw new Error(
+      "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time. Please use `skipProxyUrlNormalize` instead.",
     );
   }
 
@@ -1895,6 +1910,8 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
+    skipProxyUrlNormalize:
+      config.skipProxyUrlNormalize ?? config.skipMiddlewareUrlNormalize ?? false,
     typescript:
       typeof config.typescript?.tsconfigPath === "string"
         ? { tsconfigPath: config.typescript.tsconfigPath }

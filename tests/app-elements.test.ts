@@ -12,12 +12,11 @@ import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_LAYOUT_FLAGS_KEY,
-  APP_RENDER_OBSERVATION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
-  APP_SOURCE_PAGE_KEY,
+  APP_SOURCE_PAGE_SEGMENTS_KEY,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
   buildOutgoingAppPayload,
@@ -34,10 +33,7 @@ import {
   evaluateArtifactCompatibility,
   RSC_PAYLOAD_SCHEMA_VERSION,
 } from "../packages/vinext/src/server/artifact-compatibility.js";
-import {
-  buildRenderObservation,
-  createCacheEntryReuseProof,
-} from "../packages/vinext/src/server/cache-proof.js";
+import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 
 describe("AppElementsWire", () => {
   it("exposes stable metadata keys through the codec boundary", () => {
@@ -99,11 +95,35 @@ describe("AppElementsWire", () => {
     const decoded = AppElementsWire.decode({
       [APP_ROOT_LAYOUT_KEY]: "/",
       [APP_ROUTE_KEY]: AppElementsWire.encodeRouteId("/dashboard", null),
-      [APP_SOURCE_PAGE_KEY]: "dashboard/page",
+      [APP_SOURCE_PAGE_SEGMENTS_KEY]: ["dashboard/page"],
     });
 
     expect(AppElementsWire.readMetadata(decoded).sourcePage).toBeNull();
   });
+
+  it("reads legacy source-page strings from cached payloads", () => {
+    const decoded = AppElementsWire.decode({
+      [APP_ROOT_LAYOUT_KEY]: "/",
+      [APP_ROUTE_KEY]: AppElementsWire.encodeRouteId("/dashboard", null),
+      __sourcePage: "/(dashboard)/page",
+    });
+
+    expect(AppElementsWire.readMetadata(decoded).sourcePage).toBe("/(dashboard)/page");
+  });
+
+  it.each(["/", "//page", "dashboard/page"])(
+    "omits malformed outgoing source-page metadata: %s",
+    (sourcePage) => {
+      const metadata = AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/dashboard", null),
+        sourcePage,
+      });
+
+      expect(metadata).not.toHaveProperty(APP_SOURCE_PAGE_SEGMENTS_KEY);
+    },
+  );
 
   it("creates the canonical metadata entries for outgoing AppElements records", () => {
     const metadata = AppElementsWire.createMetadataEntries({
@@ -127,7 +147,7 @@ describe("AppElementsWire", () => {
         "layout:/(dashboard)": "/dashboard",
         "page:/dashboard": "/dashboard",
       },
-      [APP_SOURCE_PAGE_KEY]: "/(dashboard)/page",
+      [APP_SOURCE_PAGE_SEGMENTS_KEY]: ["(dashboard)", "page"],
     });
   });
 
@@ -978,37 +998,26 @@ describe("buildOutgoingAppPayload", () => {
     }
   });
 
-  it("attaches render observation metadata on the returned record when provided", () => {
-    const renderObservation = buildRenderObservation({
-      boundaryOutcome: { kind: "success" },
-      cacheability: "public",
-      cacheTags: ["posts"],
-      completeness: "complete",
-      dynamicFetches: ["https://api.example.test/posts?token=secret"],
-      output: {
-        kind: "app-rsc",
-        mountedSlotsFingerprint: null,
-        renderEpoch: null,
-        rootBoundaryId: "layout:/",
-        routeId: "route:/posts",
-      },
-      pathTags: ["/posts"],
-      requestApis: [
-        { kind: "headers", status: "notObserved" },
-        { kind: "cookies", status: "notObserved" },
-      ],
-    });
-
+  it("carries source pages as segments on the wire and reconstructs the browser value", () => {
     const result = buildOutgoingAppPayload({
-      element: { "page:/posts": "posts-page" },
+      element: {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          rootLayoutTreePath: "/",
+          routeId: "route:/pricing",
+          sourcePage: "/(marketing)/pricing/page",
+        }),
+        "page:/pricing": "pricing-page",
+      },
       layoutFlags: { "layout:/": "s" },
-      renderObservation,
     });
 
     expect(isAppElementsRecord(result)).toBe(true);
     if (isAppElementsRecord(result)) {
-      expect(result[APP_RENDER_OBSERVATION_KEY]).toEqual(renderObservation);
-      expect(JSON.stringify(result[APP_RENDER_OBSERVATION_KEY])).not.toContain("secret");
+      expect(result[APP_SOURCE_PAGE_SEGMENTS_KEY]).toEqual(["(marketing)", "pricing", "page"]);
+      expect(AppElementsWire.readMetadata(result).sourcePage).toBe("/(marketing)/pricing/page");
+      expect(JSON.stringify(result)).not.toContain("__sourcePage");
+      expect(JSON.stringify(result)).not.toContain("/(marketing)/pricing/page");
     }
   });
 

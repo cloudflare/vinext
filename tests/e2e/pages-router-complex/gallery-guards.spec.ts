@@ -17,9 +17,7 @@ test.describe("catch-all guards and precedence", () => {
     expect(redirectPath(response.headers())).toBe("/gallery/skies");
   });
 
-  test.fixme("uppercase wall paths are scrubbed to the public canonical form", async ({
-    request,
-  }) => {
+  test("uppercase wall paths are scrubbed to the public canonical form", async ({ request }) => {
     const response = await request.get("/gallery/SKIES", { maxRedirects: 0 });
     expect(response.status()).toBe(307);
     // The destination must be the public URL — no internal zone prefix.

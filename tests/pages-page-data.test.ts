@@ -695,6 +695,48 @@ describe("pages page data", () => {
     expect(result).toEqual({ kind: "notFound" });
   });
 
+  it("preserves getServerSideProps headers on a notFound data response", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        createGsspReqRes() {
+          return {
+            req: {},
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {
+                  "Content-Type": "application/vnd.atlas.not-found+json",
+                  "Set-Cookie": ["source=one; Path=/", "source=two; Path=/"],
+                  "Surrogate-Control": "max-age=600s, delta=noop",
+                };
+              },
+            },
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected data response");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe(
+      "application/vnd.atlas.not-found+json",
+    );
+    expect(result.response.headers.getSetCookie()).toEqual([
+      "source=one; Path=/",
+      "source=two; Path=/",
+    ]);
+    expect(result.response.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
+  });
+
   it("returns JSON 404 envelope for data requests when getStaticPaths excludes a path", async () => {
     const result = await resolvePagesPageData(
       createOptions({
@@ -2101,6 +2143,55 @@ describe("pages page data", () => {
     expect(body.appValue).toBe("preserved");
     expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
   });
+
+  it.each([
+    { isDataReq: false, expectedStatus: 307 },
+    { isDataReq: true, expectedStatus: 200 },
+  ])(
+    "preserves getServerSideProps response headers on redirects (data: $isDataReq)",
+    async ({ isDataReq, expectedStatus }) => {
+      const responseHeaders: Record<string, string | number | boolean | string[]> = {};
+      const response = {
+        headersSent: false,
+        statusCode: 200,
+        getHeaders() {
+          return responseHeaders;
+        },
+        setHeader(name: string, value: string) {
+          responseHeaders[name.toLowerCase()] = value;
+        },
+      };
+      const result = await resolvePagesPageData(
+        createOptions({
+          isDataReq,
+          createGsspReqRes() {
+            return {
+              req: {},
+              res: response,
+              responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+            };
+          },
+          pageModule: {
+            async getServerSideProps() {
+              response.setHeader("Surrogate-Control", "no-store, delta=noop");
+              return { redirect: { destination: "/new-page", permanent: false } };
+            },
+          },
+        }),
+      );
+
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") throw new Error("expected response");
+      expect(result.response.status).toBe(expectedStatus);
+      if (isDataReq) {
+        const body = (await result.response.json()) as { pageProps: Record<string, unknown> };
+        expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
+      } else {
+        expect(result.response.headers.get("location")).toBe("/new-page");
+      }
+      expect(result.response.headers.get("surrogate-control")).toBe("no-store, delta=noop");
+    },
+  );
 
   it("includes x-nextjs-deployment-id on redirect data response from getStaticProps", async () => {
     const result = await resolvePagesPageData(

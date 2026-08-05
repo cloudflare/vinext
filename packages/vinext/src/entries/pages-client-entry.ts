@@ -22,6 +22,7 @@ import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
+import { toClientRewrites } from "../client/client-rewrites.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { toSlash } from "pathslash";
 import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
@@ -91,6 +92,7 @@ export async function generateClientEntry(
     )
   ).filter((pattern): pattern is string => pattern !== null);
   const instrumentationClientPath = options.instrumentationClientPath ?? null;
+  const clientRewrites = toClientRewrites(nextConfig.rewrites);
 
   // Build a map of route pattern -> dynamic import.
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
@@ -204,7 +206,7 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
 // so whichever entry runs first emits the Pages manifest.
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
 window.__VINEXT_CLIENT_REDIRECTS__ = ${JSON.stringify(nextConfig.redirects)};
-window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(nextConfig.rewrites)};
+window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {

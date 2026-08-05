@@ -119,6 +119,7 @@ export async function generateServerEntry(
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
+    skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
@@ -234,7 +235,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
-import { normalizePagesDataRequest as __normalizePagesDataRequest, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
+import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_isrCachePath)};
@@ -260,7 +261,11 @@ export function normalizeDataRequest(request) {
     request,
     buildId,
     vinextConfig.basePath,
-    hasMiddleware && vinextConfig.trailingSlash,
+    __shouldAddTrailingSlashToPagesDataPath(
+      hasMiddleware,
+      vinextConfig.trailingSlash,
+      vinextConfig.skipProxyUrlNormalize,
+    ),
   );
 }
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
