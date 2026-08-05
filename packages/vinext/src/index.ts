@@ -17,63 +17,60 @@ import {
   apiRouter,
   invalidateRouteCache,
   matchRoute,
-} from "vinext/internal/routing/pages-router";
-import { generateServerEntry as _generateServerEntry } from "vinext/internal/entries/pages-server-entry";
-import { generateClientEntry as _generateClientEntry } from "vinext/internal/entries/pages-client-entry";
+} from "./routing/pages-router.js";
+import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
+import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import {
   appRouteGraph,
   appRouter,
   invalidateAppRouteCache,
   matchAppRoute,
-} from "vinext/internal/routing/app-router";
-import type { NitroRouteRuleConfig } from "vinext/internal/build/nitro-route-rules";
+} from "./routing/app-router.js";
+import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import {
   buildViteResolveExtensions,
   normalizeViteResolveExtensions,
   createValidFileMatcher,
   findFileWithExts,
-} from "vinext/internal/routing/file-matcher";
-import { createSSRHandler } from "vinext/internal/server/dev-server";
-import { handleApiRoute } from "vinext/internal/server/api-handler";
+} from "./routing/file-matcher.js";
+import { createSSRHandler } from "./server/dev-server.js";
+import { handleApiRoute } from "./server/api-handler.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   isImageOptimizationPath,
   resolveDevImageRedirect,
-} from "vinext/internal/server/image-optimization";
+} from "./server/image-optimization.js";
 
-import { installSocketErrorBackstop } from "vinext/internal/server/socket-error-backstop";
-import { shouldInvalidateAppRouteFile } from "vinext/internal/server/dev-route-files";
-import { createDirectRunner } from "vinext/internal/server/dev-module-runner";
-import { generateRscEntry } from "vinext/internal/entries/app-rsc-entry";
-import { generateSsrEntry } from "vinext/internal/entries/app-ssr-entry";
+import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
+import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
+import { createDirectRunner } from "./server/dev-module-runner.js";
+import { generateRscEntry } from "./entries/app-rsc-entry.js";
+import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
-} from "vinext/internal/cache/cache-adapters-virtual";
+} from "./cache/cache-adapters-virtual.js";
 import {
   VIRTUAL_IMAGE_ADAPTERS,
   generateImageAdaptersModule,
   type VinextImageConfig,
-} from "vinext/internal/image/image-adapters-virtual";
-import {
-  generateBrowserEntry,
-  toLinkPrefetchRoutes,
-} from "vinext/internal/entries/app-browser-entry";
+} from "./image/image-adapters-virtual.js";
+import { generateBrowserEntry, toLinkPrefetchRoutes } from "./entries/app-browser-entry.js";
 import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
-} from "vinext/internal/build/route-classification-manifest";
+} from "./build/route-classification-manifest.js";
 import {
   extractMiddlewareMatcherConfig,
   extractMiddlewareMatcherConfigValue,
   hasExportedName,
-} from "vinext/internal/build/report";
-import { planRouteClassificationInjection } from "vinext/internal/build/route-classification-injector";
-import { normalizePathnameForRouteMatchStrict } from "vinext/internal/routing/utils";
-import { hasBasePath, stripBasePath } from "vinext/internal/utils/base-path";
+} from "./build/report.js";
+import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
+import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
+import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -84,12 +81,12 @@ import {
   type NextConfig,
   type NextConfigInput,
   type ResolvedNextConfig,
-} from "vinext/internal/config/next-config";
-import { loadDotenv } from "vinext/internal/config/dotenv";
-import { mergeServerExternalPackages } from "vinext/internal/config/server-external-packages";
+} from "./config/next-config.js";
+import { loadDotenv } from "./config/dotenv.js";
+import { mergeServerExternalPackages } from "./config/server-external-packages.js";
 
-import { findMiddlewareFile, isProxyFile, runMiddleware } from "vinext/internal/server/middleware";
-import { validateMiddlewareMatcherPatterns } from "vinext/internal/server/middleware-matcher-pattern";
+import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
+import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
 import {
   encodeUrlParserIgnoredCharacters,
   isNextDataPathname,
@@ -97,11 +94,8 @@ import {
   parseNextDataPathname,
   shouldAddTrailingSlashToPagesDataPath,
   urlParserCreatesPagesDataPath,
-} from "vinext/internal/server/pages-data-route";
-import {
-  resolvePagesI18nRequest,
-  stripI18nLocaleForApiRoute,
-} from "vinext/internal/server/pages-i18n";
+} from "./server/pages-data-route.js";
+import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
@@ -109,9 +103,9 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_TIMING_HEADER,
-} from "vinext/internal/server/headers";
-import { logRequest, now } from "vinext/internal/server/request-log";
-import { normalizePath } from "vinext/internal/server/normalize-path";
+} from "./server/headers.js";
+import { logRequest, now } from "./server/request-log.js";
+import { normalizePath } from "./server/normalize-path.js";
 import {
   canonicalizeRequestUrlPathname,
   filterInternalHeaders,
@@ -119,75 +113,70 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
   VINEXT_INTERNAL_HEADERS,
-} from "vinext/internal/server/request-pipeline";
+} from "./server/request-pipeline.js";
 import {
   findInstrumentationClientFile,
   findInstrumentationFile,
   runInstrumentation,
-} from "vinext/internal/server/instrumentation";
+} from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
-import { precompressAssets } from "vinext/internal/build/precompress";
-import { ensureAssetsIgnore } from "vinext/internal/build/assets-ignore";
-import { emitNextClientRuntimeManifests } from "vinext/internal/build/next-client-runtime-manifests";
-import {
-  collectInlineCssManifest,
-  injectInlineCssManifestGlobal,
-} from "vinext/internal/build/inline-css";
-import { validateDevRequest } from "vinext/internal/server/dev-origin-check";
-import { readTrustedRevalidationHostname } from "vinext/internal/server/revalidation-host";
-import { installDevStackSourcemapMiddleware } from "vinext/internal/server/dev-stack-sourcemap";
+import { precompressAssets } from "./build/precompress.js";
+import { ensureAssetsIgnore } from "./build/assets-ignore.js";
+import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
+import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
+import { validateDevRequest } from "./server/dev-origin-check.js";
+import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
+import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 
-import {
-  invalidateMetadataFileCache,
-  scanMetadataFiles,
-} from "vinext/internal/server/metadata-routes";
+import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
 
 import {
   runPagesRequest,
   type PagesPipelineDeps,
   type MiddlewareResult,
-} from "vinext/internal/server/pages-request-pipeline";
+} from "./server/pages-request-pipeline.js";
 import {
   pagesRouteHasPriorityOverAppRoute,
   validateHybridRouteConflicts,
-} from "vinext/internal/server/hybrid-route-priority";
-import { matchesRewriteSource, proxyExternalRequest } from "vinext/internal/config/config-matchers";
+} from "./server/hybrid-route-priority.js";
+import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
 import {
   detectPackageManager,
   formatMissingCloudflarePluginError,
   hasWranglerConfig,
-} from "vinext/internal/utils/project";
-import { isUnknownRecord as isRecord } from "vinext/internal/utils/record";
-import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "vinext/internal/utils/virtual-module";
-import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "vinext/internal/utils/asset-prefix";
-import { renderVinextBuiltUrl } from "vinext/internal/utils/built-asset-url";
-import { asyncHooksStubPlugin } from "vinext/internal/plugins/async-hooks-stub";
-import { clientReferenceDedupPlugin } from "vinext/internal/plugins/client-reference-dedup";
-import { dataUrlCssPlugin } from "vinext/internal/plugins/css-data-url";
-import { createCssModuleImportCompatibilityPlugin } from "vinext/internal/plugins/css-module-imports";
-import { createRscClientReferenceLoadersPlugin } from "vinext/internal/plugins/rsc-client-reference-loaders";
-import { createRscReferenceValidationNormalizerPlugin } from "vinext/internal/plugins/rsc-reference-validation-normalizer";
-import { createInstrumentationClientTransformPlugin } from "vinext/internal/plugins/instrumentation-client";
-import { createStyledJsxPlugin } from "vinext/internal/plugins/styled-jsx";
+} from "./utils/project.js";
+import { isUnknownRecord as isRecord } from "./utils/record.js";
+import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
+import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
+import {
+  assertNoPublicDirAssetConflict,
+  assertNoPublicNextRequestConflict,
+} from "./build/public-dir-conflict.js";
+import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
+import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
+import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
+import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
+import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
-} from "vinext/internal/client/instrumentation-client-inject";
-import { createMiddlewareServerOnlyPlugin } from "vinext/internal/plugins/middleware-server-only";
-import { validateMiddlewareModuleExports } from "vinext/internal/plugins/middleware-export-validation";
-import { createOptimizeImportsPlugin } from "vinext/internal/plugins/optimize-imports";
-import { createDynamicPreloadMetadataPlugin } from "vinext/internal/plugins/dynamic-preload-metadata";
-import {
-  createOgInlineFetchAssetsPlugin,
-  createOgAssetsPlugin,
-} from "vinext/internal/plugins/og-assets";
-import { generateRouteTypes } from "vinext/internal/typegen";
+} from "./client/instrumentation-client-inject.js";
+import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
+import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
+import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
   SSR_EXTERNAL_REACT_ENTRIES,
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
-} from "vinext/internal/plugins/rsc-client-shim-excludes";
-import { createServerExternalsManifestPlugin } from "vinext/internal/plugins/server-externals-manifest";
+} from "./plugins/rsc-client-shim-excludes.js";
+import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -199,32 +188,32 @@ import {
   generateGoogleFontsVirtualModule,
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
-} from "vinext/internal/plugins/fonts";
-import { computeClientRuntimeMetadata } from "vinext/internal/utils/client-runtime-metadata";
+} from "./plugins/fonts.js";
+import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
 import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
   type ClientEntryManifest,
-} from "vinext/internal/utils/client-entry-manifest";
+} from "./utils/client-entry-manifest.js";
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
   setPagesClientAssetsBuildMetadata,
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
-} from "vinext/internal/build/pages-client-assets-module";
+} from "./build/pages-client-assets-module.js";
 import {
   createPreviewBuildCredentials,
   getPreviewBuildCredentials,
   type PreviewBuildCredentials,
-} from "vinext/internal/build/preview-credentials";
-import { createModuleDependencyCache } from "vinext/internal/build/module-dependency-cache";
-import { resolvePostcssStringPlugins } from "vinext/internal/plugins/postcss";
+} from "./build/preview-credentials.js";
+import { createModuleDependencyCache } from "./build/module-dependency-cache.js";
+import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
   createSassCssUrlAssetImporter,
   createSassTildeImporter,
   createSassAwareFileSystemLoader,
-} from "vinext/internal/plugins/sass";
+} from "./plugins/sass.js";
 import {
   createClientFileNameConfig,
   createClientManualChunks,
@@ -234,35 +223,32 @@ import {
   getClientTreeshakeConfig,
   getBuildBundlerOptions,
   withBuildBundlerOptions,
-} from "vinext/internal/build/client-build-config";
+} from "./build/client-build-config.js";
 import {
   markCssUrlAssetReferences,
   restoreDedupedCssAssetReferences,
-} from "vinext/internal/build/css-url-assets";
+} from "./build/css-url-assets.js";
 import {
   augmentSsrManifestFromBundle,
   tryRealpathSync,
   relativeWithinRoot,
   type BundleBackfillChunk,
-} from "vinext/internal/build/ssr-manifest";
+} from "./build/ssr-manifest.js";
 import {
   hasExportAllCandidate,
   stripServerExports,
   validatePageExports,
-} from "vinext/internal/plugins/strip-server-exports";
-import { removeConsoleCalls } from "vinext/internal/plugins/remove-console";
-import { createImportMetaUrlPlugin } from "vinext/internal/plugins/import-meta-url";
-import { createRequireContextPlugin } from "vinext/internal/plugins/require-context";
-import { createExtensionlessDynamicImportPlugin } from "vinext/internal/plugins/extensionless-dynamic-import";
-import { createWasmModuleImportPlugin } from "vinext/internal/plugins/wasm-module-import";
-import {
-  getTypeofWindowReplacement,
-  replaceTypeofWindow,
-} from "vinext/internal/plugins/typeof-window";
-import { hasMdxFiles } from "vinext/internal/utils/mdx-scan";
-import { scanPublicFileRoutes } from "vinext/internal/utils/public-routes";
-import { publicFilePathVariants } from "vinext/internal/utils/public-file-path";
-import { methodNotAllowedResponse } from "vinext/internal/server/http-error-responses";
+} from "./plugins/strip-server-exports.js";
+import { removeConsoleCalls } from "./plugins/remove-console.js";
+import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import { createRequireContextPlugin } from "./plugins/require-context.js";
+import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
+import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
+import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
+import { hasMdxFiles } from "./utils/mdx-scan.js";
+import { scanPublicFileRoutes } from "./utils/public-routes.js";
+import { publicFilePathVariants } from "./utils/public-file-path.js";
+import { methodNotAllowedResponse } from "./server/http-error-responses.js";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
@@ -270,23 +256,22 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { getPagesPreviewModeId } from "vinext/internal/server/pages-preview";
+import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
-import { createIgnoreDynamicRequestsPlugin } from "vinext/internal/plugins/ignore-dynamic-requests";
-import { createTransformCache } from "vinext/internal/plugins/transform-cache";
-import { stripJsExtension, stripViteModuleQuery } from "vinext/internal/utils/path";
+import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
+import { createTransformCache } from "./plugins/transform-cache.js";
+import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
   serializeViteDefine,
-} from "vinext/internal/utils/vite-version";
+} from "./utils/vite-version.js";
 import {
   normalizeVinextPrerenderConfig,
   VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY,
   VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY,
   type VinextPrerenderConfig,
-} from "vinext/internal/config/prerender";
-import { assertNoPublicDirAssetConflict } from "vinext/internal/build/public-dir-conflict";
+} from "./config/prerender.js";
 
 const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
   "vinext/server/fetch-handler",
@@ -1485,6 +1470,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Production builds leave it null and scan the configured public directory
   // once while generating the RSC entry.
   let devPublicFileRoutes: Set<string> | null = null;
+  let publicDirConflictOptions: Parameters<typeof assertNoPublicDirAssetConflict>[0] | null = null;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
@@ -3470,18 +3456,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
-        const publicDir = config.publicDir === "" ? null : config.publicDir;
-        const assetsDir =
-          config.environments.client.build.assetsDir ??
-          config.build.assetsDir ??
-          resolveAssetsDir(nextConfig.assetPrefix ?? "");
-
-        assertNoPublicDirAssetConflict({
-          root: config.root,
-          publicDir,
-          assetsDir,
-        });
-
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }
@@ -3512,6 +3486,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 sourcePath: path.relative(root, route.pagePath ?? route.routePath!),
               })),
           );
+        }
+
+        if (config.command === "build") {
+          publicDirConflictOptions = {
+            root: config.root,
+            publicDir: config.publicDir === "" ? null : config.publicDir,
+            assetsDir:
+              config.environments?.client?.build?.assetsDir ??
+              config.build?.assetsDir ??
+              resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+          };
+          assertNoPublicDirAssetConflict(publicDirConflictOptions);
         }
 
         // When the user sets `ssr.external: true`, strip React entries from
@@ -3614,6 +3600,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }),
           );
         }
+      },
+
+      // Vite copies publicDir during its prepare-out-dir renderStart hook.
+      // Re-check immediately beforehand so files generated during buildStart
+      // cannot appear after configResolved and bypass the namespace guard.
+      renderStart: {
+        order: "pre",
+        handler() {
+          if (this.environment?.name !== "client" || !publicDirConflictOptions) return;
+          assertNoPublicDirAssetConflict(publicDirConflictOptions);
+        },
       },
 
       resolveId: {
@@ -4314,6 +4311,24 @@ export const loadServerActionClient = ${
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
           next();
+        });
+
+        // Match Next.js dev behavior: allow the server to start, then reject
+        // /_next requests while public/_next exists. This runs before Vite's
+        // public-file middleware and re-checks the filesystem on every request,
+        // so creating the directory after startup cannot bypass the guard.
+        server.middlewares.use((req, _res, next) => {
+          try {
+            assertNoPublicNextRequestConflict({
+              root: server.config.root,
+              publicDir: server.config.publicDir === "" ? null : server.config.publicDir,
+              basePath: nextConfig.basePath ?? "",
+              requestUrl: req.url ?? "/",
+            });
+            next();
+          } catch (error) {
+            next(error);
+          }
         });
 
         // Watch route files for additions/removals to invalidate route cache.
@@ -6572,7 +6587,7 @@ export const loadServerActionClient = ${
           if (nitro.options.dev) return;
 
           const { collectNitroRouteRules, mergeNitroRouteRules } =
-            await import("vinext/internal/build/nitro-route-rules");
+            await import("./build/nitro-route-rules.js");
           const generatedRouteRules = await collectNitroRouteRules({
             appDir: hasAppDir ? appDir : null,
             pagesDir: hasPagesDir ? pagesDir : null,
@@ -7107,13 +7122,13 @@ async function writeWebResponseToNodeRes(
 }
 
 // Public exports for static export
-export { staticExportPages, staticExportApp } from "vinext/internal/build/static-export";
+export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type {
   StaticExportResult,
   StaticExportOptions,
   AppStaticExportOptions,
-} from "vinext/internal/build/static-export";
+} from "./build/static-export.js";
 
 // Export NextConfig type so next.config.ts files can import it from "vinext"
 // instead of "next".
-export type { NextConfig } from "vinext/internal/config/next-config";
+export type { NextConfig } from "./config/next-config.js";
