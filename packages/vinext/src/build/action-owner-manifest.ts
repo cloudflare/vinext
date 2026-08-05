@@ -132,18 +132,31 @@ export function collectRscActionReachability(
     sharedRoots?: readonly string[];
   } & ActionOwnerReferenceMaps,
 ): ActionOwnerRouteReachability {
-  return new Map(
+  const routeReachability: ActionOwnerRouteReachability = new Map(
     options.routes.map((route) => [
       route.pattern,
       collectReachableActionReferences({
         canonicalizeModuleId: options.canonicalizeModuleId,
         clientReferenceMetaMap: options.clientReferenceMetaMap,
         getModuleInfo: options.getModuleInfo,
-        roots: [...actionOwnerRouteEntryIds(route), ...(options.sharedRoots ?? [])],
+        roots: actionOwnerRouteEntryIds(route),
         serverReferenceMetaMap: options.serverReferenceMetaMap,
       }),
     ]),
   );
+  if (options.sharedRoots?.length) {
+    routeReachability.set(
+      "*",
+      collectReachableActionReferences({
+        canonicalizeModuleId: options.canonicalizeModuleId,
+        clientReferenceMetaMap: options.clientReferenceMetaMap,
+        getModuleInfo: options.getModuleInfo,
+        roots: options.sharedRoots,
+        serverReferenceMetaMap: options.serverReferenceMetaMap,
+      }),
+    );
+  }
+  return routeReachability;
 }
 
 export async function resolveClientReferenceImportIds(options: {

@@ -92,7 +92,7 @@ describe("server action owner manifest", () => {
     });
 
     expect(buildActionOwnerManifest(routeReachability)).toEqual({
-      "global-error#globalErrorAction": ["/a", "/b"],
+      "global-error#globalErrorAction": ["*"],
     });
   });
 

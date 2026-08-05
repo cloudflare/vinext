@@ -103,6 +103,7 @@ function buildActionForwardHeaders(
 function filterActionForwardResponse(
   response: Response,
   sourceMiddlewareHeaders: Headers | null,
+  sourceMiddlewareStatus: number | null,
 ): Response {
   const headers = new Headers();
   if (sourceMiddlewareHeaders) {
@@ -117,7 +118,7 @@ function filterActionForwardResponse(
   }
   return new Response(response.body, {
     headers,
-    status: response.status,
+    status: sourceMiddlewareStatus ?? response.status,
     statusText: response.statusText,
   });
 }
@@ -144,6 +145,7 @@ export async function forwardServerActionIfNeeded(
   if (csrfResponse) return csrfResponse;
 
   const ownerPatterns = actionOwnerPatterns(options.actionOwners, options.actionId);
+  if (ownerPatterns?.includes("*")) return null;
   if (
     ownerPatterns &&
     options.currentRoutePattern &&
@@ -192,7 +194,11 @@ export async function forwardServerActionIfNeeded(
     forwardResponse.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
     forwardResponse.headers.get("content-type")?.startsWith("text/x-component")
   ) {
-    return filterActionForwardResponse(forwardResponse, options.middlewareContext.headers);
+    return filterActionForwardResponse(
+      forwardResponse,
+      options.middlewareContext.headers,
+      options.middlewareContext.status,
+    );
   }
   void forwardResponse.body?.cancel().catch(() => {});
   return emptyActionForwardResponse();

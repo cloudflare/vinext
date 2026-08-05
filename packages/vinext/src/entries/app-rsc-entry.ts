@@ -1033,6 +1033,8 @@ const __appRscHandler = createAppRscHandler({
       isProgressiveServerActionRequest: __isProgressiveServerActionRequest,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
+    const { forwardServerActionIfNeeded: __forwardServerActionIfNeeded } =
+      await __loadAppActionForwarding();
     // A multipart form POST to a page is always a server-action attempt, so a
     // body that decodes to no action must surface as 404 action-not-found
     // (#1340). Route handlers run after this dispatch and accept raw multipart
@@ -1065,6 +1067,32 @@ const __appRscHandler = createAppRscHandler({
       decodeFormState,
       getAndClearPendingCookies,
       getDraftModeCookieHeader,
+      forwardAction(__progressiveActionId) {
+        return __forwardServerActionIfNeeded({
+          actionId: __progressiveActionId,
+          actionOwners: __VINEXT_ACTION_OWNERS(),
+          allowedOrigins: __allowedOrigins,
+          basePath: __basePath,
+          clearRequestContext: __clearRequestContext,
+          currentRoutePattern: routeMatch?.route.pattern ?? null,
+          dispatch(__forwardRequest) {
+            const __executionContext = __getRequestExecutionContext();
+            return __appRscHandler(
+              __forwardRequest,
+              __executionContext
+                ? {
+                    actionForwarded: true,
+                    cache: __executionContext.cache,
+                    passThroughOnException: __executionContext.passThroughOnException?.bind(__executionContext),
+                    waitUntil: __executionContext.waitUntil.bind(__executionContext),
+                  }
+                : { actionForwarded: true },
+            );
+          },
+          middlewareContext,
+          request,
+        });
+      },
       hasPageRoute: __hasPageRoute,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,

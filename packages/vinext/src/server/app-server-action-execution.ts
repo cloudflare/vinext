@@ -224,6 +224,7 @@ export type HandleProgressiveServerActionRequestOptions = {
   decodeFormState: AppServerActionFormStateDecoder;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
+  forwardAction?: (actionId: string) => Promise<Response | null>;
   /**
    * Whether the posted-to route resolves to an App Router *page* (as opposed to
    * a route handler or no match). Multipart form POSTs to a page are always
@@ -1084,6 +1085,14 @@ export async function handleProgressiveServerActionRequest(
       return payloadResponse;
     }
 
+    const directActionId = [...body.keys()]
+      .find((key) => key.startsWith("$ACTION_ID_"))
+      ?.slice("$ACTION_ID_".length);
+    if (directActionId && options.forwardAction) {
+      const forwardResponse = await options.forwardAction(directActionId);
+      if (forwardResponse) return forwardResponse;
+    }
+
     const action = await options.decodeAction(body);
     if (!isAppServerActionFunction(action)) {
       // A multipart POST to a *page* is always a server-action attempt; a body
@@ -1099,6 +1108,12 @@ export async function handleProgressiveServerActionRequest(
         });
       }
       return null;
+    }
+
+    const decodedActionId = Reflect.get(action, "$$id");
+    if (!directActionId && typeof decodedActionId === "string" && options.forwardAction) {
+      const forwardResponse = await options.forwardAction(decodedActionId);
+      if (forwardResponse) return forwardResponse;
     }
 
     let actionRedirect: AppServerActionRedirect | null = null;

@@ -118,7 +118,7 @@ describe("server action forwarding", () => {
         middlewareContext: {
           headers: middlewareHeaders,
           requestHeaders: middlewareRequestHeaders,
-          status: null,
+          status: 418,
         },
         request: request({ authorization: "Bearer token", cookie: "session=old; theme=dark" }),
       }),
@@ -135,6 +135,17 @@ describe("server action forwarding", () => {
     expect(response?.headers.get("x-response")).toBe("owner");
     expect(response?.headers.get("x-source-only")).toBe("kept");
     expect(response?.headers.getSetCookie()).toEqual(["session=rotated; Path=/"]);
+    expect(response?.status).toBe(418);
+  });
+
+  it("executes shared actions at their originating pathname", async () => {
+    const dispatch = vi.fn();
+    const response = await forwardServerActionIfNeeded(
+      options({ actionOwners: { "action-key#submit": ["*"] }, dispatch }),
+    );
+
+    expect(response).toBeNull();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("preserves Workers request metadata when forwarding", async () => {

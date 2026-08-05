@@ -187,6 +187,19 @@ async function postRawAction(
   );
 }
 
+async function postProgressiveAction(page: Page, pathname: string, actionId: string) {
+  await page.goto(`${app.baseUrl}${pathname}`);
+  return page.evaluate(
+    async ({ actionId, pathname }) => {
+      const body = new FormData();
+      body.set(`$ACTION_ID_${actionId}`, "");
+      const response = await fetch(pathname, { body, method: "POST" });
+      return { body: await response.text(), status: response.status };
+    },
+    { actionId, pathname },
+  );
+}
+
 let app: ProductionApp;
 
 test.beforeAll(async () => {
@@ -276,6 +289,16 @@ test.describe("production server action ownership", () => {
     expect(response.status).toBe(200);
     expect(response.body).toBe("{}");
     expect(response.body).not.toContain("PROTECTED_ACTION_EXECUTED");
+  });
+
+  test("routes progressive actions through protected owner middleware", async ({ page }) => {
+    const response = await postProgressiveAction(
+      page,
+      "/ownership/report/public",
+      app.actionIds.adminOnly,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).not.toContain("ADMIN_ONLY_EXECUTED");
   });
 
   test("retains protected ownership through client component boundaries", async ({ page }) => {
