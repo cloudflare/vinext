@@ -21,7 +21,9 @@ type ProductionApp = {
     cookieOwner: string;
     dynamicProtected: string;
     globalErrorOnly: string;
+    globalNotFoundOnly: string;
     loop: string;
+    packageClient: string;
     protected: string;
     protectedClient: string;
     redirectTo: string;
@@ -47,6 +49,11 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
       entry.isDirectory() ? "junction" : "file",
     );
   }
+  await fs.symlink(
+    path.join(fixtureRoot, "action-client-package"),
+    path.join(targetNodeModules, "action-client-package"),
+    "junction",
+  );
 }
 
 async function readBuiltJavaScript(directory: string): Promise<string> {
@@ -106,7 +113,9 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
       globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),
+      globalNotFoundOnly: findActionId(builtSource, "globalNotFoundOnlyAction"),
       loop: findActionId(builtSource, "$$hoist_0_loopAction"),
+      packageClient: findActionId(builtSource, "packageClientAction"),
       protected: findActionId(builtSource, "protectedAction"),
       protectedClient: findActionId(builtSource, "protectedClientAction"),
       redirectTo: findActionId(builtSource, "redirectTo"),
@@ -442,5 +451,25 @@ test.describe("production server action ownership", () => {
     );
     expect(response.status).toBe(200);
     expect(response.body).toContain("GLOBAL_ERROR_ONLY_ACTION_EXECUTED");
+  });
+
+  test("associates global not-found actions with every route", async ({ page }) => {
+    const response = await postAction(
+      page,
+      "/ownership/report/public",
+      app.actionIds.globalNotFoundOnly,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("GLOBAL_NOT_FOUND_ONLY_ACTION_EXECUTED");
+  });
+
+  test("resolves package Client Component action owners", async ({ page }) => {
+    const response = await postAction(
+      page,
+      "/ownership/report/public",
+      app.actionIds.packageClient,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("PACKAGE_CLIENT_ACTION_EXECUTED");
   });
 });

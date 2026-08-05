@@ -3778,7 +3778,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             rscClassificationManifest = collectRouteClassificationManifest(routes);
             rscActionOwnerRoutes =
               this.environment.config.command === "build" && hasServerActions ? routes : null;
-            rscActionOwnerSharedRoots = globalErrorPath ? [globalErrorPath] : [];
+            rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
+              (path): path is string => path !== null,
+            );
             return generateRscEntry(
               appDir,
               routes,

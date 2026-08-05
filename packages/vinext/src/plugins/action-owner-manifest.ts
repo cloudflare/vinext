@@ -8,6 +8,7 @@ import {
   addClientActionReachability,
   buildActionOwnerManifest,
   collectRscActionReachability,
+  resolveClientReferenceImportIds,
   type ActionOwnerRouteReachability,
 } from "../build/action-owner-manifest.js";
 
@@ -67,6 +68,11 @@ export function createActionOwnerManifestPlugin(options: {
           sharedRoots: options.getSharedRoots(),
         });
       } else if (this.environment.name === "client") {
+        await resolveClientReferenceImportIds({
+          canonicalizeModuleId: options.canonicalizeModuleId,
+          resolveId: async (id) => (await this.resolve(id))?.id ?? null,
+          routeReachability,
+        });
         addClientActionReachability({
           canonicalizeModuleId: options.canonicalizeModuleId,
           clientReferenceMetaMap: manager.clientReferenceMetaMap,

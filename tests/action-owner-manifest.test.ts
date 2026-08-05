@@ -5,6 +5,7 @@ import {
   buildActionOwnerManifest,
   collectReachableActionReferences,
   collectRscActionReachability,
+  resolveClientReferenceImportIds,
 } from "../packages/vinext/src/build/action-owner-manifest.js";
 
 function route(pattern: string, pagePath: string) {
@@ -95,22 +96,27 @@ describe("server action owner manifest", () => {
     });
   });
 
-  it("joins RSC Client Component reachability with the final client graph", () => {
+  it("resolves RSC Client Component import ids before joining the final client graph", async () => {
     const routeReachability = collectRscActionReachability({
       getModuleInfo: moduleInfo({
         "/app/a/page.tsx": ["/app/a/client.tsx?rsc"],
       }),
       ...referenceMaps({
         clients: {
-          "/app/a/client.tsx?rsc": "/app/a/client.tsx",
+          "/app/a/client.tsx?rsc": "action-client-package",
         },
       }),
       routes: [route("/a", "/app/a/page.tsx")],
     });
 
+    await resolveClientReferenceImportIds({
+      resolveId: async (id) =>
+        id === "action-client-package" ? "/node_modules/action-client-package/client.tsx" : null,
+      routeReachability,
+    });
     addClientActionReachability({
       getModuleInfo: moduleInfo({
-        "/app/a/client.tsx": ["/app/a/commands.ts"],
+        "/node_modules/action-client-package/client.tsx": ["/app/a/commands.ts"],
         "/app/a/commands.ts": ["/app/a/action.ts?server-proxy"],
       }),
       ...referenceMaps({

@@ -146,6 +146,22 @@ export function collectRscActionReachability(
   );
 }
 
+export async function resolveClientReferenceImportIds(options: {
+  canonicalizeModuleId?: (id: string) => string;
+  resolveId: (id: string) => Promise<string | null>;
+  routeReachability: ActionOwnerRouteReachability;
+}): Promise<void> {
+  const canonicalizeModuleId = options.canonicalizeModuleId ?? ((id: string) => id);
+  for (const reachability of options.routeReachability.values()) {
+    const resolvedImportIds = new Set<string>();
+    for (const importId of reachability.clientReferenceImportIds) {
+      const resolvedId = (await options.resolveId(importId)) ?? importId;
+      resolvedImportIds.add(canonicalizeModuleId(resolvedId));
+    }
+    reachability.clientReferenceImportIds = resolvedImportIds;
+  }
+}
+
 export function addClientActionReachability(
   options: {
     canonicalizeModuleId?: (id: string) => string;
