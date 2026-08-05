@@ -3,7 +3,11 @@ import { patternToNextFormat } from "../routing/route-validation.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import { ACTION_FORWARDED_HEADER, NEXTJS_ACTION_NOT_FOUND_HEADER } from "./headers.js";
+import {
+  ACTION_FORWARDED_HEADER,
+  ACTION_REDIRECT_HEADER,
+  NEXTJS_ACTION_NOT_FOUND_HEADER,
+} from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   createServerActionNotFoundResponse,
@@ -113,10 +117,12 @@ function filterActionForwardResponse(
       headers.set(key, value);
     }
   }
-  const isActionNotFound = response.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1";
+  const preserveResponseStatus =
+    response.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
+    response.headers.has(ACTION_REDIRECT_HEADER);
   return new Response(response.body, {
     headers,
-    status: isActionNotFound ? response.status : (sourceMiddlewareStatus ?? response.status),
+    status: preserveResponseStatus ? response.status : (sourceMiddlewareStatus ?? response.status),
     statusText: response.statusText,
   });
 }
@@ -197,6 +203,7 @@ export async function forwardServerActionIfNeeded(
 
   if (
     forwardResponse.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
+    forwardResponse.headers.has(ACTION_REDIRECT_HEADER) ||
     forwardResponse.headers.get("content-type")?.startsWith("text/x-component")
   ) {
     return filterActionForwardResponse(

@@ -386,6 +386,15 @@ test.describe("production server action ownership", () => {
     expect(response.body).not.toContain("ADMIN_SECRET_MARKER_42");
   });
 
+  test("preserves external redirects from forwarded action owners", async ({ page }) => {
+    const response = await postAction(page, "/ownership/report/shared", app.actionIds.redirectTo, [
+      "https://example.com/destination",
+    ]);
+    expect(response.status).toBe(303);
+    expect(response.headers["x-action-redirect"]).toBe("https://example.com/destination");
+    expect(response.body).toBe("");
+  });
+
   test("blocks encrypted closure replay across actions", async ({ page }) => {
     await page.goto(`${app.baseUrl}/ownership/report/oracle?value=victim-carol`);
     await waitForAppRouterHydration(page);

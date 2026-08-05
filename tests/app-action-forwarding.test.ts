@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { forwardServerActionIfNeeded } from "../packages/vinext/src/server/app-action-forwarding.js";
-import { ACTION_FORWARDED_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  ACTION_FORWARDED_HEADER,
+  ACTION_REDIRECT_HEADER,
+  ACTION_REDIRECT_STATUS_HEADER,
+  ACTION_REDIRECT_TYPE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { createServerActionNotFoundResponse } from "../packages/vinext/src/server/server-action-not-found.js";
 import {
   MIDDLEWARE_OVERRIDE_HEADERS,
@@ -290,6 +295,35 @@ describe("server action forwarding", () => {
     expect(response?.headers.get("x-source")).toBe("kept");
     expect(response?.headers.getSetCookie()).toEqual(["source=1"]);
     expect(await response?.text()).toBe("Server action not found.");
+  });
+
+  it("preserves marked action redirects from the owner", async () => {
+    const response = await forwardServerActionIfNeeded(
+      options({
+        async dispatch() {
+          return new Response(null, {
+            status: 303,
+            headers: {
+              [ACTION_REDIRECT_HEADER]: "https://other.example/path",
+              [ACTION_REDIRECT_STATUS_HEADER]: "307",
+              [ACTION_REDIRECT_TYPE_HEADER]: "push",
+            },
+          });
+        },
+        middlewareContext: {
+          headers: new Headers({ "set-cookie": "source=1", "x-source": "kept" }),
+          requestHeaders: null,
+          status: 418,
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get(ACTION_REDIRECT_HEADER)).toBe("https://other.example/path");
+    expect(response?.headers.get(ACTION_REDIRECT_STATUS_HEADER)).toBe("307");
+    expect(response?.headers.get(ACTION_REDIRECT_TYPE_HEADER)).toBe("push");
+    expect(response?.headers.get("x-source")).toBe("kept");
+    expect(response?.headers.getSetCookie()).toEqual(["source=1"]);
   });
 
   it.each(["constructor#x", "__proto__#x", "prototype#x"])(
