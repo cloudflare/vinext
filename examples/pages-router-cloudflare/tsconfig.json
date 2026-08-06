@@ -7,7 +7,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types"]
+    "types": ["vinext/types", "@cloudflare/workers-types"]
   },
-  "include": ["pages", "components", "worker", "../../packages/vinext/src/shims/next-shims.d.ts"]
+  "include": ["next-env.d.ts", "pages", "components", "worker"]
 }

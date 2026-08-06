@@ -5,6 +5,7 @@ import {
   resolveSsrManifest,
   getManifestFilesForModule,
 } from "../packages/vinext/src/server/pages-asset-tags.js";
+import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,28 +25,20 @@ describe("resolveSsrManifest", () => {
     expect(resolveSsrManifest(m)).toBe(m);
   });
 
-  it("falls back to globalThis.__VINEXT_SSR_MANIFEST__ when manifest is null", () => {
-    const global = makeManifest({ "a.js": ["b.js"] });
-    globalThis.__VINEXT_SSR_MANIFEST__ = global;
-    try {
-      expect(resolveSsrManifest(null)).toBe(global);
-    } finally {
-      delete globalThis.__VINEXT_SSR_MANIFEST__;
-    }
+  it("falls back to registered runtime assets when manifest is null", () => {
+    const registered = makeManifest({ "a.js": ["b.js"] });
+    setPagesClientAssets({ ssrManifest: registered });
+    expect(resolveSsrManifest(null)).toBe(registered);
   });
 
-  it("falls back to globalThis.__VINEXT_SSR_MANIFEST__ when manifest is empty", () => {
-    const global = makeManifest({ "a.js": ["b.js"] });
-    globalThis.__VINEXT_SSR_MANIFEST__ = global;
-    try {
-      expect(resolveSsrManifest({})).toBe(global);
-    } finally {
-      delete globalThis.__VINEXT_SSR_MANIFEST__;
-    }
+  it("falls back to registered runtime assets when manifest is empty", () => {
+    const registered = makeManifest({ "a.js": ["b.js"] });
+    setPagesClientAssets({ ssrManifest: registered });
+    expect(resolveSsrManifest({})).toBe(registered);
   });
 
-  it("returns null when both manifest and global are absent", () => {
-    delete globalThis.__VINEXT_SSR_MANIFEST__;
+  it("returns null when both manifest and runtime assets are absent", () => {
+    setPagesClientAssets(undefined);
     expect(resolveSsrManifest(null)).toBeNull();
   });
 });
@@ -109,6 +102,11 @@ describe("resolveClientModuleUrl", () => {
     const m = makeManifest({ "page.tsx": ["style.css"] });
     expect(resolveClientModuleUrl(m, "page.tsx")).toBeUndefined();
   });
+
+  it("preserves native ESM identity for client module URLs", () => {
+    const m = makeManifest({ "page.tsx": ["page.js"] });
+    expect(resolveClientModuleUrl(m, "page.tsx", "", "", "dpl_123")).toBe("/page.js");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -125,8 +123,7 @@ function parseTags(html: string): string[] {
 
 describe("collectAssetTags", () => {
   afterEach(() => {
-    delete globalThis.__VINEXT_LAZY_CHUNKS__;
-    delete globalThis.__VINEXT_CLIENT_ENTRY__;
+    setPagesClientAssets(undefined);
   });
 
   it("emits stylesheet link for css files", () => {
@@ -140,6 +137,22 @@ describe("collectAssetTags", () => {
     expect(result).toContain('href="/style.css"');
   });
 
+  // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
+  it("keeps JavaScript unqueried while tagging managed stylesheets", () => {
+    const result = collectAssetTags({
+      manifest: makeManifest({ "page.tsx": ["style.css", "page.js"] }),
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      deploymentId: "dpl_123",
+    });
+
+    expect(result).toContain('href="/style.css?dpl=dpl_123"');
+    expect(result).toContain('href="/page.js"');
+    expect(result).toContain('src="/page.js"');
+    expect(result).not.toContain("page.js?dpl=");
+  });
+
   it("emits modulepreload + script for js files", () => {
     const manifest = makeManifest({ "page.tsx": ["page.js"] });
     const result = collectAssetTags({
@@ -150,6 +163,20 @@ describe("collectAssetTags", () => {
     expect(result).toContain('<link rel="modulepreload"');
     expect(result).toContain('<script type="module"');
     expect(result).toContain('src="/page.js"');
+  });
+
+  it("applies configured crossOrigin to scripts and modulepreloads", () => {
+    const manifest = makeManifest({ "page.tsx": ["page.js"] });
+    const result = collectAssetTags({
+      manifest,
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      crossOrigin: "anonymous",
+    });
+    expect(result).toContain(
+      '<link rel="modulepreload" href="/page.js" crossorigin="anonymous" />',
+    );
+    expect(result).toContain('src="/page.js" crossorigin="anonymous"></script>');
   });
 
   it("adds defer attribute when disableOptimizedLoading is false", () => {
@@ -203,7 +230,7 @@ describe("collectAssetTags", () => {
   });
 
   it("skips lazy chunks", () => {
-    globalThis.__VINEXT_LAZY_CHUNKS__ = ["lazy.js"];
+    setPagesClientAssets({ lazyChunks: ["lazy.js"] });
     const manifest = makeManifest({ "page.tsx": ["lazy.js", "eager.js"] });
     const result = collectAssetTags({
       manifest,
@@ -226,8 +253,8 @@ describe("collectAssetTags", () => {
     expect(result).not.toContain('href="//page.js"');
   });
 
-  it("injects client entry from globalThis.__VINEXT_CLIENT_ENTRY__ first", () => {
-    globalThis.__VINEXT_CLIENT_ENTRY__ = "_next/static/entry.js";
+  it("injects the registered client entry first", () => {
+    setPagesClientAssets({ clientEntry: "_next/static/entry.js" });
     const manifest = makeManifest({ "page.tsx": ["page.js"] });
     const result = collectAssetTags({
       manifest,
@@ -237,6 +264,24 @@ describe("collectAssetTags", () => {
     const tags = parseTags(result);
     // Entry should be first
     expect(tags[0]).toContain("entry.js");
+  });
+
+  it("injects the registered development client entry without a manifest", () => {
+    setPagesClientAssets({ clientEntry: "/@id/__x00__virtual:vinext-client-entry" });
+    const result = collectAssetTags({
+      manifest: null,
+      moduleIds: [],
+      scriptNonce: "dev-nonce",
+      disableOptimizedLoading: false,
+    });
+
+    const tags = parseTags(result);
+    expect(tags[0]).toBe(
+      '<link rel="modulepreload" nonce="dev-nonce" href="/@id/__x00__virtual:vinext-client-entry" />',
+    );
+    expect(result).toContain(
+      '<script type="module" defer nonce="dev-nonce" src="/@id/__x00__virtual:vinext-client-entry" crossorigin></script>',
+    );
   });
 
   it("includes shared framework- chunks", () => {
@@ -277,7 +322,7 @@ describe("collectAssetTags", () => {
   });
 
   it("returns empty string when manifest is null and no globals set", () => {
-    delete globalThis.__VINEXT_SSR_MANIFEST__;
+    setPagesClientAssets(undefined);
     const result = collectAssetTags({
       manifest: null,
       moduleIds: ["page.tsx"],
@@ -321,7 +366,7 @@ describe("collectAssetTags", () => {
   });
 
   it("re-anchors the injected client entry to the assetPrefix", () => {
-    globalThis.__VINEXT_CLIENT_ENTRY__ = "docs/cdn/_next/static/entry.js";
+    setPagesClientAssets({ clientEntry: "docs/cdn/_next/static/entry.js" });
     const result = collectAssetTags({
       manifest: makeManifest({ "page.tsx": [] }),
       moduleIds: ["page.tsx"],
@@ -350,7 +395,7 @@ describe("collectAssetTags", () => {
   it("still excludes lazy chunks by their base-anchored key while re-anchoring the href", () => {
     // The membership test must use the base-anchored value, NOT the re-anchored
     // href, so exclusion keeps working under basePath + assetPrefix.
-    globalThis.__VINEXT_LAZY_CHUNKS__ = ["docs/cdn/_next/static/lazy.js"];
+    setPagesClientAssets({ lazyChunks: ["docs/cdn/_next/static/lazy.js"] });
     const manifest = makeManifest({
       "page.tsx": ["docs/cdn/_next/static/page.js", "docs/cdn/_next/static/lazy.js"],
     });

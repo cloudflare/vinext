@@ -3,6 +3,10 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
@@ -18,12 +22,105 @@ import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { stripRscSuffix, VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 
 export { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
+
+type PrefetchRouterState = { pathAndSearch: string };
+
+function extractFlightRouterStatePath(value: unknown, depth = 0): string | null {
+  if (!Array.isArray(value) || value.length < 2 || depth > 64) return null;
+
+  const rawSegment = value[0];
+  const segment = Array.isArray(rawSegment) ? rawSegment[1] : rawSegment;
+  if (typeof segment !== "string") return null;
+  // These values do not describe a stable visible pathname. Matching Next's
+  // extractPathFromFlightRouterState(), page markers and route groups are
+  // omitted while defaults and interception markers make the path unknown.
+  if (segment === "__DEFAULT__" || /^(?:\(\.\)|\(\.\.\)|\(\.\.\.\))/.test(segment)) {
+    return null;
+  }
+
+  const parallelRoutes = value[1];
+  if (!parallelRoutes || typeof parallelRoutes !== "object" || Array.isArray(parallelRoutes)) {
+    return null;
+  }
+
+  let childPath: string | null = null;
+  const children = Reflect.get(parallelRoutes, "children");
+  if (children !== undefined) {
+    childPath = extractFlightRouterStatePath(children, depth + 1);
+  }
+  if (childPath === null) {
+    for (const [key, child] of Object.entries(parallelRoutes)) {
+      if (key === "children") continue;
+      childPath = extractFlightRouterStatePath(child, depth + 1);
+      if (childPath !== null) break;
+    }
+  }
+
+  const ownSegment =
+    segment === "" ||
+    segment === "children" ||
+    segment.startsWith("__PAGE__") ||
+    (segment.startsWith("(") && segment.endsWith(")"))
+      ? ""
+      : segment.replace(/^\/+/, "");
+  const parts = [ownSegment, ...(childPath === null ? [] : childPath.split("/"))].filter(Boolean);
+  return `/${parts.join("/")}`;
+}
+
+function parsePrefetchRouterState(value: string | null): PrefetchRouterState | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(value));
+    if (Array.isArray(parsed)) {
+      const pathAndSearch = extractFlightRouterStatePath(parsed);
+      return pathAndSearch === null ? null : { pathAndSearch };
+    }
+    if (!parsed || typeof parsed !== "object") return null;
+    const pathAndSearch = Reflect.get(parsed, "pathAndSearch");
+    const routeId = Reflect.get(parsed, "routeId");
+    if (
+      typeof pathAndSearch !== "string" ||
+      !pathAndSearch.startsWith("/") ||
+      typeof routeId !== "string" ||
+      routeId.length === 0
+    ) {
+      return null;
+    }
+    return { pathAndSearch };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeComparablePathAndSearch(value: string, basePath: string, baseUrl: URL): string {
+  const parsed = new URL(value, baseUrl);
+  const pathname =
+    basePath && hasBasePath(parsed.pathname, basePath)
+      ? stripBasePath(parsed.pathname, basePath)
+      : parsed.pathname;
+  const search = parsed.searchParams.toString();
+  return `${pathname}${search ? `?${search}` : ""}`;
+}
+
+function tryNormalizeComparablePathAndSearch(
+  value: string,
+  basePath: string,
+  baseUrl: URL,
+): string | null {
+  try {
+    return normalizeComparablePathAndSearch(value, basePath, baseUrl);
+  } catch {
+    return null;
+  }
+}
 
 export type NormalizedRscRequest = {
   /** Parsed URL. Callers may mutate `url.search` after middleware runs. */
@@ -32,6 +129,8 @@ export type NormalizedRscRequest = {
   pathname: string;
   /** Pathname with `.rsc` suffix removed. Used for route matching and navigation context. */
   cleanPathname: string;
+  /** Original encoded request pathname with basePath and `.rsc` removed. */
+  requestCleanPathname: string;
   /** True when the request targets a canonical `.rsc` payload URL. */
   isRscRequest: boolean;
   /** Sanitized X-Vinext-Interception-Context header (null bytes stripped). null when absent. */
@@ -42,6 +141,8 @@ export type NormalizedRscRequest = {
   renderMode: AppRscRenderMode;
   /** Parsed ClientReuseManifest hint. Verification and skip authorization happen later. */
   clientReuseManifest: ClientReuseManifestParseResult;
+  /** Whether the incoming pathname included the configured basePath. */
+  hadBasePath: boolean;
 };
 
 /**
@@ -61,10 +162,9 @@ export type NormalizedRscRequest = {
  *   4. Collapse double-slashes, resolve `.` and `..` segments (normalizePath)
  *   5. basePath check + strip — 404 when pathname lacks the basePath prefix.
  *      `/__vinext/` bypasses this for internal prerender endpoints.
- *   6. RSC detection: `.rsc` suffix, or Next-style `RSC: 1` plus the internal
- *      `_rsc` cache-busting query. The header alone does not select payload
- *      rendering at the canonical HTML URL, so caches that ignore Vary cannot
- *      store Flight responses under HTML URLs.
+ *   6. RSC detection: `.rsc` suffix or Next-style `RSC: 1`. The internal
+ *      `_rsc` cache-busting query is validated separately so full-route Flight
+ *      responses do not share the canonical HTML URL in caches that ignore Vary.
  *   7. cleanPathname — pathname with `.rsc` suffix stripped
  *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
  *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
@@ -77,6 +177,7 @@ export type NormalizedRscRequest = {
 export function normalizeRscRequest(
   request: Request,
   basePath: string,
+  allowOutsideBasePath = false,
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
 
@@ -98,24 +199,28 @@ export function normalizeRscRequest(
 
   // Step 4: Collapse double-slashes and resolve . / .. segments.
   let pathname = normalizePath(decoded);
+  let requestPathname = url.pathname;
+  let hadBasePath = true;
 
   // Step 5: basePath check and strip.
   // Skipped when basePath is empty (no basePath configured).
   // /__vinext/ prefix bypasses the check for internal prerender endpoints
   // that must be reachable regardless of basePath configuration.
   if (basePath) {
-    if (!hasBasePath(pathname, basePath) && !pathname.startsWith("/__vinext/")) {
+    hadBasePath = hasBasePath(requestPathname, basePath);
+    if (!hadBasePath && !pathname.startsWith("/__vinext/") && !allowOutsideBasePath) {
       return notFoundResponse();
     }
-    pathname = stripBasePath(pathname, basePath);
+    if (hadBasePath) {
+      pathname = stripBasePath(pathname, basePath);
+      requestPathname = stripBasePath(requestPathname, basePath);
+    }
   }
 
   // Steps 6-7: RSC detection and cleanPathname.
-  const isRscRequest =
-    pathname.endsWith(".rsc") ||
-    (request.headers.get(RSC_HEADER) === "1" &&
-      url.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM));
+  const isRscRequest = pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1";
   const cleanPathname = stripRscSuffix(pathname);
+  const requestCleanPathname = stripRscSuffix(requestPathname);
 
   // Step 8: Validate and sanitize X-Vinext-Interception-Context.
   //
@@ -132,18 +237,52 @@ export function normalizeRscRequest(
   const mountedSlotsHeader = normalizeMountedSlotsHeader(
     request.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
   );
-  const renderMode = isRscRequest
+  let renderMode = isRscRequest
     ? parseAppRscRenderMode(request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER))
     : APP_RSC_RENDER_MODE_NAVIGATION;
+  if (
+    isRscRequest &&
+    renderMode === APP_RSC_RENDER_MODE_NAVIGATION &&
+    request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) === "1" &&
+    // Vinext's current client sends an explicit segment-prefetch header and
+    // render-mode policy. Protocol inference is only for Next-compatible raw
+    // prefetch requests, whose legacy whole-route requests omit this header.
+    request.headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) === null
+  ) {
+    const nextUrl = request.headers.get(NEXT_URL_HEADER);
+    const routerState = parsePrefetchRouterState(
+      request.headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
+    );
+    if (nextUrl && routerState) {
+      const targetUrl = new URL(url);
+      targetUrl.pathname = cleanPathname;
+      targetUrl.searchParams.delete(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
+      const routerPathAndSearch = tryNormalizeComparablePathAndSearch(
+        routerState.pathAndSearch,
+        basePath,
+        url,
+      );
+      const nextPathAndSearch = tryNormalizeComparablePathAndSearch(nextUrl, basePath, url);
+      const targetPathAndSearch = normalizeComparablePathAndSearch(targetUrl.href, basePath, url);
+      if (routerPathAndSearch !== null && nextPathAndSearch !== null) {
+        renderMode =
+          routerPathAndSearch === nextPathAndSearch && routerPathAndSearch === targetPathAndSearch
+            ? APP_RSC_RENDER_MODE_PREFETCH_EMPTY
+            : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+      }
+    }
+  }
   const clientReuseManifest = isRscRequest
     ? parseClientReuseManifestHeader(request.headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER))
     : ({ kind: "absent" } satisfies ClientReuseManifestParseResult);
 
   return {
     clientReuseManifest,
+    hadBasePath,
     url,
     pathname,
     cleanPathname,
+    requestCleanPathname,
     isRscRequest,
     interceptionContextHeader,
     mountedSlotsHeader,

@@ -2,7 +2,7 @@ import { setHeadersContext } from "vinext/shims/headers";
 import {
   setNavigationContext as setNavigationContextOrig,
   type NavigationContext,
-} from "vinext/shims/navigation";
+} from "vinext/shims/navigation-server";
 import { setRootParams } from "vinext/shims/root-params";
 
 /**

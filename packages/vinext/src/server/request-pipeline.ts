@@ -1,14 +1,46 @@
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
-import type { NextHeader } from "../config/next-config.js";
-import type { BasePathMatchState, RequestContext } from "../config/config-matchers.js";
-import { matchHeaders } from "../config/config-matchers.js";
 import {
   INTERNAL_HEADERS,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_INTERNAL_HEADERS,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
-import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
+import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
+import { getUnconsumedMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
+import {
+  forbiddenResponse,
+  methodNotAllowedResponse,
+  notFoundResponse,
+} from "./http-error-responses.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
+
+export { isOpenRedirectShaped } from "./open-redirect.js";
+
+const PATHNAME_CANONICALIZATION_BASE = new URL("http://vinext.invalid/");
+
+/**
+ * Apply the URL Standard's pathname canonicalization without decoding and
+ * re-encoding ordinary percent escapes.
+ *
+ * In particular, WHATWG URLs remove literal and percent-encoded dot segments
+ * (`/%2e/about` becomes `/about`) while preserving unrelated spellings such
+ * as `/%61bout`, `%2F`, `%5C`, and `%252F` byte-for-byte. Node request adapters
+ * must do this before comparing raw route/config/basePath identity so those
+ * comparisons agree with the `Request` that userland eventually receives.
+ */
+export function canonicalizeRequestPathname(pathname: string): string {
+  const url = new URL(PATHNAME_CANONICALIZATION_BASE);
+  url.pathname = pathname;
+  return url.pathname;
+}
+
+/** Canonicalize only the pathname portion while preserving the raw query. */
+export function canonicalizeRequestUrlPathname(url: string): string {
+  const queryIndex = url.indexOf("?");
+  const pathname = queryIndex === -1 ? url : url.slice(0, queryIndex);
+  const search = queryIndex === -1 ? "" : url.slice(queryIndex);
+  return canonicalizeRequestPathname(pathname) + search;
+}
 
 /**
  * Shared request pipeline utilities.
@@ -56,48 +88,6 @@ export function guardProtocolRelativeUrl(rawPathname: string): Response | null {
 }
 
 /**
- * Returns true if a request pathname looks like a protocol-relative open
- * redirect, in either literal or percent-encoded form.
- *
- * Exported for call sites that need to replicate the guard inline (Pages
- * Router worker codegen, Node production server) and for defense-in-depth
- * checks inside redirect emitters.
- *
- * A pathname is considered "open redirect shaped" when its first segment,
- * after decoding backslashes and encoded delimiters, would cause a browser
- * to resolve a `Location` containing the pathname as protocol-relative:
- *
- *   - literal   `//evil.com`
- *   - literal   `/\evil.com`             (browsers normalize `\` to `/`)
- *   - encoded   `/%5Cevil.com`           (`%5C` decodes to `\` in Location)
- *   - encoded   `/%2F/evil.com`          (`%2F` decodes to `/` → `//`)
- *   - mixed     `/%5C%2F`, `/%5C%5C`     (and other combinations)
- *
- * We explicitly do not require a valid percent sequence elsewhere in the
- * pathname — we only examine the leading bytes (up to the second real or
- * encoded delimiter) so malformed suffixes can still reach the normal
- * "400 Bad Request" decode path instead of being masked as "404".
- */
-export function isOpenRedirectShaped(rawPathname: string): boolean {
-  if (!rawPathname.startsWith("/")) return false;
-
-  // Fast path: literal `//...` or `/\...`. Browsers treat `\` as `/` in
-  // URL paths, so `/\evil.com` is equivalent to `//evil.com`.
-  const afterSlash = rawPathname.slice(1);
-  if (afterSlash.startsWith("/") || afterSlash.startsWith("\\")) return true;
-
-  // Slow path: percent-encoded leading delimiter. We only need to consider
-  // `%5C` (backslash) and `%2F` (forward slash) at position 1. Case-insensitive
-  // per RFC 3986 §2.1.
-  if (afterSlash.length >= 3 && afterSlash[0] === "%") {
-    const encoded = afterSlash.slice(0, 3).toLowerCase();
-    if (encoded === "%5c" || encoded === "%2f") return true;
-  }
-
-  return false;
-}
-
-/**
  * Strip the basePath prefix from a pathname.
  *
  * All internal routing uses basePath-free paths. If the pathname starts
@@ -111,18 +101,6 @@ export function isOpenRedirectShaped(rawPathname: string): boolean {
 export { hasBasePath, stripBasePath };
 
 export type HeaderRecord = Record<string, string | string[]>;
-
-type ApplyConfigHeadersOptions = {
-  configHeaders: NextHeader[];
-  pathname: string;
-  requestContext: RequestContext;
-  /**
-   * basePath gating state. When omitted, every rule is treated as a default
-   * (basePath: true) rule for backward compatibility — callers that need to
-   * support `basePath: false` headers must pass this in.
-   */
-  basePathState?: BasePathMatchState;
-};
 
 type StaticFileSignalContext = {
   headers: Headers | null;
@@ -141,94 +119,6 @@ const FILE_LIKE_PATHNAME_RE = /\.[^/]+\/?$/;
 
 function isWellKnownPathname(pathname: string): boolean {
   return pathname === "/.well-known" || pathname.startsWith("/.well-known/");
-}
-
-function findHeaderRecordKey(headers: HeaderRecord, lowerName: string): string | undefined {
-  for (const key of Object.keys(headers)) {
-    if (key.toLowerCase() === lowerName) return key;
-  }
-  return undefined;
-}
-
-function appendHeaderRecord(headers: HeaderRecord, lowerName: string, value: string): void {
-  const key = findHeaderRecordKey(headers, lowerName) ?? lowerName;
-  const existing = headers[key];
-  if (existing === undefined) {
-    headers[key] = value;
-    return;
-  }
-  if (Array.isArray(existing)) {
-    existing.push(value);
-    return;
-  }
-  headers[key] = [existing, value];
-}
-
-function appendVaryHeaderRecord(headers: HeaderRecord, value: string): void {
-  const key = findHeaderRecordKey(headers, "vary") ?? "vary";
-  const existing = headers[key];
-  if (existing === undefined) {
-    headers[key] = value;
-    return;
-  }
-  if (Array.isArray(existing)) {
-    existing.push(value);
-    return;
-  }
-  headers[key] = existing + ", " + value;
-}
-
-/**
- * Apply matched next.config.js headers to a Web Headers object.
- *
- * Next.js evaluates config header match conditions against the original
- * request snapshot. Middleware response headers still win for the same
- * response key, while multi-value headers are additive.
- */
-export function applyConfigHeadersToResponse(
-  responseHeaders: Headers,
-  options: ApplyConfigHeadersOptions,
-): void {
-  const matched = matchHeaders(
-    options.pathname,
-    options.configHeaders,
-    options.requestContext,
-    options.basePathState,
-  );
-  for (const header of matched) {
-    const lowerName = header.key.toLowerCase();
-    if (lowerName === "vary" || lowerName === "set-cookie") {
-      responseHeaders.append(header.key, header.value);
-    } else if (!responseHeaders.has(lowerName)) {
-      responseHeaders.set(header.key, header.value);
-    }
-  }
-}
-
-/**
- * Apply matched next.config.js headers to the early response header record used
- * by Node and Worker Pages Router pipelines before a concrete response exists.
- */
-export function applyConfigHeadersToHeaderRecord(
-  headers: HeaderRecord,
-  options: ApplyConfigHeadersOptions,
-): void {
-  const matched = matchHeaders(
-    options.pathname,
-    options.configHeaders,
-    options.requestContext,
-    options.basePathState,
-  );
-  for (const header of matched) {
-    const lowerName = header.key.toLowerCase();
-    if (lowerName === "set-cookie") {
-      appendHeaderRecord(headers, lowerName, header.value);
-    } else if (lowerName === "vary") {
-      appendVaryHeaderRecord(headers, header.value);
-    } else if (findHeaderRecordKey(headers, lowerName) === undefined) {
-      headers[lowerName] = header.value;
-    }
-  }
 }
 
 export function createStaticFileSignal(
@@ -254,12 +144,17 @@ export function createStaticFileSignal(
  *
  * Public files are checked after middleware and before afterFiles/fallback
  * rewrites. The generated App Router entry provides the public-file set; this
- * helper owns the request-method and RSC exclusions plus static-file signaling.
+ * helper owns the RSC exclusion, existence-first method enforcement, and
+ * static-file signaling. Missing mutation targets continue through routing.
  */
 export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
-  if (options.request.method !== "GET" && options.request.method !== "HEAD") return null;
   if (options.pathname.endsWith(".rsc")) return null;
   if (!options.publicFiles.has(options.cleanPathname)) return null;
+  if (options.request.method !== "GET" && options.request.method !== "HEAD") {
+    return methodNotAllowedResponse("GET, HEAD", {
+      headers: options.middlewareContext.headers ?? undefined,
+    });
+  }
   return createStaticFileSignal(options.cleanPathname, options.middlewareContext);
 }
 
@@ -326,9 +221,30 @@ export function normalizeTrailingSlash(
   }
   const normalizedPathname = normalizeTrailingSlashPathname(pathname, trailingSlash);
   if (normalizedPathname === null) return null;
+  // `pathname` arrives segment-wise percent-decoded with path delimiters
+  // already re-encoded (see app-rsc-request-normalization → encodePathDelimiters,
+  // which leaves `%23 %3F %2F %5C` in place). It can still carry raw spaces or
+  // characters above U+00FF (e.g. CJK slugs, emoji). Those must be encoded
+  // before building the Location: an un-encoded space is a malformed redirect
+  // target, and a non-Latin-1 character makes the Headers constructor throw
+  // 'Cannot convert argument to a ByteString' (→ 500 instead of 308).
+  // Percent-encode every character that is not a valid RFC 3986 path character,
+  // i.e. everything outside `pchar`/`/`. We deliberately keep `%` in the safe
+  // set so existing `%xx` escapes are preserved rather than double-encoded
+  // (`encodeURI` would wrongly turn `%23` into `%2523`). Sub-delimiters
+  // (`!$&'()*+,;=`) and `:@` are valid `pchar` and are left raw, matching
+  // Next.js — `+` in particular only carries space semantics in the query
+  // string, which we leave untouched. The `u` flag makes the regex match
+  // astral code points whole, so emoji surrogate pairs aren't split. The query
+  // string comes verbatim from the request URL and is already encoded, so it
+  // must not be re-encoded here. Refs cloudflare/vinext#1979
+  const encodedPathname = normalizedPathname.replace(
+    /[^A-Za-z0-9\-._~!$&'()*+,;=:@/%]/gu,
+    encodeURIComponent,
+  );
   return new Response(null, {
     status: 308,
-    headers: { Location: basePath + normalizedPathname + search },
+    headers: { Location: basePath + encodedPathname + search },
   });
 }
 
@@ -410,30 +326,46 @@ export function validateCsrfOrigin(
 export async function validateServerActionPayload(
   body: string | FormData,
 ): Promise<Response | null> {
-  const containerRefRe = /"\$([QWi])(\d+)"/g;
+  const maxNumericFields = 4096;
+  const maxContainerReferences = 16384;
+  const maxContainerDepth = 1024;
+  const containerRefRe = /"\$([QWi])([0-9a-f]+)(?=[:"])/gi;
   const fieldRefs = new Map<string, Set<string>>();
+  let referenceCount = 0;
 
-  const collectRefs = (fieldKey: string, text: string): void => {
+  const invalidPayloadResponse = (): Response =>
+    new Response("Invalid server action payload", {
+      status: 400,
+      headers: { "Content-Type": "text/plain" },
+    });
+
+  const collectRefs = (fieldKey: string, text: string): boolean => {
+    if (fieldRefs.has(fieldKey)) return true;
+    if (fieldRefs.size >= maxNumericFields) return false;
+
     const refs = new Set<string>();
     let match: RegExpExecArray | null;
     containerRefRe.lastIndex = 0;
     while ((match = containerRefRe.exec(text)) !== null) {
-      refs.add(match[2]);
+      const previousSize = refs.size;
+      refs.add(String(Number.parseInt(match[2], 16)));
+      if (refs.size !== previousSize && ++referenceCount > maxContainerReferences) return false;
     }
     fieldRefs.set(fieldKey, refs);
+    return true;
   };
 
   if (typeof body === "string") {
-    collectRefs("0", body);
+    if (!collectRefs("0", body)) return invalidPayloadResponse();
   } else {
     for (const [key, value] of body.entries()) {
       if (!/^\d+$/.test(key)) continue;
       if (typeof value === "string") {
-        collectRefs(key, value);
+        if (!collectRefs(key, value)) return invalidPayloadResponse();
         continue;
       }
       if (typeof value?.text === "function") {
-        collectRefs(key, await value.text());
+        if (!collectRefs(key, await value.text())) return invalidPayloadResponse();
       }
     }
   }
@@ -444,36 +376,36 @@ export async function validateServerActionPayload(
   for (const refs of fieldRefs.values()) {
     for (const ref of refs) {
       if (!knownFields.has(ref)) {
-        return new Response("Invalid server action payload", {
-          status: 400,
-          headers: { "Content-Type": "text/plain" },
-        });
+        return invalidPayloadResponse();
       }
     }
   }
 
-  const visited = new Set<string>();
-  const stack = new Set<string>();
+  const state = new Map<string, "visiting" | "visited">();
 
-  const hasCycle = (node: string): boolean => {
-    if (stack.has(node)) return true;
-    if (visited.has(node)) return false;
+  for (const root of fieldRefs.keys()) {
+    if (state.has(root)) continue;
 
-    visited.add(node);
-    stack.add(node);
-    for (const ref of fieldRefs.get(node) ?? []) {
-      if (hasCycle(ref)) return true;
-    }
-    stack.delete(node);
-    return false;
-  };
+    const stack = [{ node: root, refs: [...(fieldRefs.get(root) ?? [])], nextRef: 0 }];
+    state.set(root, "visiting");
 
-  for (const node of fieldRefs.keys()) {
-    if (hasCycle(node)) {
-      return new Response("Invalid server action payload", {
-        status: 400,
-        headers: { "Content-Type": "text/plain" },
-      });
+    while (stack.length > 0) {
+      if (stack.length > maxContainerDepth) return invalidPayloadResponse();
+
+      const frame = stack[stack.length - 1];
+      const ref = frame.refs[frame.nextRef++];
+      if (ref === undefined) {
+        state.set(frame.node, "visited");
+        stack.pop();
+        continue;
+      }
+
+      const refState = state.get(ref);
+      if (refState === "visiting") return invalidPayloadResponse();
+      if (refState === "visited") continue;
+
+      state.set(ref, "visiting");
+      stack.push({ node: ref, refs: [...(fieldRefs.get(ref) ?? [])], nextRef: 0 });
     }
   }
 
@@ -540,54 +472,26 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
 }
 
 /**
- * Validate an image optimization URL parameter.
- *
- * Ensures the URL is a relative path that doesn't escape the origin:
- * - Must start with "/" but not "//"
- * - Backslashes are normalized (browsers treat `\` as `/`)
- * - Origin validation as defense-in-depth
- *
- * @param rawUrl - The raw `url` query parameter value
- * @param requestUrl - The full request URL for origin comparison
- * @returns An error Response if validation fails, or the normalized image URL
- */
-export function validateImageUrl(rawUrl: string | null, requestUrl: string): Response | string {
-  // Normalize backslashes: browsers and the URL constructor treat
-  // /\evil.com as protocol-relative (//evil.com), bypassing the // check.
-  const imgUrl = rawUrl?.replaceAll("\\", "/") ?? null;
-  // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
-  // protocol-relative, backslash variants, and exotic schemes.
-  if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
-    return new Response(!rawUrl ? "Missing url parameter" : "Only relative URLs allowed", {
-      status: 400,
-    });
-  }
-  // Defense-in-depth origin check. Resolving a root-relative path against
-  // the request's own origin is tautologically same-origin today, but this
-  // guard protects against future changes to the upstream guards that might
-  // let a non-relative path slip through (e.g. a path with encoded slashes).
-  const url = new URL(requestUrl);
-  const resolvedImg = new URL(imgUrl, url.origin);
-  if (resolvedImg.origin !== url.origin) {
-    return new Response("Only relative URLs allowed", { status: 400 });
-  }
-  return imgUrl;
-}
-
-/**
  * Strip internal `x-middleware-*` headers from a Headers object.
  *
  * Middleware uses `x-middleware-*` headers as internal signals (e.g.
  * `x-middleware-next`, `x-middleware-rewrite`, `x-middleware-request-*`).
- * These must be removed before sending the response to the client.
+ * Consumed protocol headers must be removed before sending the response to the
+ * client. Next.js exposes truthy unconsumed `x-middleware-request-*` values as
+ * literal request and response headers, so those are intentionally preserved.
  *
  * @param headers - The Headers object to modify in place
  */
 export function processMiddlewareHeaders(headers: Headers): void {
   const keysToDelete: string[] = [];
+  const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(headers);
 
   for (const key of headers.keys()) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (
+      key.startsWith(MIDDLEWARE_HEADER_PREFIX) &&
+      key !== MIDDLEWARE_CACHE_HEADER &&
+      !unconsumedRequestHeaders.has(key)
+    ) {
       keysToDelete.push(key);
     }
   }
@@ -641,6 +545,24 @@ function getRequestCf(request: Request): unknown {
 }
 
 /**
+ * Re-attach the Workers-specific `cf` metadata from `source` onto a rebuilt
+ * Request. `new Request()` never copies it, and middleware/authorization code
+ * can key off `request.cf` (geo checks, bot scores), so every reconstruction
+ * must restore it explicitly.
+ */
+export function attachRequestCfMetadata(target: Request, source: Request): Request {
+  const cf = getRequestCf(source);
+  if (cf !== undefined) {
+    Object.defineProperty(target, "cf", {
+      value: cf,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return target;
+}
+
+/**
  * Clone a Request while overriding headers, preserving metadata when possible.
  *
  * Some runtimes (Workers) allow `new Request(request, { headers })` which
@@ -672,16 +594,7 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
     }
     cloned = new Request(request.url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }
 
 /**
@@ -720,14 +633,5 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
     }
     cloned = new Request(url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }

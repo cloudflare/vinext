@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4181";
 
@@ -13,22 +14,7 @@ test.describe("Dev recovery boundary (no global-error.tsx)", () => {
   test("soft-nav to a broken route still updates the URL", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("#app-with-src-home")).toBeVisible();
-    await page.waitForFunction(
-      () => {
-        const runtime = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
-        return (
-          typeof runtime === "object" &&
-          runtime !== null &&
-          "functions" in runtime &&
-          typeof runtime.functions === "object" &&
-          runtime.functions !== null &&
-          "navigate" in runtime.functions &&
-          typeof runtime.functions.navigate === "function"
-        );
-      },
-      undefined,
-      { timeout: 10_000 },
-    );
+    await waitForAppRouterHydration(page);
     await page.evaluate(() => {
       (window as unknown as { __vinextReloadCanary?: boolean }).__vinextReloadCanary = true;
     });

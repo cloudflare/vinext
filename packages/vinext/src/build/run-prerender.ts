@@ -1,6 +1,6 @@
 /**
  * Shared prerender runner used by both `vinext build` (cli.ts) and
- * `vinext deploy --prerender-all` (deploy.ts).
+ * `vinext-cloudflare deploy --prerender-all` (deploy.ts).
  *
  * `runPrerender` handles route scanning, dynamic imports, progress reporting,
  * and result summarisation.
@@ -18,7 +18,7 @@
  * `dist/server/vinext-prerender.json` manifest.
  */
 
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import type { Server as HttpServer } from "node:http";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
@@ -32,8 +32,9 @@ import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
-import { findDir } from "./report.js";
-import { startProdServer } from "../server/prod-server.js";
+import { findDir } from "../utils/project.js";
+import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
+import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -88,12 +89,8 @@ function readBuiltBuildId(serverDir: string): string | null {
 type RunPrerenderOptions = {
   /** Project root directory. */
   root: string;
-  /**
-   * Override next.config values. Merged on top of the config loaded from disk.
-   * Intended for tests that need to exercise a specific config (e.g. output: 'export')
-   * without writing a next.config file.
-   */
-  nextConfigOverride?: Partial<import("../config/next-config.js").ResolvedNextConfig>;
+  /** Fully resolved Next.js config. Loaded from disk when omitted. */
+  nextConfig?: import("../config/next-config.js").ResolvedNextConfig;
   /**
    * Override the path to the Pages Router server bundle.
    * Defaults to `<root>/dist/server/entry.js`.
@@ -133,6 +130,28 @@ type RunPrerenderOptions = {
  * If a required production bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.
  */
+/**
+ * Throw if any route is a `fatal` error (a thrown generateStaticParams /
+ * getStaticPaths). These fail the build in ALL modes — default included —
+ * matching `next build`, unlike intentionally-skipped dynamic/SSR routes and
+ * non-fatal errors (e.g. transport failures), which only fail under
+ * `output: 'export'`. Exported for direct unit testing. Refs cloudflare/vinext#1982
+ */
+export function assertNoFatalPrerenderRoutes(routes: readonly PrerenderRouteResult[]): void {
+  const fatalRoutes = routes.filter(
+    (r): r is Extract<PrerenderRouteResult, { status: "error" }> =>
+      r.status === "error" && r.fatal === true,
+  );
+  if (fatalRoutes.length === 0) return;
+  const fatalList = fatalRoutes.map((r) => `  ${r.route}: ${r.error}`).join("\n");
+  throw new Error(
+    `Prerender failed: ${fatalRoutes.length} route${fatalRoutes.length !== 1 ? "s" : ""} errored during static generation.\n${fatalList}`,
+  );
+}
+
+/**
+ * Statically generate routes and return the prerender result.
+ */
 export async function runPrerender(options: RunPrerenderOptions): Promise<PrerenderResult | null> {
   const { root } = options;
 
@@ -158,14 +177,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
   const serverDir = path.dirname(rscBundlePath);
 
-  const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
-  const config = options.nextConfigOverride
-    ? { ...loadedConfig, ...options.nextConfigOverride }
-    : // Note: shallow merge — nested keys like `images` or `i18n` in
-      // nextConfigOverride replace the entire nested object from loadedConfig.
-      // This is intentional for test usage (top-level overrides only); a deep
-      // merge would be needed to support partial nested overrides in the future.
-      { ...loadedConfig };
+  const config = options.nextConfig
+    ? { ...options.nextConfig }
+    : { ...(await resolveNextConfig(await loadNextConfig(root), root)) };
   // Prerender must reuse the exact BUILD_ID that `vinext build` wrote to disk
   // rather than re-resolving a fresh one. `config.buildId` is consumed when
   // computing prerendered-output identity (prerender.ts), so re-resolving here
@@ -338,6 +352,12 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     progress.finish(rendered, skipped, errors);
   }
 
+  // A thrown generateStaticParams/getStaticPaths is a fatal build error in ANY
+  // mode (default included), matching Next.js — unlike intentionally-skipped
+  // dynamic/SSR routes. These are flagged `fatal` by prerenderApp/prerenderPages.
+  // Refs cloudflare/vinext#1982
+  assertNoFatalPrerenderRoutes(allRoutes);
+
   // In export mode, any error route means the build should fail — the app
   // contains dynamic functionality that cannot be statically exported.
   if (mode === "export" && errors > 0) {
@@ -350,6 +370,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         `Remove server-side data fetching (getServerSideProps, force-dynamic, revalidate) from these routes, ` +
         `or remove \`output: "export"\` from next.config.js.`,
     );
+  }
+
+  injectPregeneratedConcretePaths(root);
+  if (fs.existsSync(rscBundlePath)) {
+    rememberCurrentServerEntryImportMtime(rscBundlePath);
   }
 
   return {

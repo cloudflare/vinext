@@ -12,6 +12,7 @@
     "@mdx-js/loader": "catalog:",
     "@next/mdx": "catalog:",
     "@types/mdx": "catalog:",
+    "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "clsx": "catalog:",
     "codehike": "catalog:",

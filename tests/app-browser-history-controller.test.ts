@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   AppBrowserHistoryController,
+  createCanonicalBrowserHistoryHref,
   type RestorableSnapshotCandidate,
 } from "../packages/vinext/src/server/app-browser-history-controller.js";
 import {
@@ -19,7 +20,7 @@ import {
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import type { AppRouterState } from "../packages/vinext/src/server/app-browser-state.js";
 
-type HistoryWrite = { state: unknown; href: string };
+type HistoryWrite = { state: unknown; href?: string };
 
 function readWrittenState(write: HistoryWrite | undefined): Record<string, unknown> {
   const state = write?.state;
@@ -68,10 +69,12 @@ function createHistoryStore(initialState: unknown = null, initialHref = "https:/
       state = next;
       href = new URL(nextHref, href).href;
     },
-    replaceHistoryState: (next: unknown, nextHref: string) => {
+    replaceHistoryState: (next: unknown, nextHref?: string) => {
       replaced.push({ state: next, href: nextHref });
       state = next;
-      href = new URL(nextHref, href).href;
+      if (nextHref !== undefined) {
+        href = new URL(nextHref, href).href;
+      }
     },
   };
 }
@@ -230,6 +233,41 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
 });
 
 describe("AppBrowserHistoryController history metadata sync", () => {
+  it("canonicalizes a bare trailing query marker during bootstrap", () => {
+    const { controller, store } = createController({
+      initialHref: "https://example.com/reload-error?#section",
+    });
+
+    controller.writeBootstrapHistoryMetadata();
+
+    expect(store.replaced).toHaveLength(1);
+    expect(store.replaced[0]?.href).toBe("/reload-error#section");
+  });
+
+  it("preserves non-empty query strings when canonicalizing history hrefs", () => {
+    expect(createCanonicalBrowserHistoryHref("https://example.com/page?value=1#section")).toBe(
+      "/page?value=1#section",
+    );
+  });
+
+  it("omits the URL from hydrated metadata writes", () => {
+    const { controller, store } = createController();
+
+    controller.writeHydratedHistoryMetadata({ bfcacheIds: {}, previousNextUrl: null });
+
+    expect(store.replaced).toHaveLength(1);
+    expect(store.replaced[0]?.href).toBeUndefined();
+  });
+
+  it("omits the URL from current-entry metadata synchronization", () => {
+    const { controller, store } = createController();
+
+    controller.syncCurrentHistoryStatePreviousNextUrl("/previous");
+
+    expect(store.replaced).toHaveLength(1);
+    expect(store.replaced[0]?.href).toBeUndefined();
+  });
+
   it("preserves the BFCache epoch check when deciding whether to re-sync", () => {
     // A fresh document with no stored epoch starts at document epoch 0.
     const { controller, store } = createController();

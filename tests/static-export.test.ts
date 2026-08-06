@@ -180,7 +180,9 @@ describe("Static export — Pages Router (served via HTTP)", () => {
     const html = await res.text();
     expect(html).toContain("__NEXT_DATA__");
     // Verify it's valid JSON inside the script tag
-    const match = html.match(/window\.__NEXT_DATA__\s*=\s*({[^<]+})/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).toBeTruthy();
     const data = JSON.parse(match![1]);
     expect(data.props).toBeDefined();
@@ -202,7 +204,9 @@ describe("Static export — Pages Router (served via HTTP)", () => {
   it("getStaticProps pages have correct data in __NEXT_DATA__", async () => {
     const res = await fetch(`${baseUrl}/blog/hello-world`);
     const html = await res.text();
-    const match = html.match(/window\.__NEXT_DATA__\s*=\s*({[^<]+})/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).toBeTruthy();
     const data = JSON.parse(match![1]);
     expect(data.props.pageProps).toBeDefined();

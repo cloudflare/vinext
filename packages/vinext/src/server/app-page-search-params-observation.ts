@@ -2,29 +2,44 @@ import {
   markDynamicUsage,
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
+  throwIfStaticGenerationAccessError,
 } from "vinext/shims/headers";
-import { makeThenableParams, type ThenableParams } from "vinext/shims/thenable-params";
+import {
+  makeThenableParams,
+  type ThenableParams,
+  type ThenableParamsObserver,
+} from "vinext/shims/thenable-params";
 import type { AppPageSearchParams } from "./app-page-head.js";
 
 type AppPageSearchParamsObservationOptions = {
+  markDynamic?: boolean;
   observeReactPromiseStatus?: boolean;
 };
 
-function markAppPageSearchParamsAccess(): void {
+function markAppPageSearchParamsAccess(markDynamic: boolean): void {
+  throwIfStaticGenerationAccessError();
   throwIfInsideCacheScope("searchParams");
-  markDynamicUsage();
+  if (markDynamic) {
+    markDynamicUsage();
+  }
   markRenderRequestApiUsage("searchParams");
+}
+
+export function createAppPageSearchParamsObserver(
+  options: AppPageSearchParamsObservationOptions = {},
+): ThenableParamsObserver {
+  return {
+    observeParamAccess() {
+      markAppPageSearchParamsAccess(options.markDynamic !== false);
+    },
+  };
 }
 
 export function makeObservedAppPageSearchParamsThenable(
   pageSearchParams: AppPageSearchParams,
   options: AppPageSearchParamsObservationOptions = {},
 ): ThenableParams<AppPageSearchParams> {
-  const observer = {
-    observeParamAccess() {
-      markAppPageSearchParamsAccess();
-    },
-  };
+  const observer = createAppPageSearchParamsObserver(options);
   if (options.observeReactPromiseStatus === true) {
     return makeThenableParams(pageSearchParams, {
       ...observer,

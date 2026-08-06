@@ -12,6 +12,16 @@ function filterNavigationStartLogs(logs: string[]): string[] {
   return logs.filter((message) => message.startsWith("[Router Transition Start]"));
 }
 
+async function ignoreAbortedNavigation(navigate: () => Promise<unknown>): Promise<void> {
+  try {
+    await navigate();
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("ERR_ABORTED")) {
+      throw error;
+    }
+  }
+}
+
 test.describe.serial("instrumentation-client (App Router)", () => {
   test("executes instrumentation-client before hydration", async ({ page }) => {
     const logs: string[] = [];
@@ -86,11 +96,11 @@ test.describe.serial("instrumentation-client (App Router)", () => {
     await expect(page.locator("#instrumentation-client-some-page")).toBeVisible();
     await waitForAppRouterHydration(page);
 
-    await page.goBack();
+    await ignoreAbortedNavigation(() => page.goBack());
     await expect(page.locator("#instrumentation-client-home")).toBeVisible();
     await waitForAppRouterHydration(page);
 
-    await page.goForward();
+    await ignoreAbortedNavigation(() => page.goForward());
     await expect(page.locator("#instrumentation-client-some-page")).toBeVisible();
     await waitForAppRouterHydration(page);
 

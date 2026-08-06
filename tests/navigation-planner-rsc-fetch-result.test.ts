@@ -5,11 +5,11 @@ import {
 } from "../packages/vinext/src/server/navigation-trace.js";
 import {
   navigationPlanner,
-  type RscFetchResultDecisionV0,
-  type RscFetchResultFactsV0,
+  type RscFetchResultDecision,
+  type RscFetchResultFacts,
 } from "../packages/vinext/src/server/navigation-planner.js";
 
-function createFacts(overrides: Partial<RscFetchResultFactsV0> = {}): RscFetchResultFactsV0 {
+function createFacts(overrides: Partial<RscFetchResultFacts> = {}): RscFetchResultFacts {
   return {
     clientCompatibilityId: "client-build",
     compatibilityIdHeader: "client-build",
@@ -28,12 +28,12 @@ function createFacts(overrides: Partial<RscFetchResultFactsV0> = {}): RscFetchRe
   };
 }
 
-function classify(overrides: Partial<RscFetchResultFactsV0> = {}): RscFetchResultDecisionV0 {
+function classify(overrides: Partial<RscFetchResultFacts> = {}): RscFetchResultDecision {
   return navigationPlanner.classifyRscFetchResult(createFacts(overrides));
 }
 
 function expectSingleTraceEntry(
-  decision: RscFetchResultDecisionV0,
+  decision: RscFetchResultDecision,
   code: string,
   fields: Record<string, string | number | boolean | null>,
 ): void {

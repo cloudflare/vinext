@@ -144,4 +144,62 @@ test.describe("pages-router-prod javascript-urls", () => {
     await page.locator('a[href="/nextjs-compat/javascript-urls/safe"]').click();
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
   });
+
+  test("blocks javascript URLs returned by Pages data redirects", async ({ page }) => {
+    await page.goto(`${BASE}/about`);
+    await waitForHydration(page);
+
+    const buildId = await page.evaluate(() => window.__NEXT_DATA__.buildId);
+    const destination = "javascript:void(window.__VINEXT_PAGES_DATA_REDIRECT_EXECUTED__=true)";
+    const dataResponse = await page.request.get(
+      `${BASE}/_next/data/${buildId}/gssp-redirect.json?next=${encodeURIComponent(destination)}`,
+      { maxRedirects: 0 },
+    );
+
+    expect(dataResponse.status()).toBe(500);
+    expect(await dataResponse.text()).not.toContain("javascript:");
+    const htmlResponse = await page.request.get(
+      `${BASE}/gssp-redirect?next=${encodeURIComponent(destination)}`,
+      { maxRedirects: 0 },
+    );
+    expect(htmlResponse.status()).toBe(500);
+    expect(htmlResponse.headers()["location"]).toBeUndefined();
+  });
+
+  test("blocks javascript URLs returned by middleware data redirects", async ({ page }) => {
+    const { beforePageLoad, getNavigationRequests } = createNavigationInterceptor();
+    beforePageLoad(page);
+    const destination =
+      "javascript:void(window.__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__=true)";
+    const observedDataRedirects: string[] = [];
+    page.on("response", (response) => {
+      const redirect = response.headers()["x-nextjs-redirect"];
+      if (redirect) observedDataRedirects.push(redirect);
+    });
+    await page.goto(`${BASE}/ssr?dangerous-middleware-redirect=1`);
+    await waitForHydration(page);
+    const initialUrl = page.url();
+
+    await page.evaluate(() => {
+      const router = window.next?.router as
+        | { replace(url: string, as?: string): Promise<boolean> }
+        | undefined;
+      if (!router) throw new Error("window.next.router is not installed");
+      // A distinct href forces route work while the masked URL remains fixed.
+      // Middleware probes the masked URL, including the dangerous redirect flag.
+      void router.replace(
+        "/ssr?dangerous-middleware-redirect=1&route-probe=1",
+        "/ssr?dangerous-middleware-redirect=1",
+      );
+    });
+
+    await expect.poll(() => observedDataRedirects.includes(destination)).toBe(true);
+    await expectJavascriptUrlBlocked(page, initialUrl, getNavigationRequests);
+    expect(new URL(page.url()).origin).toBe(BASE);
+    expect(
+      await page.evaluate(() =>
+        Boolean(Reflect.get(window, "__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__")),
+      ),
+    ).toBe(false);
+  });
 });

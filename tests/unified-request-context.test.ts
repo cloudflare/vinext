@@ -14,6 +14,10 @@ import {
   getRequestExecutionContext,
   runWithExecutionContext,
 } from "../packages/vinext/src/shims/request-context.js";
+import {
+  _captureRequestScopedCacheLifeAccessors,
+  _setRequestScopedCacheLife,
+} from "../packages/vinext/src/shims/cache-request-state.js";
 
 describe("unified-request-context", () => {
   describe("isInsideUnifiedScope", () => {
@@ -122,6 +126,21 @@ describe("unified-request-context", () => {
       });
 
       expect(isInsideUnifiedScope()).toBe(false);
+    });
+
+    it("retains captured cache-life access after the request scope exits", async () => {
+      const ctx = createRequestContext();
+      const accessors = await runWithRequestContext(ctx, async () => {
+        const captured = _captureRequestScopedCacheLifeAccessors();
+        await Promise.resolve();
+        _setRequestScopedCacheLife({ stale: 240 });
+        return captured;
+      });
+
+      expect(isInsideUnifiedScope()).toBe(false);
+      expect(accessors.peek()).toEqual({ stale: 240 });
+      expect(accessors.consume()).toEqual({ stale: 240 });
+      expect(accessors.peek()).toBeNull();
     });
   });
 

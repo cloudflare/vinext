@@ -1,11 +1,15 @@
 import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
+import {
+  VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
+  VINEXT_PRERENDER_STATIC_PARAMS_PATH,
+} from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { RootParams } from "vinext/shims/root-params";
 
 type GenerateStaticParams = (args: { params: RootParams }) => unknown;
 
-type AppPrerenderStaticParamsMap = Record<string, GenerateStaticParams | null | undefined>;
-type RootParamNamesMap = Record<string, readonly string[] | undefined>;
+export type AppPrerenderStaticParamsMap = Record<string, GenerateStaticParams | null | undefined>;
+export type AppPrerenderRootParamNamesMap = Record<string, readonly string[] | undefined>;
 
 type AppPrerenderPageRoute = {
   pattern: string;
@@ -18,23 +22,21 @@ type HandleAppPrerenderEndpointOptions = {
   isPrerenderEnabled?: () => boolean;
   loadPagesRoutes?: () => Promise<unknown>;
   pathname: string;
-  rootParamNamesByPattern?: RootParamNamesMap;
+  rootParamNamesByPattern?: AppPrerenderRootParamNamesMap;
   staticParamsMap: AppPrerenderStaticParamsMap;
 };
 
-const STATIC_PARAMS_ENDPOINT = "/__vinext/prerender/static-params";
-const PAGES_STATIC_PATHS_ENDPOINT = "/__vinext/prerender/pages-static-paths";
 const JSON_HEADERS = { "content-type": "application/json" };
 
 export async function handleAppPrerenderEndpoint(
   request: Request,
   options: HandleAppPrerenderEndpointOptions,
 ): Promise<Response | null> {
-  if (options.pathname === STATIC_PARAMS_ENDPOINT) {
+  if (options.pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH) {
     return handleStaticParamsEndpoint(request, options);
   }
 
-  if (options.pathname === PAGES_STATIC_PATHS_ENDPOINT) {
+  if (options.pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH) {
     if (!options.loadPagesRoutes) return null;
     return handlePagesStaticPathsEndpoint(request, options);
   }

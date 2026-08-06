@@ -62,7 +62,7 @@ async function buildPagesFixture(tmpDir: string, outDir: string): Promise<void> 
     build: {
       outDir: path.join(outDir, "server"),
       ssr: "virtual:vinext-server-entry",
-      rollupOptions: { output: { entryFileNames: "entry.js" } },
+      rolldownOptions: { output: { entryFileNames: "entry.js" } },
     },
   });
   await build({
@@ -74,7 +74,7 @@ async function buildPagesFixture(tmpDir: string, outDir: string): Promise<void> 
       outDir: path.join(outDir, "client"),
       manifest: true,
       ssrManifest: true,
-      rollupOptions: { input: "virtual:vinext-client-entry" },
+      rolldownOptions: { input: "virtual:vinext-client-entry" },
     },
   });
 }

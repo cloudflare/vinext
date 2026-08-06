@@ -15,11 +15,12 @@ import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { getAstName } from "./ast-utils.js";
-import { normalizePathSeparators } from "../utils/path.js";
+import { escapeRegExp } from "../utils/regex.js";
+import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
 /**
  * Read a file's contents, returning null on any error.
@@ -185,6 +186,21 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
   "radix-ui",
 ];
 
+export function createOptimizedImportSourceMatcher(
+  packages: Iterable<string>,
+): (code: string) => boolean {
+  const pattern = [...packages].map(escapeRegExp).join("|");
+  if (!pattern) return () => false;
+
+  const importFromPattern = new RegExp(
+    String.raw`(?:^|[;}\n\r])\s*import(?!\s*\()(?:(?!\bfrom\b)[\s\S])*?\bfrom\s*["'](?:${pattern})["']`,
+    "m",
+  );
+
+  return (code: string) =>
+    code.includes("import") && code.includes("from") && importFromPattern.test(code);
+}
+
 /**
  * Resolve a package.json exports value to a string entry path.
  * Prefers node → import → module → default conditions, recursing into nested objects.
@@ -294,18 +310,18 @@ async function resolvePackageEntry(
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport, preferReactServer);
         if (entryPath) {
-          return normalizePathSeparators(path.resolve(pkgDir, entryPath));
+          return path.resolve(pkgDir, entryPath);
         }
       }
     }
 
     const entryField = pkgJson.module ?? pkgJson.main;
     if (typeof entryField === "string") {
-      return normalizePathSeparators(path.resolve(pkgDir, entryField));
+      return path.resolve(pkgDir, entryField);
     }
 
     const req = createRequire(path.join(projectRoot, "package.json"));
-    return normalizePathSeparators(req.resolve(packageName));
+    return toSlash(req.resolve(packageName));
   } catch {
     return null;
   }
@@ -361,9 +377,7 @@ async function buildExportMapFromFile(
   >();
   const localDeclarations = new Set<string>();
 
-  // filePath is already normalized POSIX (every producer normalizes), so
-  // path.posix.dirname is safe.
-  const fileDir = path.posix.dirname(filePath);
+  const fileDir = path.dirname(filePath);
 
   /**
    * Normalize a source specifier: resolve relative paths to absolute so that
@@ -371,7 +385,7 @@ async function buildExportMapFromFile(
    * Bare package specifiers (e.g. "@radix-ui/react-slot") are returned unchanged.
    */
   function normalizeSource(source: string): string {
-    return source.startsWith(".") ? path.posix.join(fileDir, source) : source;
+    return source.startsWith(".") ? path.join(fileDir, source) : source;
   }
 
   function recordLocalDeclaration(node: DeclarationNode | null | undefined): void {
@@ -449,7 +463,7 @@ async function buildExportMapFromFile(
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
           if (rawSource.startsWith(".")) {
-            const subPath = path.posix.join(fileDir, rawSource);
+            const subPath = path.join(fileDir, rawSource);
             // Try with the path as-is first, then with common extensions.
             // Includes TypeScript-first (.ts/.tsx/.cts/.mts) and JSX (.jsx) extensions
             // for TypeScript-first internal libraries and monorepo packages that may
@@ -647,9 +661,7 @@ export function createOptimizeImportsPlugin(
   // file that imports from the same barrel package.
   const entryPathCache = new Map<string, string | null>();
   let optimizedPackages: Set<string> = new Set();
-  // Pre-built quoted forms used for the per-file quick-check. Computed once in
-  // buildStart so the transform loop doesn't allocate template literals per file.
-  let quotedPackages: string[] = [];
+  let hasOptimizedImportSource: (code: string) => boolean = () => false;
   // Tracks barrel entries whose sub-package origins have already been registered,
   // so repeated imports of the same barrel (across many files) don't redundantly
   // iterate the full export map. Keys are `${envKey}:${barrelEntry}` so that RSC
@@ -674,9 +686,7 @@ export function createOptimizeImportsPlugin(
         ...DEFAULT_OPTIMIZE_PACKAGES,
         ...(nextConfig?.optimizePackageImports ?? []),
       ]);
-      // Pre-build quoted package strings once so the per-file quick-check
-      // doesn't allocate template literals for every transformed file.
-      quotedPackages = [...optimizedPackages].flatMap((pkg) => [`"${pkg}"`, `'${pkg}'`]);
+      hasOptimizedImportSource = createOptimizedImportSourceMatcher(optimizedPackages);
       // Clear all caches across rebuilds so stale data doesn't linger.
       // exportMapCache and subpkgOrigin hold barrel AST analysis and sub-package
       // origin mappings which may change if a dependency is updated mid-dev.
@@ -711,9 +721,11 @@ export function createOptimizeImportsPlugin(
       filter: {
         id: {
           include: /\.(tsx?|jsx?|mjs)$/,
+          exclude: VIRTUAL_MODULE_ID_RE,
         },
+        code: /\bimport\b[\s\S]*\bfrom\b/,
       },
-      async handler(code, id) {
+      async handler(code) {
         // Only apply on server environments (RSC/SSR). The client uses Vite's
         // dep optimizer which handles barrel imports correctly.
         const env = (this as PluginCtx).environment;
@@ -721,21 +733,12 @@ export function createOptimizeImportsPlugin(
         // "react-server" export condition should only be preferred in the RSC environment.
         // SSR renders with the full React runtime and must NOT resolve react-server entries.
         const preferReactServer = env?.name === "rsc";
-        // Skip virtual modules
-        if (id.startsWith("\0")) return null;
 
-        // Quick string check: does the code mention any optimized package?
-        // Use quoted forms to avoid false positives (e.g. "effect" in "useEffect").
-        // quotedPackages is pre-built in buildStart to avoid per-file allocations.
+        // Quick pre-parse check: only transformable static `import ... from "pkg"`
+        // declarations can be rewritten, so skip files that merely mention an
+        // optimized package in ordinary strings, comments, or side-effect imports.
         const packages = optimizedPackages;
-        let hasBarrelImport = false;
-        for (const quoted of quotedPackages) {
-          if (code.includes(quoted)) {
-            hasBarrelImport = true;
-            break;
-          }
-        }
-        if (!hasBarrelImport) return null;
+        if (!hasOptimizedImportSource(code)) return null;
 
         let ast: ReturnType<typeof parseAst>;
         try {

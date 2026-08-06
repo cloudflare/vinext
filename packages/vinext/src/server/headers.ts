@@ -9,6 +9,15 @@
  * omitted — only vinext-internal and Next.js-protocol headers belong here.
  */
 
+import {
+  MIDDLEWARE_OVERRIDE_HEADERS,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  MIDDLEWARE_SKIP_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "../utils/protocol-headers.js";
+
 // ---------------------------------------------------------------------------
 // Vinext-proprietary headers (`x-vinext-*` / `X-Vinext-*`)
 // ---------------------------------------------------------------------------
@@ -19,20 +28,28 @@ export const VINEXT_CACHE_HEADER = "X-Vinext-Cache";
 /** Next.js public ISR / page cache state indicator. */
 export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
 
+/** Next.js cache-tag metadata carried by prerendered App Router responses. */
+export const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
+
 /** Static file signal — value is URL-encoded pathname. */
 export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
-
-/** Serialized middleware context (JSON) forwarded from dev server to RSC entry. */
-export const VINEXT_MW_CTX_HEADER = "x-vinext-mw-ctx";
 
 /** Timing metrics: `handlerStart,compileMs,renderMs`. */
 export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 
-/** Build-time prerender authentication secret. */
-export const VINEXT_PRERENDER_SECRET_HEADER = "x-vinext-prerender-secret";
+export {
+  VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "../utils/protocol-headers.js";
 
-/** URL-encoded JSON route params for build-time prerender renders. */
-export const VINEXT_PRERENDER_ROUTE_PARAMS_HEADER = "x-vinext-prerender-route-params";
+/** Internal endpoint used to evaluate App Router generateStaticParams exports. */
+export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-params";
+
+/** Internal endpoint used to evaluate Pages Router getStaticPaths exports. */
+export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pages-static-paths";
 
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
@@ -48,6 +65,15 @@ export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
+
+/** Marks an RSC body carrying completion metadata after the Flight payload. */
+export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Metadata";
+
+/** URL-encoded rendered path and search after middleware/config rewrites. */
+export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
+
+/** Prerender-only JSON side channel carrying request cacheLife metadata. */
+export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
@@ -72,6 +98,9 @@ export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manife
  */
 export const VINEXT_RSC_REDIRECT_HEADER = "X-Vinext-Rsc-Redirect";
 
+/** History update mode encoded by a streamed RSC redirect. */
+export const VINEXT_RSC_REDIRECT_TYPE_HEADER = "X-Vinext-Rsc-Redirect-Type";
+
 // ---------------------------------------------------------------------------
 // RSC protocol headers
 // ---------------------------------------------------------------------------
@@ -91,6 +120,20 @@ export const NEXT_ACTION_HEADER = "next-action";
 
 /** Next.js action-not-found indicator (value "1"). */
 export const NEXTJS_ACTION_NOT_FOUND_HEADER = "x-nextjs-action-not-found";
+
+/**
+ * Seconds the client router may reuse this response, resolved from the
+ * render's `cacheLife`. Mirrors Next.js's `NEXT_ROUTER_STALE_TIME_HEADER`;
+ * kept out of `Cache-Control`, which owns the shared-cache dimensions.
+ */
+export const NEXT_ROUTER_STALE_TIME_HEADER = "x-nextjs-stale-time";
+
+/**
+ * Marks a streamed cacheable RSC response whose `cacheLife` claim had not
+ * resolved at header time (value "1"). The client bounds such a response at
+ * min(30s floor, dynamic bound) instead of its fallback TTL.
+ */
+export const VINEXT_STALE_TIME_PENDING_HEADER = "X-Vinext-Stale-Time-Pending";
 
 /**
  * Deployment ID header used by the Pages Router for deployment-skew
@@ -123,14 +166,11 @@ export const ACTION_REDIRECT_STATUS_HEADER = "x-action-redirect-status";
 // Middleware protocol headers (`x-middleware-*`)
 // ---------------------------------------------------------------------------
 
-/** Prefix for forwarded request headers (e.g. `x-middleware-request-cookie`). */
-export const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
-
-/** Comma-separated list of header names that middleware wants to override. */
-export const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
-
-/** Carries cookies set by middleware for same-render reads. */
-export const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
+export {
+  MIDDLEWARE_HEADER_PREFIX,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  MIDDLEWARE_SKIP_HEADER,
+} from "../utils/protocol-headers.js";
 
 /** Signal from `NextResponse.next()` — value "1" means "continue to next handler". */
 export const MIDDLEWARE_NEXT_HEADER = "x-middleware-next";
@@ -141,12 +181,6 @@ export const MIDDLEWARE_REWRITE_HEADER = "x-middleware-rewrite";
 /** Redirect URL set by middleware. */
 const MIDDLEWARE_REDIRECT_HEADER = "x-middleware-redirect";
 
-/** Skip-middleware signal. */
-const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
-
-/** Generic prefix for all middleware internal headers. */
-export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";
-
 // ---------------------------------------------------------------------------
 // Next.js / RSC flight headers (forwarded through middleware)
 // ---------------------------------------------------------------------------
@@ -155,6 +189,8 @@ export const NEXT_ROUTER_STATE_TREE_HEADER = "Next-Router-State-Tree";
 export const NEXT_ROUTER_PREFETCH_HEADER = "Next-Router-Prefetch";
 export const NEXT_ROUTER_SEGMENT_PREFETCH_HEADER = "Next-Router-Segment-Prefetch";
 export const NEXT_URL_HEADER = "Next-Url";
+export const NEXT_REQUEST_ID_HEADER = "x-nextjs-request-id";
+export const NEXT_HTML_REQUEST_ID_HEADER = "x-nextjs-html-request-id";
 
 /** Lowercase flight header variants used in middleware forwarding. */
 export const FLIGHT_HEADERS: readonly string[] = [
@@ -201,4 +237,9 @@ export const INTERNAL_HEADERS = [
 ];
 
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
-export const VINEXT_INTERNAL_HEADERS = [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER];
+export const VINEXT_INTERNAL_HEADERS = [
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+];

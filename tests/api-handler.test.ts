@@ -15,6 +15,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { PassThrough } from "node:stream";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { gzipSync } from "node:zlib";
 import { handleApiRoute } from "../packages/vinext/src/server/api-handler.js";
 import {
   reportRequestError,
@@ -197,9 +198,180 @@ describe("handleApiRoute", () => {
     });
   });
 
+  describe("preview mode", () => {
+    it("supports setDraftMode and bypass-only draft requests in dev API routes", async () => {
+      const enableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setDraftMode({ enable: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft"),
+        enableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+      const cookies = enableResponse._headers["set-cookie"];
+      if (!Array.isArray(cookies)) throw new Error("expected draft cookie");
+      expect(cookies).toHaveLength(1);
+
+      const observed: Record<string, unknown> = {};
+      const disableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.setDraftMode({ enable: false });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft", undefined, { cookie: cookies[0].split(";", 1)[0] }),
+        disableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+
+      expect(observed).toEqual({ preview: true, draftMode: true, previewData: {} });
+      expect(disableResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      ]);
+    });
+
+    it("sets, reads, and clears preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies.map((value) => value.split(";", 1)[0]).join("; ");
+
+      const observed: Record<string, unknown> = {};
+      const clearResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        clearResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({
+        preview: true,
+        draftMode: true,
+        previewData: { draft: true },
+      });
+      expect(clearResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/docs;/),
+        expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/docs;/),
+      ]);
+    });
+
+    it("rejects and clears tampered preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies
+        .map((value) => value.split(";", 1)[0])
+        .join("; ")
+        .replace(
+          /(__next_preview_data=)([^;])([^;]*)/,
+          (_match, prefix: string, first: string, rest: string) =>
+            `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+        );
+
+      const observed: Record<string, unknown> = {};
+      const response = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.clearPreviewData();
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        response,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({
+        preview: undefined,
+        draftMode: undefined,
+        previewData: false,
+      });
+      expect(response._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+        expect.stringMatching(/^__next_preview_data=; Expires=/),
+      ]);
+    });
+  });
+
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {
+    it("does not expose process environment variables on the request", async () => {
+      const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+      process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+      let capturedRequest: any;
+      const handler = vi.fn((req: any) => {
+        capturedRequest = req;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/env");
+      const res = mockRes();
+
+      try {
+        await handleApiRoute(server, req, res, "/api/env", [route("/api/env")]);
+
+        expect(capturedRequest).not.toHaveProperty("env");
+        expect(capturedRequest.env).toBeUndefined();
+      } finally {
+        if (previousValue === undefined) {
+          delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+        } else {
+          process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+        }
+      }
+    });
+
     it("parses JSON body with application/json content-type", async () => {
       let capturedBody: unknown;
       const handler = vi.fn((req: any) => {
@@ -492,6 +664,54 @@ describe("handleApiRoute", () => {
       expect(capturedCookies).toEqual({ token: "abc=def=ghi" });
     });
 
+    // Next.js delegates Pages API cookies to its compiled `cookie` parser,
+    // which preserves the first duplicate value.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/get-cookie-parser.ts
+    it("preserves the first duplicate session cookie", async () => {
+      let capturedCookies: Record<string, string> = {};
+      const handler = vi.fn((req: any) => {
+        capturedCookies = req.cookies;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/account", undefined, {
+        cookie: "session=trusted; session=attacker",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/account", [route("/api/account")]);
+
+      expect(capturedCookies.session).toBe("trusted");
+    });
+
+    it("matches Next.js prototype-key and empty-name cookie semantics", async () => {
+      let capturedCookies: Record<string, string> = {};
+      const handler = vi.fn((req: any) => {
+        capturedCookies = req.cookies;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/account", undefined, {
+        cookie:
+          '=empty-name; __proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/account", [route("/api/account")]);
+
+      expect(Object.getPrototypeOf(capturedCookies)).toBe(Object.prototype);
+      expect(capturedCookies.hasOwnProperty("encoded")).toBe(true);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
+      expect(Object.prototype.toString.call(capturedCookies)).toBe("[object Object]");
+      expect(capturedCookies).toEqual({
+        "": "empty-name",
+        encoded: "hello world",
+        malformed: "%E0%A4%A",
+        quoted: "quoted value",
+      });
+      expect(Object.hasOwn(capturedCookies, "__proto__")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "constructor")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
+    });
+
     it("returns empty object when no Cookie header", async () => {
       let capturedCookies: Record<string, string> = {};
       const handler = vi.fn((req: any) => {
@@ -651,8 +871,9 @@ describe("handleApiRoute", () => {
 
   describe("res.redirect()", () => {
     it("redirects with default 307 when given only a URL", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect("/dashboard");
+        returnedResponse = res.redirect("/dashboard");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/login");
@@ -662,12 +883,16 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(307);
       expect(res._headers["location"]).toBe("/dashboard");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/dashboard");
       expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with custom status code", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect(301, "/new-location");
+        returnedResponse = res.redirect(301, "/new-location");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/old");
@@ -677,6 +902,10 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(301);
       expect(res._headers["location"]).toBe("/new-location");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/new-location");
+      expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with 302 status code", async () => {
@@ -691,6 +920,73 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(302);
       expect(res._headers["location"]).toBe("https://external.com");
+    });
+
+    it.each([
+      [null, undefined],
+      [307, undefined],
+      [true, "/destination"],
+    ])("rejects invalid redirect arguments %#", async (statusOrUrl, url) => {
+      const handler = vi.fn((_req: any, res: any) => {
+        res.redirect(statusOrUrl, url);
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/invalid-redirect");
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/invalid-redirect", [
+        route("/api/invalid-redirect"),
+      ]);
+
+      expect(reportRequestError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(res._statusCode).toBe(500);
+      expect(res._body).toBe("Internal Server Error");
+    });
+  });
+
+  describe("res.revalidate()", () => {
+    it("uses the trusted origin instead of the request Host header", async () => {
+      const originalFetch = globalThis.fetch;
+      let capturedUrl: URL | undefined;
+      globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+        capturedUrl =
+          typeof input === "string"
+            ? new URL(input)
+            : input instanceof URL
+              ? input
+              : new URL(input.url);
+        expect(input instanceof Request ? input.method : init?.method).toBe("HEAD");
+        return new Response(null, { status: 200 });
+      };
+
+      try {
+        const handler = vi.fn(async (_req: any, res: any) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        });
+        const server = mockServer({ default: handler });
+        const req = mockReq("GET", "/api/revalidate", undefined, {
+          host: "127.0.0.1:9999",
+        });
+        const res = mockRes();
+
+        await handleApiRoute(server, req, res, "/api/revalidate", [route("/api/revalidate")], {
+          trustedRevalidateOrigin: "http://app.local:3000",
+        });
+
+        expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+        expect(res._statusCode).toBe(200);
+        expect(res._body).toBe(JSON.stringify({ revalidated: true }));
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 
@@ -979,6 +1275,103 @@ describe("handleApiRoute", () => {
         hello: "world",
         query: { a: "b" },
       });
+    });
+
+    it("does not forward stale encoding headers from Node fetch responses", async () => {
+      const body = "Example Domain";
+      const compressedBody = gzipSync(body);
+      const upstream = http.createServer((_req, res) => {
+        res.writeHead(200, {
+          "content-encoding": "gzip",
+          "content-length": String(compressedBody.byteLength),
+          "content-type": "text/plain",
+        });
+        res.end(compressedBody);
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+      try {
+        const address = upstream.address() as AddressInfo;
+        const server = mockServer({
+          config: { runtime: "edge" },
+          default: () => fetch(`http://127.0.0.1:${address.port}`),
+        });
+        const req = mockReq("GET", "/api/proxy", undefined, { host: "example.com" });
+        const res = mockRes();
+
+        await handleApiRoute(server, req, res, "/api/proxy", [route("/api/proxy")]);
+
+        expect(res._headers["content-encoding"]).toBeUndefined();
+        expect(res._headers["content-length"]).toBeUndefined();
+        expect(res._body.toString()).toBe(body);
+      } finally {
+        upstream.closeAllConnections();
+        await new Promise<void>((resolve, reject) => {
+          upstream.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    });
+
+    it("applies basePath and i18n config to edge API nextUrl", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (
+          request as Request & {
+            nextUrl?: { basePath: string; locale: string; pathname: string };
+          }
+        ).nextUrl;
+        return Response.json({
+          basePath: nextUrl?.basePath,
+          locale: nextUrl?.locale,
+          pathname: nextUrl?.pathname,
+        });
+      });
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/docs/fr/api/hello?a=b", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/fr/api/hello?a=b", [route("/fr/api/hello")], {
+        basePath: "/docs",
+        i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+      });
+
+      expect(JSON.parse(res._body.toString())).toMatchObject({
+        basePath: "/docs",
+        locale: "fr",
+        pathname: "/api/hello",
+      });
+    });
+
+    it("reconstructs Vite-stripped basePath for edge API nextUrl", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as Request & { nextUrl?: { basePath: string; pathname: string } })
+          .nextUrl;
+        return Response.json({ basePath: nextUrl?.basePath, pathname: nextUrl?.pathname });
+      });
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
+        basePath: "/docs",
+      });
+
+      expect(JSON.parse(res._body.toString())).toEqual({
+        basePath: "/docs",
+        pathname: "/api/hello",
+      });
+    });
+
+    it("does not double-prefix an exact basePath edge API rewrite", async () => {
+      const handler = vi.fn((request: Request) => Response.json({ url: request.url }));
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/docs", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello", [route("/api/hello")], {
+        basePath: "/docs",
+      });
+
+      expect(JSON.parse(res._body.toString())).toEqual({ url: "http://example.com/docs" });
     });
 
     it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {

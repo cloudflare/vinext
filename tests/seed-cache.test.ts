@@ -19,6 +19,7 @@ import {
   type IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
 import { isrCacheKey, getRevalidateDuration } from "../packages/vinext/src/server/isr-cache.js";
+import { getRenderedConcreteUrlPathsForRoute } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -110,6 +111,38 @@ describe("seedMemoryCacheFromPrerender", () => {
       const rscText = new TextDecoder().decode(rscValue.rscData!);
       expect(rscText).toBe("RSC payload for about");
     }
+  });
+
+  it("replays prerendered App Router Link headers", async () => {
+    const buildId = "test-build-link-header";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/preloads",
+            status: "rendered",
+            revalidate: false,
+            router: "app",
+            headers: { link: "</font.woff2>; rel=preload; as=font" },
+          },
+        ],
+      },
+      {
+        "preloads.html": "<html><body>Preloads</body></html>",
+        "preloads.rsc": "RSC payload",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const htmlKey = isrCacheKey("app", "/preloads", buildId) + ":html";
+    const htmlEntry = await getCacheHandler().get(htmlKey);
+    expect(htmlEntry?.value).toMatchObject({
+      kind: "APP_PAGE",
+      headers: { link: "</font.woff2>; rel=preload; as=font" },
+    });
   });
 
   it("seeds the index route correctly", async () => {
@@ -352,6 +385,47 @@ describe("seedMemoryCacheFromPrerender", () => {
     ]);
   });
 
+  it("seeds the prerender's client stale time onto both artifacts", async () => {
+    // A prerendered page's `cacheLife` resolves before the artifact is written,
+    // so the seeded entry can carry the claim. Without it, a page served from
+    // the seed would be reusable for the configured staleTimes default while an
+    // identical runtime-rendered entry honored `cacheLife`.
+    const writes: { key: string; staleSeconds?: number }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "seed-stale-test",
+        routes: [
+          {
+            route: "/isr",
+            status: "rendered",
+            revalidate: 60,
+            expire: 300,
+            stale: 30,
+            router: "app",
+          },
+        ],
+      },
+      {
+        "isr.html": "<html>ISR</html>",
+        "isr.rsc": "RSC isr",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(key, _data, metadata): Promise<void> {
+        writes.push({ key, staleSeconds: metadata.staleSeconds });
+      },
+    });
+
+    const baseKey = isrCacheKey("app", "/isr", "seed-stale-test");
+    expect(writes).toEqual([
+      { key: baseKey + ":html", staleSeconds: 30 },
+      { key: baseKey + ":rsc", staleSeconds: 30 },
+    ]);
+  });
+
   it("can use injected runtime app page cache key builders", async () => {
     const keys: string[] = [];
 
@@ -430,7 +504,43 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(await getCacheHandler().get(rscKey)).not.toBeNull();
 
     // revalidatePath should invalidate both seeded artifacts.
-    await revalidatePath("/posts");
+    await Promise.resolve(revalidatePath("/posts"));
+
+    expect(await getCacheHandler().get(htmlKey)).toBeNull();
+    expect(await getCacheHandler().get(rscKey)).toBeNull();
+  });
+
+  it("user cache tags from the prerender manifest invalidate seeded entries", async () => {
+    const buildId = "revalidate-seeded-user-tag-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/update-tag-test",
+            status: "rendered",
+            revalidate: false,
+            router: "app",
+            tags: ["test-update-tag"],
+          },
+        ],
+      },
+      {
+        "update-tag-test.html": "<html>Seeded data</html>",
+        "update-tag-test.rsc": "RSC seeded data",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/update-tag-test", buildId);
+    const htmlKey = baseKey + ":html";
+    const rscKey = baseKey + ":rsc";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+    expect(await getCacheHandler().get(rscKey)).not.toBeNull();
+
+    await getCacheHandler().revalidateTag("test-update-tag");
 
     expect(await getCacheHandler().get(htmlKey)).toBeNull();
     expect(await getCacheHandler().get(rscKey)).toBeNull();
@@ -666,5 +776,123 @@ describe("seedMemoryCacheFromPrerender", () => {
     const htmlKey = isrCacheKey("app", longPath, buildId) + ":html";
     expect(htmlKey).toContain("__hash:");
     expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+  });
+
+  it("clears pregenerated concrete paths from a previous build and repopulates from the current manifest", async () => {
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/en/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/en/blog/known-post",
+            revalidate: 60,
+          },
+        ],
+      },
+      {
+        "en/blog/known-post.html": "<html>build A</html>",
+        "en/blog/known-post.rsc": "build-a-flight",
+      },
+    );
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const buildAPaths = getRenderedConcreteUrlPathsForRoute("/en/blog/:slug");
+    expect(buildAPaths).toBeDefined();
+    expect(buildAPaths!.has("/en/blog/known-post")).toBe(true);
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "build-b",
+        routes: [
+          {
+            route: "/en/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/en/blog/new-post",
+            revalidate: 60,
+          },
+        ],
+      },
+      {
+        "en/blog/new-post.html": "<html>build B</html>",
+        "en/blog/new-post.rsc": "build-b-flight",
+      },
+    );
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const buildBPaths = getRenderedConcreteUrlPathsForRoute("/en/blog/:slug");
+    expect(buildBPaths).toBeDefined();
+    expect(buildBPaths!.has("/en/blog/known-post")).toBe(false);
+    expect(buildBPaths!.has("/en/blog/new-post")).toBe(true);
+    expect(buildBPaths!.size).toBe(1);
+  });
+
+  it("excludes fallback-shell placeholder paths from concrete path registry", async () => {
+    const buildId = "fallback-shell-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/en/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/en/blog/known-post",
+            revalidate: 60,
+          },
+          {
+            route: "/en/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/en/blog/[slug]",
+            revalidate: 60,
+            fallback: true,
+          },
+        ],
+      },
+      {
+        "en/blog/known-post.html": "<html>known post</html>",
+        "en/blog/known-post.rsc": "flight-data",
+      },
+    );
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const paths = getRenderedConcreteUrlPathsForRoute("/en/blog/:slug");
+    expect(paths).toBeDefined();
+    expect(paths!.has("/en/blog/known-post")).toBe(true);
+    expect(paths!.has("/en/blog/[slug]")).toBe(false);
+    expect(paths!.size).toBe(1);
+  });
+
+  it("clears pregenerated concrete paths when manifest is absent from a subsequent build", async () => {
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/en/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/en/blog/known-post",
+            revalidate: 60,
+          },
+        ],
+      },
+      { "en/blog/known-post.html": "<html>A</html>" },
+    );
+    await seedMemoryCacheFromPrerender(serverDir);
+    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/:slug")).toBeDefined();
+
+    fs.rmSync(path.join(serverDir, "vinext-prerender.json"));
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/:slug")).toBeUndefined();
   });
 });

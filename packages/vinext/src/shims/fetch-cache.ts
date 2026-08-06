@@ -19,9 +19,11 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
-import { getDataCacheHandler, type CachedFetchValue } from "./cache.js";
+import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { markDynamicUsage } from "./headers.js";
+import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -41,8 +43,11 @@ import {
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v3";
+const CACHE_KEY_PREFIX = "v4";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
+
+// "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
+const ONE_YEAR_SECONDS = 31536000;
 
 class BodyTooLargeForCacheKeyError extends Error {
   constructor() {
@@ -69,34 +74,27 @@ type ExtendedRequestInit = RequestInit & {
 
 /**
  * Collect all headers from the request, excluding the blocklist.
- * Merges headers from both the Request object and the init object,
- * with init taking precedence (matching fetch() spec behavior).
+ * RequestInit headers replace a Request input's headers rather than merging
+ * with them, matching the Request constructor's normalization behavior.
  */
 function collectHeaders(input: string | URL | Request, init?: RequestInit): Record<string, string> {
-  const merged: Record<string, string> = {};
-
-  // Start with headers from Request object (if any)
-  if (input instanceof Request && input.headers) {
-    input.headers.forEach((v, k) => {
-      merged[k] = v;
-    });
-  }
-
-  // Override with headers from init (init takes precedence per fetch spec)
-  if (init?.headers) {
-    const headers =
-      init.headers instanceof Headers ? init.headers : new Headers(init.headers as HeadersInit);
-    headers.forEach((v, k) => {
-      merged[k] = v;
-    });
-  }
+  const headers = getEffectiveRequestHeaders(input, init);
+  const collected = Object.fromEntries(headers.entries());
 
   // Remove blocklisted headers
   for (const blocked of HEADER_BLOCKLIST) {
-    delete merged[blocked];
+    delete collected[blocked];
   }
 
-  return merged;
+  return collected;
+}
+
+function getEffectiveRequestHeaders(input: string | URL | Request, init?: RequestInit): Headers {
+  return init?.headers !== undefined
+    ? new Headers(init.headers)
+    : input instanceof Request
+      ? input.headers
+      : new Headers();
 }
 
 /**
@@ -111,22 +109,63 @@ function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): bool
   return AUTH_HEADERS.some((name) => name in headers);
 }
 
+const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"));
+
+function encodeBodyBytes(bytes: Uint8Array): string {
+  let encoded = "bytes:";
+  for (const byte of bytes) {
+    encoded += BYTE_HEX[byte];
+  }
+  return encoded;
+}
+
+function concatBodyBytes(chunks: Uint8Array[]): Uint8Array {
+  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function serializeFormData(
   formData: FormData,
-  pushBodyChunk: (chunk: string) => void,
+  pushBodyChunk: (chunk: string, byteLength?: number) => void,
   getTotalBodyBytes: () => number,
 ): Promise<void> {
+  const encoder = new TextEncoder();
   for (const [key, val] of formData.entries()) {
     if (typeof val === "string") {
       pushBodyChunk(JSON.stringify([key, { kind: "string", value: val }]));
       continue;
     }
-    if (
-      val.size > MAX_CACHE_KEY_BODY_BYTES ||
-      getTotalBodyBytes() + val.size > MAX_CACHE_KEY_BODY_BYTES
-    ) {
+    // Reject obviously oversized metadata before JSON escaping can amplify an
+    // attacker-controlled field name, filename, or media type.
+    const metadataLowerBound =
+      encoder.encode(key).byteLength +
+      encoder.encode(val.name).byteLength +
+      encoder.encode(val.type).byteLength;
+    if (getTotalBodyBytes() + val.size + metadataLowerBound > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
+
+    const metadata = JSON.stringify([
+      key,
+      {
+        kind: "file",
+        name: val.name,
+        type: val.type,
+        value: "bytes:",
+      },
+    ]);
+    const metadataByteLength = encoder.encode(metadata).byteLength;
+    if (getTotalBodyBytes() + val.size + metadataByteLength > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+
+    const bytes = new Uint8Array(await val.arrayBuffer());
     pushBodyChunk(
       JSON.stringify([
         key,
@@ -134,9 +173,10 @@ async function serializeFormData(
           kind: "file",
           name: val.name,
           type: val.type,
-          value: await val.text(),
+          value: encodeBodyBytes(bytes),
         },
       ]),
+      bytes.byteLength + metadataByteLength,
     );
   }
 }
@@ -166,13 +206,25 @@ function stripMultipartBoundary(contentType: string): string {
 type SerializedBodyResult = {
   bodyChunks: string[];
   canonicalizedContentType?: string;
+  defaultContentType?: string;
+  bodyMetadata?: string;
 };
 
-async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
+const NORMALIZED_FETCH_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"]);
+
+function normalizeFetchMethod(method: string): string {
+  const upperMethod = method.toUpperCase();
+  return NORMALIZED_FETCH_METHODS.has(upperMethod) ? upperMethod : method;
+}
+
+async function readRequestBodyChunksWithinLimit(
+  request: Request,
+  effectiveHeaders: Headers,
+): Promise<{
   chunks: Uint8Array[];
   contentType: string | undefined;
 }> {
-  const contentLengthHeader = request.headers.get("content-length");
+  const contentLengthHeader = effectiveHeaders.get("content-length");
   if (contentLengthHeader) {
     const contentLength = Number(contentLengthHeader);
     if (Number.isFinite(contentLength) && contentLength > MAX_CACHE_KEY_BODY_BYTES) {
@@ -181,7 +233,7 @@ async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
   }
 
   const requestClone = request.clone();
-  const contentType = requestClone.headers.get("content-type") ?? undefined;
+  const contentType = effectiveHeaders.get("content-type") ?? undefined;
   const reader = requestClone.body?.getReader();
   if (!reader) {
     return { chunks: [], contentType };
@@ -221,30 +273,40 @@ async function serializeBody(
   input: string | URL | Request,
   init?: RequestInit,
 ): Promise<SerializedBodyResult> {
-  if (!init?.body && !(input instanceof Request && input.body)) {
+  const hasInitBody = init?.body !== undefined && init.body !== null;
+  if (!hasInitBody && !(input instanceof Request && input.body)) {
     return { bodyChunks: [] };
   }
 
   const bodyChunks: string[] = [];
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
   let totalBodyBytes = 0;
   let canonicalizedContentType: string | undefined;
+  let defaultContentType: string | undefined;
+  let bodyMetadata: string | undefined = "body-present";
+  const hasEffectiveContentType = getEffectiveRequestHeaders(input, init).has("content-type");
 
-  const pushBodyChunk = (chunk: string): void => {
-    totalBodyBytes += encoder.encode(chunk).byteLength;
+  const pushBodyChunk = (chunk: string, byteLength = encoder.encode(chunk).byteLength): void => {
+    totalBodyBytes += byteLength;
     if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
     bodyChunks.push(chunk);
   };
+  const pushBodyBytes = (bytes: Uint8Array): void => {
+    pushBodyChunk(encodeBodyBytes(bytes), bytes.byteLength);
+  };
   const getTotalBodyBytes = (): number => totalBodyBytes;
 
-  if (init?.body instanceof Uint8Array) {
-    if (init.body.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
+  if (init?.body instanceof ArrayBuffer || (init?.body && ArrayBuffer.isView(init.body))) {
+    const bytes =
+      init.body instanceof ArrayBuffer
+        ? new Uint8Array(init.body)
+        : new Uint8Array(init.body.buffer, init.body.byteOffset, init.body.byteLength);
+    if (bytes.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(decoder.decode(init.body));
+    pushBodyBytes(bytes);
     (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
@@ -252,29 +314,24 @@ async function serializeBody(
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
     (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
+    const chunks: Uint8Array[] = [];
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (typeof value === "string") {
-          pushBodyChunk(value);
-        } else {
-          // Check raw byte size before the expensive decode to prevent
-          // OOM from a single oversized chunk.
-          totalBodyBytes += value.byteLength;
-          if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
-            throw new BodyTooLargeForCacheKeyError();
-          }
-          bodyChunks.push(decoder.decode(value, { stream: true }));
+        const bytes = typeof value === "string" ? encoder.encode(value) : value;
+        totalBodyBytes += bytes.byteLength;
+        if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+          throw new BodyTooLargeForCacheKeyError();
         }
+        chunks.push(bytes);
       }
-      const finalChunk = decoder.decode();
-      if (finalChunk) {
-        pushBodyChunk(finalChunk);
-      }
+      bodyChunks.push(encodeBodyBytes(concatBodyBytes(chunks)));
     } catch (err) {
-      await reader.cancel();
+      // Do not await cancellation of one tee branch: it may not settle until
+      // the fallback fetch starts consuming the other branch.
+      void reader.cancel().catch(() => {});
       if (err instanceof BodyTooLargeForCacheKeyError) {
         throw err;
       }
@@ -283,12 +340,21 @@ async function serializeBody(
   } else if (init?.body instanceof URLSearchParams) {
     // URLSearchParams — .toString() gives a stable serialization
     (init as ExtendedRequestInit)._ogBody = init.body;
-    pushBodyChunk(init.body.toString());
+    pushBodyBytes(encoder.encode(init.body.toString()));
+    if (!hasEffectiveContentType) {
+      defaultContentType = "application/x-www-form-urlencoded;charset=UTF-8";
+    }
   } else if (init?.body && typeof (init.body as { keys?: unknown }).keys === "function") {
     // FormData
     const formData = init.body as FormData;
     (init as ExtendedRequestInit)._ogBody = init.body;
     await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
+    // The generated boundary is transport-specific and the serialized form
+    // entries already distinguish bodies, so keep only the stable media type.
+    if (!hasEffectiveContentType) {
+      defaultContentType = "multipart/form-data";
+      bodyMetadata = "body-present;valid-multipart-boundary";
+    }
   } else if (
     init?.body &&
     typeof (init.body as { arrayBuffer?: unknown }).arrayBuffer === "function"
@@ -298,22 +364,31 @@ async function serializeBody(
     if (blob.size > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(await blob.text());
     const arrayBuffer = await blob.arrayBuffer();
+    pushBodyBytes(new Uint8Array(arrayBuffer));
     (init as ExtendedRequestInit)._ogBody = new Blob([arrayBuffer], { type: blob.type });
+    if (!hasEffectiveContentType) {
+      defaultContentType = blob.type || undefined;
+    }
   } else if (typeof init?.body === "string") {
     // String length is always <= UTF-8 byte length, so this is a
     // cheap lower-bound check that avoids encoder.encode() for huge strings.
     if (init.body.length > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(init.body);
+    pushBodyBytes(encoder.encode(init.body));
     (init as ExtendedRequestInit)._ogBody = init.body;
+    if (!hasEffectiveContentType) {
+      defaultContentType = "text/plain;charset=UTF-8";
+    }
   } else if (input instanceof Request && input.body) {
     let chunks: Uint8Array[];
     let contentType: string | undefined;
     try {
-      ({ chunks, contentType } = await readRequestBodyChunksWithinLimit(input));
+      ({ chunks, contentType } = await readRequestBodyChunksWithinLimit(
+        input,
+        getEffectiveRequestHeaders(input, init),
+      ));
     } catch (err) {
       if (err instanceof BodyTooLargeForCacheKeyError) {
         throw err;
@@ -335,7 +410,11 @@ async function serializeBody(
           formContentType === "multipart/form-data" && contentType
             ? stripMultipartBoundary(contentType)
             : undefined;
-        return { bodyChunks, canonicalizedContentType };
+        bodyMetadata =
+          formContentType === "multipart/form-data"
+            ? "body-present;valid-multipart-boundary"
+            : "body-present";
+        return { bodyChunks, canonicalizedContentType, bodyMetadata };
       } catch (err) {
         if (err instanceof BodyTooLargeForCacheKeyError) {
           throw err;
@@ -344,16 +423,10 @@ async function serializeBody(
       }
     }
 
-    for (const chunk of chunks) {
-      pushBodyChunk(decoder.decode(chunk, { stream: true }));
-    }
-    const finalChunk = decoder.decode();
-    if (finalChunk) {
-      pushBodyChunk(finalChunk);
-    }
+    pushBodyBytes(concatBodyBytes(chunks));
   }
 
-  return { bodyChunks, canonicalizedContentType };
+  return { bodyChunks, canonicalizedContentType, defaultContentType, bodyMetadata };
 }
 
 /**
@@ -368,24 +441,25 @@ async function buildFetchCacheKey(
   init?: RequestInit & { next?: NextFetchOptions },
 ): Promise<string> {
   let url: string;
-  let method = "GET";
+  const inputRequest = input instanceof Request ? input : undefined;
 
   if (typeof input === "string") {
-    url = input;
+    url = new Request(input).url;
   } else if (input instanceof URL) {
-    url = input.toString();
+    url = new Request(input).url;
   } else {
-    // Request object
     url = input.url;
-    method = input.method || "GET";
   }
 
-  if (init?.method) method = init.method;
+  const method = normalizeFetchMethod(init?.method ?? inputRequest?.method ?? "GET");
 
   const headers = collectHeaders(input, init);
-  const { bodyChunks, canonicalizedContentType } = await serializeBody(input, init);
+  const { bodyChunks, canonicalizedContentType, defaultContentType, bodyMetadata } =
+    await serializeBody(input, init);
   if (canonicalizedContentType) {
     headers["content-type"] = canonicalizedContentType;
+  } else if (defaultContentType && headers["content-type"] === undefined) {
+    headers["content-type"] = defaultContentType;
   }
 
   const cacheString = JSON.stringify([
@@ -393,14 +467,15 @@ async function buildFetchCacheKey(
     url,
     method,
     headers,
-    init?.mode,
-    init?.redirect,
-    init?.credentials,
-    init?.referrer,
-    init?.referrerPolicy,
-    init?.integrity,
-    init?.cache,
+    init?.mode ?? inputRequest?.mode ?? "cors",
+    init?.redirect ?? inputRequest?.redirect ?? "follow",
+    init?.credentials ?? inputRequest?.credentials ?? "same-origin",
+    init?.referrer ?? inputRequest?.referrer ?? "about:client",
+    init?.referrerPolicy ?? inputRequest?.referrerPolicy ?? "",
+    init?.integrity ?? inputRequest?.integrity ?? "",
+    init?.cache ?? inputRequest?.cache ?? "default",
     bodyChunks,
+    bodyMetadata,
   ]);
 
   const encoder = new TextEncoder();
@@ -478,7 +553,9 @@ export type FetchCacheState = {
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
   currentFetchCacheMode: FetchCacheMode | null;
+  currentForceDynamicFetchDefault: boolean;
   dynamicFetchUrls: Set<string>;
+  refreshStaleFetchesInForeground: boolean;
   isFetchDedupeActive: boolean;
   currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
 };
@@ -513,7 +590,9 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
   currentFetchSoftTags: [],
   currentFetchCacheMode: null,
+  currentForceDynamicFetchDefault: false,
   dynamicFetchUrls: new Set<string>(),
+  refreshStaleFetchesInForeground: false,
   isFetchDedupeActive: false,
   currentFetchDedupeEntries: new Map(),
 } satisfies FetchCacheState) as FetchCacheState;
@@ -534,7 +613,9 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentRequestTags = [];
   _fallbackState.currentFetchSoftTags = [];
   _fallbackState.currentFetchCacheMode = null;
+  _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
+  _fallbackState.refreshStaleFetchesInForeground = false;
   _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
   _fallbackState.currentFetchDedupeEntries = new Map();
 }
@@ -547,8 +628,99 @@ function recordDynamicFetchObservation(input: string | URL | Request): void {
   _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
 }
 
+function markUncachedFetchForPageOutput(input: string | URL | Request): void {
+  recordDynamicFetchObservation(input);
+  markDynamicUsage();
+}
+
 function recordCacheableFetchObservation(input: string | URL | Request): void {
   _getState().cacheableFetchUrls.add(getFetchObservationUrl(input));
+}
+
+function recordFiniteFetchRevalidate(revalidateSeconds: number): void {
+  if (Number.isFinite(revalidateSeconds) && revalidateSeconds > 0) {
+    _setRequestScopedCacheLife({ revalidate: revalidateSeconds });
+  }
+}
+
+function shouldRefreshStaleFetchInForeground(): boolean {
+  return _getState().refreshStaleFetchesInForeground;
+}
+
+async function buildFetchCacheValue(
+  response: Response,
+  tags: string[],
+  revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
+): Promise<CachedFetchValue | null> {
+  if (response.status !== 200) return null;
+
+  const responseForCache = options?.cloneForReturn === false ? response : response.clone();
+  const body = await responseForCache.text();
+  const headers: Record<string, string> = {};
+  responseForCache.headers.forEach((v, k) => {
+    if (k.toLowerCase() === "set-cookie") return;
+    headers[k] = v;
+  });
+
+  return {
+    kind: "FETCH",
+    data: {
+      headers,
+      body,
+      url: response.url,
+      status: responseForCache.status,
+    },
+    tags,
+    revalidate: revalidateSeconds,
+  };
+}
+
+async function writeFetchCacheResponse(
+  handler: CacheHandler,
+  cacheKey: string,
+  response: Response,
+  tags: string[],
+  revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
+): Promise<void> {
+  const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
+  if (!cacheValue) return;
+
+  await handler.set(cacheKey, cacheValue, {
+    fetchCache: true,
+    tags,
+    revalidate: revalidateSeconds,
+  });
+}
+
+async function lowerFetchCacheRevalidateIfNeeded(
+  handler: CacheHandler,
+  cacheKey: string,
+  cachedValue: CachedFetchValue,
+  tags: string[],
+  revalidateSeconds: number,
+): Promise<void> {
+  if (
+    !Number.isFinite(revalidateSeconds) ||
+    revalidateSeconds <= 0 ||
+    typeof cachedValue.revalidate !== "number" ||
+    cachedValue.revalidate <= revalidateSeconds
+  ) {
+    return;
+  }
+
+  const mergedTags = Array.from(new Set([...(cachedValue.tags ?? []), ...tags]));
+  const updatedValue: CachedFetchValue = {
+    ...cachedValue,
+    tags: mergedTags,
+    revalidate: revalidateSeconds,
+  };
+  await handler.set(cacheKey, updatedValue, {
+    fetchCache: true,
+    tags: mergedTags,
+    revalidate: revalidateSeconds,
+  });
 }
 
 export function peekCacheableFetchObservations(): string[] {
@@ -623,37 +795,70 @@ export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
   _getState().currentFetchCacheMode = mode;
 }
 
+export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
+  _getState().currentForceDynamicFetchDefault = enabled;
+}
+
+export function setRefreshStaleFetchesInForeground(enabled: boolean): void {
+  _getState().refreshStaleFetchesInForeground = enabled;
+}
+
 function isNoStoreFetch(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
 ): boolean {
   return (
-    cacheDirective === "no-store" ||
-    cacheDirective === "no-cache" ||
-    nextOpts?.revalidate === false ||
-    nextOpts?.revalidate === 0
+    cacheDirective === "no-store" || cacheDirective === "no-cache" || nextOpts?.revalidate === 0
   );
 }
 
+// Note: `revalidate: false` is cacheable-indefinitely (it normalizes to
+// INFINITE_CACHE), so it belongs here — and therefore conflicts with
+// `only-no-store` — and must not be re-added to `isNoStoreFetch` above.
 function isCacheableFetch(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
 ): boolean {
   return (
     cacheDirective === "force-cache" ||
+    nextOpts?.revalidate === false ||
     (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0)
   );
 }
 
+// Returns true when the fetch call carries any defined `next.revalidate` value.
+// Used by segment cache defaults (default-cache, default-no-store) where
+// `revalidate: 0` and `revalidate: false` are both explicit opt-outs that
+// should prevent the segment default from kicking in.
 function hasExplicitRevalidateValue(nextOpts: NextFetchOptions | undefined): boolean {
   return nextOpts?.revalidate !== undefined;
+}
+
+// Matches upstream's `!currentFetchRevalidate` truthiness check in
+// noFetchConfigAndForceDynamic.  `false` and `0` are both falsy, so they
+// count as "no fetch revalidate config" for the force-dynamic default path.
+function isFalsyRevalidate(nextOpts: NextFetchOptions | undefined): boolean {
+  return !nextOpts?.revalidate;
 }
 
 function resolveSegmentCacheDirective(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
   mode: FetchCacheMode | null,
+  forceDynamicFetchDefault: boolean,
 ): RequestCache | undefined {
+  // Explicit segment fetchCache modes (e.g. default-cache/default-no-store)
+  // skip this guard and are handled below, taking precedence over the
+  // force-dynamic no-store default.
+  if (
+    forceDynamicFetchDefault &&
+    (!mode || mode === "auto") &&
+    (cacheDirective === undefined || cacheDirective === "default") &&
+    isFalsyRevalidate(nextOpts)
+  ) {
+    return "no-store";
+  }
+
   if (!mode || mode === "auto") {
     return cacheDirective;
   }
@@ -728,8 +933,8 @@ function createFetchDedupeCandidate(
     return null;
   }
 
-  const method = init?.method?.toUpperCase();
-  if (method && method !== "GET" && method !== "HEAD") {
+  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
     return null;
   }
 
@@ -737,8 +942,10 @@ function createFetchDedupeCandidate(
     return null;
   }
 
-  const request =
-    typeof input === "string" || input instanceof URL ? new Request(input, init) : input;
+  // RequestInit overrides a Request input too. Normalize whenever init is
+  // present so the dedupe key describes the request that fetch will execute.
+  // Eligible GET/HEAD requests have no body stream for this to disturb.
+  const request = input instanceof Request && !init ? input : new Request(input, init);
 
   if ((request.method !== "GET" && request.method !== "HEAD") || request.keepalive) {
     return null;
@@ -782,6 +989,34 @@ function cloneDedupeResponse(response: Response): [Response, Response] {
 
   const [body1, body2] = response.body.tee();
   return [buildDedupeClone(body1, response), buildDedupeClone(body2, response)];
+}
+
+function buildCachedFetchResponse(
+  data: CachedFetchValue["data"],
+  input: string | URL | Request,
+): Response {
+  const response = new Response(data.body, {
+    status: data.status ?? 200,
+    headers: data.headers,
+  });
+  // `data.url` is typed as required, but cached entries may cross a
+  // serialization boundary (e.g. KV) where a legacy or third-party writer
+  // never populated it — fall back to the request URL (what an uncached,
+  // redirect-free fetch would report) so consumers that read `response.url`
+  // (e.g. to resolve relative redirects) still see a usable absolute URL.
+  Object.defineProperty(response, "url", {
+    value: data.url ?? getFetchObservationUrl(input),
+    configurable: true,
+    enumerable: true,
+    writable: false,
+  });
+  // Intentional change from the previous inline reconstruction: cached
+  // responses now participate in body-stream cleanup too, so an unconsumed
+  // cached body gets cancelled when the Response is GC'd instead of leaking.
+  if (_responseBodyRegistry && response.body) {
+    _responseBodyRegistry.register(response, new WeakRef(response.body));
+  }
+  return response;
 }
 
 function dedupeFetch(
@@ -870,12 +1105,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
       getFetchCacheDirective(input, init),
       nextOpts,
       _getState().currentFetchCacheMode,
+      _getState().currentForceDynamicFetchDefault,
     );
 
     // Determine caching behavior:
     // - cache: 'no-store' → skip cache entirely
     // - cache: 'force-cache' → cache indefinitely (revalidate = Infinity)
-    // - next.revalidate: false → same as 'no-store'
+    // - next.revalidate: false → cache indefinitely (same as force-cache)
     // - next.revalidate: 0 → same as 'no-store'
     // - next.revalidate: N → cache for N seconds
     // - No cache/next options → default behavior (no caching, pass-through)
@@ -887,15 +1123,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Explicit no-store or no-cache — bypass cache entirely
+    // Deliberate divergence from upstream: Next.js only calls
+    // markCurrentScopeAsDynamic for 'no-store'/revalidate: 0, while 'no-cache'
+    // merely opts the fetch out of caching. We conservatively mark the page
+    // dynamic for 'no-cache' too, since its response is never reusable.
     if (
       cacheDirective === "no-store" ||
       cacheDirective === "no-cache" ||
-      nextOpts?.revalidate === false ||
       nextOpts?.revalidate === 0
     ) {
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
-      recordDynamicFetchObservation(input);
+      markUncachedFetchForPageOutput(input);
       return dedupeFetch(input, cleanInit);
     }
 
@@ -904,8 +1143,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // `next.revalidate`, skip caching to prevent accidental cross-user data
     // leakage. Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
+    // This is an automatic safety bypass, not an explicit opt-out, so it does
+    // NOT mark the page dynamic via markDynamicUsage(). It still records a
+    // dynamic fetch observation: the per-user response must downgrade the
+    // page output to fresh render, or a statically cached page could leak
+    // one user's auth-keyed data to everyone else.
+    // Ordering is deliberate: an explicit `no-store`/`no-cache`/`revalidate: 0`
+    // takes the stronger branch above and fully marks the page dynamic even
+    // when auth headers are present — this bypass only handles auth-keyed
+    // fetches that would otherwise be implicitly cacheable.
     const hasExplicitCacheOpt =
       cacheDirective === "force-cache" ||
+      nextOpts?.revalidate === false ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -920,7 +1169,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
       revalidateSeconds =
         nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
           ? nextOpts.revalidate
-          : 31536000; // 1 year
+          : ONE_YEAR_SECONDS;
+    } else if (nextOpts?.revalidate === false) {
+      // revalidate: false means cache indefinitely
+      revalidateSeconds = ONE_YEAR_SECONDS;
     } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
       revalidateSeconds = nextOpts.revalidate;
     } else {
@@ -928,7 +1180,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // caching when `next` is present (force-cache behavior).
       // If only tags are specified, cache indefinitely.
       if (nextOpts?.tags && nextOpts.tags.length > 0) {
-        revalidateSeconds = 31536000;
+        revalidateSeconds = ONE_YEAR_SECONDS;
       } else {
         // next: {} with no revalidate or tags — pass through
         const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -945,6 +1197,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // recording both cacheable and dynamic is conservative — a false "unsafe"
     // result costs performance, not correctness.
     recordCacheableFetchObservation(input);
+    recordFiniteFetchRevalidate(revalidateSeconds);
     const reqTags = _getState().currentRequestTags;
     const tags = encodeCacheTags(nextOpts?.tags ?? []);
     if (tags.length > 0) {
@@ -969,29 +1222,58 @@ function createPatchedFetch(): typeof globalThis.fetch {
         err instanceof SkipCacheKeyGenerationError
       ) {
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
+        // The developer opted into caching but we couldn't build a cache key
+        // (body too large / unserializable). That is an internal vinext
+        // limitation, not an explicit uncached-fetch decision, so record only
+        // the observation (downgrading the page output to fresh render)
+        // without marking the whole page dynamic.
         recordDynamicFetchObservation(input);
         return dedupeFetch(input, fetchInit);
       }
       throw err;
     }
     const handler = getDataCacheHandler();
+    let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
     // Try cache first
     try {
-      const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
+      let cached = mustBypassPendingRevalidation
+        ? null
+        : await handler.get(cacheKey, {
+            kind: "FETCH",
+            tags,
+            softTags,
+            revalidate: revalidateSeconds,
+          });
+      if (
+        cached?.value?.kind === "FETCH" &&
+        _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
+      ) {
+        mustBypassPendingRevalidation = true;
+        cached = null;
+      }
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+        await lowerFetchCacheRevalidateIfNeeded(
+          handler,
+          cacheKey,
+          cached.value,
+          tags,
+          revalidateSeconds,
+        );
         const cachedData = cached.value.data;
-        // Reconstruct a Response from the cached data
-        return new Response(cachedData.body, {
-          status: cachedData.status ?? 200,
-          headers: cachedData.headers,
-        });
+        return buildCachedFetchResponse(cachedData, input);
       }
 
       // Stale entry — we could do stale-while-revalidate here, but for fetch()
       // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
       // However, if we have a stale entry, return it and trigger background refetch.
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+        if (shouldRefreshStaleFetchInForeground()) {
+          const freshResponse = await dedupeFetch(input, fetchInit);
+          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
+          return freshResponse;
+        }
+
         const staleData = cached.value.data;
 
         // Background refetch — deduped so only one in-flight refetch runs
@@ -999,37 +1281,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
         if (!pendingRefetches.has(cacheKey)) {
           const refetchPromise = originalFetch(input, fetchInit)
             .then(async (freshResp) => {
-              // Only cache 200 responses — a transient error or unexpected
-              // status must not overwrite previously-good cached data.
-              if (freshResp.status !== 200) return;
-
-              const freshBody = await freshResp.text();
-              const freshHeaders: Record<string, string> = {};
-              freshResp.headers.forEach((v, k) => {
-                if (k.toLowerCase() === "set-cookie") return;
-                freshHeaders[k] = v;
-              });
-
-              const freshValue: CachedFetchValue = {
-                kind: "FETCH",
-                data: {
-                  headers: freshHeaders,
-                  body: freshBody,
-                  url:
-                    typeof input === "string"
-                      ? input
-                      : input instanceof URL
-                        ? input.toString()
-                        : input.url,
-                  status: freshResp.status,
-                },
-                tags,
-                revalidate: revalidateSeconds,
-              };
-              await handler.set(cacheKey, freshValue, {
-                fetchCache: true,
-                tags,
-                revalidate: revalidateSeconds,
+              await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
+                cloneForReturn: false,
               });
             })
             .catch((err) => {
@@ -1068,10 +1321,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
 
         // Return stale data immediately
-        return new Response(staleData.body, {
-          status: staleData.status ?? 200,
-          headers: staleData.headers,
-        });
+        return buildCachedFetchResponse(staleData, input);
       }
     } catch (cacheErr) {
       // Cache read failed — fall through to network
@@ -1079,35 +1329,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Cache miss — fetch from network
-    const response = await dedupeFetch(input, fetchInit);
+    const response = await (mustBypassPendingRevalidation
+      ? originalFetch(input, fetchInit)
+      : dedupeFetch(input, fetchInit));
 
-    // Only cache 200 responses
-    if (response.status === 200) {
-      // Clone before reading body
-      const cloned = response.clone();
-      const body = await cloned.text();
-      const headers: Record<string, string> = {};
-      cloned.headers.forEach((v, k) => {
-        // Never cache Set-Cookie headers — they are per-user and must not
-        // be replayed to subsequent requests from different users.
-        if (k.toLowerCase() === "set-cookie") return;
-        headers[k] = v;
-      });
-
-      const cacheValue: CachedFetchValue = {
-        kind: "FETCH",
-        data: {
-          headers,
-          body,
-          url:
-            typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
-          status: cloned.status,
-        },
-        tags,
-        revalidate: revalidateSeconds,
-      };
-
-      // Store in cache (fire-and-forget)
+    const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+    if (cacheValue) {
       handler
         .set(cacheKey, cacheValue, {
           fetchCache: true,
@@ -1200,6 +1427,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       uCtx.currentRequestTags = [];
       uCtx.currentFetchSoftTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
+      uCtx.refreshStaleFetchesInForeground = false;
       uCtx.isFetchDedupeActive = true;
       uCtx.currentFetchDedupeEntries = new Map();
     }, fn);
@@ -1210,7 +1438,9 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentRequestTags: [],
       currentFetchSoftTags: [],
       currentFetchCacheMode: null,
+      currentForceDynamicFetchDefault: false,
       dynamicFetchUrls: new Set<string>(),
+      refreshStaleFetchesInForeground: false,
       isFetchDedupeActive: true,
       currentFetchDedupeEntries: new Map(),
     },

@@ -1,4 +1,11 @@
-import { startTransition, useLayoutEffect, type Dispatch, type ReactNode } from "react";
+import {
+  startTransition,
+  useInsertionEffect,
+  useLayoutEffect,
+  type Dispatch,
+  type ReactNode,
+} from "react";
+import { flushSync } from "react-dom";
 import {
   activateNavigationSnapshot,
   clearPendingPathname,
@@ -16,6 +23,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
+  createPendingNavigationCommitFromElements,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
@@ -30,10 +38,16 @@ import {
   type ApprovedVisibleCommit,
 } from "./app-browser-visible-commit.js";
 import {
+  resolveServerActionOperationLane,
   shouldScheduleRefreshForDiscardedServerAction,
   type ServerActionRevalidationKind,
 } from "./app-browser-action-result.js";
 import type { AppElements } from "./app-elements.js";
+import type { NavigationRuntimeVisibleCommitMode } from "../client/navigation-runtime.js";
+import {
+  clearAppNavigationFailureTarget,
+  getAppNavigationFailureTarget,
+} from "../client/app-nav-failure-handler.js";
 
 export type HistoryUpdateMode = "push" | "replace";
 
@@ -45,6 +59,8 @@ export type PendingBrowserRouterState = {
 export type NavigationPayloadOutcome = "committed" | "no-commit" | "hard-navigate";
 type HardNavigationMode = "assign" | "replace";
 
+type BrowserNavigationCommitEffect = () => void;
+
 type BrowserNavigationCommitEffectFactory = (options: {
   bfcacheIds: Readonly<Record<string, string>>;
   href: string;
@@ -53,7 +69,7 @@ type BrowserNavigationCommitEffectFactory = (options: {
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
-}) => () => void;
+}) => BrowserNavigationCommitEffect;
 
 type BrowserRouterStateRef = {
   current: AppRouterState;
@@ -77,6 +93,29 @@ type BrowserNavigationControllerDeps = {
   ) => void;
 };
 
+type BrowserNavigationPayloadOptions = {
+  actionType: "navigate" | "replace" | "traverse";
+  createNavigationCommitEffect: BrowserNavigationCommitEffectFactory;
+  historyUpdateMode: HistoryUpdateMode | undefined;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationInitiationState: AppRouterState;
+  navigationSnapshot: ClientNavigationRenderSnapshot;
+  navId: number;
+  nextElements: Promise<AppElements> | AppElements;
+  onCommittedState?: (state: AppRouterState) => void;
+  operationLane: OperationLane;
+  params: Record<string, string | string[]>;
+  payloadOrigin: AppNavigationPayloadOrigin;
+  pendingRouterState: PendingBrowserRouterState | null;
+  previousNextUrl: string | null;
+  restoredBfcacheIds?: Readonly<Record<string, string>> | null;
+  reuseCurrentBfcacheIds?: boolean;
+  scrollIntent?: AppRouterScrollIntent | null;
+  targetHistoryIndex?: number | null;
+  targetHref: string;
+  visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
+};
+
 type BrowserNavigationController = {
   beginNavigation(): number;
   getActiveNavigationId(): number;
@@ -97,24 +136,9 @@ type BrowserNavigationController = {
     state: AppRouterState;
     targetHref: string;
   }): boolean;
-  renderNavigationPayload(options: {
-    actionType: "navigate" | "replace" | "traverse";
-    createNavigationCommitEffect: BrowserNavigationCommitEffectFactory;
-    historyUpdateMode: HistoryUpdateMode | undefined;
-    navigationSnapshot: ClientNavigationRenderSnapshot;
-    nextElements: Promise<AppElements>;
-    operationLane: OperationLane;
-    payloadOrigin: AppNavigationPayloadOrigin;
-    params: Record<string, string | string[]>;
-    pendingRouterState: PendingBrowserRouterState | null;
-    previousNextUrl: string | null;
-    scrollIntent?: AppRouterScrollIntent | null;
-    restoredBfcacheIds?: Readonly<Record<string, string>> | null;
-    reuseCurrentBfcacheIds?: boolean;
-    targetHistoryIndex?: number | null;
-    targetHref: string;
-    navId: number;
-  }): Promise<NavigationPayloadOutcome>;
+  renderNavigationPayload(
+    options: BrowserNavigationPayloadOptions,
+  ): Promise<NavigationPayloadOutcome>;
   commitSameUrlNavigatePayload(
     nextElements: Promise<AppElements>,
     navigationSnapshot: ClientNavigationRenderSnapshot,
@@ -135,6 +159,7 @@ type BrowserNavigationController = {
    * navigation would otherwise be lost.
    */
   drainPrePaintEffects(renderId: number): void;
+  clearCommittedNavigationFailureTargets(renderId: number): void;
   NavigationCommitSignal(
     this: void,
     {
@@ -265,8 +290,19 @@ export function createAppBrowserNavigationController(
   // and causing hooks to prefer stale snapshot values indefinitely.
   let nextNavigationRenderId = 0;
   let activeNavigationId = 0;
-  const pendingNavigationCommits = new Map<number, () => void>();
-  const pendingNavigationPrePaintEffects = new Map<number, () => void>();
+  let pendingUserNavigationId: number | null = null;
+  let pendingUserNavigationLane: OperationLane | null = null;
+  let latestHmrUpdateId = 0;
+  const pendingNavigationCommits = new Map<
+    number,
+    {
+      committedState: AppRouterState | null;
+      onCommittedState?: (state: AppRouterState) => void;
+      resolve: (committed: boolean) => void;
+    }
+  >();
+  const pendingNavigationFailureTargets = new Map<number, URL>();
+  const pendingNavigationPrePaintEffects = new Map<number, BrowserNavigationCommitEffect>();
 
   let setBrowserRouterState: Dispatch<AppRouterState | Promise<AppRouterState>> | null = null;
   let browserRouterStateRef: BrowserRouterStateRef | null = null;
@@ -312,7 +348,13 @@ export function createAppBrowserNavigationController(
   }
 
   function beginNavigation(): number {
+    // User navigation owns the next visible result. Revoke any HMR payload
+    // already suspended on RSC resolution so it cannot commit first and make
+    // the still-current navigation look stale by advancing visible state.
+    latestHmrUpdateId += 1;
     activeNavigationId += 1;
+    pendingUserNavigationId = activeNavigationId;
+    pendingUserNavigationLane = null;
     return activeNavigationId;
   }
 
@@ -382,21 +424,9 @@ export function createAppBrowserNavigationController(
     settlePendingBrowserRouterState(pending);
 
     if (isCurrentNavigation(navId)) {
+      pendingUserNavigationId = null;
+      pendingUserNavigationLane = null;
       clearPendingPathname(navId);
-    }
-  }
-
-  function resolvePendingBrowserRouterState(
-    pending: PendingBrowserRouterState | null | undefined,
-    commit: ApprovedVisibleCommit,
-  ): void {
-    if (!pending || pending.settled) return;
-
-    pending.settled = true;
-    pending.resolve(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
-
-    if (activePendingBrowserRouterState === pending) {
-      activePendingBrowserRouterState = null;
     }
   }
 
@@ -435,19 +465,33 @@ export function createAppBrowserNavigationController(
   }
 
   /**
-   * Resolve all pending navigation commits with renderId <= the committed renderId.
-   * Note: Map iteration handles concurrent deletion safely — entries are visited in
-   * insertion order and deletion doesn't affect the iterator's view of remaining entries.
-   * This pattern is also used in drainPrePaintEffects with the same semantics.
+   * Settle all pending navigation renders through the supplied renderId. Only
+   * the exact render whose layout effect ran is a successful commit; older
+   * superseded renders and cleanup-only settlements resolve as no-commit.
    */
-  function resolveCommittedNavigations(renderId: number): void {
-    for (const [pendingId, resolve] of pendingNavigationCommits) {
+  function settleNavigationCommits(renderId: number, committed: boolean): void {
+    for (const [pendingId, pendingCommit] of pendingNavigationCommits) {
       if (pendingId > renderId) {
         continue;
       }
 
       pendingNavigationCommits.delete(pendingId);
-      resolve();
+      const didCommit = committed && pendingId === renderId;
+      if (didCommit && pendingCommit.committedState !== null) {
+        pendingCommit.onCommittedState?.(pendingCommit.committedState);
+      }
+      pendingCommit.resolve(didCommit);
+    }
+  }
+
+  function clearCommittedNavigationFailureTargets(renderId: number): void {
+    for (const [pendingId, targetHref] of pendingNavigationFailureTargets) {
+      if (pendingId > renderId) {
+        continue;
+      }
+
+      pendingNavigationFailureTargets.delete(pendingId);
+      clearAppNavigationFailureTarget(targetHref);
     }
   }
 
@@ -455,6 +499,8 @@ export function createAppBrowserNavigationController(
     nextElements: Promise<AppElements>,
     navigationSnapshot: ClientNavigationRenderSnapshot,
   ): Promise<void> {
+    const hmrUpdateId = ++latestHmrUpdateId;
+    const startedDuringUserNavigation = pendingUserNavigationLane === "navigation";
     if (!hasBrowserRouterState()) return;
 
     const currentState = getBrowserRouterState();
@@ -469,13 +515,25 @@ export function createAppBrowserNavigationController(
       type: "replace",
     });
 
+    if (hmrUpdateId !== latestHmrUpdateId || startedDuringUserNavigation) return;
+
     // createPendingNavigationCommit awaits the new RSC payload. While
     // suspended, the prior broken render can unmount BrowserRoot. Re-check
     // before dispatching so a racing unmount doesn't surface as an
     // initialized-setter error.
     if (!hasBrowserRouterState()) return;
 
-    dispatchSynchronousVisibleCommit(approveHmrVisibleCommit(pending));
+    const approval = approveHmrVisibleCommit({
+      currentState: getBrowserRouterState(),
+      pending,
+      routeManifest: deps.getRouteManifest?.() ?? null,
+      targetHref: createSnapshotPathAndSearch(navigationSnapshot),
+    });
+    if (approval.approvedCommit) {
+      dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    } else if (approval.decision.disposition === "hard-navigate") {
+      performHardNavigation(createSnapshotPathAndSearch(navigationSnapshot));
+    }
   }
 
   function NavigationCommitSignal(
@@ -488,18 +546,19 @@ export function createAppBrowserNavigationController(
       children?: ReactNode;
     },
   ): ReactNode {
+    useInsertionEffect(() => {
+      clearCommittedNavigationFailureTargets(renderId);
+    }, [renderId]);
+
     useLayoutEffect(() => {
       drainPrePaintEffects(renderId);
-
-      const frame = requestAnimationFrame(() => {
-        resolveCommittedNavigations(renderId);
-      });
+      settleNavigationCommits(renderId, true);
 
       return () => {
-        cancelAnimationFrame(frame);
-        // Resolve pending commits to prevent callers from hanging if React
-        // unmounts this component without committing (e.g., error boundary).
-        resolveCommittedNavigations(renderId);
+        // Settle pending renders without publishing their candidate state when
+        // React unmounts this component before its layout effect commits (for
+        // example, when an error boundary replaces the navigation subtree).
+        settleNavigationCommits(renderId, false);
       };
     }, [renderId]);
 
@@ -507,21 +566,67 @@ export function createAppBrowserNavigationController(
   }
 
   function dispatchApprovedVisibleCommit(
+    renderId: number,
     commit: ApprovedVisibleCommit,
     pendingRouterState: PendingBrowserRouterState | null,
+    visibleCommitMode: NavigationRuntimeVisibleCommitMode,
   ): void {
     const setter = getBrowserRouterStateSetter();
+    const pendingCommit = pendingNavigationCommits.get(renderId);
+
+    const captureCandidateState = (state: AppRouterState): AppRouterState => {
+      if (pendingCommit) {
+        pendingCommit.committedState = state;
+      }
+      return state;
+    };
 
     if (pendingRouterState) {
-      // The programmatic navigation is already running inside React.startTransition
-      // (from router.push/replace/refresh/Link), so resolving the deferred promise
-      // is sufficient.
-      resolvePendingBrowserRouterState(pendingRouterState, commit);
+      // Programmatic navigation already runs inside React.startTransition, so
+      // resolving the deferred promise is normally sufficient. A same-path
+      // search+hash response whose visible tree is unchanged can be retained by
+      // React without mounting the new NavigationCommitSignal, though. In that
+      // narrow synchronous mode, publish the resolved state directly as well;
+      // the signal's layout effect remains the authority for URL and scroll
+      // effects, including when the response suspends or changes the tree.
+      if (pendingRouterState.settled) return;
+      const committedState = captureCandidateState(
+        applyApprovedVisibleCommit(getBrowserRouterState(), commit),
+      );
+      pendingRouterState.settled = true;
+      pendingRouterState.resolve(committedState);
+      if (activePendingBrowserRouterState === pendingRouterState) {
+        activePendingBrowserRouterState = null;
+      }
+      if (visibleCommitMode === "synchronous") {
+        flushSync(() => {
+          setter(committedState);
+        });
+      }
+      return;
+    }
+
+    // This is intentionally distinct from dispatchSynchronousVisibleCommit
+    // below: that path's callers (HMR, history traversal) already run inside a
+    // synchronous event-handler/effect context where React flushes the plain
+    // setter itself, whereas the gesture commit fires after an `await` inside a
+    // held async transition and must be forced out with flushSync. Don't
+    // consolidate the two.
+    if (visibleCommitMode === "synchronous") {
+      flushSync(() => {
+        const committedState = captureCandidateState(
+          applyApprovedVisibleCommit(getBrowserRouterState(), commit),
+        );
+        setter(committedState);
+      });
       return;
     }
 
     startTransition(() => {
-      setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
+      const committedState = captureCandidateState(
+        applyApprovedVisibleCommit(getBrowserRouterState(), commit),
+      );
+      setter(committedState);
     });
   }
 
@@ -566,6 +671,7 @@ export function createAppBrowserNavigationController(
       previousNextUrl: options.restoredState.previousNextUrl,
       rootLayoutTreePath: options.restoredState.rootLayoutTreePath,
       routeId: options.restoredState.routeId,
+      restoredHistorySnapshot: true,
       skippedLayoutIds: [],
     };
   }
@@ -613,37 +719,61 @@ export function createAppBrowserNavigationController(
     lifecycleOptions?.onDiscardedRevalidation?.();
   }
 
-  async function renderNavigationPayload(options: {
-    actionType: "navigate" | "replace" | "traverse";
-    createNavigationCommitEffect: BrowserNavigationCommitEffectFactory;
-    historyUpdateMode: HistoryUpdateMode | undefined;
-    navigationSnapshot: ClientNavigationRenderSnapshot;
-    nextElements: Promise<AppElements>;
-    operationLane: OperationLane;
-    payloadOrigin: AppNavigationPayloadOrigin;
-    params: Record<string, string | string[]>;
-    pendingRouterState: PendingBrowserRouterState | null;
-    previousNextUrl: string | null;
-    scrollIntent?: AppRouterScrollIntent | null;
-    restoredBfcacheIds?: Readonly<Record<string, string>> | null;
-    reuseCurrentBfcacheIds?: boolean;
-    targetHistoryIndex?: number | null;
-    targetHref: string;
-    navId: number;
-  }): Promise<NavigationPayloadOutcome> {
+  function isSamePathSearchHashCommit(targetHref: string): boolean {
+    if (typeof window === "undefined") return false;
+
+    try {
+      const currentUrl = new URL(window.location.href);
+      const targetUrl = new URL(targetHref, currentUrl.href);
+      return (
+        targetUrl.origin === currentUrl.origin &&
+        targetUrl.pathname === currentUrl.pathname &&
+        targetUrl.search !== currentUrl.search &&
+        targetUrl.hash !== ""
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function shouldForceSynchronousCommit(options: BrowserNavigationPayloadOptions): boolean {
+    if (options.actionType === "traverse") return false;
+    if (options.historyUpdateMode === undefined) return false;
+    if (options.scrollIntent?.hash == null) return false;
+    return isSamePathSearchHashCommit(options.targetHref);
+  }
+
+  async function renderNavigationPayload(
+    options: BrowserNavigationPayloadOptions,
+  ): Promise<NavigationPayloadOutcome> {
+    if (options.navId === pendingUserNavigationId) {
+      pendingUserNavigationLane = options.operationLane;
+    }
+
     const renderId = allocateRenderId();
-    let resolveCommitted: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
+    const failureTarget = getAppNavigationFailureTarget(options.targetHref);
+    if (failureTarget) {
+      pendingNavigationFailureTargets.set(renderId, failureTarget);
+    }
+    let resolveCommitted: ((committed: boolean) => void) | undefined;
+    const committed = new Promise<boolean>((resolve) => {
       resolveCommitted = resolve;
-      pendingNavigationCommits.set(renderId, resolve);
+      pendingNavigationCommits.set(renderId, {
+        committedState: null,
+        onCommittedState: options.onCommittedState,
+        resolve,
+      });
     });
 
     let snapshotActivated = false;
     try {
-      const startedState = getBrowserRouterState();
-      const pending = await createPendingNavigationCommit({
-        currentState: startedState,
-        nextElements: options.nextElements,
+      // Preparation is historical: identities and the started commit version
+      // come from the initiating state. Approval below intentionally stays live
+      // so superseding navigations and unrelated visible commits still reject.
+      const pendingOptions = {
+        currentState: options.navigationInitiationState,
+        navigationCommitKind: options.navigationCommitKind,
+        navigationId: options.navId,
         navigationSnapshot: options.navigationSnapshot,
         operationLane: options.operationLane,
         payloadOrigin: options.payloadOrigin,
@@ -652,7 +782,17 @@ export function createAppBrowserNavigationController(
         restoredBfcacheIds: options.restoredBfcacheIds,
         reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
         type: options.actionType,
-      });
+      };
+      const pending =
+        options.nextElements instanceof Promise
+          ? await createPendingNavigationCommit({
+              ...pendingOptions,
+              nextElements: options.nextElements,
+            })
+          : createPendingNavigationCommitFromElements({
+              ...pendingOptions,
+              nextElements: options.nextElements,
+            });
 
       const approval = approvePendingNavigationCommit({
         activeNavigationId,
@@ -665,17 +805,28 @@ export function createAppBrowserNavigationController(
 
       if (approval.decision.disposition === "no-commit") {
         settlePendingBrowserRouterState(options.pendingRouterState);
+        pendingNavigationFailureTargets.delete(renderId);
+        if (failureTarget) {
+          clearAppNavigationFailureTarget(failureTarget);
+        }
         pendingNavigationCommits.delete(renderId);
-        resolveCommitted?.();
+        resolveCommitted?.(false);
         consumeAppRouterScrollIntent(options.scrollIntent ?? null);
         return "no-commit";
       }
 
       if (approval.decision.disposition === "hard-navigate") {
         settlePendingBrowserRouterState(options.pendingRouterState);
+        pendingNavigationFailureTargets.delete(renderId);
         pendingNavigationCommits.delete(renderId);
         consumeAppRouterScrollIntent(options.scrollIntent ?? null);
-        return performHardNavigation(options.targetHref) ? "hard-navigate" : "no-commit";
+        if (performHardNavigation(options.targetHref)) {
+          return "hard-navigate";
+        }
+        if (failureTarget) {
+          clearAppNavigationFailureTarget(failureTarget);
+        }
+        return "no-commit";
       }
 
       const approvedCommit = approval.approvedCommit;
@@ -698,19 +849,27 @@ export function createAppBrowserNavigationController(
       claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId);
       activateNavigationSnapshot();
       snapshotActivated = true;
-      dispatchApprovedVisibleCommit(approvedCommit, options.pendingRouterState);
+      dispatchApprovedVisibleCommit(
+        renderId,
+        approvedCommit,
+        options.pendingRouterState,
+        shouldForceSynchronousCommit(options)
+          ? "synchronous"
+          : (options.visibleCommitMode ?? "transition"),
+      );
     } catch (error) {
+      pendingNavigationFailureTargets.delete(renderId);
       pendingNavigationPrePaintEffects.delete(renderId);
       pendingNavigationCommits.delete(renderId);
       if (snapshotActivated) {
         commitClientNavigationStateImpl(options.navId);
       }
       settlePendingBrowserRouterState(options.pendingRouterState);
-      resolveCommitted?.();
+      resolveCommitted?.(false);
       throw error;
     }
 
-    return committed.then(() => "committed");
+    return committed.then((didCommit) => (didCommit ? "committed" : "no-commit"));
   }
 
   async function commitSameUrlNavigatePayload(
@@ -739,7 +898,7 @@ export function createAppBrowserNavigationController(
       navigationSnapshot,
       nextElements,
       renderId: allocateRenderId(),
-      operationLane: "server-action",
+      operationLane: resolveServerActionOperationLane(lifecycleOptions?.revalidation ?? "none"),
       payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
       startedNavigationId,
       routeManifest: getRouteManifest(),
@@ -775,10 +934,13 @@ export function createAppBrowserNavigationController(
       }
 
       if (latestApproval.approvedCommit) {
-        dispatchSynchronousVisibleCommit(latestApproval.approvedCommit);
+        const approvedRevalidationCommit = latestApproval.approvedCommit;
+        startTransition(() => {
+          dispatchSynchronousVisibleCommit(approvedRevalidationCommit);
+        });
         syncHistoryStatePreviousNextUrl(
-          latestApproval.approvedCommit.previousNextUrl,
-          latestApproval.approvedCommit.action.bfcacheIds,
+          approvedRevalidationCommit.previousNextUrl,
+          approvedRevalidationCommit.action.bfcacheIds,
         );
       } else {
         notifyDiscardedServerActionRevalidation(lifecycleOptions);
@@ -836,6 +998,7 @@ export function createAppBrowserNavigationController(
     commitSameUrlNavigatePayload,
     hmrReplaceTree,
     drainPrePaintEffects,
+    clearCommittedNavigationFailureTargets,
     NavigationCommitSignal,
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "0.1.1",
+  "version": "1.0.0-beta.4",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
   "repository": {
@@ -21,9 +21,19 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
     "./cache": {
       "types": "./dist/cache.d.ts",
       "import": "./dist/cache.js"
+    },
+    "./types": {
+      "types": "./dist/shims/next-shims-public.d.ts"
+    },
+    "./types/augmentations": {
+      "types": "./dist/shims/next-shims-augmentations.d.ts"
     },
     "./shims/*": {
       "types": "./dist/shims/*.d.ts",
@@ -37,10 +47,6 @@
       "types": "./dist/server/pages-i18n.d.ts",
       "import": "./dist/server/pages-i18n.js"
     },
-    "./cloudflare": {
-      "types": "./dist/cloudflare/index.d.ts",
-      "import": "./dist/cloudflare/index.js"
-    },
     "./server/image-optimization": {
       "types": "./dist/server/image-optimization.d.ts",
       "import": "./dist/server/image-optimization.js"
@@ -53,9 +59,77 @@
       "types": "./dist/server/pages-request-pipeline.d.ts",
       "import": "./dist/server/pages-request-pipeline.js"
     },
+    "./server/pages-client-assets": {
+      "types": "./dist/server/pages-client-assets.d.ts",
+      "import": "./dist/server/pages-client-assets.js"
+    },
+    "./server/fetch-handler": {
+      "types": "./dist/server/fetch-handler.d.ts",
+      "import": "./dist/server/fetch-handler.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
+    },
+    "./server/pages-router-entry": {
+      "types": "./dist/server/pages-router-entry.d.ts",
+      "import": "./dist/server/pages-router-entry.js"
+    },
+    "./internal/server/headers": {
+      "types": "./dist/server/headers.d.ts",
+      "import": "./dist/server/headers.js"
+    },
+    "./internal/server/isr-cache": {
+      "types": "./dist/server/isr-cache.d.ts",
+      "import": "./dist/server/isr-cache.js"
+    },
+    "./internal/server/app-page-cache": {
+      "types": "./dist/server/app-page-cache.d.ts",
+      "import": "./dist/server/app-page-cache.js"
+    },
+    "./internal/server/prerender-manifest": {
+      "types": "./dist/server/prerender-manifest.d.ts",
+      "import": "./dist/server/prerender-manifest.js"
+    },
+    "./internal/server/pregenerated-concrete-paths": {
+      "types": "./dist/server/pregenerated-concrete-paths.d.ts",
+      "import": "./dist/server/pregenerated-concrete-paths.js"
+    },
+    "./internal/build/run-prerender": {
+      "types": "./dist/build/run-prerender.d.ts",
+      "import": "./dist/build/run-prerender.js"
+    },
+    "./internal/build/prerender-paths": {
+      "types": "./dist/build/prerender-paths.d.ts",
+      "import": "./dist/build/prerender-paths.js"
+    },
+    "./internal/cache-adapters": {
+      "types": "./dist/cache/cache-adapters-virtual.d.ts",
+      "import": "./dist/cache/cache-adapters-virtual.js"
+    },
+    "./internal/init": {
+      "types": "./dist/init.d.ts",
+      "import": "./dist/init.js"
+    },
+    "./internal/init-platform": {
+      "types": "./dist/init-platform.d.ts",
+      "import": "./dist/init-platform.js"
+    },
+    "./internal/config/dotenv": {
+      "types": "./dist/config/dotenv.d.ts",
+      "import": "./dist/config/dotenv.js"
+    },
+    "./internal/config/next-config": {
+      "types": "./dist/config/next-config.d.ts",
+      "import": "./dist/config/next-config.js"
+    },
+    "./internal/config/prerender": {
+      "types": "./dist/config/prerender.d.ts",
+      "import": "./dist/config/prerender.js"
+    },
+    "./server/app-rsc-handler": {
+      "types": "./dist/server/app-rsc-handler.d.ts",
+      "import": "./dist/server/app-rsc-handler.js"
     },
     "./config/config-matchers": {
       "types": "./dist/config/config-matchers.d.ts",
@@ -80,30 +154,43 @@
     "./utils/query": {
       "types": "./dist/utils/query.d.ts",
       "import": "./dist/utils/query.js"
+    },
+    "./internal/utils/project": {
+      "types": "./dist/utils/project.d.ts",
+      "import": "./dist/utils/project.js"
+    },
+    "./internal/utils/prerender-output-paths": {
+      "types": "./dist/utils/prerender-output-paths.d.ts",
+      "import": "./dist/utils/prerender-output-paths.js"
+    },
+    "./internal/utils/hash": {
+      "types": "./dist/utils/hash.d.ts",
+      "import": "./dist/utils/hash.js"
     }
   },
   "scripts": {
     "build": "vp pack",
-    "prepack": "cp ../../README.md README.md && vp run build",
+    "prepack": "node -e \"require('node:fs').copyFileSync('../../README.md', 'README.md')\" && vp run build",
     "dev": "vp pack --watch"
   },
   "dependencies": {
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
+    "@vinext/types": "workspace:^",
     "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
-    "vite-tsconfig-paths": "catalog:",
     "web-vitals": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
-    "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "am-i-vibing": "catalog:",
+    "pathslash": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
@@ -115,7 +202,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-server-dom-webpack": "^19.2.6",
-    "vite": "^7.0.0 || ^8.0.0"
+    "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "@mdx-js/rollup": {

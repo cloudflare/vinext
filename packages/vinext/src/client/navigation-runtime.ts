@@ -11,14 +11,29 @@ export type NavigationRuntimeRscChunk = string | [3, string];
 
 export type NavigationRuntimeRscBootstrap = {
   done?: boolean;
+  dynamicStaleTimeSeconds?: number;
+  initialCacheKind?: "dynamic" | "static";
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
   rsc: NavigationRuntimeRscChunk[];
+  /**
+   * Client reuse bound in seconds resolved from the initial render's completed
+   * `cacheLife` — the done-script sibling of `dynamicStaleTimeSeconds`, which
+   * carries the `experimental.staleTimes` config value instead.
+   */
+  staleTimeSeconds?: number;
 };
 
 type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
 
 type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
+
+export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
+
+type NavigationRuntimePrefetchRouterState = {
+  pathAndSearch: string;
+  routeId: string;
+};
 
 type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
@@ -35,6 +50,7 @@ export type NavigationRuntimeNavigate = (
   programmaticTransition?: boolean,
   traversalIntent?: NavigationRuntimeTraversalIntent,
   scrollIntent?: AppRouterScrollIntent | null,
+  visibleCommitMode?: NavigationRuntimeVisibleCommitMode,
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
@@ -49,6 +65,7 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
+  getPrefetchRouterState?: () => NavigationRuntimePrefetchRouterState | null;
   /**
    * Called at the start of every App Router navigation so the <Link> shim can
    * reset any link that is still showing a `useLinkStatus()` pending state but
@@ -58,6 +75,7 @@ export type NavigationRuntimeFunctions = {
    */
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
+  preparePrefetchResponse?: (response: Response) => Promise<unknown>;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -110,8 +128,10 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRouterState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))
+    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse"))
   );
 }
 
@@ -151,19 +171,31 @@ function isNavigationRuntimeParams(value: unknown): value is Record<string, stri
 function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRuntimeRscBootstrap {
   if (!isUnknownRecord(value)) return false;
   const done = Reflect.get(value, "done");
+  const dynamicStaleTimeSeconds = Reflect.get(value, "dynamicStaleTimeSeconds");
+  const initialCacheKind = Reflect.get(value, "initialCacheKind");
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
   const rsc = Reflect.get(value, "rsc");
+  const staleTimeSeconds = Reflect.get(value, "staleTimeSeconds");
   // getNavigationRuntime() runs at bootstrap/read boundaries, not per chunk.
   // Keep full validation here so malformed ambient state is rejected before
   // hydration consumes it instead of caching a stale validation result.
   return (
     (done === undefined || typeof done === "boolean") &&
+    isOptionalStaleTimeSeconds(dynamicStaleTimeSeconds) &&
+    (initialCacheKind === undefined ||
+      initialCacheKind === "dynamic" ||
+      initialCacheKind === "static") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
     Array.isArray(rsc) &&
-    rsc.every(isNavigationRuntimeRscChunk)
+    rsc.every(isNavigationRuntimeRscChunk) &&
+    isOptionalStaleTimeSeconds(staleTimeSeconds)
   );
+}
+
+function isOptionalStaleTimeSeconds(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
 function isReadonlyStringArray(value: unknown): value is readonly string[] {

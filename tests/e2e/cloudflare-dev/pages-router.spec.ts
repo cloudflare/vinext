@@ -19,13 +19,9 @@
  *
  * ## How we assert "served by the Worker"
  *
- * The app-router-cloudflare example has two competing handlers for /:
- *   - pages/index.tsx  → "<div>pages index</div>"  (Pages Router stub)
- *   - app/page.tsx     → "vinext on Cloudflare Workers"  (App Router, Worker)
- *
- * The Worker entry dispatches via the RSC entry, which serves app/page.tsx.
- * If the connect handler intercepted the request first, pages/index.tsx would
- * be rendered — without any Cloudflare runtime.
+ * The app-router-cloudflare example exposes a dedicated Pages route at
+ * /pages-index. If the host connect handler intercepted the request, it would
+ * render in Node instead of passing through the Cloudflare Worker entry.
  *
  * Note: Pages Router API routes on Cloudflare Workers are covered by the
  * cloudflare-pages-router e2e suite (wrangler dev, not vite dev), which
@@ -37,17 +33,13 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4178";
 
 test.describe("Pages Router routes on Cloudflare Workers (vite dev)", () => {
-  test("root route is served by the Worker, not intercepted by the connect handler", async ({
+  test("Pages route is served by the Worker, not intercepted by the connect handler", async ({
     request,
   }) => {
-    // pages/index.tsx and app/page.tsx both match /.
-    // The Worker entry dispatches via the RSC entry, which serves app/page.tsx.
-    // If the connect handler intercepts first, pages/index.tsx is rendered instead.
-    const res = await request.get(`${BASE}/`);
+    const res = await request.get(`${BASE}/pages-index`);
     expect(res.status()).toBe(200);
 
     const body = await res.text();
-    expect(body).toContain("vinext on Cloudflare Workers");
-    expect(body).not.toContain("pages index");
+    expect(body).toContain("pages index");
   });
 });

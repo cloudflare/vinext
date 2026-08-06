@@ -11,10 +11,9 @@
  * Issue: https://github.com/cloudflare/vinext/issues/1365
  */
 import { describe, expect, it } from "vite-plus/test";
-import {
-  generateAppRouterWorkerEntry,
-  generatePagesRouterWorkerEntry,
-} from "../packages/vinext/src/deploy.js";
+import fs from "node:fs";
+import path from "node:path";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 
 type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
@@ -89,13 +88,14 @@ describe("after() in deploy mode — ctx.waitUntil wiring", () => {
     // the ctx via the unified scope so server components / route handlers
     // can schedule deferred work.
     const { after } = await import("../packages/vinext/src/shims/server.js");
-    const { createRequestContext, runWithRequestContext } =
+    const { closeAfterResponse, createRequestContext, runWithRequestContext } =
       await import("../packages/vinext/src/shims/unified-request-context.js");
 
     const ctx = createMockCtx();
+    const requestContext = createRequestContext({ executionContext: ctx });
     let ran = false;
 
-    await runWithRequestContext(createRequestContext({ executionContext: ctx }), async () => {
+    await runWithRequestContext(requestContext, async () => {
       after(async () => {
         await Promise.resolve();
         ran = true;
@@ -103,6 +103,8 @@ describe("after() in deploy mode — ctx.waitUntil wiring", () => {
     });
 
     expect(ctx.promises).toHaveLength(1);
+    expect(ran).toBe(false);
+    await closeAfterResponse(requestContext);
     await ctx.promises[0];
     expect(ran).toBe(true);
   });
@@ -143,20 +145,25 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     //
     // After #1336 item 3 the dispatch URL is `apiLookupUrl` (the locale-
     // stripped form of `resolvedUrl`), but `ctx` is still threaded through.
-    const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
+    const content = readPagesRouterEntrySource();
+    expect(content).toContain(
+      'handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")',
+    );
   });
 
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
   });
 });
 
 describe("after() in deploy mode — App Router worker entry", () => {
   it("delegates to handler.fetch with ctx so vinext/server/app-router-entry can wrap with runWithExecutionContext", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("handler.fetch(request, env, ctx)");
+    const content = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
+      "utf-8",
+    );
+    expect(content).toContain("runWithExecutionContext(ctx");
   });
 });
 
@@ -189,6 +196,55 @@ describe("after() in deploy mode — Pages Router API handler", () => {
     });
 
     expect(observedCtx).toBe(ctx);
+  });
+
+  it("keeps streaming handler completion alive through the active execution context", async () => {
+    const { handlePagesApiRoute } =
+      await import("../packages/vinext/src/server/pages-api-route.js");
+    const { runWithExecutionContext } =
+      await import("../packages/vinext/src/shims/request-context.js");
+
+    const ctx = createMockCtx();
+    let releaseHandler!: () => void;
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let handlerSettled = false;
+
+    // The ambient form matches the hybrid App/Pages bridge, where the App
+    // Router owns the request scope and handlePagesApiRoute receives no ctx
+    // argument of its own.
+    const response = await runWithExecutionContext(ctx, () =>
+      handlePagesApiRoute({
+        match: {
+          params: {},
+          route: {
+            pattern: "/api/test",
+            module: {
+              async default(
+                _req: unknown,
+                res: { end: (body?: string) => void; statusCode: number },
+              ) {
+                res.statusCode = 200;
+                res.end("ok");
+                await handlerGate;
+                handlerSettled = true;
+              },
+            },
+          },
+        },
+        request: new Request("https://example.test/api/test"),
+        url: "/api/test",
+      }),
+    );
+
+    await expect(response.text()).resolves.toBe("ok");
+    expect(handlerSettled).toBe(false);
+    expect(ctx.promises).toHaveLength(1);
+
+    releaseHandler();
+    await ctx.promises[0];
+    expect(handlerSettled).toBe(true);
   });
 
   it("handlePagesApiRoute works without ctx (Node dev parity)", async () => {

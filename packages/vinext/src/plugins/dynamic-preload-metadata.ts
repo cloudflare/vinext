@@ -1,8 +1,9 @@
 import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
+import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 
 type AstRecord = Record<string, unknown>;
@@ -438,10 +439,6 @@ function appendObjectProperty(
   return true;
 }
 
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-}
-
 function insertSecondOptionsArgument(
   output: MagicString,
   code: string,
@@ -461,14 +458,14 @@ function insertSecondOptionsArgument(
   // dropping it. The call's close paren is always past the whole argument list.
   const closeParen = callEnd - 1;
 
-  // Decide the separator with a COMMENT-AWARE trailing-comma check: strip
-  // comments from the gap between the first argument and the close paren, then
-  // look for a real trailing comma. A pre-existing trailing comma
-  // (`dynamic(loader,)`) must NOT get a second one (`,,` is a syntax error), and
-  // a comma living inside a comment must NOT be mistaken for a real one (the old
-  // substring scan overwrote — and thus ate — such comments).
-  const between = stripComments(code.slice(firstArgEnd, closeParen)).trimEnd();
-  const separator = between.endsWith(",") ? " " : ", ";
+  // Decide the separator with a COMMENT-AWARE trailing-comma check:
+  // `hasTrailingComma` inspects only the gap between the first argument and the
+  // close paren, ignoring trailing whitespace/comments (and never treating a
+  // `//`/`/*` inside a string literal as a comment). A pre-existing trailing
+  // comma (`dynamic(loader,)`) must NOT get a second one (`,,` is a syntax
+  // error), and a comma living inside a comment must NOT be mistaken for a real
+  // one (the old substring scan overwrote — and thus ate — such comments).
+  const separator = hasTrailingComma(code.slice(firstArgEnd, closeParen)) ? " " : ", ";
   output.appendLeft(closeParen, `${separator}${optionsLiteral}`);
   return true;
 }
@@ -479,11 +476,12 @@ function cleanResolvedId(id: string): string {
     start += 1;
   }
 
-  return id
-    .slice(start)
-    .replace(/^\/@fs\//, "/")
-    .split("?")[0]
-    .replace(/\\/g, "/");
+  return toSlash(
+    id
+      .slice(start)
+      .replace(/^\/@fs\//, "/")
+      .split("?")[0],
+  );
 }
 
 // `toManifestModuleId` runs once per resolved specifier but `root` is constant
@@ -529,11 +527,11 @@ function toManifestModuleId(root: string, resolvedId: string): string | null {
   // diverge (the lookup would miss and the preload would be skipped — no crash).
   const rootCandidates = new Set<string>([root]);
   const realRoot = cachedRootRealpath(root);
-  if (realRoot) rootCandidates.add(realRoot);
+  if (realRoot) rootCandidates.add(toSlash(realRoot));
 
   const moduleCandidates = new Set<string>([cleaned]);
   const realCleaned = tryRealpathSync(cleaned);
-  if (realCleaned) moduleCandidates.add(realCleaned.replace(/\\/g, "/"));
+  if (realCleaned) moduleCandidates.add(toSlash(realCleaned));
 
   for (const rootCandidate of rootCandidates) {
     for (const moduleCandidate of moduleCandidates) {
@@ -672,7 +670,7 @@ export async function transformNextDynamicPreloadMetadata(
 }
 
 export function createDynamicPreloadMetadataPlugin(): Plugin {
-  let root = process.cwd();
+  let root = toSlash(process.cwd());
 
   return {
     name: "vinext:dynamic-preload-metadata",

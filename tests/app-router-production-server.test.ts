@@ -3,9 +3,18 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createBuilder } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR } from "./helpers.js";
+import {
+  getPagesClientAssets,
+  setPagesClientAssets,
+} from "../packages/vinext/src/server/pages-client-assets.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
+
+const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/root-layout-not-found-redirect",
+);
 
 function getStylesheetHrefs(html: string): string[] {
   const hrefs: string[] = [];
@@ -65,6 +74,27 @@ function getInlineStyleText(html: string): string {
   return styles.join("\n");
 }
 
+async function rawHttpRequest(
+  url: URL,
+  options: { method?: string; headers?: Record<string, string> } = {},
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, options, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => {
+        resolve({
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 async function withCountingFetchTarget<T>(
   fn: (targetUrl: string, getRequestCount: () => number) => Promise<T>,
 ): Promise<T> {
@@ -105,12 +135,16 @@ type StartedTextSequenceTarget = {
   url: string;
 };
 
-async function startTextSequenceTarget(): Promise<StartedTextSequenceTarget> {
+async function startTextSequenceTarget(options?: {
+  prefix?: string;
+  recordRequest?: (req: http.IncomingMessage) => void;
+}): Promise<StartedTextSequenceTarget> {
   let responseCount = 0;
-  const upstream = http.createServer((_req, res) => {
+  const upstream = http.createServer((req, res) => {
     responseCount += 1;
+    options?.recordRequest?.(req);
     res.setHeader("content-type", "text/plain; charset=utf-8");
-    res.end(`random-${responseCount}`);
+    res.end(`${options?.prefix ?? "random"}-${responseCount}`);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -139,6 +173,48 @@ async function startTextSequenceTarget(): Promise<StartedTextSequenceTarget> {
   };
 }
 
+async function startDelayedJsonSequenceTarget(delayMs: number): Promise<StartedTextSequenceTarget> {
+  let responseCount = 0;
+  const upstream = http.createServer((req, res) => {
+    responseCount += 1;
+    const current = responseCount;
+    setTimeout(() => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          count: current,
+          method: req.method,
+        }),
+      );
+    }, delayMs);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", () => {
+      upstream.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = upstream.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve, reject) => {
+      upstream.close((error) => (error ? reject(error) : resolve()));
+    });
+    throw new Error("Delayed JSON target did not bind to a TCP port");
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}/data`,
+    close() {
+      return new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+  };
+}
+
 async function waitForCondition(
   condition: () => boolean | Promise<boolean>,
   options?: { intervalMs?: number; timeoutMs?: number },
@@ -158,6 +234,9 @@ describe("App Router Production server (startProdServer)", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
   let server: import("node:http").Server | undefined;
   let baseUrl: string;
+  let appStaticDelayTarget: StartedTextSequenceTarget | undefined;
+  let appStaticDynamicTarget: StartedTextSequenceTarget | undefined;
+  let appStaticRevalidateTarget: StartedTextSequenceTarget | undefined;
   let revalidatePathFetchTarget: StartedTextSequenceTarget | undefined;
 
   function extractRequestId(html: string): string | undefined {
@@ -170,6 +249,10 @@ describe("App Router Production server (startProdServer)", () => {
 
   function extractRandomData(html: string): string | undefined {
     return html.match(/id="random-data"[^>]*>(?:<!--.*?-->)*([^<]+)/)?.[1];
+  }
+
+  function extractTextById(html: string, id: string): string | undefined {
+    return html.match(new RegExp(`id="${id}"[^>]*>(?:<!--.*?-->)*([^<]+)`))?.[1];
   }
 
   async function fetchRandomData(pathname: string, url = baseUrl): Promise<string> {
@@ -200,7 +283,13 @@ describe("App Router Production server (startProdServer)", () => {
   }
 
   beforeAll(async () => {
+    appStaticDelayTarget = await startDelayedJsonSequenceTarget(750);
+    appStaticDynamicTarget = await startTextSequenceTarget({ prefix: "dynamic" });
+    appStaticRevalidateTarget = await startTextSequenceTarget({ prefix: "revalidate" });
     revalidatePathFetchTarget = await startTextSequenceTarget();
+    process.env.TEST_APP_STATIC_DELAY_TARGET = appStaticDelayTarget.url;
+    process.env.TEST_APP_STATIC_DYNAMIC_TARGET = appStaticDynamicTarget.url;
+    process.env.TEST_APP_STATIC_REVALIDATE_TARGET = appStaticRevalidateTarget.url;
     process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET = revalidatePathFetchTarget.url;
 
     try {
@@ -222,9 +311,18 @@ describe("App Router Production server (startProdServer)", () => {
     } catch (error) {
       server?.close();
       try {
-        await revalidatePathFetchTarget.close();
+        await appStaticDelayTarget?.close();
+        await appStaticDynamicTarget?.close();
+        await appStaticRevalidateTarget?.close();
+        await revalidatePathFetchTarget?.close();
       } finally {
+        appStaticDelayTarget = undefined;
+        appStaticDynamicTarget = undefined;
+        appStaticRevalidateTarget = undefined;
         revalidatePathFetchTarget = undefined;
+        delete process.env.TEST_APP_STATIC_DELAY_TARGET;
+        delete process.env.TEST_APP_STATIC_DYNAMIC_TARGET;
+        delete process.env.TEST_APP_STATIC_REVALIDATE_TARGET;
         delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
       }
       throw error;
@@ -233,7 +331,13 @@ describe("App Router Production server (startProdServer)", () => {
 
   afterAll(async () => {
     server?.close();
+    await appStaticDelayTarget?.close();
+    await appStaticDynamicTarget?.close();
+    await appStaticRevalidateTarget?.close();
     await revalidatePathFetchTarget?.close();
+    delete process.env.TEST_APP_STATIC_DELAY_TARGET;
+    delete process.env.TEST_APP_STATIC_DYNAMIC_TARGET;
+    delete process.env.TEST_APP_STATIC_REVALIDATE_TARGET;
     delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
     fs.rmSync(outDir, { recursive: true, force: true });
   });
@@ -245,6 +349,315 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("<script");
+  });
+
+  it("keeps source-page paths and cache observations out of document HTML", async () => {
+    const res = await fetch(`${baseUrl}/features`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("route group");
+    expect(html).not.toContain("__sourcePage");
+    expect(html).not.toContain("/(marketing)/features/page");
+    expect(html).not.toContain("__renderObservation");
+    expect(html).not.toContain("_N_T_/(marketing)");
+  });
+
+  it("bundles a static CommonJS request encoded with String.fromCharCode", async () => {
+    const res = await fetch(`${baseUrl}/char-code-require`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("loaded from a character-code require");
+  });
+
+  it("serves static asset byte ranges from the identity representation", async () => {
+    const html = await (await fetch(`${baseUrl}/`)).text();
+    const href = html.match(/["'](\/_next\/static\/[^"']+\.(?:js|css))["']/)?.[1];
+    if (!href) throw new Error("Expected the production HTML to reference a static asset");
+
+    const assetUrl = new URL(href, baseUrl);
+    const full = await fetch(assetUrl);
+    const fullBody = new Uint8Array(await full.arrayBuffer());
+    expect(fullBody.byteLength).toBeGreaterThan(10);
+    expect(full.headers.get("accept-ranges")).toBe("bytes");
+    expect(full.headers.get("last-modified")).not.toBeNull();
+
+    const partial = await fetch(assetUrl, {
+      headers: { Range: "bytes=2-9", "Accept-Encoding": "br, gzip" },
+    });
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get("content-range")).toBe(`bytes 2-9/${fullBody.byteLength}`);
+    expect(partial.headers.get("content-length")).toBe("8");
+    expect(partial.headers.get("content-encoding")).toBeNull();
+    expect(new Uint8Array(await partial.arrayBuffer())).toEqual(fullBody.subarray(2, 10));
+
+    const hugeEnd = await fetch(assetUrl, {
+      headers: { Range: "bytes=2-9007199254740992" },
+    });
+    expect(hugeEnd.status).toBe(206);
+    expect(hugeEnd.headers.get("content-range")).toBe(
+      `bytes 2-${fullBody.length - 1}/${fullBody.length}`,
+    );
+    expect(new Uint8Array(await hugeEnd.arrayBuffer())).toEqual(fullBody.subarray(2));
+
+    const matchingIfRange = await fetch(assetUrl, {
+      headers: {
+        Range: "bytes=2-9",
+        "If-Range": full.headers.get("last-modified")!,
+      },
+    });
+    expect(matchingIfRange.status).toBe(206);
+    expect(new Uint8Array(await matchingIfRange.arrayBuffer())).toEqual(fullBody.subarray(2, 10));
+
+    const futureIfRange = await fetch(assetUrl, {
+      headers: {
+        Range: "bytes=2-9",
+        "If-Range": "Thu, 01 Jan 2099 00:00:00 GMT",
+      },
+    });
+    expect(futureIfRange.status).toBe(206);
+    expect(futureIfRange.headers.get("content-range")).toBe(`bytes 2-9/${fullBody.byteLength}`);
+    expect(new Uint8Array(await futureIfRange.arrayBuffer())).toEqual(fullBody.subarray(2, 10));
+
+    const invalidIfRange = await fetch(assetUrl, {
+      headers: {
+        Range: "bytes=2-9",
+        "If-Range": "Sun, 31 Feb 2099 00:00:00 GMT",
+      },
+    });
+    expect(invalidIfRange.status).toBe(200);
+    expect(invalidIfRange.headers.get("content-range")).toBeNull();
+    expect(new Uint8Array(await invalidIfRange.arrayBuffer())).toEqual(fullBody);
+
+    const unsatisfiable = await fetch(assetUrl, {
+      headers: { Range: "bytes=9007199254740992-" },
+    });
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers.get("content-range")).toBe(`bytes */${fullBody.byteLength}`);
+
+    const head = await fetch(assetUrl, {
+      method: "HEAD",
+      headers: { Range: "bytes=2-9" },
+    });
+    expect(head.status).toBe(206);
+    expect(head.headers.get("content-range")).toBe(`bytes 2-9/${fullBody.byteLength}`);
+    expect(head.headers.get("content-length")).toBe("8");
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+  });
+
+  it("evaluates static asset preconditions before byte ranges", async () => {
+    const html = await (await fetch(`${baseUrl}/`)).text();
+    const href = html.match(/["'](\/_next\/static\/[^"']+\.(?:js|css))["']/)?.[1];
+    if (!href) throw new Error("Expected the production HTML to reference a static asset");
+
+    const assetUrl = new URL(href, baseUrl);
+    const full = await rawHttpRequest(assetUrl);
+    const etag = full.headers.etag;
+    const lastModified = full.headers["last-modified"];
+    if (!etag || !lastModified) throw new Error("Expected static validators");
+
+    const notModified = await rawHttpRequest(assetUrl, {
+      headers: { "If-None-Match": etag, Range: "bytes=0-2" },
+    });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["content-range"]).toBeUndefined();
+    expect(notModified.body).toHaveLength(0);
+
+    const failed = await rawHttpRequest(assetUrl, {
+      headers: { "If-Match": '"different"', Range: "bytes=0-2" },
+    });
+    expect(failed.status).toBe(412);
+    expect(failed.headers["content-range"]).toBeUndefined();
+    expect(failed.body).toHaveLength(0);
+
+    expect(etag).toMatch(/^W\//);
+    const matchingIfMatch = await rawHttpRequest(assetUrl, {
+      headers: { "If-Match": etag },
+    });
+    expect(matchingIfMatch.status).toBe(200);
+    expect(matchingIfMatch.body).toEqual(full.body);
+
+    const range = await rawHttpRequest(assetUrl, {
+      headers: {
+        "If-Match": "*",
+        "If-Unmodified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
+        Range: "bytes=0-2",
+      },
+    });
+    expect(range.status).toBe(206);
+    expect(range.body).toEqual(full.body.subarray(0, 3));
+
+    const head = await rawHttpRequest(assetUrl, {
+      method: "HEAD",
+      headers: { "If-Modified-Since": lastModified },
+    });
+    expect(head.status).toBe(304);
+    expect(head.body).toHaveLength(0);
+
+    const unsafe = await rawHttpRequest(assetUrl, { method: "POST" });
+    expect(unsafe.status).toBe(405);
+    expect(unsafe.headers.allow).toBe("GET, HEAD");
+
+    const unsafeConditional = await rawHttpRequest(assetUrl, {
+      method: "POST",
+      headers: { "If-None-Match": etag },
+    });
+    expect(unsafeConditional.status).toBe(405);
+    expect(unsafeConditional.headers.allow).toBe("GET, HEAD");
+
+    const forcedRange = await rawHttpRequest(assetUrl, {
+      headers: {
+        "Cache-Control": "no-cache",
+        "If-None-Match": etag,
+        Range: "bytes=0-2",
+      },
+    });
+    expect(forcedRange.status).toBe(206);
+    expect(forcedRange.body).toEqual(full.body.subarray(0, 3));
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  it("contains dynamic = 'error' failures without terminating later App Router requests", async () => {
+    const errorRes = await fetch(
+      `${baseUrl}/nextjs-compat/app-static-dynamic-error/static-bailout-1`,
+    );
+    expect(errorRes.status).toBe(500);
+
+    const forceStaticRes = await fetch(
+      `${baseUrl}/nextjs-compat/app-static-force-static/static-bailout-1`,
+      {
+        headers: {
+          cookie: "app-static-dynamic=hidden",
+          "x-app-static": "hidden",
+        },
+      },
+    );
+    expect(forceStaticRes.status).toBe(200);
+    const forceStaticHtml = await forceStaticRes.text();
+    expect(forceStaticHtml).toContain("/nextjs-compat/app-static-force-static");
+    expect(forceStaticHtml).toContain("static-bailout-1");
+    expect(forceStaticHtml).toContain('<p id="headers">[]</p>');
+    expect(forceStaticHtml).toContain('<p id="cookies">[]</p>');
+
+    const homeRes = await fetch(`${baseUrl}/`);
+    expect(homeRes.status).toBe(200);
+    expect(await homeRes.text()).toContain("Welcome to App Router");
+  });
+
+  // Next.js v16.2.6 only selects NOT_FOUND fallback when dynamicParams is explicitly false:
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/static-paths/app.ts
+  it("matches dynamic = 'error' dynamicParams admission semantics", async () => {
+    for (const route of ["dynamic-error", "dynamic-error-true"]) {
+      const unknown = await fetch(`${baseUrl}/layout-segment-config/${route}/unknown`);
+      expect(unknown.status).toBe(200);
+    }
+
+    const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/known`);
+    expect(known.status).toBe(200);
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/unknown`);
+    expect(unknown.status).toBe(404);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  it("revalidates static App pages that combine route config and fetch revalidate", async () => {
+    const initialRes = await fetch(`${baseUrl}/nextjs-compat/app-static-config-fetch-revalidate`);
+    expect(initialRes.status).toBe(200);
+    const initialHtml = await initialRes.text();
+    const initialDate = extractTextById(initialHtml, "date");
+    const initialData = extractTextById(initialHtml, "random-data");
+    expect(initialDate).toBeTruthy();
+    expect(initialData).toBeTruthy();
+
+    let firstFreshDate = "";
+    let firstFreshData = "";
+    await waitForCondition(
+      async () => {
+        const res = await fetch(`${baseUrl}/nextjs-compat/app-static-config-fetch-revalidate`);
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        firstFreshDate = extractTextById(html, "date") ?? "";
+        firstFreshData = extractTextById(html, "random-data") ?? "";
+        return firstFreshDate !== initialDate && firstFreshData !== initialData;
+      },
+      { timeoutMs: 5000 },
+    );
+
+    await waitForCondition(
+      async () => {
+        const res = await fetch(`${baseUrl}/nextjs-compat/app-static-config-fetch-revalidate`);
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        const nextDate = extractTextById(html, "date");
+        const nextData = extractTextById(html, "random-data");
+        return nextDate !== firstFreshDate && nextData !== firstFreshData;
+      },
+      { timeoutMs: 5000 },
+    );
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  it("does not cache generated static params when the page uses dynamic fetch data", async () => {
+    const pathname = "/nextjs-compat/app-static-gen-params-dynamic/one";
+    const initialRes = await fetch(`${baseUrl}${pathname}`);
+    expect(initialRes.status).toBe(200);
+    const initialHtml = await initialRes.text();
+    expect(initialHtml).toContain("/nextjs-compat/app-static-gen-params-dynamic/[slug]");
+    expect(extractTextById(initialHtml, "slug")).toBe("one");
+    const initialData = extractTextById(initialHtml, "data");
+    expect(initialData).toBeTruthy();
+
+    for (let index = 0; index < 3; index++) {
+      const res = await fetch(`${baseUrl}${pathname}`);
+      expect(res.status).toBe(200);
+      const data = extractTextById(await res.text(), "data");
+      expect(data).toBeTruthy();
+      expect(data).not.toBe(initialData);
+    }
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  it("caches lazy dynamic params for force-static App pages", async () => {
+    const pathname = "/nextjs-compat/app-static-force-static/lazy";
+    const first = await fetch(`${baseUrl}${pathname}`, {
+      headers: {
+        cookie: "app-static-dynamic=hidden",
+        "x-app-static": "hidden",
+      },
+    });
+    expect(first.status).toBe(200);
+    const firstHtml = await first.text();
+    expect(extractTextById(firstHtml, "id")).toBe("lazy");
+    expect(firstHtml).toContain('<p id="headers">[]</p>');
+    expect(firstHtml).toContain('<p id="cookies">[]</p>');
+    const firstNow = extractTextById(firstHtml, "now");
+    expect(firstNow).toBeTruthy();
+
+    const second = await fetch(`${baseUrl}${pathname}`);
+    expect(second.status).toBe(200);
+    expect(extractTextById(await second.text(), "now")).toBe(firstNow);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  it("serves stale edge App page responses without waiting for regeneration", async () => {
+    const pathname = "/nextjs-compat/app-static-stale-cache-serving-edge/app-page";
+    const prime = await fetch(`${baseUrl}${pathname}`);
+    expect(prime.status).toBe(200);
+    await prime.text();
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const started = Date.now();
+    const stale = await fetch(`${baseUrl}${pathname}`);
+    const html = await stale.text();
+    const duration = Date.now() - started;
+    expect(stale.status).toBe(200);
+    expect(duration).toBeLessThan(500);
+    const data = JSON.parse((extractTextById(html, "data") ?? "{}").replace(/&quot;/g, '"'));
+    expect(data.data.count).toBeGreaterThan(0);
   });
 
   // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
@@ -471,11 +884,8 @@ describe("App Router Production server (startProdServer)", () => {
     const fixtureRoot = path.join(tmpDir, "fixture");
     const prefixedOutDir = path.join(fixtureRoot, "dist");
     let assetPrefixServer: import("node:http").Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -557,6 +967,7 @@ describe("App Router Production server (startProdServer)", () => {
       }
     } finally {
       assetPrefixServer?.close();
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);
@@ -575,11 +986,8 @@ describe("App Router Production server (startProdServer)", () => {
     const fixtureRoot = path.join(tmpDir, "fixture");
     const prefixedOutDir = path.join(fixtureRoot, "dist");
     let assetPrefixServer: import("node:http").Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -658,6 +1066,7 @@ describe("App Router Production server (startProdServer)", () => {
       }
     } finally {
       assetPrefixServer?.close();
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);
@@ -707,7 +1116,7 @@ describe("App Router Production server (startProdServer)", () => {
   // (and `revalidate = false`) should produce a stable cached response. Two
   // requests must return identical HTML bytes; the first MISS render writes
   // to the cache and the second is a HIT. This was historically broken
-  // because `resolveAppPageCacheWritePolicy` rejected non-finite revalidate
+  // because `resolveAppPageCacheControl` rejected non-finite revalidate
   // intervals, so indefinite-cache pages re-rendered on every request.
   it("export const revalidate = Infinity: second request is a HIT with identical HTML", async () => {
     const res1 = await fetch(`${baseUrl}/revalidate-infinity-test`);
@@ -743,6 +1152,28 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain('"cookie":null');
   });
 
+  it("lets a concrete Pages data route win a middleware rewrite over an App catch-all", async () => {
+    // Next.js merges Pages and App matchers before applying dynamic-route
+    // precedence, so this concrete Pages route wins over app/docs/[...slug].
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-matcher-managers/default-route-matcher-manager.ts
+    const buildId = fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf8").trim();
+    const res = await fetch(`${baseUrl}/_next/data/${buildId}/pages-data-rewrite-source.json`, {
+      headers: { "x-nextjs-data": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-nextjs-rewrite")).toBe("/docs/pages-data-rewrite-target");
+    expect(res.headers.get("cache-control")).toContain("private");
+    expect(res.headers.getSetCookie()).toEqual([
+      "pages-rewrite-session=middleware; Path=/",
+      "pages-rewrite-session=gssp; Path=/",
+    ]);
+    expect(await res.json()).toEqual({
+      pageProps: { message: "concrete Pages GSSP" },
+      __N_SSP: true,
+    });
+  });
+
   it("serves Pages Router edge API ImageResponse routes in hybrid production", async () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
@@ -774,12 +1205,19 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("content-type")).toContain("text/x-component");
   });
 
-  it("returns HTML for header-only RSC requests at canonical page URLs", async () => {
+  it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
     const res = await fetch(`${baseUrl}/about`, {
       headers: { Accept: "text/x-component", RSC: "1" },
+      redirect: "manual",
     });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/about?_rsc");
+
+    const followedRes = await fetch(`${baseUrl}${res.headers.get("location")}`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(followedRes.status).toBe(200);
+    expect(followedRes.headers.get("content-type")).toContain("text/x-component");
   });
 
   it("serves route handlers (GET /api/hello)", async () => {
@@ -789,9 +1227,163 @@ describe("App Router Production server (startProdServer)", () => {
     expect(json).toHaveProperty("message");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  it("lets route handlers synchronously catch updateTag errors without crashing", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/update-tag-error`);
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("updateTag can only be called from within a Server Action"),
+    });
+
+    const healthRes = await fetch(`${baseUrl}/api/hello`);
+    expect(healthRes.status).toBe(200);
+  });
+
+  it("runs an exact API middleware matcher for a trailing-slash route handler request", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
+  });
+
   it("returns 404 for nonexistent routes", async () => {
     const res = await fetch(`${baseUrl}/no-such-page`);
     expect(res.status).toBe(404);
+  });
+
+  // Faithfully combines two Next.js contracts:
+  // - route misses render the root not-found page inside the root layout:
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/not-found/basic/index.test.ts
+  // - redirect() thrown during an RSC document request becomes a 307 response:
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  it("handles route-miss root layout redirects in production", async () => {
+    const fixtureRoot = await createIsolatedFixture(
+      ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR,
+      "vinext-root-layout-not-found-redirect-",
+    );
+    const redirectOutDir = path.join(fixtureRoot, "dist");
+    let redirectServer: http.Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
+    const prodGlobalKeys = [
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+    ];
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
+
+    try {
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const started = await startProdServer({
+        port: 0,
+        outDir: redirectOutDir,
+        noCompression: true,
+      });
+      redirectServer = started.server;
+
+      const address = redirectServer.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Production redirect fixture did not bind to a TCP port");
+      }
+      const redirectBaseUrl = `http://127.0.0.1:${address.port}`;
+
+      const notFoundRes = await fetch(`${redirectBaseUrl}/random-content`);
+      expect(notFoundRes.status).toBe(404);
+      const html = await notFoundRes.text();
+      expect(html).toContain("Root Not Found");
+      expect(html).toContain('id="layout-nav"');
+
+      const redirectRes = await fetch(`${redirectBaseUrl}/random-content`, {
+        redirect: "manual",
+        headers: {
+          "x-vinext-root-layout-redirect": "1",
+        },
+      });
+      expect(redirectRes.status).toBe(307);
+      const location = redirectRes.headers.get("location");
+      expect(location).toBeTruthy();
+      expect(new URL(location!, redirectBaseUrl).pathname).toBe("/result");
+
+      // RSC navigations encode the redirect in the flight body (200), not a
+      // 307 status line — mirrors the dev-server RSC test and pins the built
+      // production path through the same boundary redirect-flight builder.
+      // vinext routes RSC by the `.rsc` suffix (app-rsc-request-normalization).
+      const rscRedirectRes = await fetch(`${redirectBaseUrl}/random-content.rsc`, {
+        redirect: "manual",
+        headers: {
+          "x-vinext-root-layout-redirect": "1",
+          Accept: "text/x-component",
+        },
+      });
+      expect(rscRedirectRes.status).toBe(200);
+      expect(rscRedirectRes.headers.get("content-type")).toContain("text/x-component");
+      expect(rscRedirectRes.headers.get("x-vinext-rsc-redirect")).toBe("/result");
+      const rscBody = await rscRedirectRes.text();
+      expect(rscBody).toContain("NEXT_REDIRECT");
+      expect(rscBody).toContain("/result");
+
+      // The RSC drain applies to matched-route HTTP-access fallbacks too, not
+      // only route misses. `/gated` is a matched route that calls notFound();
+      // its route-level not-found boundary (app/gated/not-found.tsx) redirects
+      // on its own header, so it renders during the fallback (not the layout
+      // probe) and its async redirect is caught by the boundary drain. With the
+      // trigger → 200 flight redirect; without it → a normal 404 flight
+      // (proving the buffering does not drop or corrupt the matched-route
+      // payload).
+      const matchedRedirectRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
+        redirect: "manual",
+        headers: {
+          "x-vinext-gated-notfound-redirect": "1",
+          Accept: "text/x-component",
+        },
+      });
+      expect(matchedRedirectRes.status).toBe(200);
+      expect(matchedRedirectRes.headers.get("x-vinext-rsc-redirect")).toBe("/result");
+      expect(await matchedRedirectRes.text()).toContain("NEXT_REDIRECT");
+
+      const matchedNotFoundRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
+        redirect: "manual",
+        headers: { Accept: "text/x-component" },
+      });
+      expect(matchedNotFoundRes.status).toBe(404);
+      expect(matchedNotFoundRes.headers.get("x-vinext-rsc-redirect")).toBeNull();
+      expect(await matchedNotFoundRes.text()).toContain("Gated Not Found");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        if (!redirectServer) {
+          resolve();
+          return;
+        }
+        redirectServer.close((error) => (error ? reject(error) : resolve()));
+      });
+      setPagesClientAssets(previousPagesClientAssets);
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
@@ -851,6 +1443,14 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("image/svg+xml");
     expect(await res.text()).toContain("vinext");
+  });
+
+  it("returns 405 for unsupported methods on existing public files", async () => {
+    const res = await fetch(`${baseUrl}/logo/logo.svg`, { method: "POST" });
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET, HEAD");
+    expect(await res.text()).toBe("Method Not Allowed");
   });
 
   it("serves public files under basePath and 404s without it", async () => {
@@ -935,6 +1535,142 @@ describe("App Router Production server (startProdServer)", () => {
     // Verify we can read the body as text (proves streaming works)
     const html = await res.text();
     expect(html.length).toBeGreaterThan(0);
+  });
+
+  it("flushes the document shell before slow generated metadata resolves", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const response = await fetch(`${baseUrl}/metadata-streaming-timing`, {
+      headers: { "user-agent": "HeadlessChrome" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).not.toBeNull();
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let html = "";
+    let shellTime: number | null = null;
+    let metadataTime: number | null = null;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      html += decoder.decode(value, { stream: true });
+      const now = performance.now();
+      if (shellTime === null && html.includes("metadata-streaming-shell")) {
+        shellTime = now;
+      }
+      if (metadataTime === null && html.includes("Delayed streaming metadata")) {
+        metadataTime = now;
+      }
+    }
+    html += decoder.decode();
+
+    expect(shellTime).not.toBeNull();
+    expect(metadataTime).not.toBeNull();
+    expect(metadataTime! - shellTime!).toBeGreaterThan(600);
+    expect(html).toContain("<title>Delayed streaming metadata</title>");
+    expect(html).toContain('data-testid="metadata-streaming-shell"');
+  });
+
+  it("flushes the RSC navigation shell before slow generated metadata resolves", async () => {
+    // Ported from Next.js: test/e2e/app-dir/instant-validation/instant-validation.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/instant-validation/instant-validation.test.ts
+    const response = await fetch(`${baseUrl}/metadata-streaming-timing.rsc`, {
+      headers: { Accept: "text/x-component", RSC: "1", "user-agent": "HeadlessChrome" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/x-component");
+    expect(response.body).not.toBeNull();
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let flight = "";
+    let shellTime: number | null = null;
+    let metadataTime: number | null = null;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      flight += decoder.decode(value, { stream: true });
+      const now = performance.now();
+      if (shellTime === null && flight.includes("metadata-streaming-shell")) {
+        shellTime = now;
+      }
+      if (metadataTime === null && flight.includes("Delayed streaming metadata")) {
+        metadataTime = now;
+      }
+    }
+    flight += decoder.decode();
+
+    expect(shellTime).not.toBeNull();
+    expect(metadataTime).not.toBeNull();
+    expect(metadataTime! - shellTime!).toBeGreaterThan(600);
+  });
+
+  it("carries a delayed generateMetadata redirect in the streamed RSC payload", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts#L76-L87
+    //
+    // RSC navigation starts streaming before generated metadata settles, so a
+    // late redirect remains an HTTP 200 and travels in the Flight error digest.
+    const response = await fetch(`${baseUrl}/metadata-redirect-test.rsc`, {
+      headers: { Accept: "text/x-component", RSC: "1", "user-agent": "HeadlessChrome" },
+      redirect: "manual",
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/x-component");
+
+    const flight = await response.text();
+    expect(flight).toContain("NEXT_REDIRECT;;%2Fabout");
+  });
+
+  it("renders not-found metadata when deferred generateMetadata calls notFound", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const response = await fetch(`${baseUrl}/metadata-streaming-not-found`, {
+      headers: { "user-agent": "HeadlessChrome" },
+    });
+    expect(response.status).toBe(200);
+
+    const html = await response.text();
+    expect(html.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>Streamed not-found metadata</title>");
+
+    const rscResponse = await fetch(`${baseUrl}/metadata-streaming-not-found.rsc`, {
+      headers: { Accept: "text/x-component", RSC: "1", "user-agent": "HeadlessChrome" },
+    });
+    expect(rscResponse.status).toBe(200);
+    const flight = await rscResponse.text();
+    expect(flight).toContain("Streamed not-found metadata");
+    expect(flight).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+  });
+
+  it("omits searchParams from deferred not-found convention metadata", async () => {
+    // Next.js puts page.tsx in a synthetic __PAGE__ loader-tree child, so the
+    // containing not-found convention receives layout-style { params } props.
+    // Verified against Next.js 16.2.7 production behavior.
+    const response = await fetch(
+      `${baseUrl}/metadata-streaming-not-found-search-params?source=search`,
+      { headers: { "user-agent": "HeadlessChrome" } },
+    );
+    expect(response.status).toBe(200);
+
+    const html = await response.text();
+    expect(html).toContain("<title>Streamed not-found search=false source=missing</title>");
+  });
+
+  it("uses an active slot's local not-found metadata convention", async () => {
+    // Ported from Next.js loader-tree error-convention traversal:
+    // packages/next/src/lib/metadata/resolve-metadata.ts
+    const response = await fetch(`${baseUrl}/metadata-streaming-slot-not-found`, {
+      headers: { "user-agent": "HeadlessChrome" },
+    });
+    expect(response.status).toBe(200);
+
+    const html = await response.text();
+    expect(html).toContain("<title>Slot-local not-found metadata</title>");
+    expect(html).not.toContain("<title>Primary not-found metadata</title>");
   });
 
   it("reports server component render errors via instrumentation in production", async () => {
@@ -1055,11 +1791,8 @@ describe("App Router Production server (startProdServer)", () => {
       const fixtureRoot = path.join(tmpDir, "fixture");
       const ccOutDir = path.join(fixtureRoot, "dist");
       let ccServer: import("node:http").Server | undefined;
+      const previousPagesClientAssets = getPagesClientAssets();
       const prodGlobalKeys = [
-        "__VINEXT_CLIENT_ENTRY__",
-        "__VINEXT_DYNAMIC_PRELOADS__",
-        "__VINEXT_LAZY_CHUNKS__",
-        "__VINEXT_SSR_MANIFEST__",
         "__vite_rsc_client_require__",
         "__vite_rsc_require__",
         "__vite_rsc_server_require__",
@@ -1132,6 +1865,7 @@ describe("App Router Production server (startProdServer)", () => {
       } finally {
         delete process.env.__NEXT_CACHE_COMPONENTS;
         ccServer?.close();
+        setPagesClientAssets(previousPagesClientAssets);
         for (const [key, previous] of previousGlobals) {
           if (previous.exists) {
             Reflect.set(globalThis, key, previous.value);
@@ -1602,14 +2336,51 @@ describe("App Router Production server (startProdServer)", () => {
     expect(text).not.toContain("Server action not found");
     expect(text).toContain("echo:world");
   });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/actions/app-action-size-limit-invalid.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/actions/app-action-size-limit-invalid.test.ts
+  it("returns a Flight error for a streamed server action body overflow", async () => {
+    const html = await (await fetch(`${baseUrl}/nextjs-compat/action-node-mw`)).text();
+    const refValue = html.match(/name="\$ACTION_[^"]*:0"\s+value="([^"]+)"/)?.[1];
+    expect(refValue).toBeDefined();
+    const decoded = refValue!.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+    const actionId = JSON.parse(decoded).id as string;
+
+    const oversizedPayload = JSON.stringify(["x".repeat(2 * 1024 * 1024)]);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoded = new TextEncoder().encode(oversizedPayload);
+        for (let offset = 0; offset < encoded.byteLength; offset += 64 * 1024) {
+          controller.enqueue(encoded.subarray(offset, offset + 64 * 1024));
+        }
+        controller.close();
+      },
+    });
+
+    const res = await fetch(`${baseUrl}/nextjs-compat/action-node-mw.rsc`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": actionId,
+      },
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const text = await res.text();
+
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(text).not.toContain("echo:");
+  });
 });
 
 describe("App Router production server entry module identity", () => {
   // Regression test for cloudflare/vinext#1923.
   //
-  // Chunks emitted by default Vite builds — Rollup on Vite 7 and Rolldown on
-  // Vite 8 — import the server entry back by its bare path: modules shared
-  // between the entry's static graph (middleware, instrumentation) and lazy
+  // Chunks emitted by default Vite/Rolldown builds import the server entry
+  // back by its bare path: modules shared between the entry's static graph
+  // (middleware, instrumentation) and lazy
   // route chunks are hoisted into the entry chunk, and the lazy chunks then
   // import them via "../../index.js" (e.g. a plain `vite@8.0.16` SSR build
   // of an entry-shared module emits `import { t as shared } from
@@ -1631,11 +2402,8 @@ describe("App Router production server entry module identity", () => {
     const outDir = path.join(fixtureRoot, "dist");
     let server: import("node:http").Server | undefined;
     const EVAL_COUNT_KEY = "__vinext_test_entry_evaluations__";
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -1728,6 +2496,7 @@ describe("App Router production server entry module identity", () => {
     } finally {
       server?.close();
       Reflect.deleteProperty(globalThis, EVAL_COUNT_KEY);
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);

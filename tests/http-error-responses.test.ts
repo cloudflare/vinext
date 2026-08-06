@@ -10,7 +10,7 @@
  *   - packages/next/src/pages/_error.tsx L7  (`404: 'This page could not be found'`)
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   notFoundResponse,
   badRequestResponse,

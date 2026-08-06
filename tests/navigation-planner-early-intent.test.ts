@@ -5,13 +5,13 @@ import {
 } from "../packages/vinext/src/server/navigation-trace.js";
 import {
   navigationPlanner,
-  type EarlyNavigationIntentDecisionV0,
-  type EarlyNavigationIntentFactsV0,
+  type EarlyNavigationIntentDecision,
+  type EarlyNavigationIntentFacts,
 } from "../packages/vinext/src/server/navigation-planner.js";
 
 function createFacts(
-  overrides: Partial<EarlyNavigationIntentFactsV0> = {},
-): EarlyNavigationIntentFactsV0 {
+  overrides: Partial<EarlyNavigationIntentFacts> = {},
+): EarlyNavigationIntentFacts {
   return {
     basePath: "",
     currentHref: "https://example.com/docs?q=1",
@@ -23,13 +23,13 @@ function createFacts(
 }
 
 function classify(
-  overrides: Partial<EarlyNavigationIntentFactsV0> = {},
-): EarlyNavigationIntentDecisionV0 {
+  overrides: Partial<EarlyNavigationIntentFacts> = {},
+): EarlyNavigationIntentDecision {
   return navigationPlanner.classifyEarlyNavigationIntent(createFacts(overrides));
 }
 
 function expectSingleTraceEntry(
-  decision: EarlyNavigationIntentDecisionV0,
+  decision: EarlyNavigationIntentDecision,
   code: string,
   fields: Record<string, string | number | boolean | null>,
 ): void {

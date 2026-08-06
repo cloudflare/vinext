@@ -10,8 +10,28 @@ import { isUnknownRecord } from "../utils/record.js";
 
 export type VinextLinkPrefetchRoute = {
   canPrefetchLoadingShell: boolean;
+  documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
+};
+
+/**
+ * Pages Router route pattern exposed to the client so the App Router's
+ * navigation runtime can decide whether a soft-navigated URL should be
+ * handled by Pages (hard nav) or App (RSC). Mirrors the public shape of
+ * `VinextLinkPrefetchRoute` so a single trie matcher handles both.
+ *
+ * `canPrefetchLoadingShell` is always `false` for Pages routes — Pages
+ * does not have a separate loading boundary and its prefetch surface is
+ * `_next/data/<buildId>/<page>.json`.
+ */
+export type VinextPagesLinkPrefetchRoute = {
+  canPrefetchLoadingShell: false;
+  documentOnly?: boolean;
+  isDynamic: boolean;
+  patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
 };
 
 export type VinextNextData = {
@@ -25,6 +45,8 @@ export type VinextNextData = {
     hasMiddleware?: boolean;
     /** True when build-time rewrites can affect the initial Pages Router ready state. */
     hasRewrites?: boolean;
+    /** Server-resolved Pages route URL used to hydrate fallback shells behind rewrites. */
+    routeUrl?: string;
   };
 } & NEXT_DATA;
 
@@ -37,6 +59,12 @@ type VinextLocaleGlobalTarget = {
 };
 
 export function extractVinextNextDataJson(html: string): string | null {
+  const canonical =
+    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>([\s\S]*?)<\/script>/.exec(
+      html,
+    );
+  if (canonical) return canonical[1];
+
   const assignment = /<script(?:\s[^>]*)?>\s*window\.__NEXT_DATA__\s*=\s*/.exec(html);
   if (!assignment || assignment.index === undefined) return null;
 

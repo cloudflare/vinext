@@ -1,4 +1,4 @@
-import path from "node:path";
+import path from "pathslash";
 import { fileURLToPath } from "node:url";
 
 /**

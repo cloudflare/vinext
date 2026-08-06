@@ -60,6 +60,51 @@ test.describe("Pages Router Production Build", () => {
     expect(content).toContain("hello-world");
   });
 
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+  test("window.next.router.sdc retains prefetched SSG data", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+
+    await page.evaluate(async () => {
+      const w = window as unknown as {
+        next: { router: { prefetch: (url: string) => Promise<void> } };
+      };
+      await w.next.router.prefetch("/blog/hello-world");
+    });
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const w = window as unknown as {
+            next: { router: { sdc: Record<string, Promise<Response>> } };
+          };
+          return Object.keys(w.next.router.sdc).filter((key) =>
+            key.includes("/blog/hello-world.json"),
+          ).length;
+        }),
+      )
+      .toBe(1);
+  });
+
+  test("navigates to a seeded optional catch-all root", async ({ page }) => {
+    // Ported from Next.js: test/e2e/prerender.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+    await page.goto(`${BASE}/`);
+    await page.evaluate(() => {
+      (window as typeof window & { didTransition?: number }).didTransition = 1;
+    });
+
+    await page.locator("#optional-root").click();
+
+    await expect(page.locator("#home")).toBeVisible();
+    await expect(page.locator("#catchall")).toHaveText("Catch all: []");
+    expect(
+      await page.evaluate(
+        () => (window as typeof window & { didTransition?: number }).didTransition,
+      ),
+    ).toBe(1);
+  });
+
   test("import.meta.url uses source file URLs on the server and browser", async ({
     page,
     request,
@@ -101,6 +146,16 @@ test.describe("Pages Router Production Build", () => {
     expect(jsRes.status()).toBe(200);
     expect(jsRes.headers()["content-type"]).toContain("javascript");
     expect(jsRes.headers()["cache-control"]).toContain("immutable");
+
+    const unsupported = await request.post(`${BASE}${jsPath}`);
+    expect(unsupported.status()).toBe(405);
+    expect(unsupported.headers()["allow"]).toBe("GET, HEAD");
+
+    const unsupportedConditional = await request.post(`${BASE}${jsPath}`, {
+      headers: { "If-None-Match": jsRes.headers()["etag"] ?? "*" },
+    });
+    expect(unsupportedConditional.status()).toBe(405);
+    expect(unsupportedConditional.headers()["allow"]).toBe("GET, HEAD");
   });
 
   test("large responses include compression headers", async ({ request }) => {

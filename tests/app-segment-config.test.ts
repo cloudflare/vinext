@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   isEdgeRuntime,
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
+  resolveAppRouteHandlerFetchCacheMode,
 } from "../packages/vinext/src/server/app-segment-config.js";
 
 describe("resolveAppPageSegmentConfig", () => {
@@ -37,9 +38,24 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "force-dynamic",
-      fetchCache: "force-no-store",
       revalidateSeconds: 0,
     });
+  });
+
+  it("keeps ancestor force-dynamic sticky across child dynamic overrides", () => {
+    // Next.js create-component-tree.tsx sets workStore.forceDynamic and never
+    // clears it when a deeper segment selects auto/error/force-static.
+    for (const childDynamic of ["auto", "error", "force-static"] as const) {
+      expect(
+        resolveAppPageSegmentConfig({
+          layouts: [{ dynamic: "force-dynamic" }],
+          page: { dynamic: childDynamic },
+        }),
+      ).toEqual({
+        dynamicConfig: "force-dynamic",
+        revalidateSeconds: 0,
+      });
+    }
   });
 
   it("derives fetchCache from static-only dynamic modes", () => {
@@ -50,7 +66,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "only-cache",
       revalidateSeconds: null,
     });
@@ -64,7 +79,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "default-cache",
       revalidateSeconds: null,
     });
@@ -117,12 +131,11 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "force-static",
-      dynamicParamsConfig: false,
       revalidateSeconds: null,
     });
   });
 
-  it("defaults dynamicParams to false for static-only dynamic modes", () => {
+  it("keeps implicit dynamicParams separate from static render modes", () => {
     expect(
       resolveAppPageSegmentConfig({
         layouts: [{ dynamic: "error" }],
@@ -130,7 +143,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "only-cache",
       revalidateSeconds: null,
     });
@@ -142,7 +154,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "force-static",
-      dynamicParamsConfig: false,
       revalidateSeconds: null,
     });
   });
@@ -190,6 +201,43 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toEqual({
       dynamicParamsConfig: false,
       revalidateSeconds: null,
+    });
+  });
+
+  it("allows an ungenerated dynamic child below an ancestor dynamicParams=false segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
+        layoutTreePositions: [1, 2],
+        page: {},
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBeUndefined();
+  });
+
+  it("enforces ancestor dynamicParams=false when the dynamic child generates params", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
+        layoutTreePositions: [1, 2],
+        page: { generateStaticParams() {} },
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
+  it("ignores route groups when assigning layout config to a dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{}, { dynamicParams: false, generateStaticParams: () => [{ region: "SE" }] }],
+        layoutTreePositions: [0, 2],
+        page: { dynamic: "force-dynamic" },
+        routeSegments: ["[region]", "(default)", "static-prefetch"],
+      }),
+    ).toEqual({
+      dynamicConfig: "force-dynamic",
+      dynamicParamsConfig: false,
+      revalidateSeconds: 0,
     });
   });
 
@@ -252,6 +300,158 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("includes active parallel route segments in effective route config", () => {
+    // Ported from Next.js: packages/next/src/build/segment-config/app/app-segments.ts
+    // collectAppPageSegments() breadth-first traverses every parallel route before reduceAppConfig().
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ revalidate: 300 }],
+        page: { dynamic: "auto", runtime: "nodejs" },
+        parallelSegments: [
+          { fetchCache: "only-cache", revalidate: 60, runtime: "edge" },
+          { dynamic: "force-dynamic", revalidate: 120 },
+        ],
+      }),
+    ).toEqual({
+      dynamicConfig: "force-dynamic",
+      fetchCache: "only-cache",
+      revalidateSeconds: 0,
+      runtime: "nodejs",
+    });
+  });
+
+  it("keeps dynamicParams=false active when a parallel layout generates the leaf param", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams: () => [{ locale: "en" }] }],
+        layoutTreePositions: [1],
+        parallelBranches: [
+          {
+            configLayouts: [{ generateStaticParams: () => [{ slug: "static-123" }] }],
+            configLayoutTreePositions: [2],
+            routeSegments: ["stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
+  it("ignores parallel generateStaticParams owned by a parent dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams: () => [{ locale: "en" }] }],
+        layoutTreePositions: [1],
+        parallelBranches: [
+          {
+            configLayouts: [{ generateStaticParams: () => [{ locale: "en" }] }],
+            configLayoutTreePositions: [1],
+            routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBeUndefined();
+  });
+
+  it("ignores parallel dynamicParams=false owned by a parent dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        parallelBranches: [
+          {
+            configLayouts: [{ dynamicParams: false }],
+            configLayoutTreePositions: [1],
+            routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBeUndefined();
+  });
+
+  it("enforces parallel dynamicParams=false owned by the leaf dynamic segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        parallelBranches: [
+          {
+            configLayouts: [{ dynamicParams: false }],
+            configLayoutTreePositions: [2],
+            routeSegments: ["stories", "[slug]"],
+          },
+        ],
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
+  it("uses slot-only route config values", () => {
+    // Next.js collectAppPageSegments() includes parallel route layouts/pages
+    // before reduceAppConfig() selects the route-level config.
+    expect(
+      resolveAppPageSegmentConfig({
+        parallelSegments: [
+          {
+            dynamic: "error",
+            dynamicParams: false,
+            fetchCache: "default-cache",
+            runtime: "edge",
+          },
+        ],
+      }),
+    ).toEqual({
+      dynamicConfig: "error",
+      dynamicParamsConfig: false,
+      fetchCache: "default-cache",
+      revalidateSeconds: null,
+      runtime: "edge",
+    });
+  });
+
+  it("does not invent last-wins ordering for ambiguous parallel branch configs", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { dynamic: "error", runtime: "nodejs" },
+        parallelSegments: [{ dynamic: "force-static", runtime: "edge" }],
+      }),
+    ).toEqual({
+      dynamicConfig: "error",
+      fetchCache: "only-cache",
+      revalidateSeconds: null,
+      runtime: "nodejs",
+    });
+
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { fetchCache: "default-cache" },
+        parallelSegments: [{ fetchCache: "default-no-store" }],
+      }).fetchCache,
+    ).toBe("default-cache");
+  });
+
+  it("rejects fetchCache conflicts from active parallel route segments", () => {
+    expect(() =>
+      resolveAppPageSegmentConfig({
+        page: { fetchCache: "only-cache" },
+        parallelSegments: [{ fetchCache: "only-no-store" }],
+      }),
+    ).toThrow(/incompatible fetchCache/);
+  });
+
+  it("lets force fetchCache modes override opposing only modes", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ fetchCache: "only-cache" }],
+        page: { fetchCache: "force-no-store" },
+      }).fetchCache,
+    ).toBe("force-no-store");
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { fetchCache: "only-no-store" },
+        parallelSegments: [{ fetchCache: "force-cache" }],
+      }).fetchCache,
+    ).toBe("force-cache");
+  });
+
   it("resolves just the fetchCache mode for route-specific render scopes", () => {
     expect(
       resolveAppPageFetchCacheMode({
@@ -284,6 +484,21 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toBe("edge");
 
     expect(resolveAppPageSegmentConfig({ page: {} }).runtime).toBeUndefined();
+  });
+});
+
+describe("resolveAppRouteHandlerFetchCacheMode", () => {
+  it("returns the handler module's fetchCache export when valid", () => {
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: "force-cache" })).toBe("force-cache");
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: "default-no-store" })).toBe(
+      "default-no-store",
+    );
+  });
+
+  it("returns null for missing or invalid fetchCache values", () => {
+    expect(resolveAppRouteHandlerFetchCacheMode({})).toBeNull();
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: "bogus" })).toBeNull();
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: 42 })).toBeNull();
   });
 });
 

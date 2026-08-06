@@ -35,10 +35,9 @@
  * Issue: https://github.com/cloudflare/vinext/issues/1526
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
-import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
 import { stripBasePath, removeTrailingSlash } from "../../utils/base-path.js";
-
-const appRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
+import { getLocalePathPrefix } from "../../utils/domain-locale.js";
+import { getPagesRouterComponentsMap } from "./pages-router-components.js";
 
 declare global {
   // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
@@ -47,34 +46,7 @@ declare global {
   }
 }
 
-/**
- * Pages Router `components` map shape. Next.js types this loosely (route
- * pattern → `PrivateRouteInfo`), but for the App Router-detected case it
- * stores `{ __appRouter: true }` as a marker (see Next.js source link above).
- * Vinext only writes the marker variant; reads are by test code that checks
- * for `__appRouter: true`.
- */
-type PagesRouterComponentsMap = Record<string, { __appRouter: true } | Record<string, unknown>>;
-
-const _COMPONENTS_KEY = Symbol.for("vinext.pagesRouter.components");
-type _GlobalWithComponents = typeof globalThis & {
-  [_COMPONENTS_KEY]?: PagesRouterComponentsMap;
-};
-
-/**
- * Get-or-create the Pages Router `components` map. Returns the same object
- * on every call so `router.components` and `window.next.router.components`
- * have referential identity.
- */
-export function getPagesRouterComponentsMap(): PagesRouterComponentsMap {
-  const globalState = globalThis as _GlobalWithComponents;
-  let components = globalState[_COMPONENTS_KEY];
-  if (!components) {
-    components = {};
-    globalState[_COMPONENTS_KEY] = components;
-  }
-  return components;
-}
+export { getPagesRouterComponentsMap } from "./pages-router-components.js";
 
 /**
  * Resolve a prefetch href to a same-origin pathname (basePath-stripped),
@@ -91,23 +63,12 @@ function resolveSameOriginPathname(href: string, basePath: string): string | nul
     return null;
   }
   if (url.origin !== window.location.origin) return null;
-  return stripBasePath(url.pathname, basePath);
-}
+  const pathname = stripBasePath(url.pathname, basePath);
+  const locale = getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__);
+  if (!locale) return pathname;
 
-/**
- * Returns true when the prefetch href matches any route in the App Router
- * prefetch manifest (static or dynamic). Returns false when the manifest is
- * absent (Pages-Router-only build), the URL is external, or no route matches.
- */
-function matchesAppRoute(href: string, basePath: string): boolean {
-  if (typeof window === "undefined") return false;
-  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  if (!routes || routes.length === 0) return false;
-
-  const pathname = resolveSameOriginPathname(href, basePath);
-  if (pathname === null) return false;
-
-  return matchRouteWithTrie(pathname, routes, appRouteTrieCache) !== null;
+  const localePrefixLength = locale.length + 1;
+  return pathname.length === localePrefixLength ? "/" : pathname.slice(localePrefixLength);
 }
 
 /**
@@ -122,9 +83,14 @@ function matchesAppRoute(href: string, basePath: string): boolean {
  * first (e.g. `link.tsx` normalises to match `trailingSlash` config before
  * calling, while `router.prefetch()` passes the raw user-supplied URL).
  */
-export function markAppRouteDetectedOnPrefetch(href: string, basePath: string): void {
+export async function markAppRouteDetectedOnPrefetch(
+  href: string,
+  basePath: string,
+): Promise<void> {
   if (typeof window === "undefined") return;
-  if (!matchesAppRoute(href, basePath)) return;
+  if (!window.__VINEXT_LINK_PREFETCH_ROUTES__?.length) return;
+  const { resolveHybridClientRouteOwner } = await import("./hybrid-client-route-owner.js");
+  if (resolveHybridClientRouteOwner(href, basePath) !== "app") return;
 
   const rawPathname = resolveSameOriginPathname(href, basePath);
   if (rawPathname === null) return;

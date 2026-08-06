@@ -22,10 +22,17 @@ const defaultFetchMockImplementation = async (
   requestCount++;
   const url =
     typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-  return new Response(JSON.stringify({ url, count: requestCount }), {
+  const response = new Response(JSON.stringify({ url, count: requestCount }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+  Object.defineProperty(response, "url", {
+    value: url,
+    configurable: true,
+    enumerable: true,
+    writable: false,
+  });
+  return response;
 };
 const fetchMock = vi.fn(defaultFetchMockImplementation);
 
@@ -38,7 +45,10 @@ const {
   runWithFetchCache,
   getCollectedFetchTags,
   setCurrentFetchCacheMode,
+  setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
+  setRefreshStaleFetchesInForeground,
+  runWithFetchDedupe,
   getOriginalFetch,
   _resetPendingRefetches,
   consumeDynamicFetchObservations,
@@ -46,6 +56,7 @@ const {
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
 const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
+const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
@@ -67,11 +78,13 @@ describe("fetch cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
     // Clear in-flight refetch dedup state
     _resetPendingRefetches();
+    consumeDynamicUsage();
     // Install the patched fetch
     cleanup = withFetchCache();
   });
 
   afterEach(() => {
+    consumeDynamicUsage();
     cleanup?.();
     cleanup = null;
   });
@@ -106,6 +119,75 @@ describe("fetch cache shim", () => {
     });
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Cached
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves Response.url on cached fetch responses", async () => {
+    const url = "https://api.example.com/force-url";
+
+    await fetch(url, {
+      cache: "force-cache",
+    });
+    const cached = await fetch(url, {
+      cache: "force-cache",
+    });
+
+    expect(cached.url).toBe(url);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves actual response URL when it differs from request URL", async () => {
+    const requestUrl = "https://api.example.com/redirect-request";
+    const responseUrl = "https://api.example.com/redirect-actual";
+
+    fetchMock.mockImplementationOnce(async () => {
+      requestCount++;
+      const response = new Response(JSON.stringify({ url: responseUrl, count: requestCount }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+      Object.defineProperty(response, "url", {
+        value: responseUrl,
+        configurable: true,
+        enumerable: true,
+        writable: false,
+      });
+      return response;
+    });
+
+    const res1 = await fetch(requestUrl, {
+      cache: "force-cache",
+    });
+    expect(res1.url).toBe(responseUrl);
+
+    const cached = await fetch(requestUrl, {
+      cache: "force-cache",
+    });
+    expect(cached.url).toBe(responseUrl);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the request URL when a cached entry lacks url", async () => {
+    const url = "https://api.example.com/legacy-no-url";
+
+    await fetch(url, {
+      cache: "force-cache",
+    });
+
+    // Simulate a legacy/third-party cache writer (e.g. an external KV backend)
+    // that never populated `data.url` on the serialized entry.
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      delete entry.value.data.url;
+    }
+
+    startNewFetchCacheScope();
+    const cached = await fetch(url, {
+      cache: "force-cache",
+    });
+
+    expect(cached.url).toBe(url);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -169,6 +251,36 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // revalidate: 0 is an explicit opt-out — default-cache must not override it to force-cache
+  it("segment fetchCache default-cache does not override next.revalidate: 0", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    await fetch("https://api.example.com/segment-default-cache-revalidate-zero", {
+      next: { revalidate: 0 },
+    });
+    // revalidate: 0 bypasses cache entirely (no persistent cache entry)
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // revalidate: false is an explicit opt-out — default-no-store must not override it
+  it("segment fetchCache default-no-store does not override next.revalidate: false", async () => {
+    setCurrentFetchCacheMode("default-no-store");
+
+    const res1 = await fetch("https://api.example.com/segment-default-no-store-revalidate-false", {
+      next: { revalidate: false },
+    });
+    const data1 = await res1.json();
+    // revalidate: false → cache indefinitely (1 year), so second fetch hits cache
+    const res2 = await fetch("https://api.example.com/segment-default-no-store-revalidate-false", {
+      next: { revalidate: false },
+    });
+    const data2 = await res2.json();
+    expect(data1.count).toBe(1);
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("segment fetchCache default-no-store bypasses cache with metadata-only next options", async () => {
     setCurrentFetchCacheMode("default-no-store");
 
@@ -215,6 +327,166 @@ describe("fetch cache shim", () => {
     });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  // Upstream verifies that explicit uncached fetches in /default-cache and
+  // fetchCache = "force-no-store" make the page output non-reusable, while
+  // auto/default fetches can still participate in static prerender output.
+  it("marks page output dynamic for explicit uncached fetch decisions", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    await fetch("https://api.example.com/segment-explicit-no-cache", {
+      cache: "no-cache",
+    });
+
+    expect(consumeDynamicUsage()).toBe(true);
+
+    setCurrentFetchCacheMode("force-no-store");
+
+    await fetch("https://api.example.com/segment-force-no-store-dynamic", {
+      cache: "force-cache",
+    });
+
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  it("does not mark page output dynamic for auto/default pass-through fetches", async () => {
+    await fetch("https://api.example.com/auto-pass-through");
+    await fetch("https://api.example.com/default-pass-through", {
+      cache: "default",
+    });
+
+    expect(consumeDynamicUsage()).toBe(false);
+    expect(peekDynamicFetchObservations()).toEqual([
+      "https://api.example.com/auto-pass-through",
+      "https://api.example.com/default-pass-through",
+    ]);
+  });
+
+  it("does not mark page output dynamic for fetchCache default-cache implicit cache hits", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch("https://api.example.com/segment-default-cache-static");
+    const data1 = await res1.json();
+    const res2 = await fetch("https://api.example.com/segment-default-cache-static");
+    const data2 = await res2.json();
+
+    expect(data1.count).toBe(1);
+    expect(data2.count).toBe(1);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  it("uses force-dynamic as a default no-store fetch mode without overriding explicit revalidate", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+
+    await fetch("https://api.example.com/force-dynamic-default");
+    expect(fetchMock).toHaveBeenLastCalledWith("https://api.example.com/force-dynamic-default", {
+      cache: "no-store",
+    });
+    expect(consumeDynamicUsage()).toBe(true);
+
+    await fetch("https://api.example.com/force-dynamic-cache-default", {
+      cache: "default",
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.com/force-dynamic-cache-default",
+      {
+        cache: "no-store",
+      },
+    );
+    expect(consumeDynamicUsage()).toBe(true);
+
+    const res1 = await fetch("https://api.example.com/force-dynamic-explicit-revalidate", {
+      next: { revalidate: 3 },
+    });
+    const data1 = await res1.json();
+    const res2 = await fetch("https://api.example.com/force-dynamic-explicit-revalidate", {
+      next: { revalidate: 3 },
+    });
+    const data2 = await res2.json();
+
+    expect(data1.count).toBe(3);
+    expect(data2.count).toBe(3);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/force-dynamic-fetch-revalidate/force-dynamic-fetch-revalidate.test.ts
+  // Upstream noFetchConfigAndForceDynamic uses !currentFetchRevalidate (truthiness),
+  // so revalidate: false is treated as "no fetch revalidate config" and force-dynamic wins.
+  it("force-dynamic overrides next.revalidate: false to no-store (upstream parity)", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+
+    await fetch("https://api.example.com/force-dynamic-revalidate-false", {
+      next: { revalidate: false },
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.com/force-dynamic-revalidate-false",
+      {
+        cache: "no-store",
+      },
+    );
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // The force-dynamic fetch default only applies when the segment has no
+  // explicit fetchCache mode — an explicit `fetchCache = "default-cache"` /
+  // `"default-no-store"` takes precedence over the force-dynamic default.
+  it("explicit segment fetchCache takes precedence over force-dynamic fetch default", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch("https://api.example.com/force-dynamic-segment-default-cache");
+    const data1 = await res1.json();
+    const res2 = await fetch("https://api.example.com/force-dynamic-segment-default-cache");
+    const data2 = await res2.json();
+
+    // default-cache promotes the fetch to force-cache despite force-dynamic
+    expect(data1.count).toBe(1);
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(consumeDynamicUsage()).toBe(false);
+
+    setCurrentFetchCacheMode("default-no-store");
+
+    await fetch("https://api.example.com/force-dynamic-segment-default-no-store");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.com/force-dynamic-segment-default-no-store",
+      {
+        cache: "no-store",
+      },
+    );
+  });
+
+  // Upstream noFetchConfigAndForceDynamic: tags alone are not cache config, so
+  // a tags-only fetch under force-dynamic still defaults to no-store. The tags
+  // are stripped with the rest of `next` and never registered for
+  // revalidation, so they must not re-enable caching.
+  it("force-dynamic defaults tags-only fetches to no-store without registering tags", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+
+    const res1 = await fetch("https://api.example.com/force-dynamic-tags-only", {
+      next: { tags: ["force-dynamic-tags-only"] },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+    expect(fetchMock).toHaveBeenLastCalledWith("https://api.example.com/force-dynamic-tags-only", {
+      cache: "no-store",
+    });
+    expect(getCollectedFetchTags()).toEqual([]);
+    expect(consumeDynamicUsage()).toBe(true);
+
+    // No persistent cache entry: a fresh render scope re-fetches.
+    startNewFetchCacheScope();
+    setCurrentForceDynamicFetchDefault(true);
+
+    const res2 = await fetch("https://api.example.com/force-dynamic-tags-only", {
+      next: { tags: ["force-dynamic-tags-only"] },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("segment fetchCache only-cache rejects no-store fetches", async () => {
     setCurrentFetchCacheMode("only-cache");
 
@@ -247,6 +519,16 @@ describe("fetch cache shim", () => {
     ).rejects.toThrow(/only-no-store/);
   });
 
+  it("segment fetchCache only-no-store rejects next.revalidate: false fetches", async () => {
+    setCurrentFetchCacheMode("only-no-store");
+
+    await expect(
+      fetch("https://api.example.com/segment-only-no-store-revalidate-false", {
+        next: { revalidate: false },
+      }),
+    ).rejects.toThrow(/only-no-store/);
+  });
+
   it("segment fetchCache only-no-store rejects cacheable Request inputs", async () => {
     setCurrentFetchCacheMode("only-no-store");
 
@@ -259,7 +541,7 @@ describe("fetch cache shim", () => {
     ).rejects.toThrow(/only-no-store/);
   });
 
-  // ── No caching (no-store, revalidate: 0, revalidate: false) ─────────
+  // ── No caching (no-store, revalidate: 0) ─────────────────────────────
   // Ported from Next.js: test coverage for packages/next/src/server/lib/dedupe-fetch.test.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/dedupe-fetch.test.ts
 
@@ -313,7 +595,7 @@ describe("fetch cache shim", () => {
     expect(peekDynamicFetchObservations()).toEqual([]);
   });
 
-  it("next.revalidate: false bypasses persistent cache but dedupes identical render fetches", async () => {
+  it("next.revalidate: false caches indefinitely", async () => {
     const res1 = await fetch("https://api.example.com/revfalse", {
       next: { revalidate: false },
     });
@@ -324,8 +606,15 @@ describe("fetch cache shim", () => {
       next: { revalidate: false },
     });
     const data2 = await res2.json();
-    expect(data2.count).toBe(1); // Same render fetch is deduped
+    expect(data2.count).toBe(1); // Cached indefinitely
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("next.revalidate: false does not mark page output dynamic", async () => {
+    await fetch("https://api.example.com/revfalse-dynamic", {
+      next: { revalidate: false },
+    });
+    expect(consumeDynamicUsage()).toBe(false);
   });
 
   it("no cache or next options bypasses persistent cache but dedupes identical render fetches", async () => {
@@ -495,7 +784,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     // Invalidate via tag
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Should re-fetch after tag invalidation
@@ -518,7 +807,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Invalidate only "posts"
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Posts should re-fetch
@@ -535,6 +824,69 @@ describe("fetch cache shim", () => {
     const userData = await userRes.json();
     expect(userData.count).toBe(2); // Still the cached version
     expect(fetchMock).toHaveBeenCalledTimes(3); // Only posts re-fetched
+  });
+
+  it("bypasses a stored tagged fetch while its request-local invalidation is pending", async () => {
+    const previousHandler = getCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+
+    let getCalls = 0;
+    setCacheHandler({
+      async get() {
+        getCalls++;
+        if (getCalls === 1) return null;
+        return {
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ count: 1 }),
+              url: "https://api.example.com/pending-tag",
+            },
+            tags: ["posts"],
+            revalidate: 60,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+      },
+    });
+
+    try {
+      await runWithRequestContext(createRequestContext(), () =>
+        runWithFetchDedupe(async () => {
+          const initialResponse = await fetch("https://api.example.com/pending-tag", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await initialResponse.json()).count).toBe(1);
+
+          expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
+          await invalidationStarted;
+
+          // The current call deliberately omits `next.tags`: the stored entry's
+          // tags must reject it and bypass the pre-invalidation request dedupe.
+          const response = await fetch("https://api.example.com/pending-tag", {
+            next: { revalidate: 60 },
+          });
+          expect((await response.json()).count).toBe(2);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        }),
+      );
+    } finally {
+      releaseInvalidation();
+      setCacheHandler(previousHandler);
+    }
   });
 
   // ── TTL expiry (stale-while-revalidate) ─────────────────────────────
@@ -564,6 +916,107 @@ describe("fetch cache shim", () => {
     // Wait for background refetch
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fetchMock).toHaveBeenCalledTimes(2); // Original + background refetch
+  });
+
+  it("refreshes stale fetch entries when foreground fetch refresh is enabled", async () => {
+    const res1 = await fetch("https://api.example.com/foreground-stale", {
+      next: { revalidate: 1 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-stale", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
+    const res1 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
+      next: { revalidate: 60 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.lastModified = Date.now() - 2_000;
+      entry.revalidateAt = Date.now() + 58_000;
+    }
+    startNewFetchCacheScope();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes in the background when a shorter current revalidate makes a fetch stale", async () => {
+    const res1 = await fetch("https://api.example.com/background-shorter-revalidate", {
+      next: { revalidate: 60 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.lastModified = Date.now() - 2_000;
+      entry.revalidateAt = Date.now() + 58_000;
+    }
+    startNewFetchCacheScope();
+
+    const res2 = await fetch("https://api.example.com/background-shorter-revalidate", {
+      next: { revalidate: 1 },
+    });
+    expect((await res2.json()).count).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not clone the upstream response body for stale background revalidation", async () => {
+    const res1 = await fetch("https://api.example.com/background-no-returned-clone", {
+      next: { revalidate: 1 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    const cloneSpy = vi.spyOn(Response.prototype, "clone");
+    try {
+      const res2 = await fetch("https://api.example.com/background-no-returned-clone", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(cloneSpy).not.toHaveBeenCalled();
+    } finally {
+      cloneSpy.mockRestore();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("preserves Request bodies for stale background revalidation", async () => {
@@ -1117,7 +1570,7 @@ describe("fetch cache shim", () => {
     const data1 = await res1.json();
     expect(data1.count).toBe(1);
 
-    await revalidatePath("/posts/hello");
+    await Promise.resolve(revalidatePath("/posts/hello"));
     startNewFetchCacheScope();
     setCurrentFetchSoftTags(["_N_T_/posts/hello"]);
 
@@ -1182,6 +1635,210 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares persistent cache entries between equivalent URL and Request inputs", async () => {
+    const url = "https://api.example.com";
+    const urlResponse = await fetch(url, { next: { revalidate: 60 } });
+    expect((await urlResponse.json()).count).toBe(1);
+
+    startNewFetchCacheScope();
+    const requestResponse = await fetch(new Request(url), {
+      next: { revalidate: 60 },
+    });
+    expect((await requestResponse.json()).count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("includes synthesized Blob content types in the persistent cache key", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          contentType: request.headers.get("content-type"),
+          count: requestCount,
+        }),
+      );
+    });
+    const url = "https://api.example.com/blob-content-type";
+
+    const jsonResponse = await fetch(url, {
+      method: "POST",
+      body: new Blob(["same-body"], { type: "application/json" }),
+      next: { revalidate: 60 },
+    });
+    expect(await jsonResponse.json()).toEqual({
+      contentType: "application/json",
+      count: 1,
+    });
+
+    startNewFetchCacheScope();
+    const textResponse = await fetch(url, {
+      method: "POST",
+      body: new Blob(["same-body"], { type: "text/plain" }),
+      next: { revalidate: 60 },
+    });
+    expect(await textResponse.json()).toEqual({
+      contentType: "text/plain",
+      count: 2,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("serializes ArrayBuffer and ArrayBufferView byte ranges in persistent cache keys", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          bytes: Array.from(new Uint8Array(await request.arrayBuffer())),
+          count: requestCount,
+        }),
+      );
+    });
+    const url = "https://api.example.com/buffer-source-body";
+
+    const arrayBufferResponse = await fetch(url, {
+      method: "POST",
+      body: Uint8Array.of(0x80).buffer,
+      next: { revalidate: 60 },
+    });
+    expect(await arrayBufferResponse.json()).toEqual({ bytes: [0x80], count: 1 });
+
+    startNewFetchCacheScope();
+    const viewBytes = Uint8Array.of(0, 0x81, 0);
+    const dataViewResponse = await fetch(url, {
+      method: "POST",
+      body: new DataView(viewBytes.buffer, 1, 1),
+      next: { revalidate: 60 },
+    });
+    expect(await dataViewResponse.json()).toEqual({ bytes: [0x81], count: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("hashes invalid UTF-8 body bytes without replacement-character collisions", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          bytes: Array.from(new Uint8Array(await request.arrayBuffer())),
+          count: requestCount,
+        }),
+      );
+    });
+    const url = "https://api.example.com/binary-body";
+
+    const firstResponse = await fetch(url, {
+      method: "POST",
+      body: Uint8Array.of(0x80),
+      next: { revalidate: 60 },
+    });
+    expect(await firstResponse.json()).toEqual({ bytes: [0x80], count: 1 });
+
+    startNewFetchCacheScope();
+    const secondResponse = await fetch(url, {
+      method: "POST",
+      body: Uint8Array.of(0x81),
+      next: { revalidate: 60 },
+    });
+    expect(await secondResponse.json()).toEqual({ bytes: [0x81], count: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("hashes binary Blob bodies without lossy text decoding", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          bytes: Array.from(new Uint8Array(await request.arrayBuffer())),
+          count: requestCount,
+        }),
+      );
+    });
+    const url = "https://api.example.com/binary-blob-body";
+
+    const firstResponse = await fetch(url, {
+      method: "POST",
+      body: new Blob([Uint8Array.of(0x80)]),
+      next: { revalidate: 60 },
+    });
+    expect(await firstResponse.json()).toEqual({ bytes: [0x80], count: 1 });
+
+    startNewFetchCacheScope();
+    const secondResponse = await fetch(url, {
+      method: "POST",
+      body: new Blob([Uint8Array.of(0x81)]),
+      next: { revalidate: 60 },
+    });
+    expect(await secondResponse.json()).toEqual({ bytes: [0x81], count: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("distinguishes an empty string body from an absent body in the persistent cache key", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          contentType: request.headers.get("content-type"),
+          count: requestCount,
+        }),
+      );
+    });
+    const url = "https://api.example.com/empty-string-body";
+
+    const absentResponse = await fetch(url, {
+      method: "POST",
+      next: { revalidate: 60 },
+    });
+    expect(await absentResponse.json()).toEqual({
+      contentType: null,
+      count: 1,
+    });
+
+    startNewFetchCacheScope();
+    const emptyResponse = await fetch(url, {
+      method: "POST",
+      body: "",
+      next: { revalidate: 60 },
+    });
+    expect(await emptyResponse.json()).toEqual({
+      contentType: "text/plain;charset=UTF-8",
+      count: 2,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("distinguishes an empty binary body from an absent body in the persistent cache key", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          hasBody: request.body !== null,
+          count: requestCount,
+        }),
+      );
+    });
+    const url = "https://api.example.com/empty-binary-body";
+
+    const absentResponse = await fetch(url, {
+      method: "POST",
+      next: { revalidate: 60 },
+    });
+    expect(await absentResponse.json()).toEqual({ hasBody: false, count: 1 });
+
+    startNewFetchCacheScope();
+    const emptyResponse = await fetch(url, {
+      method: "POST",
+      body: new Uint8Array(),
+      next: { revalidate: 60 },
+    });
+    expect(await emptyResponse.json()).toEqual({ hasBody: true, count: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("includes Request object bodies in the cache key", async () => {
@@ -1301,6 +1958,90 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses replacement content-type headers when serializing Request bodies", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          contentType: request.headers.get("content-type"),
+          count: requestCount,
+        }),
+      );
+    });
+    const makeMultipartRequest = () =>
+      new Request("https://api.example.com/req-form-replaced-content-type", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=base" },
+        body: [
+          "--base",
+          'Content-Disposition: form-data; name="name"',
+          "",
+          "same-value",
+          "--base--",
+          "",
+        ].join("\r\n"),
+      });
+
+    const jsonResponse = await fetch(makeMultipartRequest(), {
+      headers: { "content-type": "application/json" },
+      next: { revalidate: 60 },
+    });
+    expect(await jsonResponse.json()).toEqual({
+      contentType: "application/json",
+      count: 1,
+    });
+
+    const textResponse = await fetch(makeMultipartRequest(), {
+      headers: { "content-type": "text/plain" },
+      next: { revalidate: 60 },
+    });
+    expect(await textResponse.json()).toEqual({
+      contentType: "text/plain",
+      count: 2,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("separates generated FormData content types from explicit bare multipart headers", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      requestCount++;
+      const request = new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          contentType: request.headers.get("content-type"),
+          count: requestCount,
+        }),
+      );
+    });
+    const makeForm = () => {
+      const form = new FormData();
+      form.append("name", "same-value");
+      return form;
+    };
+    const url = "https://api.example.com/form-data-content-type-source";
+
+    const generatedResponse = await fetch(url, {
+      method: "POST",
+      body: makeForm(),
+      next: { revalidate: 60 },
+    });
+    expect((await generatedResponse.json()).count).toBe(1);
+
+    startNewFetchCacheScope();
+    const bareResponse = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "multipart/form-data" },
+      body: makeForm(),
+      next: { revalidate: 60 },
+    });
+    expect(await bareResponse.json()).toEqual({
+      contentType: "multipart/form-data",
+      count: 2,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("malformed multipart Request bodies bypass cache instead of hashing raw bytes", async () => {
@@ -1556,6 +2297,93 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it("bases the auth cache bypass on effective replacement headers", async () => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        const request = new Request(input, init);
+        return new Response(
+          JSON.stringify({
+            authorization: request.headers.get("authorization"),
+            count: requestCount,
+          }),
+        );
+      });
+      const makeBaseAuthRequest = () =>
+        new Request("https://api.example.com/replaced-auth-bypass", {
+          headers: { Authorization: "Bearer removed" },
+        });
+
+      const anonymousResponse = await fetch(makeBaseAuthRequest(), {
+        headers: {},
+        next: { tags: ["public-data"] },
+      });
+      expect(await anonymousResponse.json()).toEqual({ authorization: null, count: 1 });
+
+      startNewFetchCacheScope();
+      const cachedAnonymousResponse = await fetch(makeBaseAuthRequest(), {
+        headers: {},
+        next: { tags: ["public-data"] },
+      });
+      expect(await cachedAnonymousResponse.json()).toEqual({ authorization: null, count: 1 });
+
+      startNewFetchCacheScope();
+      const authenticatedResponse = await fetch("https://api.example.com/effective-auth-bypass", {
+        headers: { Authorization: "Bearer effective" },
+        next: { tags: ["user-data"] },
+      });
+      expect(await authenticatedResponse.json()).toEqual({
+        authorization: "Bearer effective",
+        count: 2,
+      });
+
+      startNewFetchCacheScope();
+      const freshAuthenticatedResponse = await fetch(
+        "https://api.example.com/effective-auth-bypass",
+        {
+          headers: { Authorization: "Bearer effective" },
+          next: { tags: ["user-data"] },
+        },
+      );
+      expect(await freshAuthenticatedResponse.json()).toEqual({
+        authorization: "Bearer effective",
+        count: 3,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("auth-keyed safety bypass records a dynamic fetch observation without marking the page dynamic", async () => {
+      await fetch("https://api.example.com/auth-bypass-page-output", {
+        headers: { Authorization: "Bearer alice" },
+        next: { tags: ["user-data"] },
+      });
+
+      // The fetch itself is bypassed (not cached), but the per-user response
+      // must still downgrade the page output to fresh render so auth-keyed
+      // data is never statically cached and served across users.
+      expect(peekDynamicFetchObservations()).toEqual([
+        "https://api.example.com/auth-bypass-page-output",
+      ]);
+      // The safety bypass is automatic, not an explicit uncached-fetch
+      // decision, so the page is not marked dynamic.
+      expect(consumeDynamicUsage()).toBe(false);
+    });
+
+    it("explicit no-store with auth headers marks the page dynamic instead of taking the auth bypass", async () => {
+      await fetch("https://api.example.com/nostore-auth-dynamic", {
+        cache: "no-store",
+        headers: { Authorization: "Bearer alice" },
+      });
+
+      // An explicit `no-store` is an explicit uncached-fetch decision, so it
+      // hits the no-store branch (full markDynamicUsage) before the softer
+      // auth-safety bypass: the page is fully marked dynamic, not merely
+      // downgraded via a dynamic fetch observation.
+      expect(peekDynamicFetchObservations()).toEqual([
+        "https://api.example.com/nostore-auth-dynamic",
+      ]);
+      expect(consumeDynamicUsage()).toBe(true);
+    });
+
     it("X-API-Key header is included in cache key", async () => {
       const res1 = await fetch("https://api.example.com/api-key", {
         headers: { "X-API-Key": "key-alice" },
@@ -1588,6 +2416,184 @@ describe("fetch cache shim", () => {
       const data2 = await res2.json();
       expect(data2.count).toBe(2); // Different auth = different cache
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("applies RequestInit overrides when deduping Request inputs", async () => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        const request = new Request(input, init);
+        return new Response(
+          JSON.stringify({
+            authorization: request.headers.get("authorization"),
+            credentials: request.credentials,
+          }),
+        );
+      });
+      const request = new Request("https://api.example.com/req-auth-override", {
+        headers: { Authorization: "Bearer base" },
+        credentials: "same-origin",
+      });
+
+      const [aliceResponse, bobResponse] = await Promise.all([
+        fetch(request, {
+          cache: "no-store",
+          headers: { Authorization: "Bearer alice" },
+          credentials: "include",
+        }),
+        fetch(request, {
+          cache: "no-store",
+          headers: { Authorization: "Bearer bob" },
+          credentials: "omit",
+        }),
+      ]);
+
+      expect(await aliceResponse.json()).toEqual({
+        authorization: "Bearer alice",
+        credentials: "include",
+      });
+      expect(await bobResponse.json()).toEqual({
+        authorization: "Bearer bob",
+        credentials: "omit",
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not persist a deduped response under a different RequestInit cache key", async () => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        const request = new Request(input, init);
+        return new Response(
+          JSON.stringify({
+            authorization: request.headers.get("authorization"),
+            count: requestCount,
+          }),
+        );
+      });
+      const request = new Request("https://api.example.com/req-auth-cache-override");
+
+      const aliceResponse = await fetch(request, {
+        headers: { Authorization: "Bearer alice" },
+        next: { revalidate: 60 },
+      });
+      expect(await aliceResponse.json()).toEqual({
+        authorization: "Bearer alice",
+        count: 1,
+      });
+
+      const bobResponse = await fetch(request, {
+        headers: { Authorization: "Bearer bob" },
+        next: { revalidate: 60 },
+      });
+      expect(await bobResponse.json()).toEqual({
+        authorization: "Bearer bob",
+        count: 2,
+      });
+
+      startNewFetchCacheScope();
+      const cachedBobResponse = await fetch(request, {
+        headers: { Authorization: "Bearer bob" },
+        next: { revalidate: 60 },
+      });
+      expect(await cachedBobResponse.json()).toEqual({
+        authorization: "Bearer bob",
+        count: 2,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("replaces Request headers when deriving the persistent cache key", async () => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        const request = new Request(input, init);
+        return new Response(
+          JSON.stringify({
+            authorization: request.headers.get("authorization"),
+            count: requestCount,
+          }),
+        );
+      });
+      const authenticatedRequest = new Request("https://api.example.com/replaced-headers", {
+        headers: { Authorization: "Bearer alice" },
+      });
+
+      const anonymousResponse = await fetch(authenticatedRequest, {
+        headers: {},
+        next: { revalidate: 60 },
+      });
+      expect(await anonymousResponse.json()).toEqual({
+        authorization: null,
+        count: 1,
+      });
+
+      const authenticatedResponse = await fetch(authenticatedRequest, {
+        next: { revalidate: 60 },
+      });
+      expect(await authenticatedResponse.json()).toEqual({
+        authorization: "Bearer alice",
+        count: 2,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("includes inherited Request options in the persistent cache key", async () => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        const request = new Request(input, init);
+        return new Response(
+          JSON.stringify({
+            redirect: request.redirect,
+            count: requestCount,
+          }),
+        );
+      });
+      const manualRequest = new Request("https://api.example.com/request-options", {
+        redirect: "manual",
+      });
+      const followRequest = new Request("https://api.example.com/request-options", {
+        redirect: "follow",
+      });
+
+      const manualResponse = await fetch(manualRequest, {
+        next: { revalidate: 60 },
+      });
+      expect(await manualResponse.json()).toEqual({
+        redirect: "manual",
+        count: 1,
+      });
+
+      const followResponse = await fetch(followRequest, {
+        next: { revalidate: 60 },
+      });
+      expect(await followResponse.json()).toEqual({
+        redirect: "follow",
+        count: 2,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    // Adapted from Next.js: packages/next/src/server/lib/dedupe-fetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/dedupe-fetch.test.ts
+    it("does not consume an ineligible Request body while checking dedupe eligibility", async () => {
+      fetchMock.mockImplementationOnce(async (input) => {
+        expect(input).toBe(request);
+        expect(request.bodyUsed).toBe(false);
+        return new Response(await request.text());
+      });
+      const request = new Request("https://api.example.com/request-body", {
+        method: "POST",
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("stream data"));
+            controller.close();
+          },
+        }),
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+
+      const response = await fetch(request, { cache: "no-store" });
+
+      expect(await response.text()).toBe("stream data");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1855,6 +2861,35 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it("hashes FormData file bytes without lossy text decoding", async () => {
+      const makeForm = (byte: number) => {
+        const form = new FormData();
+        form.append(
+          "file",
+          new File([Uint8Array.of(byte)], "binary.bin", {
+            type: "application/octet-stream",
+          }),
+        );
+        return form;
+      };
+
+      const res1 = await fetch("https://api.example.com/body-form-file-binary", {
+        method: "POST",
+        body: makeForm(0x80),
+        next: { revalidate: 60 },
+      });
+      expect((await res1.json()).count).toBe(1);
+
+      startNewFetchCacheScope();
+      const res2 = await fetch("https://api.example.com/body-form-file-binary", {
+        method: "POST",
+        body: makeForm(0x81),
+        next: { revalidate: 60 },
+      });
+      expect((await res2.json()).count).toBe(2);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it("ReadableStream bodies are included in cache key", async () => {
       const streamA = new ReadableStream({
         start(controller) {
@@ -1884,6 +2919,32 @@ describe("fetch cache shim", () => {
       });
       const data2 = await res2.json();
       expect(data2.count).toBe(2); // Different stream = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("hashes ReadableStream bytes without lossy text decoding", async () => {
+      const makeStream = (byte: number) =>
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(Uint8Array.of(byte));
+            controller.close();
+          },
+        });
+
+      const res1 = await fetch("https://api.example.com/body-stream-binary", {
+        method: "POST",
+        body: makeStream(0x80),
+        next: { revalidate: 60 },
+      });
+      expect((await res1.json()).count).toBe(1);
+
+      startNewFetchCacheScope();
+      const res2 = await fetch("https://api.example.com/body-stream-binary", {
+        method: "POST",
+        body: makeStream(0x81),
+        next: { revalidate: 60 },
+      });
+      expect((await res2.json()).count).toBe(2);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
@@ -2225,6 +3286,23 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it("oversized body with explicit cache opt-in does not mark page output dynamic", async () => {
+      await fetch("https://api.example.com/large-body-page-output", {
+        method: "POST",
+        body: "x".repeat(1024 * 1024 + 1),
+        cache: "force-cache",
+      });
+
+      // The developer opted into caching; failing to build a cache key is an
+      // internal vinext limitation, not an explicit uncached-fetch decision.
+      // The observation downgrades the page output to fresh render, but the
+      // page is not marked dynamic.
+      expect(consumeDynamicUsage()).toBe(false);
+      expect(peekDynamicFetchObservations()).toContain(
+        "https://api.example.com/large-body-page-output",
+      );
+    });
+
     it("oversized Request body bypasses cache without cloning the body when content-length exceeds the limit", async () => {
       const cloneSpy = vi.spyOn(Request.prototype, "clone");
       const request = new Request("https://api.example.com/large-request-stream", {
@@ -2287,6 +3365,42 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it("does not wait for one tee branch to cancel before oversized stream fallback", async () => {
+      let chunk = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (chunk >= 10) {
+            controller.close();
+            return;
+          }
+          chunk++;
+          controller.enqueue(new Uint8Array(600 * 1024));
+        },
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+
+      try {
+        const response = await Promise.race([
+          fetch("https://api.example.com/large-pull-stream", {
+            method: "POST",
+            body: stream,
+            next: { revalidate: 60 },
+          }),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("oversized stream fallback timed out")),
+              1_000,
+            );
+          }),
+        ]);
+
+        expect((await response.json()).count).toBe(1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+
     it("FormData with large File entry bypasses cache and still fetches", async () => {
       const largeContent = "x".repeat(1024 * 1024 + 1);
       const largeFile = new File([largeContent], "big.txt", { type: "text/plain" });
@@ -2308,6 +3422,26 @@ describe("fetch cache shim", () => {
       });
       const data2 = await res2.json();
       expect(data2.count).toBe(2); // bypassed cache because file is oversized
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("FormData with oversized File metadata bypasses cache key generation", async () => {
+      const form = new FormData();
+      form.append("file", new File([], `${"x".repeat(1024 * 1024)}.txt`));
+
+      const res1 = await fetch("https://api.example.com/large-formdata-metadata", {
+        method: "POST",
+        body: form,
+        next: { revalidate: 60 },
+      });
+      expect((await res1.json()).count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/large-formdata-metadata", {
+        method: "POST",
+        body: form,
+        next: { revalidate: 60 },
+      });
+      expect((await res2.json()).count).toBe(2);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });

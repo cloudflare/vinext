@@ -1,4 +1,5 @@
 import type { UserConfig } from "vite";
+import { toSlash } from "pathslash";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
@@ -6,6 +7,22 @@ type ClientAssetFileNameInfo = {
   readonly originalFileName?: string;
   readonly originalFileNames?: readonly string[];
 };
+
+const ROUTE_OWNED_CLIENT_SHIMS = new Set([
+  "compat-router",
+  "dynamic",
+  "dynamic-preload-chunks",
+  "form",
+  "image",
+  "internal/hybrid-client-route-owner",
+  "layout-segment-context",
+  "legacy-image",
+  "link",
+  "offline",
+  "router",
+  "script",
+  "web-vitals",
+]);
 
 // Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
 // fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
@@ -55,9 +72,10 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const nmIdx = id.lastIndexOf("node_modules/");
+  const normalizedId = toSlash(id);
+  const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
-  const rest = id.slice(nmIdx + "node_modules/".length);
+  const rest = normalizedId.slice(nmIdx + "node_modules/".length);
   if (rest.startsWith("@")) {
     // Scoped package: @org/pkg
     const parts = rest.split("/");
@@ -71,12 +89,10 @@ function getPackageName(id: string): string | null {
  *
  * Splits the client bundle into:
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
- * - "vinext"    — vinext shims (router, head, link, etc.)
+ * - "vinext"    — shared vinext runtime shims
  *
- * All other vendor code is left to Rollup's default chunk-splitting
- * algorithm. Rollup automatically deduplicates shared modules into
- * common chunks based on the import graph — no manual intervention
- * needed.
+ * Route-owned client shims and all other vendor code are left to the bundler's
+ * graph-based chunking so they stay behind their client-reference boundaries.
  *
  * Why not split every npm package into its own chunk?
  * - Per-package splitting (`vendor-X`) creates 50-200+ chunks for a
@@ -89,11 +105,11 @@ function getPackageName(id: string): string | null {
  *   mobile devices.
  * - No major Vite-based framework (Remix, SvelteKit, Astro, TanStack)
  *   uses per-package splitting. Next.js only isolates packages >160KB.
- * - Rollup's graph-based splitting already handles the common case
+ * - The bundler's graph-based splitting already handles the common case
  *   well: shared dependencies between routes get their own chunks,
  *   and route-specific code stays in route chunks.
  */
-export function createClientManualChunks(shimsDir: string) {
+export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
   return function clientManualChunks(id: string): string | undefined {
     // React framework — always loaded, shared across all pages.
     // Isolating React into its own chunk is the single highest-value
@@ -102,20 +118,50 @@ export function createClientManualChunks(shimsDir: string) {
     if (id.includes("node_modules")) {
       const pkg = getPackageName(id);
       if (!pkg) return undefined;
-      if (pkg === "react" || pkg === "react-dom" || pkg === "scheduler") {
+      if (pkg === "react-dom") {
+        // The server renderer (Fizz: renderToString / renderToReadableStream /
+        // renderToStaticMarkup, plus the prerender "static" APIs) is only needed
+        // by client code that explicitly imports those APIs.
+        // Keying the always-loaded "framework" chunk on the bare package name
+        // ("react-dom") would otherwise drag react-dom/server.browser — and its
+        // sizeable cjs implementation — into every page, even though most client
+        // routes do not render to a string (an embedded Sanity Studio is one
+        // example that does). Split those entrypoints into their own chunk
+        // so the server renderer loads lazily, only on routes that use it,
+        // instead of weighing down first paint on every page.
+        // Windows ids carry backslashes, so slash-normalize before matching
+        // the "react-dom/" separator (same convention as getPackageName).
+        const slashedId = toSlash(id);
+        const sub = slashedId.slice(slashedId.lastIndexOf("react-dom/") + "react-dom/".length);
+        if (
+          sub.startsWith("server.") ||
+          sub.startsWith("static.") ||
+          sub.startsWith("cjs/react-dom-server")
+        ) {
+          return "react-dom-server";
+        }
         return "framework";
       }
-      // Let Rollup handle all other vendor code via its default
+      if (pkg === "react" || pkg === "scheduler") {
+        return "framework";
+      }
+      // Let the bundler handle all other vendor code via its default
       // graph-based splitting. This produces a reasonable number of
       // shared chunks (typically 5-15) based on actual import patterns,
       // with good compression efficiency.
       return undefined;
     }
 
-    // vinext shims — small runtime, shared across all pages.
-    // Use the absolute shims directory path to avoid matching user files
-    // that happen to have "/shims/" in their path.
-    if (id.startsWith(shimsDir)) {
+    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
+    // id can carry native backslashes on Windows, so slash it before matching.
+    const slashedId = toSlash(id);
+    if (slashedId.startsWith(shimsDir)) {
+      if (preserveRouteBoundaries) {
+        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const extensionIndex = relativeId.lastIndexOf(".");
+        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      }
       return "vinext";
     }
 
@@ -123,32 +169,11 @@ export function createClientManualChunks(shimsDir: string) {
   };
 }
 
-/**
- * Rollup output config with manualChunks for client code-splitting.
- * Used by both CLI builds and multi-environment builds.
- *
- * experimentalMinChunkSize merges tiny shared chunks (< 10KB) back into
- * their importers. This reduces HTTP request count and improves gzip
- * compression efficiency — small files restart the compression dictionary,
- * adding ~5-15% wire overhead vs fewer larger chunks.
- */
 export function createClientFileNameConfig(assetsDir: string) {
   const chunksDir = `${assetsDir}/chunks`;
   return {
     entryFileNames: `${chunksDir}/[name]-[hash].js`,
     chunkFileNames: `${chunksDir}/[name]-[hash].js`,
-  };
-}
-
-export function createClientOutputConfig(
-  clientManualChunks: (id: string) => string | undefined,
-  assetsDir: string,
-) {
-  return {
-    ...createClientFileNameConfig(assetsDir),
-    assetFileNames: createClientAssetFileNames(assetsDir),
-    manualChunks: clientManualChunks,
-    experimentalMinChunkSize: 10_000,
   };
 }
 
@@ -210,113 +235,52 @@ export function isRscFrameworkModule(id: string): boolean {
 
 /**
  * Output config that isolates React (and the RSC flight runtime) into a
- * dedicated "framework" chunk in the RSC server build. Returns the bundler-
- * appropriate shape: rolldown's `codeSplitting` for Vite 8+, Rollup's
- * `manualChunks` for Vite 7. See {@link RSC_FRAMEWORK_CHUNK_TEST} for the
- * motivation (issue #1549).
+ * dedicated "framework" chunk in the RSC server build. See
+ * {@link RSC_FRAMEWORK_CHUNK_TEST} for the motivation (issue #1549). Framework
+ * modules that are only reachable through dynamic imports must stay out of the
+ * eager framework chunk (issue #2073).
  */
-export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
-  if (viteMajorVersion >= 8) {
-    return {
-      codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
-      },
-    };
-  }
+export function createRscFrameworkChunkOutputConfig() {
   return {
-    manualChunks(id: string): string | undefined {
-      return isRscFrameworkModule(id) ? "framework" : undefined;
+    codeSplitting: {
+      groups: [
+        {
+          name: "framework",
+          test: RSC_FRAMEWORK_CHUNK_TEST,
+          // Split by the entries that use each module so lazy framework
+          // imports cannot become eager Worker-startup dependencies (#2073).
+          entriesAware: true,
+        },
+      ],
     },
   };
 }
 
 /**
- * Rollup treeshake configuration for production client builds.
- *
- * Uses the 'recommended' preset as a safe base, then overrides
- * moduleSideEffects to strip unused re-exports from npm packages.
- *
- * The 'no-external' value for moduleSideEffects means:
- * - Local project modules: preserve side effects (CSS imports, polyfills)
- * - node_modules packages: treat as side-effect-free unless exports are used
- *
- * This is the single highest-impact optimization for large barrel-exporting
- * libraries like mermaid, @mui/material, lucide-react, etc. These libraries
- * re-export hundreds of sub-modules through barrel files. Without this,
- * Rollup preserves every sub-module even when only a few exports are consumed.
- *
- * Why 'no-external' instead of false (global side-effect-free)?
- * - User code may rely on import-time side effects (e.g., `import './global.css'`)
- * - 'no-external' is safe for app code while still enabling aggressive DCE for deps
- *
- * Why not the 'smallest' preset?
- * - 'smallest' also sets propertyReadSideEffects: false and
- *   tryCatchDeoptimization: false, which can break specific libraries
- *   that rely on property access side effects or try/catch for feature detection
- * - 'recommended' + 'no-external' gives most of the benefit with less risk
- *
- * @deprecated Use getClientTreeshakeConfigForVite(viteMajorVersion) instead
- * for Vite version compatibility. Kept for backward compatibility.
- */
-export const clientTreeshakeConfig = {
-  preset: "recommended" as const,
-  moduleSideEffects: "no-external" as const,
-};
-
-/**
- * Returns treeshake configuration appropriate for the Vite version.
- *
- * Rollup (Vite 7) supports presets like "recommended" which set multiple
- * treeshake options at once. Rolldown (Vite 8+) doesn't support presets,
- * so we only return moduleSideEffects for Vite 8+.
- *
- * The Rollup "recommended" preset sets:
- * - annotations: true (Rolldown default is also true)
- * - manualPureFunctions: [] (Rolldown default is also [])
- * - propertyReadSideEffects: true (Rolldown equivalent is 'always', the default)
- * - unknownGlobalSideEffects: false (Rolldown default is true — this is a known acceptable
- *   divergence. Slightly less aggressive DCE on unknown globals, acceptable for client bundles)
- * - correctVarValueBeforeDeclaration and tryCatchDeoptimization (Rolldown handles these differently)
+ * Returns Rolldown treeshake configuration for production client builds.
  *
  * The key optimization is moduleSideEffects: "no-external", which is supported
- * by both bundlers and provides the DCE benefits for barrel-exporting libraries.
- * It treats node_modules as side-effect-free (enabling aggressive DCE) while
- * preserving side effects in local code.
+ * by Rolldown and provides the DCE benefits for barrel-exporting libraries. It
+ * treats node_modules as side-effect-free while preserving side effects in
+ * local code.
  */
-export function getClientTreeshakeConfigForVite(viteMajorVersion: number) {
-  if (viteMajorVersion >= 8) {
-    // Rolldown (Vite 8+) - no preset support, only specific options.
-    // Rolldown's built-in defaults already cover what Rollup's 'recommended'
-    // preset provides (annotations, correctContext, tryCatchDeoptimization).
-    return {
-      moduleSideEffects: "no-external" as const,
-    };
-  }
-  // Rollup (Vite 7) - supports presets for convenient option grouping
+export function getClientTreeshakeConfig() {
   return {
-    preset: "recommended" as const,
     moduleSideEffects: "no-external" as const,
   };
 }
 
 type VinextBuildConfig = NonNullable<UserConfig["build"]>;
 type VinextBuildBundlerOptions = NonNullable<VinextBuildConfig["rolldownOptions"]>;
-type VinextBuildConfigWithLegacy = VinextBuildConfig & {
-  rollupOptions?: VinextBuildBundlerOptions;
-};
 
 export function getBuildBundlerOptions(
   build: UserConfig["build"] | undefined,
 ): VinextBuildBundlerOptions | undefined {
-  const buildConfig = build as VinextBuildConfigWithLegacy | undefined;
-  return buildConfig?.rolldownOptions ?? buildConfig?.rollupOptions;
+  return build?.rolldownOptions;
 }
 
 export function withBuildBundlerOptions(
-  viteMajorVersion: number,
   bundlerOptions: VinextBuildBundlerOptions,
-): Partial<VinextBuildConfigWithLegacy> {
-  return viteMajorVersion >= 8
-    ? { rolldownOptions: bundlerOptions }
-    : { rollupOptions: bundlerOptions };
+): Partial<VinextBuildConfig> {
+  return { rolldownOptions: bundlerOptions };
 }

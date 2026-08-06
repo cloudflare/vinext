@@ -34,7 +34,7 @@ export async function waitForHydration(page: Page): Promise<void> {
  */
 export async function waitForAppRouterHydration(page: Page): Promise<void> {
   await expect(async () => {
-    const ready = await page.evaluate(() => {
+    const ready = await page.evaluate(async () => {
       const runtime = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
       const hasNavigate =
         typeof runtime === "object" &&
@@ -44,20 +44,22 @@ export async function waitForAppRouterHydration(page: Page): Promise<void> {
         runtime.functions !== null &&
         "navigate" in runtime.functions &&
         typeof runtime.functions.navigate === "function";
-      return (
+      const hydrated =
         Boolean(window.__VINEXT_RSC_ROOT__) &&
         hasNavigate &&
-        typeof window.__VINEXT_HYDRATED_AT === "number"
-      );
+        typeof window.__VINEXT_HYDRATED_AT === "number";
+
+      if (!hydrated) {
+        return false;
+      }
+
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      return true;
     });
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      }),
-  );
 }
 
 /**

@@ -438,6 +438,47 @@ function createMatch(
 }
 
 describe("handlePagesApiRoute body parser config (Workers/prod path)", () => {
+  // Next.js delegates Pages API cookies to its compiled `cookie` parser.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/get-cookie-parser.ts
+  it("preserves duplicate ordering and the public object API", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((req: PagesReqResRequest, res: PagesReqResResponse) => {
+        res.json({
+          cookies: req.cookies,
+          hasOwnPropertyWorks: req.cookies.hasOwnProperty("session"),
+          hasDefaultToString: req.cookies.toString === Object.prototype.toString,
+          toStringResult: Object.prototype.toString.call(req.cookies),
+          ownsProto: Object.hasOwn(req.cookies, "__proto__"),
+          ownsConstructor: Object.hasOwn(req.cookies, "constructor"),
+          ownsToString: Object.hasOwn(req.cookies, "toString"),
+        });
+      }),
+      request: new Request("https://example.com/api/account", {
+        headers: {
+          cookie:
+            'session=trusted; session=attacker; =empty-name; __proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
+        },
+      }),
+      url: "/api/account",
+    });
+
+    expect(await response.json()).toEqual({
+      cookies: {
+        session: "trusted",
+        "": "empty-name",
+        encoded: "hello world",
+        malformed: "%E0%A4%A",
+        quoted: "quoted value",
+      },
+      hasOwnPropertyWorks: true,
+      hasDefaultToString: true,
+      toStringResult: "[object Object]",
+      ownsProto: false,
+      ownsConstructor: false,
+      ownsToString: false,
+    });
+  });
+
   // Ported from Next.js: test/e2e/proxy-request-with-middleware/test/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/proxy-request-with-middleware/test/index.test.ts
   //

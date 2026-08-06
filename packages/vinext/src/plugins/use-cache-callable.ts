@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import path from "node:path";
+import path from "pathslash";
 import { pathToFileURL } from "node:url";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import type {
@@ -20,6 +20,7 @@ type Options = {
 };
 
 type CacheWrapperOptions = {
+  acceptsSecondArgument: boolean;
   appPageDefaultExport?: boolean;
   argumentCount?: number;
 };
@@ -83,6 +84,22 @@ function getArgumentCount(
   return node.params.at(-1)?.type === "RestElement" ? undefined : node.params.length;
 }
 
+function acceptsSecondArgument(
+  meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
+): boolean {
+  const node = meta.valueNode;
+  if (
+    node?.type !== "FunctionDeclaration" &&
+    node?.type !== "FunctionExpression" &&
+    node?.type !== "ArrowFunctionExpression"
+  ) {
+    return true;
+  }
+  return (
+    node.params.length >= 2 || node.params.some((parameter) => parameter.type === "RestElement")
+  );
+}
+
 function isInsideDirectory(directory: string, filePath: string): boolean {
   const relativePath = path.relative(directory, filePath);
   return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
@@ -119,6 +136,7 @@ function getCacheWrapperOptions(
 ): CacheWrapperOptions {
   const argumentCount = getArgumentCount(meta);
   return {
+    acceptsSecondArgument: acceptsSecondArgument(meta),
     ...(isAppPageDefaultExport(options, id, name, isModuleDirective)
       ? { appPageDefaultExport: true }
       : {}),

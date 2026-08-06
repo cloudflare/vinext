@@ -1,9 +1,7 @@
 import { ACTION_REVALIDATED_HEADER } from "./headers.js";
-import {
-  isRscCompatibilityIdCompatible,
-  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
-  VINEXT_RSC_CONTENT_TYPE,
-} from "./app-rsc-cache-busting.js";
+import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
+import { ServerActionResultFacts } from "./navigation-planner.js";
+import type { OperationLane } from "./operation-token.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
   root?: TRoot;
@@ -75,8 +73,14 @@ export function parseServerActionRevalidationHeader(
   }
 }
 
+export function resolveServerActionOperationLane(
+  revalidation: ServerActionRevalidationKind,
+): Extract<OperationLane, "refresh" | "server-action"> {
+  return revalidation === "none" ? "server-action" : "refresh";
+}
+
 function createServerActionHttpFallbackError(status: number): (Error & { digest: string }) | null {
-  if (status < 400 || status > 599) return null;
+  if (status !== 401 && status !== 403 && status !== 404) return null;
 
   const digest =
     status === 404 ? "NEXT_HTTP_ERROR_FALLBACK;404" : `NEXT_HTTP_ERROR_FALLBACK;${status}`;
@@ -86,6 +90,14 @@ function createServerActionHttpFallbackError(status: number): (Error & { digest:
 
 export function normalizeServerActionThrownValue(data: unknown, responseStatus: number): unknown {
   return createServerActionHttpFallbackError(responseStatus) ?? data;
+}
+
+export function shouldSyncServerActionHttpFallbackHead<TRoot>(
+  result: AppBrowserServerActionResult<TRoot> | TRoot,
+): boolean {
+  if (!isServerActionResult<TRoot>(result) || result.root !== undefined) return false;
+
+  return result.returnValue?.ok !== false;
 }
 
 export async function readInvalidServerActionResponseError(
@@ -108,28 +120,36 @@ export async function readInvalidServerActionResponseError(
   return new Error(message || "An unexpected response was received from the server.");
 }
 
-export function shouldCheckRscCompatibilityForServerActionResponse(
-  response: Pick<Response, "headers">,
-): boolean {
-  return (response.headers.get("content-type") ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE);
-}
-
-export function resolveServerActionRedirectCompatibilityHardNavigationTarget(options: {
+export type ServerActionResultResponseFactsInput = {
   actionRedirectHref: string | null;
-  clientCompatibilityId: string | null | undefined;
-  response: Pick<Response, "headers">;
-}): string | null {
-  if (!options.actionRedirectHref) return null;
-  if (!shouldCheckRscCompatibilityForServerActionResponse(options.response)) return null;
-  if (
-    isRscCompatibilityIdCompatible(
-      options.response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
-      options.clientCompatibilityId,
-    )
-  ) {
-    return null;
-  }
-  return options.actionRedirectHref;
+  actionRedirectType: string | null;
+  clientCompatibilityId: string | null;
+  contentTypeHeader: string | null;
+  compatibilityIdHeader: string | null;
+  currentHref: string;
+  origin: string;
+  responseUrl: string | null;
+};
+
+/**
+ * Converts raw browser response data into the narrow facts expected by the
+ * navigation planner. This is the single place where redirect-type
+ * normalisation and RSC content-type detection happen for server-action
+ * compatibility checks.
+ */
+export function createServerActionResultFacts(
+  input: ServerActionResultResponseFactsInput,
+): ServerActionResultFacts {
+  return {
+    actionRedirectHref: input.actionRedirectHref,
+    actionRedirectType: input.actionRedirectType === "push" ? "push" : "replace",
+    clientCompatibilityId: input.clientCompatibilityId,
+    compatibilityIdHeader: input.compatibilityIdHeader,
+    currentHref: input.currentHref,
+    isRscContentType: (input.contentTypeHeader ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE),
+    origin: input.origin,
+    responseUrl: input.responseUrl,
+  };
 }
 
 export function shouldScheduleRefreshForDiscardedServerAction(

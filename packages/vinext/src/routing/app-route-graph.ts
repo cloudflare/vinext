@@ -4,16 +4,17 @@
  * Scans app/ directories and materializes route metadata before the request-time
  * matcher consumes it. Keep request matching and cache ownership in app-router.ts.
  */
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { compareRoutes, decodeRouteSegment, isInvisibleSegment } from "./utils.js";
+import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
 import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
-import { normalizePathSeparators } from "../utils/path.js";
 
 type InterceptingRoute = {
+  /** Graph-owned identity for this interception edge. */
+  id?: string;
   /** The interception convention: "." | ".." | "../.." | "..." */
   convention: string;
   /** The URL pattern this intercepts (e.g. "/photos/:id") */
@@ -36,8 +37,24 @@ type InterceptingRoute = {
   sourceMatchPattern: string;
   /** Absolute path to the intercepting page component */
   pagePath: string;
+  /** Filesystem segments from app/ root to the intercepting page directory. */
+  sourcePageSegments?: string[];
   /** Absolute layout paths inside the intercepting route tree, outermost to innermost */
   layoutPaths: string[];
+  /** Normalized branch segments accumulated at each intercept layout. */
+  layoutSegments?: string[][];
+  /** Loading conventions inside the intercepted branch, outermost to innermost. */
+  loadingPaths?: string[];
+  /** Tree positions for loadingPaths in the normalized interception branch. */
+  loadingTreePositions?: number[];
+  /** Full normalized interception branch segments through the page. */
+  branchSegments?: string[];
+  /** Nearest not-found convention inside the interception branch. */
+  notFoundPath?: string | null;
+  /** Slot-root-relative branch segments used to scope not-found params. */
+  notFoundBranchSegments?: string[];
+  /** Tree position relative to the normalized interception branch. */
+  notFoundTreePosition?: number | null;
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -58,6 +75,8 @@ type ParallelSlot = {
   ownerDir: string;
   /** Stable tree path for the directory whose layout owns this slot. */
   ownerTreePath: string;
+  /** Directory depth of the slot owner from app/ root. */
+  ownerTreePosition?: number;
   /** Whether the slot owner directory declares its own page component. */
   hasPage: boolean;
   /** Absolute path to the slot's page component */
@@ -66,10 +85,22 @@ type ParallelSlot = {
   defaultPath: string | null;
   /** Absolute path to the slot's layout component (wraps slot content) */
   layoutPath: string | null;
+  /** Nested active-branch layouts whose exports contribute route config. */
+  configLayoutPaths?: string[];
+  /** Tree positions of configLayoutPaths relative to the slot root. */
+  configLayoutTreePositions?: number[];
   /** Absolute path to the slot's loading component */
   loadingPath: string | null;
+  /** Per-segment loading components from the slot root to its active page. */
+  loadingPaths?: string[];
+  /** Slot-root-relative tree positions aligned with loadingPaths. */
+  loadingTreePositions?: number[];
   /** Absolute path to the slot's error component */
   errorPath: string | null;
+  /** Nearest not-found convention for the slot's active branch. */
+  notFoundPath?: string | null;
+  /** Tree position of that convention relative to the slot root. */
+  notFoundTreePosition?: number | null;
   /** Intercepting routes within this slot */
   interceptingRoutes: InterceptingRoute[];
   /**
@@ -116,14 +147,24 @@ export type AppRoute = {
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
+  /** Stable implicit children-slot identity for parallel-slot sub-route families. */
+  childrenSlot?: {
+    id: string;
+    ownerTreePath: string;
+    state: "active" | "default" | "unmatched";
+  };
   /**
    * Interception markers not wrapped in an `@slot` directory.
    * On soft-nav, the intercepting page replaces the entire page response.
    * Empty array when there are no sibling-style interception markers.
    */
   siblingIntercepts: InterceptingRoute[];
-  /** Loading component path */
+  /** Loading component path (leaf directory only) */
   loadingPath: string | null;
+  /** Per-segment loading component paths, aligned with loadingTreePositions. */
+  loadingPaths?: string[];
+  /** Tree position (directory depth from app/ root) for each loading boundary. */
+  loadingTreePositions?: number[];
   /** Error component path (leaf directory only) */
   errorPath: string | null;
   /**
@@ -138,6 +179,8 @@ export type AppRoute = {
   errorTreePositions?: number[];
   /** Not-found component path (nearest, walking up from page dir) */
   notFoundPath: string | null;
+  /** Tree position of the nearest not-found component's owning segment. */
+  notFoundTreePosition?: number | null;
   /**
    * Not-found component paths per layout level (aligned with layouts array).
    * Each entry is the not-found.tsx at that layout's directory, or null.
@@ -153,8 +196,12 @@ export type AppRoute = {
   forbiddenPaths: (string | null)[];
   /** Forbidden component path (403) at the route's directory level */
   forbiddenPath: string | null;
+  /** Tree position of the nearest forbidden component's owning segment. */
+  forbiddenTreePosition?: number | null;
   /** Unauthorized component path (401) at the route's directory level */
   unauthorizedPath: string | null;
+  /** Tree position of the nearest unauthorized component's owning segment. */
+  unauthorizedTreePosition?: number | null;
   /** Unauthorized component paths per layout level (aligned with layouts array). */
   unauthorizedPaths: (string | null)[];
   /**
@@ -163,6 +210,15 @@ export type AppRoute = {
    * Used at render time to compute the child segments for useSelectedLayoutSegments().
    */
   routeSegments: string[];
+  /**
+   * Active filesystem segments for the default `children` slot.
+   *
+   * Synthetic routes materialized only from named parallel-slot pages still
+   * use the full `routeSegments` for URL matching, params, and route identity,
+   * but their children slot renders the parent's default.tsx. In that case the
+   * active children segments remain at the parent route.
+   */
+  childrenRouteSegments?: string[];
   /** Tree position (directory depth from app/ root) for each template. */
   templateTreePositions?: number[];
   /**
@@ -434,6 +490,26 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       slotIds: route.parallelSlots.map((slot) => slot.id).sort(compareStableStrings),
     });
 
+    if (route.childrenSlot) {
+      const ownerLayoutId = findRouteManifestOwnerLayoutIdByTreePath(
+        route,
+        route.childrenSlot.ownerTreePath,
+      );
+      routeEntries.get(route.ids.route)!.slotIds = [
+        ...routeEntries.get(route.ids.route)!.slotIds,
+        route.childrenSlot.id,
+      ].sort(compareStableStrings);
+      slotBindings.set(`${route.ids.route}::${route.childrenSlot.id}`, {
+        id: `${route.ids.route}::${route.childrenSlot.id}`,
+        routeId: route.ids.route,
+        slotId: route.childrenSlot.id,
+        ownerLayoutId,
+        state: route.childrenSlot.state,
+        defaultId: null,
+        routeSegments: null,
+      });
+    }
+
     if (route.ids.page) {
       pages.set(route.ids.page, {
         id: route.ids.page,
@@ -577,11 +653,9 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
     // The synthetic slotId is stored on each InterceptingRoute.
     for (const ir of route.siblingIntercepts) {
       if (!ir.slotId) continue;
-      const id = createAppRouteGraphInterceptionId(
-        ir.slotId,
-        ir.sourceMatchPattern,
-        ir.targetPattern,
-      );
+      const id =
+        ir.id ??
+        createAppRouteGraphInterceptionId(ir.slotId, ir.sourceMatchPattern, ir.targetPattern);
       interceptions.set(id, {
         id,
         sourcePattern: ir.sourceMatchPattern,
@@ -625,6 +699,16 @@ function findRouteManifestOwnerLayoutId(
   treePosition: number,
 ): string | null {
   const layoutIndex = route.layoutTreePositions.indexOf(treePosition);
+  return route.ids.layouts[layoutIndex] ?? null;
+}
+
+function findRouteManifestOwnerLayoutIdByTreePath(
+  route: AppRouteGraphRoute,
+  treePath: string,
+): string | null {
+  const layoutIndex = route.layoutTreePositions.findIndex(
+    (treePosition) => createAppRouteGraphTreePath(route.routeSegments, treePosition) === treePath,
+  );
   return route.ids.layouts[layoutIndex] ?? null;
 }
 
@@ -854,6 +938,9 @@ function createRouteManifestGraphVersion(segmentGraph: StaticSegmentGraph): Grap
   return `graph:${createHash("sha256").update(JSON.stringify(stableShape)).digest("hex")}`;
 }
 
+/**
+ * Build the App Router route graph by scanning `appDir`.
+ */
 export async function buildAppRouteGraph(
   appDir: string,
   matcher: ValidFileMatcher,
@@ -883,6 +970,16 @@ export async function buildAppRouteGraph(
   // See https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
   const routes: AppRouteGraphRoute[] = [];
 
+  // Per-scan matcher clone used as the cache key for `findFileProbeCache` (and,
+  // transitively, the slot-subpage cache). Cloning gives every scan a fresh
+  // key, so the convention-file probe memo is scoped to exactly this
+  // `buildAppRouteGraph` call: it captures the heavy cross-route re-probing of
+  // shared ancestor directories, then becomes unreachable when the scan returns.
+  // The clone carries the same extensions/regexes/methods, so probe and scan
+  // results are identical to using `matcher` directly.
+  const scanMatcher: ValidFileMatcher = { ...matcher };
+  findFileProbeCache.set(scanMatcher, new Map());
+
   const excludeDir = (name: string) =>
     (name.startsWith("@") && name !== "@children") ||
     name.startsWith("_") ||
@@ -890,14 +987,24 @@ export async function buildAppRouteGraph(
 
   // Process page files in a single pass
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
-  for await (const file of scanWithExtensions("**/page", appDir, matcher.extensions, excludeDir)) {
-    const route = fileToAppRoute(file, appDir, "page", matcher);
+  for await (const file of scanWithExtensions(
+    "**/page",
+    appDir,
+    scanMatcher.extensions,
+    excludeDir,
+  )) {
+    const route = fileToAppRoute(file, appDir, "page", scanMatcher);
     if (route) routes.push(route);
   }
 
   // Process route handler files (API routes) in a single pass
-  for await (const file of scanWithExtensions("**/route", appDir, matcher.extensions, excludeDir)) {
-    const route = fileToAppRoute(file, appDir, "route", matcher);
+  for await (const file of scanWithExtensions(
+    "**/route",
+    appDir,
+    scanMatcher.extensions,
+    excludeDir,
+  )) {
+    const route = fileToAppRoute(file, appDir, "route", scanMatcher);
     if (route) routes.push(route);
   }
 
@@ -914,16 +1021,26 @@ export async function buildAppRouteGraph(
   for await (const file of scanWithExtensions(
     "**/layout",
     appDir,
-    matcher.extensions,
+    scanMatcher.extensions,
     excludeDir,
   )) {
     const dir = path.dirname(file);
     const routeDir = dir === "." ? appDir : path.join(appDir, dir);
     if (!hasParallelSlotDirectory(routeDir)) continue;
-    if (discoverParallelSlots(routeDir, appDir, matcher).length === 0) continue;
+    if (discoverParallelSlots(routeDir, appDir, scanMatcher, true).length === 0) continue;
 
-    const route = directoryToAppRoute(dir, appDir, matcher, null, null);
+    const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null, true);
     if (!route) continue;
+    const optionalCatchAllOwnsPattern = routes.some(
+      (candidate) =>
+        candidate.patternParts.length === route.patternParts.length + 1 &&
+        candidate.patternParts.at(-1)?.endsWith("*") &&
+        patternsStructurallyEquivalent(candidate.patternParts.slice(0, -1), route.patternParts),
+    );
+    if (optionalCatchAllOwnsPattern) {
+      ghostParentRoutes.push(route);
+      continue;
+    }
     if (routePatterns.has(route.pattern)) {
       ghostParentRoutes.push(route);
       continue;
@@ -937,11 +1054,11 @@ export async function buildAppRouteGraph(
   // In Next.js, pages nested inside @slot directories create additional URL routes.
   // For example, @audience/demographics/page.tsx at app/parallel-routes/ creates
   // a route at /parallel-routes/demographics.
-  const slotSubRoutes = discoverSlotSubRoutes(routes, matcher, ghostParentRoutes);
+  const slotSubRoutes = discoverSlotSubRoutes(routes, scanMatcher, ghostParentRoutes);
   routes.push(...slotSubRoutes);
 
   // Discover sibling-style interception markers (markers not inside an @slot directory).
-  discoverSiblingInterceptingRoutes(routes, appDir, matcher);
+  discoverSiblingInterceptingRoutes(routes, appDir, scanMatcher);
 
   validatePageRouteConflicts(routes, appDir);
   validateRoutePatterns(routes.map((route) => route.pattern));
@@ -958,7 +1075,7 @@ export async function buildAppRouteGraph(
   validateRoutePatterns(interceptTargetPatterns);
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return { routes, routeManifest: createRouteManifest(routes) };
 }
@@ -1013,9 +1130,9 @@ function validatePageRouteConflicts(routes: readonly AppRoute[], appDir: string)
 }
 
 function formatAppFilePath(filePath: string, appDir: string): string {
-  const relativePath = path.relative(appDir, filePath).replace(/\\/g, "/");
+  const relativePath = path.relative(appDir, filePath);
   const parsedPath = path.parse(relativePath);
-  const withoutExtension = path.join(parsedPath.dir, parsedPath.name).replace(/\\/g, "/");
+  const withoutExtension = path.join(parsedPath.dir, parsedPath.name);
   return withoutExtension.startsWith("/") ? withoutExtension : `/${withoutExtension}`;
 }
 
@@ -1049,7 +1166,24 @@ function discoverSlotSubRoutes(
     route.parallelSlots = route.parallelSlots.map((slot) => {
       const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
-        return { ...slot, pagePath: subPage, routeSegments: rawSegments };
+        const configLayoutPaths = findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher);
+        const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage, matcher);
+        return withSlotLoadingEntries(
+          {
+            ...slot,
+            pagePath: subPage,
+            configLayoutPaths,
+            configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+              slot.ownerDir,
+              configLayoutPaths,
+            ),
+            notFoundPath: notFoundBoundary.path,
+            notFoundTreePosition: notFoundBoundary.treePosition,
+            routeSegments: rawSegments,
+          },
+          subPage,
+          matcher,
+        );
       }
       return slot;
     });
@@ -1131,6 +1265,15 @@ function discoverSlotSubRoutes(
 
     if (subPathMap.size === 0) continue;
 
+    const childrenOwnerTreePath = parentRoute.parallelSlots.find(
+      (slot) => path.dirname(slot.ownerDir) === parentPageDir,
+    )?.ownerTreePath;
+    if (!childrenOwnerTreePath) {
+      throw new Error(
+        `[vinext] App route graph invariant violated: missing children slot owner for ${parentRoute.pattern}`,
+      );
+    }
+
     // Find the default.tsx for the children slot at the parent directory.
     // When the parent route has a children page, a default.tsx is required so
     // the synthetic sub-route has a fallback for the children slot. Layout-only
@@ -1138,6 +1281,38 @@ function discoverSlotSubRoutes(
     // never occupied at the parent level, so the sub-route simply renders null.
     const childrenDefault = findFile(parentPageDir, "default", matcher);
     if (parentRoute.pagePath && !childrenDefault) continue;
+    const childrenSlotId = createAppRouteGraphSlotId("children", childrenOwnerTreePath);
+    if (parentRoute.pagePath) {
+      parentRoute.childrenSlot = {
+        id: childrenSlotId,
+        ownerTreePath: childrenOwnerTreePath,
+        state: "active",
+      };
+    }
+    for (const route of routes) {
+      if (!route.pagePath || route === parentRoute) continue;
+      const relativePageDir = path.relative(parentPageDir, path.dirname(route.pagePath));
+      if (
+        relativePageDir === "" ||
+        relativePageDir === ".." ||
+        relativePageDir.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativePageDir)
+      ) {
+        continue;
+      }
+      const existingOwnerDepth = route.childrenSlot?.ownerTreePath
+        .split("/")
+        .filter(Boolean).length;
+      const candidateOwnerDepth = childrenOwnerTreePath.split("/").filter(Boolean).length;
+      if (existingOwnerDepth !== undefined && existingOwnerDepth >= candidateOwnerDepth) {
+        continue;
+      }
+      route.childrenSlot = {
+        id: childrenSlotId,
+        ownerTreePath: childrenOwnerTreePath,
+        state: "active",
+      };
+    }
 
     // When a slot sub-route has no children page of its own (no page.tsx for
     // the sub-path and no default.tsx for the children slot), Next.js falls
@@ -1202,11 +1377,28 @@ function discoverSlotSubRoutes(
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
       const subSlots: AppRouteGraphParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
         const subPage = slotPages.get(slot.key);
-        return {
-          ...slot,
-          pagePath: subPage || null,
-          routeSegments: subPage ? rawSegments : null,
-        };
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          subPage ?? null,
+          matcher,
+        );
+        const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage ?? null, matcher);
+        return withSlotLoadingEntries(
+          {
+            ...slot,
+            pagePath: subPage || null,
+            configLayoutPaths,
+            configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+              slot.ownerDir,
+              configLayoutPaths,
+            ),
+            notFoundPath: notFoundBoundary.path,
+            notFoundTreePosition: notFoundBoundary.treePosition,
+            routeSegments: subPage ? rawSegments : null,
+          },
+          subPage ?? null,
+          matcher,
+        );
       });
 
       const newRoute: AppRouteGraphRoute = {
@@ -1227,16 +1419,29 @@ function discoverSlotSubRoutes(
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
         parallelSlots: subSlots,
-        loadingPath: parentRoute.loadingPath,
+        childrenSlot: {
+          id: childrenSlotId,
+          ownerTreePath: childrenOwnerTreePath,
+          state: childrenDefault ? "default" : childrenCatchAll ? "active" : "unmatched",
+        },
+        // The parent loading convention becomes an ancestor boundary for the
+        // synthetic sub-route; it is no longer the synthetic route's leaf.
+        loadingPath: null,
+        loadingPaths: parentRoute.loadingPaths,
+        loadingTreePositions: parentRoute.loadingTreePositions,
         errorPath: parentRoute.errorPath,
         layoutErrorPaths: parentRoute.layoutErrorPaths,
         notFoundPath: parentRoute.notFoundPath,
+        notFoundTreePosition: parentRoute.notFoundTreePosition,
         notFoundPaths: parentRoute.notFoundPaths,
         forbiddenPaths: parentRoute.forbiddenPaths,
         forbiddenPath: parentRoute.forbiddenPath,
+        forbiddenTreePosition: parentRoute.forbiddenTreePosition,
         unauthorizedPath: parentRoute.unauthorizedPath,
+        unauthorizedTreePosition: parentRoute.unauthorizedTreePosition,
         unauthorizedPaths: parentRoute.unauthorizedPaths,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
+        childrenRouteSegments: childrenDefault ? parentRoute.routeSegments : undefined,
         templateTreePositions: parentRoute.templateTreePositions,
         layoutTreePositions: parentRoute.layoutTreePositions,
         isDynamic: parentRoute.isDynamic || subIsDynamic,
@@ -1261,14 +1466,50 @@ function discoverSlotSubRoutes(
  */
 type SlotSubPageEntry = { relativePath: string; pagePath: string };
 
-// Per-build memo: a slot directory's sub-pages depend only on the directory
+// Per-scan memo of raw directory reads (withFileTypes). Inherited parallel-slot
+// discovery walks every ancestor directory of a route and reads it with
+// `fs.readdirSync` to look for `@slot` directories; because routes share
+// ancestors, the same directory is otherwise read once per descendant route
+// (super-linear: a route dir with N siblings is read O(N) times across the
+// scan). Keyed by the per-scan matcher clone (like `findSlotSubPagesCache`
+// below) so it is scoped to a single scan and collected afterwards — no
+// cross-scan pollution in long-lived dev servers.
+const dirEntriesCache = new WeakMap<ValidFileMatcher, Map<string, fs.Dirent[]>>();
+
+function readDirEntriesCached(dir: string, matcher: ValidFileMatcher): fs.Dirent[] {
+  let perMatcher = dirEntriesCache.get(matcher);
+  if (!perMatcher) {
+    perMatcher = new Map();
+    dirEntriesCache.set(matcher, perMatcher);
+  }
+  let entries = perMatcher.get(dir);
+  if (entries === undefined) {
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (error) {
+      // Only a *missing* directory is an expected empty result — this replaces
+      // the prior `fs.existsSync(dir)` guard, and caching [] keeps a known-absent
+      // dir from being re-probed for every descendant route. Any other fault
+      // (EACCES, EMFILE/ENFILE, …) is real: rethrow it like the original
+      // unguarded `readdirSync` did, rather than silently caching an empty
+      // listing that would drop routes/slots for the rest of the scan.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      entries = [];
+    }
+    perMatcher.set(dir, entries);
+  }
+  return entries;
+}
+
+// Per-scan memo: a slot directory's sub-pages depend only on the directory
 // contents and the matcher's accepted extensions. Inherited slots get scanned
 // once per descendant route, so without memoization a route N segments deep
 // pays O(N) full subtree walks for every shared ancestor slot.
 //
-// Keyed by matcher (one matcher per build) so the cache is naturally scoped
-// to a single build run and gets collected when the build finishes — no
-// cross-build pollution in long-lived dev servers.
+// Keyed by the per-scan matcher clone that `buildAppRouteGraph` registers, so
+// the cache is naturally scoped to a single scan and gets collected when the
+// scan finishes — no cross-scan pollution in long-lived dev servers.
 const findSlotSubPagesCache = new WeakMap<ValidFileMatcher, Map<string, SlotSubPageEntry[]>>();
 
 function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPageEntry[] {
@@ -1306,6 +1547,91 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   scan(slotDir);
   perMatcher.set(slotDir, results);
   return results;
+}
+
+function findSlotConfigLayoutPaths(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): string[] {
+  if (!pagePath) return [];
+
+  const layouts: string[] = [];
+  let dir = path.dirname(pagePath);
+  while (dir !== slotDir && dir.startsWith(`${slotDir}${path.sep}`)) {
+    const layoutPath = findFile(dir, "layout", matcher);
+    if (layoutPath) layouts.unshift(layoutPath);
+    dir = path.dirname(dir);
+  }
+  return layouts;
+}
+
+function findSlotConfigLayoutTreePositions(
+  slotDir: string,
+  layoutPaths: readonly string[],
+): number[] {
+  return layoutPaths.map((layoutPath) => {
+    const relativeDir = path.relative(slotDir, path.dirname(layoutPath));
+    return relativeDir ? relativeDir.split(path.sep).filter(Boolean).length : 0;
+  });
+}
+
+function findSlotLoadingEntries(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const pageDir = pagePath ? path.dirname(pagePath) : slotDir;
+  if (pageDir !== slotDir && !pageDir.startsWith(`${slotDir}${path.sep}`)) return [];
+
+  const relativeDir = path.relative(slotDir, pageDir);
+  const segments = relativeDir ? relativeDir.split(path.sep).filter(Boolean) : [];
+  const loadings: { path: string; treePosition: number }[] = [];
+  let currentDir = slotDir;
+
+  const rootLoading = findFile(currentDir, "loading", matcher);
+  if (rootLoading) loadings.push({ path: rootLoading, treePosition: 0 });
+
+  for (let index = 0; index < segments.length; index++) {
+    currentDir = path.join(currentDir, segments[index]);
+    const loading = findFile(currentDir, "loading", matcher);
+    if (loading) loadings.push({ path: loading, treePosition: index + 1 });
+  }
+  return loadings;
+}
+
+function withSlotLoadingEntries<TSlot extends ParallelSlot>(
+  slot: TSlot,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): TSlot {
+  const loadingEntries = findSlotLoadingEntries(slot.ownerDir, pagePath, matcher);
+  return {
+    ...slot,
+    loadingPaths: loadingEntries.map((entry) => entry.path),
+    loadingTreePositions: loadingEntries.map((entry) => entry.treePosition),
+  };
+}
+
+function findSlotNotFoundBoundary(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): { path: string | null; treePosition: number | null } {
+  let dir = pagePath ? path.dirname(pagePath) : slotDir;
+  while (dir === slotDir || dir.startsWith(`${slotDir}${path.sep}`)) {
+    const boundaryPath = findFile(dir, "not-found", matcher);
+    if (boundaryPath) {
+      const relativeDir = path.relative(slotDir, dir);
+      return {
+        path: boundaryPath,
+        treePosition: relativeDir ? relativeDir.split(path.sep).filter(Boolean).length : 0,
+      };
+    }
+    if (dir === slotDir) break;
+    dir = path.dirname(dir);
+  }
+  return { path: null, treePosition: null };
 }
 
 /**
@@ -1380,8 +1706,9 @@ function directoryToAppRoute(
   matcher: ValidFileMatcher,
   pagePath: string | null,
   routePath: string | null,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphRoute | null {
-  const segments = dir === "." ? [] : dir.split(path.sep);
+  const segments = dir === "." ? [] : dir.split("/");
 
   const params: string[] = [];
   let isDynamic = false;
@@ -1408,19 +1735,26 @@ function directoryToAppRoute(
   // In Next.js, each segment independently wraps its children with an ErrorBoundary.
   // This array enables interleaving error boundaries with layouts in the rendering.
   const layoutErrorPaths = discoverLayoutAlignedErrors(segments, appDir, matcher);
+  const loadingEntries = discoverSegmentLoadings(segments, appDir, matcher);
+  const loadingPaths = loadingEntries.map((entry) => entry.path);
+  const loadingTreePositions = loadingEntries.map((entry) => entry.treePosition);
   const errorEntries = discoverSegmentErrors(segments, appDir, matcher);
   const errorPaths = errorEntries.map((entry) => entry.path);
   const errorTreePositions = errorEntries.map((entry) => entry.treePosition);
 
-  // Discover loading, error in the route's directory
+  // Discover loading, error in the route's directory.
   const routeDir = dir === "." ? appDir : path.join(appDir, dir);
+  const effectivePagePath = pagePath ?? (routePath ? null : findFile(routeDir, "default", matcher));
   const loadingPath = findFile(routeDir, "loading", matcher);
   const errorPath = findFile(routeDir, "error", matcher);
 
   // Discover not-found/forbidden/unauthorized: walk from route directory up to root (nearest wins).
-  const notFoundPath = discoverBoundaryFile(segments, appDir, "not-found", matcher);
-  const forbiddenPath = discoverBoundaryFile(segments, appDir, "forbidden", matcher);
-  const unauthorizedPath = discoverBoundaryFile(segments, appDir, "unauthorized", matcher);
+  const notFoundEntry = discoverBoundaryFileEntry(segments, appDir, "not-found", matcher);
+  const notFoundPath = notFoundEntry?.path ?? null;
+  const forbiddenEntry = discoverBoundaryFileEntry(segments, appDir, "forbidden", matcher);
+  const forbiddenPath = forbiddenEntry?.path ?? null;
+  const unauthorizedEntry = discoverBoundaryFileEntry(segments, appDir, "unauthorized", matcher);
+  const unauthorizedPath = unauthorizedEntry?.path ?? null;
 
   // Discover per-layout not-found files (one per layout directory).
   // These are used for per-layout NotFoundBoundary to match Next.js behavior where
@@ -1432,12 +1766,18 @@ function directoryToAppRoute(
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
   // (inherited from parent layouts) use default.tsx as fallback.
-  const parallelSlots = discoverInheritedParallelSlots(segments, appDir, routeDir, matcher);
+  const parallelSlots = discoverInheritedParallelSlots(
+    segments,
+    appDir,
+    routeDir,
+    matcher,
+    includeNestedOnlySlots,
+  );
 
   return {
     ids: createAppRouteSemanticIds({
       pattern: pattern === "/" ? "/" : pattern,
-      pagePath,
+      pagePath: effectivePagePath,
       routePath,
       routeSegments: segments,
       layoutTreePositions,
@@ -1445,21 +1785,26 @@ function directoryToAppRoute(
       slots: parallelSlots,
     }),
     pattern: pattern === "/" ? "/" : pattern,
-    pagePath,
+    pagePath: effectivePagePath,
     routePath,
     layouts,
     templates,
     parallelSlots,
     loadingPath,
+    loadingPaths,
+    loadingTreePositions,
     errorPath,
     layoutErrorPaths,
     errorPaths,
     errorTreePositions,
     notFoundPath,
+    notFoundTreePosition: notFoundEntry?.treePosition ?? null,
     notFoundPaths,
     forbiddenPaths,
     forbiddenPath,
+    forbiddenTreePosition: forbiddenEntry?.treePosition ?? null,
     unauthorizedPath,
+    unauthorizedTreePosition: unauthorizedEntry?.treePosition ?? null,
     unauthorizedPaths,
     routeSegments: segments,
     templateTreePositions,
@@ -1569,8 +1914,10 @@ function convertTreePathToRouteParts(treePath: string): {
 function computeLayoutTreePositions(appDir: string, layouts: string[]): number[] {
   return layouts.map((layoutPath) => {
     const layoutDir = path.dirname(layoutPath);
-    if (layoutDir === appDir) return 0;
+    // path.relative tolerates mixed separators and win32 case differences,
+    // so an empty result is the separator-agnostic "layout at app root" test.
     const relative = path.relative(appDir, layoutDir);
+    if (relative === "") return 0;
     return relative.split(path.sep).length;
   });
 }
@@ -1659,6 +2006,37 @@ function discoverSegmentErrors(
 }
 
 /**
+ * Discover loading.tsx files by segment tree position.
+ *
+ * Loading conventions belong to loader-tree segments rather than layouts. A
+ * segment without layout.tsx can therefore provide the boundary that suspends
+ * while its child layout renders.
+ */
+function discoverSegmentLoadings(
+  segments: string[],
+  appDir: string,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const loadings: { path: string; treePosition: number }[] = [];
+
+  const rootLoading = findFile(appDir, "loading", matcher);
+  if (rootLoading) {
+    loadings.push({ path: rootLoading, treePosition: 0 });
+  }
+
+  let currentDir = appDir;
+  for (let index = 0; index < segments.length; index++) {
+    currentDir = path.join(currentDir, segments[index]);
+    const loading = findFile(currentDir, "loading", matcher);
+    if (loading) {
+      loadings.push({ path: loading, treePosition: index + 1 });
+    }
+  }
+
+  return loadings;
+}
+
+/**
  * Discover error.tsx files aligned with the layouts array.
  *
  * Route manifests still model layout-owned boundary facts by layout index.
@@ -1695,12 +2073,12 @@ function discoverLayoutAlignedErrors(
  * by walking from the route's directory up to the app root.
  * Returns the first (closest) file found, or null.
  */
-function discoverBoundaryFile(
+function discoverBoundaryFileEntry(
   segments: string[],
   appDir: string,
   fileName: string,
   matcher: ValidFileMatcher,
-): string | null {
+): { path: string; treePosition: number } | null {
   // Build all directory paths from leaf to root
   const dirs: string[] = [];
   let dir = appDir;
@@ -1713,7 +2091,7 @@ function discoverBoundaryFile(
   // Walk from leaf (last) to root (first)
   for (let i = dirs.length - 1; i >= 0; i--) {
     const f = findFile(dirs[i], fileName, matcher);
-    if (f) return f;
+    if (f) return { path: f, treePosition: i };
   }
   return null;
 }
@@ -1755,6 +2133,7 @@ function discoverInheritedParallelSlots(
   appDir: string,
   routeDir: string,
   matcher: ValidFileMatcher,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphParallelSlot[] {
   const slotMap = new Map<string, AppRouteGraphParallelSlot>();
 
@@ -1785,14 +2164,20 @@ function discoverInheritedParallelSlots(
     // Layout-less routes keep their legacy slot metadata here; validation is separate.
     if (lvlLayoutIdx < 0 && routeHasLayout) continue;
 
-    const isOwnDir = dir === routeDir;
     const slotLayoutIdx = Math.max(lvlLayoutIdx, 0);
-    const slotsAtLevel = discoverParallelSlots(dir, appDir, matcher);
     const segmentsBelow = segments.slice(segmentIndex);
+    const isActiveUrlLevel = dir === routeDir || segmentsBelow.every(isInvisibleSegment);
+    const slotsAtLevel = discoverParallelSlots(
+      dir,
+      appDir,
+      matcher,
+      includeNestedOnlySlots && isActiveUrlLevel,
+    );
 
     for (const slot of slotsAtLevel) {
-      if (isOwnDir) {
-        // At the route's own directory: use page.tsx (normal behavior)
+      if (isActiveUrlLevel) {
+        // Use the slot's root page at its active URL level. Route groups below
+        // the slot owner are transparent, so they do not make the slot inherited.
         slot.layoutIndex = slotLayoutIdx;
         slotMap.set(slot.key, slot);
       } else {
@@ -1811,15 +2196,29 @@ function discoverInheritedParallelSlots(
           slotPatternParts = [...(ownerUrl?.urlSegments ?? []), ...mirror.slotUrlSegments];
           slotParamNames = [...(ownerUrl?.params ?? []), ...mirror.slotParamNames];
         }
-        const inheritedSlot: AppRouteGraphParallelSlot = {
-          ...slot,
-          pagePath: mirror?.pagePath ?? null,
-          layoutIndex: slotLayoutIdx,
-          routeSegments: mirror?.segments ?? null,
-          slotPatternParts,
-          slotParamNames,
-          // defaultPath, loadingPath, errorPath, interceptingRoutes remain
-        };
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          mirror?.pagePath ?? null,
+          matcher,
+        );
+        const inheritedSlot = withSlotLoadingEntries(
+          {
+            ...slot,
+            pagePath: mirror?.pagePath ?? null,
+            configLayoutPaths,
+            configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+              slot.ownerDir,
+              configLayoutPaths,
+            ),
+            layoutIndex: slotLayoutIdx,
+            routeSegments: mirror?.segments ?? null,
+            slotPatternParts,
+            slotParamNames,
+            // defaultPath, loadingPath, errorPath, interceptingRoutes remain
+          },
+          mirror?.pagePath ?? null,
+          matcher,
+        );
         slotMap.set(slot.key, inheritedSlot);
       }
     }
@@ -1973,7 +2372,10 @@ function segmentTreeNodeType(seg: string): string {
   return "dynamic";
 }
 
-function patternsStructurallyEquivalent(a: readonly string[], b: readonly string[]): boolean {
+export function patternsStructurallyEquivalent(
+  a: readonly string[],
+  b: readonly string[],
+): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (segmentTreeNodeType(a[i]) !== segmentTreeNodeType(b[i])) return false;
@@ -1998,12 +2400,7 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
   if (directPage) return directPage;
 
   // Walk route-group subdirectories (transparent in the URL).
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(slotDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
+  const entries = readDirEntriesCached(slotDir, matcher);
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!entry.name.startsWith("(") || !entry.name.endsWith(")")) continue;
@@ -2015,16 +2412,16 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
 
 /**
  * Discover parallel route slots (@team, @analytics, etc.) in a directory.
- * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
+ * Returns a ParallelSlot for each @-prefixed subdirectory that has a page,
+ * default component, intercepting route, or nested page-backed sub-route.
  */
 function discoverParallelSlots(
   dir: string,
   appDir: string,
   matcher: ValidFileMatcher,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphParallelSlot[] {
-  if (!fs.existsSync(dir)) return [];
-
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const entries = readDirEntriesCached(dir, matcher);
   const slots: AppRouteGraphParallelSlot[] = [];
 
   for (const entry of entries) {
@@ -2045,9 +2442,12 @@ function discoverParallelSlots(
     const pagePath = findSlotRootPage(slotDir, matcher);
     const defaultPath = findFile(slotDir, "default", matcher);
     const interceptingRoutes = discoverInterceptingRoutes(slotDir, dir, appDir, matcher);
+    const hasNestedPages = includeNestedOnlySlots && findSlotSubPages(slotDir, matcher).length > 0;
 
-    // Only include slots that have at least a page, default, or intercepting route
-    if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
+    // A slot with only nested pages still owns URL sub-routes. Keeping it in
+    // the graph lets discoverSlotSubRoutes materialize shapes such as
+    // `@slot/other/page.tsx` when the owner has no children page of its own.
+    if (!pagePath && !defaultPath && interceptingRoutes.length === 0 && !hasNestedPages) continue;
 
     const ownerSegments = path
       .relative(appDir, dir)
@@ -2055,18 +2455,28 @@ function discoverParallelSlots(
       .filter((segment) => segment.length > 0);
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
+    const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
+    const loadingEntries = findSlotLoadingEntries(slotDir, pagePath, matcher);
+    const notFoundBoundary = findSlotNotFoundBoundary(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
-      key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
+      key: `${slotName}@${path.relative(appDir, slotDir)}`,
       name: slotName,
       ownerDir: slotDir,
       ownerTreePath,
+      ownerTreePosition: ownerSegments.length,
       hasPage: pagePath !== null,
       pagePath,
       defaultPath,
       layoutPath: findFile(slotDir, "layout", matcher),
+      configLayoutPaths,
+      configLayoutTreePositions: findSlotConfigLayoutTreePositions(slotDir, configLayoutPaths),
       loadingPath: findFile(slotDir, "loading", matcher),
+      loadingPaths: loadingEntries.map((loading) => loading.path),
+      loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
       errorPath: findFile(slotDir, "error", matcher),
+      notFoundPath: notFoundBoundary.path,
+      notFoundTreePosition: notFoundBoundary.treePosition,
       interceptingRoutes,
       layoutIndex: -1, // Will be set by discoverInheritedParallelSlots
       routeSegments: pagePath ? [] : null,
@@ -2121,7 +2531,7 @@ function discoverInterceptingRoutes(
   const results: InterceptingRoute[] = [];
 
   // Recursively scan for page files inside intercepting directories
-  scanForInterceptingPages(slotDir, routeDir, appDir, results, matcher);
+  scanForInterceptingPages(slotDir, slotDir, routeDir, appDir, results, matcher);
 
   return results;
 }
@@ -2148,8 +2558,7 @@ function discoverSiblingInterceptingRoutes(
   for (const route of routes) {
     const filePath = route.pagePath ?? route.routePath;
     if (!filePath) continue;
-    // Keys are forward-slash — findOwnerRouteForDir compares in that space.
-    const routeDir = normalizePathSeparators(path.dirname(filePath));
+    const routeDir = path.dirname(filePath);
     if (!routesByDir.has(routeDir)) {
       routesByDir.set(routeDir, route);
     }
@@ -2186,11 +2595,17 @@ function discoverSiblingInterceptingRoutes(
           parentDir, // routeDir: the parent directory (no @slot between parent and marker)
           appDir,
           parentDir, // interceptParentDir: same as routeDir for sibling case
+          null,
           results,
           matcher,
         );
         for (const ir of results) {
           ir.slotId = createAppRouteGraphSiblingInterceptSlotId(ir.sourceMatchPattern);
+          ir.id = createAppRouteGraphInterceptionId(
+            ir.slotId,
+            ir.sourceMatchPattern,
+            ir.targetPattern,
+          );
           // Find the route that serves the parentDir. Fall back to scanning all
           // routes that live under parentDir (handles the case where the route
           // pattern is a catch-all like /templates/:catchAll+ rather than /templates).
@@ -2223,12 +2638,9 @@ function discoverSiblingInterceptingRoutes(
  *    no sibling pages at all (e.g. `deep/path/(...)target` with no
  *    `deep/path/page.tsx`).
  *
- * All comparisons happen in forward-slash space: `appDir` is forward-slash
- * (normalized once in the config hook), but `dir` and route file paths
- * descend through native `path.join`/`path.dirname`, which reintroduce
- * backslashes on Windows. Without normalizing, the `current === appDir`
- * termination never fires there and the walk overshoots the app root.
- * `routesByDir` keys must be forward-slash dirnames of the route file paths.
+ * Comparisons happen in forward-slash space — inputs go through `toSlash` so
+ * callers still holding native-separator paths hit the `current === appDir`
+ * termination instead of overshooting the app root.
  *
  * Exported for tests.
  */
@@ -2238,8 +2650,8 @@ export function findOwnerRouteForDir(
   routes: readonly AppRouteGraphRoute[],
   routesByDir: Map<string, AppRouteGraphRoute>,
 ): AppRouteGraphRoute | null {
-  const appRoot = normalizePathSeparators(appDir);
-  let current = normalizePathSeparators(dir);
+  const appRoot = toSlash(appDir);
+  let current = toSlash(dir);
   while (true) {
     // Exact match: a route whose page/handler file lives directly in `current`
     const exact = routesByDir.get(current);
@@ -2252,7 +2664,7 @@ export function findOwnerRouteForDir(
     for (const route of routes) {
       const filePath = route.pagePath ?? route.routePath;
       if (!filePath) continue;
-      if (!normalizePathSeparators(filePath).startsWith(currentWithSep)) continue;
+      if (!toSlash(filePath).startsWith(currentWithSep)) continue;
       if (!best || route.patternParts.length < best.patternParts.length) {
         best = route;
       }
@@ -2274,10 +2686,12 @@ export function findOwnerRouteForDir(
  */
 function scanForInterceptingPages(
   currentDir: string,
+  slotRootDir: string,
   routeDir: string,
   appDir: string,
   results: InterceptingRoute[],
   matcher: ValidFileMatcher,
+  parentLoadingEntries: readonly { path: string; treePosition: number }[] = [],
 ): void {
   if (!fs.existsSync(currentDir)) return;
 
@@ -2290,12 +2704,12 @@ function scanForInterceptingPages(
 
     // Check if this directory name starts with an interception convention
     const interceptMatch = matchInterceptConvention(entry.name);
+    const interceptDir = path.join(currentDir, entry.name);
 
     if (interceptMatch) {
       // This directory is the start of an intercepting route
       // e.g. "(.)photos" means intercept same-level "photos" route
       const restOfName = entry.name.slice(interceptMatch.prefix.length);
-      const interceptDir = path.join(currentDir, entry.name);
 
       // Find page files within this intercepting directory tree.
       // `currentDir` is the *parent* of the marker dir — used by
@@ -2309,17 +2723,34 @@ function scanForInterceptingPages(
         routeDir,
         appDir,
         currentDir,
+        slotRootDir,
         results,
         matcher,
+        [],
+        parentLoadingEntries,
+        path.relative(slotRootDir, currentDir).split(path.sep).filter(Boolean).length,
       );
     } else {
       // Regular subdirectory — keep scanning for intercepting dirs
+      const loading = findFile(interceptDir, "loading", matcher);
+      const loadingEntries = loading
+        ? [
+            ...parentLoadingEntries,
+            {
+              path: loading,
+              treePosition: path.relative(slotRootDir, interceptDir).split(path.sep).filter(Boolean)
+                .length,
+            },
+          ]
+        : parentLoadingEntries;
       scanForInterceptingPages(
-        path.join(currentDir, entry.name),
+        interceptDir,
+        slotRootDir,
         routeDir,
         appDir,
         results,
         matcher,
+        loadingEntries,
       );
     }
   }
@@ -2356,14 +2787,27 @@ function collectInterceptingPages(
    * Next.js' `interceptingRoute`.
    */
   interceptParentDir: string,
+  /** Named-slot root used as the not-found ancestry bound; null for slot-less siblings. */
+  slotRootDir: string | null,
   results: InterceptingRoute[],
   matcher: ValidFileMatcher,
   parentLayoutPaths: readonly string[] = [],
+  parentLoadingEntries: readonly { path: string; treePosition: number }[] = [],
+  treePositionOffset = 0,
 ): void {
   const currentLayoutPath = findFile(currentDir, "layout", matcher);
   const layoutPaths = currentLayoutPath
     ? [...parentLayoutPaths, currentLayoutPath]
     : parentLayoutPaths;
+  const currentLoadingPath = findFile(currentDir, "loading", matcher);
+  const relativeCurrentDir = path.relative(interceptRoot, currentDir);
+  const currentTreePosition =
+    treePositionOffset +
+    1 +
+    (relativeCurrentDir ? relativeCurrentDir.split(path.sep).filter(Boolean).length : 0);
+  const loadingEntries = currentLoadingPath
+    ? [...parentLoadingEntries, { path: currentLoadingPath, treePosition: currentTreePosition }]
+    : parentLoadingEntries;
 
   // Check for page.tsx in current directory
   const page = findFile(currentDir, "page", matcher);
@@ -2378,12 +2822,45 @@ function collectInterceptingPages(
     );
     if (targetPattern) {
       const sourceMatchPattern = computeInterceptSourceMatchPattern(interceptParentDir, appDir);
+      const notFoundBoundary = findSlotNotFoundBoundary(
+        slotRootDir ?? interceptRoot,
+        page,
+        matcher,
+      );
+      const slotParentSegments = slotRootDir
+        ? path.relative(slotRootDir, interceptParentDir).split(path.sep).filter(Boolean)
+        : [];
+      const branchSegments = [
+        ...slotParentSegments,
+        interceptSegment,
+        ...path.relative(interceptRoot, path.dirname(page)).split(path.sep).filter(Boolean),
+      ];
       results.push({
+        branchSegments,
         convention,
         layoutPaths: [...layoutPaths],
+        layoutSegments: layoutPaths.map((layoutPath) => {
+          const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
+          return [
+            ...slotParentSegments,
+            interceptSegment,
+            ...relativeDir.split(path.sep).filter(Boolean),
+          ];
+        }),
+        loadingPaths: loadingEntries.map((loading) => loading.path),
+        loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
+        notFoundBranchSegments: branchSegments,
+        notFoundPath: notFoundBoundary.path,
+        notFoundTreePosition:
+          notFoundBoundary.treePosition === null
+            ? null
+            : slotRootDir
+              ? notFoundBoundary.treePosition
+              : notFoundBoundary.treePosition + 1,
         targetPattern: targetPattern.pattern,
         sourceMatchPattern,
         pagePath: page,
+        sourcePageSegments: path.relative(appDir, path.dirname(page)).split("/").filter(Boolean),
         params: targetPattern.params,
       });
     }
@@ -2404,9 +2881,12 @@ function collectInterceptingPages(
       routeDir,
       appDir,
       interceptParentDir,
+      slotRootDir,
       results,
       matcher,
       layoutPaths,
+      loadingEntries,
+      treePositionOffset,
     );
   }
 }
@@ -2512,7 +2992,9 @@ function computeInterceptTarget(
       return null;
   }
 
-  // Add the intercept segment and any nested path segments
+  // Add the intercept segment and any nested path segments. Next.js resolves
+  // only the first interception marker; later marker-shaped names remain part
+  // of the intercepted route string.
   const nestedParts = path.relative(interceptRoot, currentDir).split(path.sep).filter(Boolean);
   const allSegments = [...baseParts, interceptSegment, ...nestedParts];
 
@@ -2558,10 +3040,43 @@ function markerForInterceptionConvention(convention: string): string {
 }
 
 /**
- * Find a file by name (without extension) in a directory.
- * Checks configured pageExtensions.
+ * Scan-scoped cache of convention-file probes, keyed by the per-scan matcher
+ * created in `buildAppRouteGraph`. A single scan walks the appDir→leaf chain
+ * separately for every route (layouts, templates, errors, boundaries, slots),
+ * so shared ancestor directories — the `app/` root above all — get re-probed
+ * once per descendant route. The probe result is deterministic within one scan
+ * (the filesystem does not change mid-build), so memoizing it removes the
+ * dominant cross-route redundancy.
+ *
+ * Keyed by matcher so the cache lifetime is exactly one `buildAppRouteGraph`
+ * call: the scan registers a fresh matcher clone, and the entry is unreachable
+ * (and GC-eligible) once the scan returns. A fresh key per scan is also what
+ * makes this concurrency-safe — overlapping builds never share probe state.
  */
-const findFile = findFileWithExts;
+const findFileProbeCache = new WeakMap<ValidFileMatcher, Map<string, string | null>>();
+
+/**
+ * Find a file by name (without extension) in a directory, checking configured
+ * pageExtensions. Memoizes through `findFileProbeCache` when the matcher has a
+ * registered per-scan cache; otherwise falls back to a direct probe (identical
+ * result). The `null` "not found" outcome is cached too, so repeated misses on
+ * shared ancestors cost a single set of `existsSync` calls per scan.
+ */
+function findFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
+  const cache = findFileProbeCache.get(matcher);
+  if (!cache) return findFileWithExts(dir, name, matcher);
+
+  const key = `${dir}\0${name}`;
+  // `findFileWithExts` returns `string | null`, so a stored miss reads back as
+  // `null` (not `undefined`). Only a genuinely absent key yields `undefined`,
+  // which is what distinguishes a cache miss from a cached not-found result.
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+
+  const result = findFileWithExts(dir, name, matcher);
+  cache.set(key, result);
+  return result;
+}
 
 /**
  * Convert filesystem path segments to URL route parts, skipping invisible segments

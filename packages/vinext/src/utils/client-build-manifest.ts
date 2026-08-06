@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { manifestFileWithBase } from "./manifest-paths.js";
 import type { BuildManifestChunk } from "./lazy-chunks.js";
 import { isUnknownRecord } from "./record.js";
@@ -110,9 +110,9 @@ function findClientEntryFileInAssetsDir(options: {
   }
   if (!entryFull) return undefined;
 
-  // Return the path relative to clientDir (POSIX-normalised) so it preserves the
+  // Return the path relative to clientDir so it preserves the
   // `<assetsSubdir>/chunks/` location, then apply the basePath.
-  const relativeToClient = path.relative(options.clientDir, entryFull).split(path.sep).join("/");
+  const relativeToClient = path.relative(options.clientDir, entryFull);
   return manifestFileWithBase(relativeToClient, options.assetBase);
 }
 

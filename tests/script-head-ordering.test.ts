@@ -160,11 +160,23 @@ describe("inline beforeInteractive head ordering", () => {
     expect(tagMatch?.[0]).toContain('nonce="ordering-nonce"');
   });
 
-  it("does not affect external src beforeInteractive scripts", async () => {
-    // The existing /script-nonce page uses external src beforeInteractive
-    // (Script src="/test2.js"). This must keep rendering as an inline
-    // <script src> tag — only the no-src inline form is hoisted.
+  it("hoists external src beforeInteractive scripts into <head> with the data-nscript marker", async () => {
+    // Regression for cloudflare/vinext#2016: external src beforeInteractive
+    // scripts (the /script-nonce page renders Script src="/test2.js") are now
+    // registered through BeforeInteractiveContext and hoisted into <head> just
+    // like the inline form, mirroring Next.js which routes inline and src
+    // beforeInteractive scripts equally through the App Router runtime. The
+    // hoisted tag carries Next.js's `data-nscript="beforeInteractive"` marker.
     const { html } = await fetchHtml(baseUrl, "/script-nonce");
-    expect(html).toMatch(/<script\b[^>]*src="\/test2\.js"/);
+    const head = extractHeadHtml(html);
+    const tagMatch = /<script\b[^>]*src="\/test2\.js"[^>]*>/.exec(head);
+    expect(
+      tagMatch,
+      "expected the src beforeInteractive script to be hoisted into <head>",
+    ).not.toBeNull();
+    expect(tagMatch?.[0]).toContain('data-nscript="beforeInteractive"');
+    // Exactly one tag — the client must not re-render a duplicate.
+    const matches = [...html.matchAll(/<script\b[^>]*src="\/test2\.js"/g)];
+    expect(matches).toHaveLength(1);
   });
 });

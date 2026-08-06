@@ -1,6 +1,8 @@
 import { createInlineScriptTag } from "./html.js";
 import { createNavigationRuntimeRscMetadataScript } from "./app-ssr-stream.js";
 
+const PPR_DYNAMIC_FALLBACK_SHELL_MARKER = "<!--vinext-ppr-dynamic-fallback-shell-->";
+
 type AppPprFallbackShellRoute = {
   params: readonly string[];
   pattern: string;
@@ -12,6 +14,25 @@ type AppPprFallbackShell = {
   pathname: string;
   params: Record<string, string | string[]>;
 };
+
+/**
+ * A fallback-shell cache entry as consumed by the dispatch layer.
+ * Produced at build time by the PPR prerender and served at request time
+ * when the exact cache entry for a dynamic child param is missing.
+ */
+export type AppPagePprFallbackCacheShell = {
+  fallbackParamNames: readonly string[];
+  params: Record<string, string | string[]>;
+  pathname: string;
+};
+
+export function markAppPprDynamicFallbackShellHtml(html: string): string {
+  return html + PPR_DYNAMIC_FALLBACK_SHELL_MARKER;
+}
+
+export function isAppPprDynamicFallbackShellHtml(html: string): boolean {
+  return html.includes(PPR_DYNAMIC_FALLBACK_SHELL_MARKER);
+}
 
 function routeRootParamNames(route: AppPprFallbackShellRoute): Set<string> {
   return new Set(route.rootParamNames ?? []);
@@ -100,18 +121,7 @@ export function createAppPprFallbackShells(
     }
 
     if (!isValidShell) continue;
-    // Placeholder brackets (`[slug]`, `[...slug]`) become literal `[`/`]` in the
-    // shell pathname, which `new URL()` percent-encodes at fetch time. The
-    // prerender render path must supply params via the prerender-params header
-    // rather than URL matching, because encoded brackets won't match the route
-    // pattern's literal brackets.
-    //
-    // Note: this describes the intended end-state. As of this PR
-    // (generation-only), `prerenderRouteParamsPayloadMatchesRoute` accepts only
-    // `kind === "exact"` payloads, so a fallback-shell render currently resolves
-    // params from the URL (the literal `[slug]` placeholder) rather than the
-    // prerender-params header. The header-supplied placeholder params are wired
-    // up by the fallback-shell render-lifecycle follow-up (#1715).
+
     shells.push({
       fallbackParamNames,
       pathname: "/" + segments.join("/"),

@@ -32,40 +32,33 @@ import {
   type NavigationTraceFields,
   type NavigationTraceReasonCode,
 } from "./navigation-trace.js";
+import {
+  verifyOperationTokenForCacheReuse,
+  type OperationLane,
+  type OperationToken,
+  type OperationTokenRejectionReason,
+} from "./operation-token.js";
 
-export type OperationLane =
-  | "hmr"
-  | "navigation"
-  | "prefetch"
-  | "refresh"
-  | "server-action"
-  | "traverse";
+// OperationToken and OperationLane are owned by ./operation-token.ts, the token
+// authority module. Re-exported here so the planner stays the single import
+// surface for navigation types.
+export type { OperationLane, OperationToken } from "./operation-token.js";
 
-export type OperationToken = {
-  operationId: number;
-  lane: OperationLane;
-  baseVisibleCommitVersion: number;
-  graphVersion: string | null;
-  deploymentVersion: string | null;
-  targetSnapshotFingerprint: string;
-  cacheVariantFingerprint?: string;
-};
-
-export type RouteSnapshotV0 = {
-  interception: InterceptionSnapshotV0 | null;
+export type RouteSnapshot = {
+  interception: InterceptionSnapshot | null;
   interceptionContext: string | null;
   routeId: string;
   // Ordered ancestor-first, with the root layout at index 0. Same-layout
   // persistence uses prefix comparison, so callers must preserve this order.
   layoutIds: readonly string[];
-  mountedParallelSlots: readonly MountedParallelSlotSnapshotV0[];
+  mountedParallelSlots: readonly MountedParallelSlotSnapshot[];
   rootBoundaryId: string | null;
   displayUrl: string;
   matchedUrl: string;
-  slotBindings: readonly ParallelSlotBindingSnapshotV0[];
+  slotBindings: readonly ParallelSlotBindingSnapshot[];
 };
 
-export type InterceptionSnapshotV0 = {
+export type InterceptionSnapshot = {
   sourceMatchedUrl: string;
   sourceRouteId: string;
   slotId: string;
@@ -73,7 +66,7 @@ export type InterceptionSnapshotV0 = {
   targetRouteId: string;
 };
 
-export type MountedParallelSlotSnapshotV0 = {
+export type MountedParallelSlotSnapshot = {
   slotId: string;
   ownerLayoutId: string | null;
 };
@@ -82,20 +75,20 @@ export type MountedParallelSlotSnapshotV0 = {
 // AppElements metadata. Keep the alias explicit so route-state and transport
 // readers cannot drift into structurally identical but semantically separate
 // shapes.
-export type ParallelSlotBindingSnapshotV0 = AppElementsSlotBinding;
+export type ParallelSlotBindingSnapshot = AppElementsSlotBinding;
 
-export type NavigationPlannerStateV0 = {
-  // V0 keeps a single state shape so intent events and result events can move
-  // through one planner surface. flightResponseArrived uses event.token; later
-  // #726 slices can split this by event kind once more result paths are routed
-  // through the planner.
+export type NavigationPlannerState = {
+  // A single state shape lets intent events and result events move through one
+  // planner surface. flightResponseArrived uses event.token; later #726 slices
+  // can split this by event kind once more result paths are routed through the
+  // planner.
   nextOperationToken: OperationToken;
   // Callers that have lifecycle authority should pass the complete trace
   // context. When absent, the planner emits the stable root-boundary facts it
   // can derive from the event and visible snapshot.
   traceFields?: NavigationTraceFields;
   visibleCommitVersion: number;
-  visibleSnapshot: RouteSnapshotV0;
+  visibleSnapshot: RouteSnapshot;
 };
 
 export type RefreshScope = "visible";
@@ -106,7 +99,7 @@ export type NavigationEvent =
   | { kind: "refresh"; scope: RefreshScope }
   | { kind: "traverse"; direction: TraverseDirection; historyState: unknown }
   | { kind: "prefetch"; href: string }
-  | { kind: "flightResponseArrived"; token: OperationToken; result: FlightResultV0 };
+  | { kind: "flightResponseArrived"; token: OperationToken; result: FlightResult };
 
 type RequestedWork =
   | { kind: "flight"; href: string; mode: "push" | "replace" | "refresh" }
@@ -119,12 +112,13 @@ type CommitProposal = {
   preserveElementIds: readonly string[];
   preservePreviousSlotIds: readonly string[];
   reason: "currentRootBoundary" | "interceptedCurrentRootBoundary" | "unprovenTopologyFallback";
-  targetSnapshot: RouteSnapshotV0;
+  targetSnapshot: RouteSnapshot;
 };
 
 type NoCommitReason = "prefetchOnly";
 type HardNavigationReason =
   | "cacheProofRejected"
+  | "cacheReuseTokenRejected"
   | "interceptionProofRejected"
   | "rootBoundaryChanged";
 export type RootBoundaryTransition =
@@ -132,7 +126,7 @@ export type RootBoundaryTransition =
   | "rootBoundaryChanged"
   | "rootBoundaryUnknown";
 
-export type NavigationDecisionV0 =
+export type NavigationDecision =
   | {
       kind: "requestWork";
       token: OperationToken;
@@ -159,16 +153,17 @@ export type NavigationDecisionV0 =
       trace: NavigationTrace;
     };
 
-export type FlightResultV0 = {
+export type FlightResult = {
   cacheEntryReuseProof?: CacheEntryReuseProof;
   href: string;
-  targetSnapshot: RouteSnapshotV0;
+  restoredHistorySnapshot?: boolean;
+  targetSnapshot: RouteSnapshot;
 };
 
 type RscFetchResultSource = "cached" | "live";
 type RscRedirectSignal = "response-url" | "streamed-header";
 
-export type RscFetchResultFactsV0 = {
+export type RscFetchResultFacts = {
   source: RscFetchResultSource;
   currentHref: string;
   origin: string;
@@ -182,14 +177,22 @@ export type RscFetchResultFactsV0 = {
   compatibilityIdHeader: string | null;
   responseUrl: string | null;
   streamedRedirectTarget: string | null;
+  streamedRedirectType?: "push" | "replace" | null;
 };
 
-type RscRedirectFollowV0 = {
+type RscRedirectFollow = {
   href: string;
   historyUpdateMode: "push" | "replace";
   previousNextUrl: string | null;
   redirectDepth: number;
 };
+
+function mergeRscRedirectHistoryMode(
+  navigationMode: "push" | "replace",
+  redirectType: "push" | "replace" | null | undefined,
+): "push" | "replace" {
+  return navigationMode === "push" || redirectType === "push" ? "push" : "replace";
+}
 
 type RscFetchResultHardNavReason =
   | "invalidRscPayload"
@@ -198,18 +201,19 @@ type RscFetchResultHardNavReason =
   | "redirectDepthExhausted"
   | "streamedRedirectLoop";
 
-export type RscFetchResultDecisionV0 =
+export type RscFetchResultDecision =
   | { kind: "proceedToCommit"; discardBody: false; trace: NavigationTrace }
   | {
       kind: "followRedirect";
       discardBody: boolean;
-      redirect: RscRedirectFollowV0;
+      redirect: RscRedirectFollow;
       trace: NavigationTrace;
     }
   | {
       kind: "hardNavigate";
       discardBody: boolean;
       url: string;
+      hardNavigationMode?: "assign" | "replace";
       reason: RscFetchResultHardNavReason;
       trace: NavigationTrace;
     };
@@ -220,10 +224,10 @@ export type RscFetchResultDecisionV0 =
 // outcome (same-document scroll vs cache-bypassing flight vs ordinary flight),
 // the executor owns the effects (history mutation, scroll, RSC fetch).
 //
-// V0 only needs the URL delta plus history/scroll intent. Richer planner inputs
-// (route manifest, mounted slots) join later slices once prefetch reuse and the
-// remaining hard-navigation causes route through this surface.
-export type EarlyNavigationIntentFactsV0 = {
+// This surface only needs the URL delta plus history/scroll intent. Richer
+// planner inputs (route manifest, mounted slots) join later slices once prefetch
+// reuse and the remaining hard-navigation causes route through this surface.
+export type EarlyNavigationIntentFacts = {
   // App basePath, stripped from both pathnames before comparison.
   basePath: string;
   // The current visible document URL (window.location.href at navigation start),
@@ -237,7 +241,7 @@ export type EarlyNavigationIntentFactsV0 = {
   targetHref: string;
 };
 
-export type EarlyNavigationIntentDecisionV0 =
+export type EarlyNavigationIntentDecision =
   | {
       kind: "sameDocumentScroll";
       // Always non-empty: same-document scroll is only chosen for a hash target.
@@ -254,12 +258,66 @@ export type EarlyNavigationIntentDecisionV0 =
       trace: NavigationTrace;
     };
 
+type NavigationReuseNavigationKind = "navigate" | "refresh" | "traverse";
+
+export type VisitedResponseCacheCandidateFacts =
+  | {
+      candidate: "missing";
+      navigationKind: NavigationReuseNavigationKind;
+    }
+  | {
+      candidate: "present";
+      fresh: boolean;
+      mountedSlotsMatch: boolean;
+      navigationKind: NavigationReuseNavigationKind;
+    };
+
+type VisitedResponseCacheCandidateDecision =
+  | { kind: "miss" }
+  | {
+      kind: "evict";
+      reason: "mountedSlotsMismatch" | "refresh" | "stale";
+    }
+  | { kind: "reuse" };
+
+type NavigationReuseCandidateAvailability = { status: "available" } | { status: "unavailable" };
+type OptimisticRouteShellCandidateAvailability =
+  | { status: "available" }
+  | { status: "unavailable"; reason: "routeManifestMissing" };
+
+export type NavigationReuseFacts = {
+  bypassNavigationCache: boolean;
+  navigationKind: NavigationReuseNavigationKind;
+  optimisticRouteShell: OptimisticRouteShellCandidateAvailability;
+  prefetch: NavigationReuseCandidateAvailability;
+  targetHref: string;
+  visitedResponse: NavigationReuseCandidateAvailability;
+};
+
+type FreshFetchReason = "cacheBypassed" | "cacheMiss" | "refresh" | "routeManifestMissing";
+
+export type NavigationReuseDecision =
+  | { kind: "reuseVisitedResponse"; trace: NavigationTrace }
+  | { kind: "consumePrefetch"; trace: NavigationTrace }
+  | { kind: "attemptOptimisticRouteShell"; trace: NavigationTrace }
+  | { kind: "fetchFresh"; reason: FreshFetchReason; trace: NavigationTrace };
+
+type NavigationPrefetchProbeFacts = {
+  bypassNavigationCache: boolean;
+  navigationKind: NavigationReuseNavigationKind;
+  visitedResponse: NavigationReuseCandidateAvailability;
+};
+
+type NavigationPrefetchProbeDecision =
+  | { kind: "probe" }
+  | { kind: "skip"; reason: "cacheBypassed" | "refresh" | "visitedResponseAvailable" };
+
 export type NavigationPlannerInput = {
   // Graph-owned route topology is the semantic authority for root/layout/slot
   // decisions whenever the caller can supply it. Null keeps the legacy
   // snapshot-only path for low-level tests and unknown route shapes.
   routeManifest: RouteManifest | null;
-  state: NavigationPlannerStateV0;
+  state: NavigationPlannerState;
   event: NavigationEvent;
 };
 
@@ -267,7 +325,7 @@ type RouteTopologySnapshot = {
   layoutIds: readonly string[];
   rootBoundaryId: string | null;
   rootLayoutTreePath: string | null;
-  slotBindings: readonly ParallelSlotBindingSnapshotV0[];
+  slotBindings: readonly ParallelSlotBindingSnapshot[];
 };
 
 type RouteTopologyResolution =
@@ -298,9 +356,9 @@ const CACHE_ENTRY_PROOF_MISSING_CODE =
 
 function createRequestWorkDecision(options: {
   eventKind: NavigationEvent["kind"];
-  state: NavigationPlannerStateV0;
+  state: NavigationPlannerState;
   work: RequestedWork;
-}): NavigationDecisionV0 {
+}): NavigationDecision {
   const traverseFields =
     options.work.kind === "traverseFlight" ? { traverseDirection: options.work.direction } : {};
   return {
@@ -330,7 +388,7 @@ function getRequestedWorkTargetHref(work: RequestedWork): string | null {
 }
 
 function createRscFetchResultTraceFields(
-  facts: RscFetchResultFactsV0,
+  facts: RscFetchResultFacts,
   fields: NavigationTraceFields = {},
 ): NavigationTraceFields {
   return {
@@ -341,15 +399,19 @@ function createRscFetchResultTraceFields(
 
 function createRscFetchResultHardNavigationDecision(options: {
   discardBody: boolean;
-  facts: RscFetchResultFactsV0;
+  facts: RscFetchResultFacts;
   reason: RscFetchResultHardNavReason;
   reasonCode: NavigationTraceReasonCode;
   redirectSignal?: RscRedirectSignal;
+  hardNavigationMode?: "assign" | "replace";
   url: string;
-}): RscFetchResultDecisionV0 {
+}): RscFetchResultDecision {
   return {
     discardBody: options.discardBody,
     kind: "hardNavigate",
+    ...(options.hardNavigationMode !== undefined
+      ? { hardNavigationMode: options.hardNavigationMode }
+      : {}),
     reason: options.reason,
     trace: createNavigationTrace(
       options.reasonCode,
@@ -367,10 +429,10 @@ function createRscFetchResultHardNavigationDecision(options: {
 
 function createRscFetchResultFollowRedirectDecision(options: {
   discardBody: boolean;
-  facts: RscFetchResultFactsV0;
-  redirect: RscRedirectFollowV0;
+  facts: RscFetchResultFacts;
+  redirect: RscRedirectFollow;
   redirectSignal: RscRedirectSignal;
-}): RscFetchResultDecisionV0 {
+}): RscFetchResultDecision {
   return {
     discardBody: options.discardBody,
     kind: "followRedirect",
@@ -408,7 +470,7 @@ function mapRscRedirectTerminalReason(reason: "externalRedirect" | "maxRedirects
   }
 }
 
-function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDecisionV0 {
+function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecision {
   if (!facts.responseOk || !facts.isRscContentType || !facts.hasBody) {
     const url = resolveHardNavigationTargetFromRscResponse(
       facts.responseUrl,
@@ -477,9 +539,13 @@ function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDec
   }
 
   if (facts.streamedRedirectTarget !== null) {
+    const streamedHistoryMode = mergeRscRedirectHistoryMode(
+      facts.effectiveHistoryUpdateMode,
+      facts.streamedRedirectType,
+    );
     const redirectDecision = resolveStreamedRscRedirectLifecycleHop({
       currentHref: facts.currentHref,
-      historyUpdateMode: facts.effectiveHistoryUpdateMode,
+      historyUpdateMode: streamedHistoryMode,
       origin: facts.origin,
       redirectDepth: facts.redirectDepth,
       requestPreviousNextUrl: facts.requestPreviousNextUrl,
@@ -493,6 +559,7 @@ function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDec
         reason: terminalReason.hardNavigationReason,
         reasonCode: terminalReason.traceReasonCode,
         redirectSignal: "streamed-header",
+        hardNavigationMode: streamedHistoryMode === "push" ? "assign" : "replace",
         url: redirectDecision.href,
       });
     }
@@ -502,7 +569,7 @@ function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDec
         facts,
         redirect: {
           href: redirectDecision.href,
-          historyUpdateMode: facts.effectiveHistoryUpdateMode,
+          historyUpdateMode: streamedHistoryMode,
           previousNextUrl: redirectDecision.previousNextUrl,
           redirectDepth: redirectDecision.redirectDepth,
         },
@@ -532,14 +599,14 @@ function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDec
 
 function createEarlyNavigationIntentTrace(
   reasonCode: NavigationTraceReasonCode,
-  facts: EarlyNavigationIntentFactsV0,
+  facts: EarlyNavigationIntentFacts,
 ): NavigationTrace {
   return createNavigationTrace(reasonCode, { targetHref: facts.targetHref });
 }
 
 function classifyEarlyNavigationIntent(
-  facts: EarlyNavigationIntentFactsV0,
-): EarlyNavigationIntentDecisionV0 {
+  facts: EarlyNavigationIntentFacts,
+): EarlyNavigationIntentDecision {
   let current: URL;
   let next: URL;
   try {
@@ -601,7 +668,121 @@ function classifyEarlyNavigationIntent(
   };
 }
 
-function createSnapshotRouteTopology(snapshot: RouteSnapshotV0): RouteTopologySnapshot {
+function classifyVisitedResponseCacheCandidate(
+  facts: VisitedResponseCacheCandidateFacts,
+): VisitedResponseCacheCandidateDecision {
+  if (facts.candidate === "missing") {
+    return { kind: "miss" };
+  }
+
+  if (!facts.mountedSlotsMatch) {
+    return {
+      kind: "evict",
+      reason: "mountedSlotsMismatch",
+    };
+  }
+
+  if (facts.navigationKind === "refresh") {
+    return {
+      kind: "evict",
+      reason: "refresh",
+    };
+  }
+
+  if (!facts.fresh) {
+    return {
+      kind: "evict",
+      reason: "stale",
+    };
+  }
+
+  return { kind: "reuse" };
+}
+
+function createNavigationReuseTrace(
+  code: NavigationTraceReasonCode,
+  facts: NavigationReuseFacts,
+  fields: NavigationTraceFields = {},
+): NavigationTrace {
+  return createNavigationTrace(code, {
+    eventKind: facts.navigationKind,
+    targetHref: facts.targetHref,
+    ...fields,
+  });
+}
+
+function createFreshFetchDecision(
+  facts: NavigationReuseFacts,
+  reason: FreshFetchReason,
+): NavigationReuseDecision {
+  return {
+    kind: "fetchFresh",
+    reason,
+    trace: createNavigationReuseTrace(NavigationTraceReasonCodes.fetchFresh, facts, {
+      freshFetchReason: reason,
+    }),
+  };
+}
+
+function classifyNavigationReuse(facts: NavigationReuseFacts): NavigationReuseDecision {
+  if (facts.navigationKind === "refresh") {
+    return createFreshFetchDecision(facts, "refresh");
+  }
+
+  if (!facts.bypassNavigationCache && facts.visitedResponse.status === "available") {
+    return {
+      kind: "reuseVisitedResponse",
+      trace: createNavigationReuseTrace(NavigationTraceReasonCodes.visitedResponseReuse, facts),
+    };
+  }
+
+  if (!facts.bypassNavigationCache && facts.prefetch.status === "available") {
+    return {
+      kind: "consumePrefetch",
+      trace: createNavigationReuseTrace(NavigationTraceReasonCodes.prefetchResponseReuse, facts),
+    };
+  }
+
+  if (facts.navigationKind === "navigate") {
+    if (facts.optimisticRouteShell.status === "available") {
+      return {
+        kind: "attemptOptimisticRouteShell",
+        trace: createNavigationReuseTrace(NavigationTraceReasonCodes.optimisticRouteShell, facts),
+      };
+    }
+
+    return createFreshFetchDecision(
+      facts,
+      facts.bypassNavigationCache ? "cacheBypassed" : facts.optimisticRouteShell.reason,
+    );
+  }
+
+  if (facts.bypassNavigationCache) {
+    return createFreshFetchDecision(facts, "cacheBypassed");
+  }
+
+  return createFreshFetchDecision(facts, "cacheMiss");
+}
+
+function classifyNavigationPrefetchProbe(
+  facts: NavigationPrefetchProbeFacts,
+): NavigationPrefetchProbeDecision {
+  if (facts.visitedResponse.status === "available") {
+    return { kind: "skip", reason: "visitedResponseAvailable" };
+  }
+
+  if (facts.navigationKind === "refresh") {
+    return { kind: "skip", reason: "refresh" };
+  }
+
+  if (facts.bypassNavigationCache) {
+    return { kind: "skip", reason: "cacheBypassed" };
+  }
+
+  return { kind: "probe" };
+}
+
+function createSnapshotRouteTopology(snapshot: RouteSnapshot): RouteTopologySnapshot {
   return {
     layoutIds: snapshot.layoutIds,
     rootBoundaryId: snapshot.rootBoundaryId,
@@ -613,6 +794,12 @@ function createSnapshotRouteTopology(snapshot: RouteSnapshotV0): RouteTopologySn
 function stripInterceptionContextFromRouteId(routeId: string): string {
   const separatorIndex = routeId.indexOf(ROUTE_INTERCEPTION_CONTEXT_SEPARATOR);
   return separatorIndex === -1 ? routeId : routeId.slice(0, separatorIndex);
+}
+
+function matchedUrlFromConcreteRouteId(routeId: string): string | null {
+  const normalizedRouteId = stripInterceptionContextFromRouteId(routeId);
+  if (!normalizedRouteId.startsWith("route:/")) return null;
+  return normalizedRouteId.slice("route:".length);
 }
 
 function getMatchedUrlPathname(matchedUrl: string): string {
@@ -635,7 +822,7 @@ function findRouteManifestRouteByMatchedUrl(
 ): RouteManifestRoute | null {
   const urlParts = splitMatchedUrlIntoRouteParts(matchedUrl);
 
-  // RouteManifest preserves buildAppRouteGraph's compareRoutes() order, so the
+  // RouteManifest preserves buildAppRouteGraph's sortRoutes() order, so the
   // first pattern match follows the same static/dynamic/catch-all precedence as
   // request-time route matching instead of raw filesystem scan order.
   for (const route of routeManifest.segmentGraph.routes.values()) {
@@ -662,12 +849,22 @@ function findRouteManifestRouteByIdOrMatchedUrl(options: {
     return route;
   }
 
+  const concreteRouteMatchedUrl =
+    route === undefined ? matchedUrlFromConcreteRouteId(options.routeId) : null;
+  if (concreteRouteMatchedUrl !== null) {
+    const concreteRoute = findRouteManifestRouteByMatchedUrl(
+      options.routeManifest,
+      concreteRouteMatchedUrl,
+    );
+    if (concreteRoute !== null) return concreteRoute;
+  }
+
   return findRouteManifestRouteByMatchedUrl(options.routeManifest, options.matchedUrl);
 }
 
 function findRouteManifestRouteForSnapshot(
   routeManifest: RouteManifest,
-  snapshot: RouteSnapshotV0,
+  snapshot: RouteSnapshot,
 ): RouteManifestRoute | null {
   if (snapshot.interception !== null) {
     return findRouteManifestRouteByIdOrMatchedUrl({
@@ -687,8 +884,8 @@ function findRouteManifestRouteForSnapshot(
 function resolveRouteManifestSlotBindings(
   routeManifest: RouteManifest,
   route: RouteManifestRoute,
-): readonly ParallelSlotBindingSnapshotV0[] {
-  const bindings: ParallelSlotBindingSnapshotV0[] = [];
+): readonly ParallelSlotBindingSnapshot[] {
+  const bindings: ParallelSlotBindingSnapshot[] = [];
   for (const slotId of route.slotIds) {
     const binding = routeManifest.segmentGraph.slotBindings.get(`${route.id}::${slotId}`);
     if (!binding) continue;
@@ -713,7 +910,7 @@ function resolveRouteManifestRootLayoutTreePath(
 function resolveRouteTopologySnapshot(options: {
   routeManifest: RouteManifest | null;
   slotBindingSource: RouteTopologySlotBindingSource;
-  snapshot: RouteSnapshotV0;
+  snapshot: RouteSnapshot;
 }): RouteTopologyResolution {
   const route =
     options.routeManifest === null
@@ -743,7 +940,7 @@ function resolveRouteTopologySnapshot(options: {
 
 function findRouteManifestInterceptionForProof(
   routeManifest: RouteManifest,
-  proof: InterceptionSnapshotV0,
+  proof: InterceptionSnapshot,
 ): RouteManifestInterception | null {
   const sourceParts = splitMatchedUrlIntoRouteParts(proof.sourceMatchedUrl);
   const targetParts = splitMatchedUrlIntoRouteParts(proof.targetMatchedUrl);
@@ -783,7 +980,7 @@ function createRootBoundaryTraceFields(options: {
   currentRootLayoutTreePath: string | null;
   event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
   nextRootLayoutTreePath: string | null;
-  state: NavigationPlannerStateV0;
+  state: NavigationPlannerState;
 }): NavigationTraceFields {
   // Browser commit approval supplies lifecycle trace context before calling
   // the planner. This fallback exists for pure planner callers and tests; it
@@ -818,8 +1015,8 @@ function classifyRootBoundaryTransition(
 }
 
 function resolveSameLayoutAncestorPersistence(
-  currentSnapshot: RouteSnapshotV0,
-  targetSnapshot: RouteSnapshotV0,
+  currentSnapshot: RouteSnapshot,
+  targetSnapshot: RouteSnapshot,
 ): readonly string[] {
   return resolveSameLayoutAncestorPersistenceForTopologies(
     createSnapshotRouteTopology(currentSnapshot),
@@ -851,15 +1048,15 @@ function resolveSameLayoutAncestorPersistenceForTopologies(
 }
 
 function resolveMountedParallelSlotPersistence(
-  currentSnapshot: RouteSnapshotV0,
-  targetSnapshot: RouteSnapshotV0,
+  currentSnapshot: RouteSnapshot,
+  targetSnapshot: RouteSnapshot,
 ): readonly string[] {
   const preservedLayoutIds = resolveSameLayoutAncestorPersistence(currentSnapshot, targetSnapshot);
   return resolveMountedParallelSlotPersistenceForLayouts(currentSnapshot, preservedLayoutIds);
 }
 
 function resolveMountedParallelSlotPersistenceForLayouts(
-  currentSnapshot: RouteSnapshotV0,
+  currentSnapshot: RouteSnapshot,
   preservedLayoutIds: readonly string[],
 ): readonly string[] {
   if (preservedLayoutIds.length === 0) return [];
@@ -879,8 +1076,8 @@ function resolveMountedParallelSlotPersistenceForLayouts(
 }
 
 function resolveCurrentRootBoundaryElementPersistence(
-  currentSnapshot: RouteSnapshotV0,
-  targetSnapshot: RouteSnapshotV0,
+  currentSnapshot: RouteSnapshot,
+  targetSnapshot: RouteSnapshot,
 ): readonly string[] {
   const preservedLayoutIds = resolveSameLayoutAncestorPersistence(currentSnapshot, targetSnapshot);
   // Non-commit consumers still receive the legacy mounted-slot element list.
@@ -940,9 +1137,9 @@ function resolveCurrentRootBoundaryCommitSlotPersistence(options: {
  * Wire absence and UNMATCHED_SLOT markers are not semantic proof.
  */
 export function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
-  currentSlotBindings: readonly ParallelSlotBindingSnapshotV0[];
+  currentSlotBindings: readonly ParallelSlotBindingSnapshot[];
   preservedLayoutIds: readonly string[];
-  targetSlotBindings: readonly ParallelSlotBindingSnapshotV0[];
+  targetSlotBindings: readonly ParallelSlotBindingSnapshot[];
 }): readonly string[] {
   const preservedLayoutIdSet = new Set(options.preservedLayoutIds);
   const slotIdsWithContent = new Set<string>();
@@ -983,7 +1180,7 @@ type InterceptedPreservationValidation =
     };
 
 function getVisibleInterceptionSourceIdentity(
-  snapshot: RouteSnapshotV0,
+  snapshot: RouteSnapshot,
 ): VisibleInterceptionSourceIdentity {
   if (snapshot.interception) {
     return {
@@ -991,8 +1188,9 @@ function getVisibleInterceptionSourceIdentity(
       routeId: snapshot.interception.sourceRouteId,
     };
   }
+  const concreteMatchedUrl = matchedUrlFromConcreteRouteId(snapshot.routeId);
   return {
-    matchedUrl: snapshot.matchedUrl,
+    matchedUrl: concreteMatchedUrl ?? snapshot.matchedUrl,
     routeId: snapshot.routeId,
   };
 }
@@ -1001,7 +1199,7 @@ function createInterceptionProofRejectedDecision(options: {
   event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
   reasonCode: NavigationTraceReasonCode;
   traceFields: NavigationTraceFields;
-}): NavigationDecisionV0 {
+}): NavigationDecision {
   return {
     kind: "hardNavigate",
     reason: "interceptionProofRejected",
@@ -1064,7 +1262,7 @@ function createCacheProofRejectedDecision(options: {
   event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
   rejection: Extract<CacheEntryProofEvaluation, { kind: "rejected" }>;
   traceFields: NavigationTraceFields;
-}): NavigationDecisionV0 {
+}): NavigationDecision {
   return {
     kind: "hardNavigate",
     reason: "cacheProofRejected",
@@ -1073,6 +1271,27 @@ function createCacheProofRejectedDecision(options: {
       NavigationTraceReasonCodes.cacheProofRejected,
       createCacheProofRejectedTraceFields(options.traceFields, options.rejection.decision),
     ),
+    url: options.event.result.href,
+  };
+}
+
+// A proven cache entry rejected by the OperationToken authority (its graph
+// version or variant no longer matches the installed one). Distinct from
+// cacheProofRejected — the cache proof itself authorized reuse; the token did
+// not — so it carries its own reason code and the verdict reason for telemetry.
+function createCacheReuseTokenRejectedDecision(options: {
+  event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
+  reason: OperationTokenRejectionReason;
+  traceFields: NavigationTraceFields;
+}): NavigationDecision {
+  return {
+    kind: "hardNavigate",
+    reason: "cacheReuseTokenRejected",
+    token: options.event.token,
+    trace: createNavigationTrace(NavigationTraceReasonCodes.cacheReuseTokenRejected, {
+      ...options.traceFields,
+      cacheReuseTokenReason: options.reason,
+    }),
     url: options.event.result.href,
   };
 }
@@ -1099,10 +1318,11 @@ function createCacheEntryProposalFields(
 }
 
 function validateInterceptedPreservation(options: {
-  currentSnapshot: RouteSnapshotV0;
+  currentSnapshot: RouteSnapshot;
   currentTopology: RouteTopologySnapshot;
+  restoredHistorySnapshot: boolean;
   routeManifest: RouteManifest | null;
-  targetSnapshot: RouteSnapshotV0;
+  targetSnapshot: RouteSnapshot;
   targetTopology: RouteTopologySnapshot;
 }): InterceptedPreservationValidation {
   const proof = options.targetSnapshot.interception;
@@ -1122,8 +1342,9 @@ function validateInterceptedPreservation(options: {
 
   const sourceIdentity = getVisibleInterceptionSourceIdentity(options.currentSnapshot);
   if (
-    proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
-    proof.sourceRouteId !== sourceIdentity.routeId
+    !options.restoredHistorySnapshot &&
+    (proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
+      proof.sourceRouteId !== sourceIdentity.routeId)
   ) {
     return {
       kind: "rejected",
@@ -1194,8 +1415,8 @@ function validateInterceptedPreservation(options: {
 function planFlightResponseArrived(options: {
   event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
   routeManifest: RouteManifest | null;
-  state: NavigationPlannerStateV0;
-}): NavigationDecisionV0 {
+  state: NavigationPlannerState;
+}): NavigationDecision {
   const targetSnapshot = options.event.result.targetSnapshot;
   const currentTopology = resolveRouteTopologySnapshot({
     routeManifest: options.routeManifest,
@@ -1236,6 +1457,29 @@ function planFlightResponseArrived(options: {
     });
   }
   const acceptedCacheEntryDecision = cacheEntryProofEvaluation.decision;
+
+  // Commits and cache reuse share the OperationToken authority. A proven cache
+  // entry may only be reused if its token still matches the installed route graph
+  // and cache variant. Behavior-preserving today — the token's graphVersion is
+  // minted from the same route manifest the planner verifies against — and a real
+  // guard once cross-document or segment reuse (PR 6/7) can carry a token whose
+  // graph version or variant has diverged from the installed one. The installed
+  // cache variant is not yet known to the planner (segment cache, PR 7), so that
+  // dimension stays dormant rather than comparing the token to itself.
+  if (acceptedCacheEntryDecision !== null) {
+    const reuseVerdict = verifyOperationTokenForCacheReuse(options.event.token, {
+      graphVersion: options.routeManifest?.graphVersion ?? null,
+      installedCacheVariantFingerprint: null,
+    });
+    if (!reuseVerdict.authorized) {
+      return createCacheReuseTokenRejectedDecision({
+        event: options.event,
+        reason: reuseVerdict.reason,
+        traceFields,
+      });
+    }
+  }
+
   const commitTraceFields = createAcceptedCacheProofTraceFields(
     traceFields,
     acceptedCacheEntryDecision,
@@ -1258,6 +1502,7 @@ function planFlightResponseArrived(options: {
     const validation = validateInterceptedPreservation({
       currentSnapshot: options.state.visibleSnapshot,
       currentTopology: currentTopology.topology,
+      restoredHistorySnapshot: options.event.result.restoredHistorySnapshot === true,
       routeManifest: options.routeManifest,
       targetSnapshot,
       targetTopology: targetTopology.topology,
@@ -1358,7 +1603,7 @@ function planFlightResponseArrived(options: {
   };
 }
 
-function planNavigation(input: NavigationPlannerInput): NavigationDecisionV0 {
+function planNavigation(input: NavigationPlannerInput): NavigationDecision {
   switch (input.event.kind) {
     case "navigate":
       return createRequestWorkDecision({
@@ -1412,10 +1657,126 @@ function planNavigation(input: NavigationPlannerInput): NavigationDecisionV0 {
   }
 }
 
+export type ServerActionResultFacts = {
+  actionRedirectHref: string | null;
+  actionRedirectType: "push" | "replace";
+  clientCompatibilityId: string | null;
+  compatibilityIdHeader: string | null;
+  currentHref: string;
+  isRscContentType: boolean;
+  origin: string;
+  responseUrl: string | null;
+};
+
+export type ServerActionResultDecision =
+  | { kind: "proceed"; trace: NavigationTrace }
+  | {
+      kind: "hardNavigate";
+      url: string;
+      historyMode?: "assign" | "replace";
+      clearClientNavigationCaches: boolean;
+      reason: "serverActionRedirectCompatibilityMismatch" | "serverActionRscCompatibilityMismatch";
+      trace: NavigationTrace;
+    };
+
+export type RscNavigationErrorFacts = {
+  currentHref: string;
+};
+
+export type RscNavigationErrorDecision = {
+  kind: "hardNavigate";
+  url: string;
+  reason: "rscNavigationError";
+  trace: NavigationTrace;
+};
+
+function classifyServerActionResult(facts: ServerActionResultFacts): ServerActionResultDecision {
+  // A client without a compatibility id cannot prove skew.
+  if (facts.clientCompatibilityId === null) {
+    return {
+      kind: "proceed",
+      trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
+    };
+  }
+
+  // Non-RSC action responses are not subject to the cache-busting compatibility
+  // check; the executor will handle them directly.
+  if (!facts.isRscContentType) {
+    return {
+      kind: "proceed",
+      trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
+    };
+  }
+
+  const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
+    clientCompatibilityId: facts.clientCompatibilityId,
+    currentHref: facts.currentHref,
+    origin: facts.origin,
+    responseCompatibilityId: facts.compatibilityIdHeader,
+    responseUrl: facts.responseUrl,
+  });
+
+  if (compatibilityDecision.kind === "compatible") {
+    return {
+      kind: "proceed",
+      trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
+    };
+  }
+
+  // compatibilityDecision.hardNavigationTarget (derived from responseUrl with _rsc stripped)
+  // is intentionally not used here. For server actions, responseUrl is the action endpoint URL,
+  // not the page URL the user should land on. The authoritative destinations are actionRedirectHref
+  // (explicit redirect) and currentHref (reload in place) — both are set below.
+
+  if (facts.actionRedirectHref !== null) {
+    return {
+      kind: "hardNavigate",
+      url: facts.actionRedirectHref,
+      historyMode: facts.actionRedirectType === "push" ? "assign" : "replace",
+      clearClientNavigationCaches: true,
+      reason: "serverActionRedirectCompatibilityMismatch",
+      trace: createNavigationTrace(
+        NavigationTraceReasonCodes.serverActionRedirectCompatibilityMismatch,
+        { targetHref: facts.actionRedirectHref },
+      ),
+    };
+  }
+
+  // For a no-redirect RSC response, the executor should reload the current
+  // document so the user stays on the same URL (including search params).
+  const targetUrl = facts.currentHref;
+
+  return {
+    kind: "hardNavigate",
+    url: targetUrl,
+    clearClientNavigationCaches: false,
+    reason: "serverActionRscCompatibilityMismatch",
+    trace: createNavigationTrace(NavigationTraceReasonCodes.serverActionRscCompatibilityMismatch, {
+      targetHref: targetUrl,
+    }),
+  };
+}
+
+function classifyRscNavigationError(facts: RscNavigationErrorFacts): RscNavigationErrorDecision {
+  return {
+    kind: "hardNavigate",
+    url: facts.currentHref,
+    reason: "rscNavigationError",
+    trace: createNavigationTrace(NavigationTraceReasonCodes.rscNavigationError, {
+      targetHref: facts.currentHref,
+    }),
+  };
+}
+
 export const navigationPlanner = {
   classifyEarlyNavigationIntent,
+  classifyNavigationPrefetchProbe,
+  classifyNavigationReuse,
   classifyRscFetchResult,
+  classifyRscNavigationError,
   classifyRootBoundaryTransition,
+  classifyServerActionResult,
+  classifyVisitedResponseCacheCandidate,
   plan: planNavigation,
   resolveCurrentRootBoundaryElementPersistence,
   resolveMountedParallelSlotPersistence,

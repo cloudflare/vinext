@@ -72,6 +72,31 @@ const templateCounter = {
 // ---------------------------------------------------------------------------
 
 test.describe("Layout persistence", () => {
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/index.test.ts
+  test("server layout identity survives sibling navigation and history traversal", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/dashboard`);
+    await expect(page.locator("h1")).toHaveText("Dashboard");
+    await waitForAppRouterHydration(page);
+
+    const renderId = await page.getByTestId("dashboard-layout-render-id").textContent();
+    expect(renderId).toBeTruthy();
+
+    await page.getByTestId("dash-settings-link").click();
+    await expect(page.locator("h1")).toHaveText("Settings");
+    await expect(page.getByTestId("dashboard-layout-render-id")).toHaveText(renderId!);
+
+    await page.goBack();
+    await expect(page.locator("h1")).toHaveText("Dashboard");
+    await expect(page.getByTestId("dashboard-layout-render-id")).toHaveText(renderId!);
+
+    await page.goForward();
+    await expect(page.locator("h1")).toHaveText("Settings");
+    await expect(page.getByTestId("dashboard-layout-render-id")).toHaveText(renderId!);
+  });
+
   test("dashboard layout counter survives sibling navigation", async ({ page }) => {
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
@@ -113,7 +138,9 @@ test.describe("Layout persistence", () => {
 
   // Related Next.js coverage:
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/vary-params.test.ts
-  test("dynamic segment layout counter survives param navigation while content updates", async ({
+  // Ported from Next.js: test/e2e/app-dir/use-router-bfcache-id/use-router-bfcache-id.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-router-bfcache-id/use-router-bfcache-id.test.ts
+  test("dynamic segment layout resets on param navigation while content updates", async ({
     page,
   }) => {
     await page.goto(`${BASE}/blog/hello-world`);
@@ -132,7 +159,7 @@ test.describe("Layout persistence", () => {
     await expect(page.getByTestId("blog-page-slug")).toHaveText("Slug: getting-started");
     await expect(page.getByTestId("layout-slug-awaited")).toHaveText("getting-started");
     await expect(page.getByTestId("layout-slug-direct")).toHaveText("getting-started");
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 1}`);
+    await expect(page.getByTestId("layout-count")).toHaveText("Layout count: 0");
   });
 });
 

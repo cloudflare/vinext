@@ -12,7 +12,7 @@ const BASE = "http://localhost:4174";
 
 // NOTE: this project runs the DEV server (`vp dev`). `next/dynamic` preload
 // <link> tags are a PRODUCTION-only feature — they are emitted from the client
-// build manifest (`globalThis.__VINEXT_DYNAMIC_PRELOADS__`), which dev never
+// build manifest (the Pages client asset descriptor), which dev never
 // populates. So these browser tests verify the runtime CONSEQUENCE that matters
 // (the boundary hydrates under `script-src 'nonce-…' 'strict-dynamic'` with no
 // CSP console violations) — NOT the presence/nonce of preload links. The

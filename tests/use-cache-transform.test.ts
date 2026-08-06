@@ -55,6 +55,20 @@ async function configurePluginRsc(plugins: Plugin[]) {
   return (minimal as any).api.manager;
 }
 
+async function transformRsc(source: string): Promise<string> {
+  const plugins = await getPlugins();
+  await configurePluginRsc(plugins);
+  const plugin = plugins.find(
+    (candidate) => candidate.name === "vinext:server-function-directives",
+  )!;
+  const result = await unwrapHook(plugin.transform)!.call(
+    { environment: { name: "rsc", mode: "build" } },
+    source,
+    moduleId,
+  );
+  return result!.code;
+}
+
 describe("plugin-rsc inline use-cache references", () => {
   it("keeps the vinext claim when rsc:use-server removes its own claim", async () => {
     const plugins = await getPlugins();
@@ -524,4 +538,44 @@ describe("plugin-rsc inline use-cache references", () => {
       expect(result!.code).not.toContain("registerCachedServerReference");
     },
   );
+
+  it.each([
+    {
+      name: "a default parameter",
+      parameters: "_props, parent = fallbackParent",
+    },
+    {
+      name: "a rest parameter",
+      parameters: "...args",
+    },
+  ])(
+    "records second-argument usage for an inline cached function with $name",
+    async ({ parameters }) => {
+      const code = await transformRsc(
+        `export async function generateMetadata(${parameters}) {\n  "use cache";\n  return {};\n}`,
+      );
+      expect(code).toContain('"acceptsSecondArgument":true');
+    },
+  );
+
+  it("records second-argument usage for file-level cached exports", async () => {
+    const code = await transformRsc(
+      `"use cache";\nexport async function generateMetadata(_props, parent = fallbackParent) {\n  return {};\n}`,
+    );
+    expect(code).toContain('"acceptsSecondArgument":true');
+  });
+
+  it("conservatively records second-argument usage for opaque re-exports", async () => {
+    const code = await transformRsc(
+      `"use cache";\nexport { generateMetadata } from "./metadata.js";`,
+    );
+    expect(code).toContain('"acceptsSecondArgument":true');
+  });
+
+  it("records when a cached function omits the second argument", async () => {
+    const code = await transformRsc(
+      `export async function generateMetadata() {\n  "use cache";\n  return {};\n}`,
+    );
+    expect(code).toContain('"acceptsSecondArgument":false');
+  });
 });

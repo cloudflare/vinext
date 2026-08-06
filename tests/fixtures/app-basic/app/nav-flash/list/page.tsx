@@ -16,6 +16,11 @@ export default function ListPage() {
           </Link>
         </li>
         <li>
+          <Link href="/nav-flash/query-sync?delay=slow" id="to-query-sync-slow">
+            Query Sync Slow
+          </Link>
+        </li>
+        <li>
           <Link href="/nav-flash/param-sync/active" id="to-param-sync">
             Param Sync
           </Link>

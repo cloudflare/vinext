@@ -1,9 +1,6 @@
 import { throwClientHookError } from "./client-hook-error.js";
 
-// Re-export server-safe APIs from the canonical navigation module.
-// This import uses a relative path to the source file, which does NOT
-// go through the `next/navigation` resolveId hook — so it always
-// resolves to the full module, avoiding a circular redirect.
+// Keep the RSC surface independent from the browser navigation runtime.
 export {
   // Types
   type NavigationContext,
@@ -37,9 +34,7 @@ export {
 
   // Internal-error predicates and rethrow.
   //
-  // These are environment-agnostic (no React hooks, no browser globals), so
-  // we re-export the canonical implementation from `./navigation.js` to keep
-  // a single source of truth across the react-server and client conditions.
+  // These are environment-agnostic (no React hooks or browser globals).
   //
   // Ported from Next.js:
   //   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/navigation.react-server.ts
@@ -51,10 +46,9 @@ export {
   BailoutToCSRError,
   DynamicServerError,
   unstable_rethrow,
+} from "./navigation-server.js";
 
-  // Utilities
-  ReadonlyURLSearchParams,
-} from "./navigation.js";
+export { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 
 // These hooks are client-only. Exporting error-throwing stubs (rather than
 // omitting them entirely) gives developers a clear, actionable error message

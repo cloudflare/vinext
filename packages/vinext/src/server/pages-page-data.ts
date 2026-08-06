@@ -2,14 +2,25 @@ import type { ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
-import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import type {
+  CachedPagesValue,
+  CachedRedirectValue,
+  CacheHandlerValue,
+  CacheControlMetadata,
+} from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
-import { decideIsr } from "./isr-decision.js";
+import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import {
+  buildPagesCacheValue,
+  isrCacheControl,
+  type ISRCacheEntry,
+  type IsrWritePolicy,
+} from "./isr-cache.js";
+import type { PagesPreviewData } from "./pages-preview.js";
 import {
   buildPagesNextDataScript,
-  etagMatches,
   generatePagesETag,
   isPagesStreamingBot,
   requestsNoCache,
@@ -17,20 +28,42 @@ import {
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
+import { matchesIfNoneMatch } from "./http-conditional.js";
 import {
+  createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,
   isResponseSent,
   loadPagesGetInitialProps,
+  type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
-import { buildNextDataJsonResponse } from "./pages-data-route.js";
-import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { buildNextDataPropsJsonResponse } from "./pages-data-route.js";
+import { NEXTJS_CACHE_HEADER, NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { isUnknownRecord } from "../utils/record.js";
+import { isDangerousScheme } from "vinext/shims/url-safety";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 
-type PagesRedirectResult = {
+export type PagesRedirectResult = {
   destination: string;
   permanent?: boolean;
   statusCode?: number;
+  basePath?: boolean;
 };
+
+export type ResolvedPagesRedirect = {
+  destination: string;
+  statusCode: number;
+  basePath?: boolean;
+};
+
+const ALLOWED_PAGES_REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+
+/** Headers that are part of a cached Pages representation, never request state. */
+function isCachedPagesRepresentationHeader(name: string): boolean {
+  const lowerName = name.toLowerCase();
+  return lowerName === "location" || lowerName === "content-type";
+}
 
 // Next.js allows `paths` entries to be either an object with a `params` key
 // or a raw string path. We keep a local variant of `StaticPathsEntry` here
@@ -39,7 +72,12 @@ type PagesRedirectResult = {
 // `string | string[]` shape used at build time. The shared
 // `normalizeStaticPathname` helper from `../routing/route-pattern.js` is used
 // to canonicalize the string-entry comparison.
-type PagesStaticPathsEntry = string | { params?: Record<string, unknown>; locale?: string };
+export type PagesStaticPathsEntry =
+  | string
+  | {
+      params?: Record<string, unknown>;
+      locale?: string;
+    };
 
 type PagesStaticPathsResult = {
   fallback?: boolean | "blocking";
@@ -47,11 +85,66 @@ type PagesStaticPathsResult = {
 };
 
 type PagesPagePropsResult = {
-  props?: Record<string, unknown>;
+  props?: Record<string, unknown> | Promise<Record<string, unknown>>;
   redirect?: PagesRedirectResult;
   notFound?: boolean;
-  revalidate?: number;
+  revalidate?: unknown;
 };
+
+export function assertPages404DoesNotReturnNotFound(
+  routePattern: string,
+  result: Pick<PagesPagePropsResult, "notFound"> | null | undefined,
+): void {
+  if (routePattern === "/404" && result?.notFound) {
+    throw new Error(
+      'The /404 page can not return notFound in "getStaticProps", please remove it to continue!',
+    );
+  }
+}
+
+/**
+ * Next.js preserves an omitted/false Pages `revalidate` result as an indefinite
+ * cache lifetime. The one-year sentinel is only an HTTP Cache-Control detail;
+ * storing it as a revalidation deadline would incorrectly regenerate static
+ * pages after one year.
+ *
+ * Next.js source:
+ * - packages/next/src/server/render.tsx (`metadata.cacheControl`)
+ * - packages/next/src/server/route-modules/pages/pages-handler.ts
+ */
+export function resolvePagesRevalidateSeconds(
+  result: PagesPagePropsResult,
+  routeUrl = "",
+): number | false {
+  const revalidate = result.revalidate;
+  if (revalidate === true) return 1;
+  if (typeof revalidate === "number") {
+    if (!Number.isInteger(revalidate)) {
+      throw new Error(
+        `A page's revalidate option must be seconds expressed as a natural number for ${routeUrl}. Mixed numbers, such as '${revalidate}', cannot be used.`,
+      );
+    }
+    if (revalidate <= 0) {
+      throw new Error(
+        `A page's revalidate option can not be less than or equal to zero for ${routeUrl}.`,
+      );
+    }
+    return revalidate;
+  }
+  if (revalidate === false || revalidate === undefined) return false;
+  throw new Error(
+    `A page's revalidate option must be seconds expressed as a natural number. Mixed numbers and strings cannot be used. Received '${JSON.stringify(revalidate)}' for ${routeUrl}`,
+  );
+}
+
+function resolvePagesExpireSeconds(
+  result: PagesPagePropsResult,
+  configuredExpireSeconds: number | undefined,
+): number | undefined {
+  return result.revalidate === false || result.revalidate === undefined
+    ? undefined
+    : configuredExpireSeconds;
+}
 
 type PagesMutableGsspResponse = {
   headersSent: boolean;
@@ -62,6 +155,24 @@ type PagesGsspContextResponse = {
   res: PagesMutableGsspResponse;
   responsePromise: Promise<Response>;
 };
+
+type PagesRenderProps = Record<string, unknown> & {
+  pageProps?: unknown;
+};
+
+/**
+ * Merge gSP/gSSP data into the custom App's raw pageProps value.
+ *
+ * Next.js deliberately uses Object.assign rather than object spread, so
+ * enumerable keys from arrays and primitive wrapper objects are retained.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+ */
+export function mergePagesDataProps(
+  appPageProps: unknown,
+  dataProps: unknown,
+): Record<string, unknown> {
+  return Object.assign({}, appPageProps, dataProps) as Record<string, unknown>;
+}
 
 export type PagesPageModule = {
   default?: unknown;
@@ -89,12 +200,18 @@ export type PagesPageModule = {
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
+    draftMode?: true;
+    preview?: true;
+    previewData?: PagesPreviewData;
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
   getStaticProps?: (context: {
     params: Record<string, unknown> | null;
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
+    draftMode?: true;
+    preview?: true;
+    previewData?: PagesPreviewData;
     /**
      * Indicates why `getStaticProps` was invoked.
      *
@@ -113,11 +230,16 @@ export type PagesPageModule = {
 type RenderPagesIsrHtmlOptions = {
   buildId: string | null;
   cachedHtml: string;
-  createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
+  collectIsrHeadHTML?: (() => string) | undefined;
+  createPageElement: (props: Record<string, unknown>) => ReactNode;
   i18n: PagesI18nRenderContext;
   pageProps: Record<string, unknown>;
+  props?: Record<string, unknown>;
   params: Record<string, unknown>;
-  renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
+  renderIsrPassToStringAsync: (
+    element: ReactNode,
+    onHeadReady?: () => Promise<void>,
+  ) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
   vinext?: VinextNextData["__vinext"];
@@ -126,6 +248,7 @@ type RenderPagesIsrHtmlOptions = {
 
 export type ResolvePagesPageDataOptions = {
   applyRequestContexts: () => void;
+  basePath?: string;
   buildId: string | null;
   /**
    * When true, this is a `/_next/data/<buildId>/<page>.json` request. Callers
@@ -138,17 +261,16 @@ export type ResolvePagesPageDataOptions = {
   isDataReq?: boolean;
   err?: unknown;
   createGsspReqRes: () => PagesGsspContextResponse;
-  createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
+  createAppTree?: (props: Record<string, unknown>) => ReactNode;
+  createPageElement: (props: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
   i18n: PagesI18nRenderContext;
   isrCacheKey: (router: string, pathname: string) => string;
   isrGet: (key: string) => Promise<ISRCacheEntry | null>;
   isrSet: (
     key: string,
-    data: CachedPagesValue,
-    revalidateSeconds: number,
-    tags?: string[],
-    expireSeconds?: number,
+    data: CachedPagesValue | CachedRedirectValue | null,
+    policy: IsrWritePolicy,
   ) => Promise<void>;
   expireSeconds?: number;
   /**
@@ -160,6 +282,7 @@ export type ResolvePagesPageDataOptions = {
    * `.nextjs-ref/packages/next/src/server/render.tsx`.
    */
   isBuildTimePrerendering?: boolean;
+  validatePropsSerialization?: boolean;
   /**
    * When true, this dispatch was triggered by an on-demand revalidation
    * request (e.g. `res.revalidate()` in a Pages Router API route, or an
@@ -177,19 +300,37 @@ export type ResolvePagesPageDataOptions = {
    */
   isOnDemandRevalidate?: boolean;
   /**
+   * When true alongside an authenticated on-demand request, return a
+   * successful 404 no-op if no cache entry exists instead of generating a new
+   * fallback path. Mirrors Next.js `unstable_onlyGenerated`.
+   */
+  revalidateOnlyGenerated?: boolean;
+  previewData?: PagesPreviewData | false;
+  /**
    * The deployment ID used for deployment-skew protection. When set, it is
    * included as `x-nextjs-deployment-id` on all `_next/data` responses
    * (success, redirect, notFound). Mirrors Next.js pages-handler.ts behavior.
    * Typically sourced from `process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID`.
    */
   deploymentId?: string;
+  htmlLimitedBots?: string;
   pageModule: PagesPageModule;
+  AppComponent?: unknown;
+  /** The request-scoped `next/router` server instance when available. */
+  router?: PagesGetInitialPropsRouter;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
   asPath?: string;
+  resolvedUrl?: string;
   route: Pick<Route, "isDynamic">;
   routePattern: string;
   routeUrl: string;
+  /**
+   * Filesystem-route identity used for Pages ISR reads and writes. Error pages
+   * render against the original request URL but cache under /404, /500, or
+   * /_error, matching Next.js's error-page cache-key override.
+   */
+  isrCachePathname?: string;
   runInFreshUnifiedContext: <T>(callback: () => Promise<T>) => Promise<T>;
   safeJsonStringify: (value: unknown) => string;
   sanitizeDestination: (destination: string) => string;
@@ -200,7 +341,16 @@ export type ResolvePagesPageDataOptions = {
     renderFn: () => Promise<void>,
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
   ) => void;
-  renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
+  renderIsrPassToStringAsync: (
+    element: ReactNode,
+    onHeadReady?: () => Promise<void>,
+  ) => Promise<string>;
+  /**
+   * Serializes the `<head>` collected by an ISR regeneration render. Called
+   * inside that render's head scope so the regenerated shell can pick up
+   * `next/head` output derived from the refreshed `getStaticProps` data.
+   */
+  collectIsrHeadHTML?: (() => string) | undefined;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
   /**
@@ -228,9 +378,12 @@ export type ResolvePagesPageDataOptions = {
 
 type ResolvePagesPageDataRenderResult = {
   kind: "render";
+  documentReqRes: PagesGsspContextResponse | null;
   gsspRes: PagesGsspResponse | null;
-  isrRevalidateSeconds: number | null;
+  isrRevalidateSeconds: number | false | null;
+  isrExpireSeconds?: number;
   pageProps: Record<string, unknown>;
+  props: PagesRenderProps;
   /**
    * True when `getStaticPaths` returned `fallback: true` AND the requested path
    * is not in the pre-rendered list. The caller renders a loading shell with
@@ -243,10 +396,18 @@ type ResolvePagesPageDataRenderResult = {
 type ResolvePagesPageDataResponseResult = {
   kind: "response";
   response: Response;
+  /** False when an on-demand request must be reported as a failed revalidation. */
+  onDemandRevalidateSuccess?: boolean;
 };
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
+  /** Headers set by getServerSideProps before it returned notFound. */
+  responseHeaders?: Record<string, string | number | boolean | string[]>;
+  /** Current getStaticProps cache lifetime, when this is an SSG result. */
+  revalidateSeconds?: number | false;
+  expireSeconds?: number;
+  cacheState?: "MISS" | "HIT" | "STALE";
 };
 
 type ResolvePagesPageDataResult =
@@ -255,16 +416,15 @@ type ResolvePagesPageDataResult =
   | ResolvePagesPageDataNotFoundResult;
 
 function buildPagesDataNotFoundResponse(deploymentId?: string): Response {
-  // Matches Next.js: `/_next/data/<buildId>/<page>.json` 404 responses use
-  // application/json with an empty object body so clients can call
-  // `res.json()` without throwing before inspecting the status code.
+  // Next.js preserves the canonical notFound representation for data requests
+  // so the client router can distinguish it from an unknown data route.
   // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
   // `_next/data` notFound exits so the client can detect a new deployment.
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (deploymentId) {
     headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
   }
-  return new Response("{}", {
+  return new Response('{"notFound":true}', {
     status: 404,
     headers,
   });
@@ -272,19 +432,288 @@ function buildPagesDataNotFoundResponse(deploymentId?: string): Response {
 
 function buildPagesNotFoundResult(
   options: Pick<ResolvePagesPageDataOptions, "isDataReq" | "deploymentId">,
+  revalidateSeconds?: number | false,
+  cacheState?: "MISS" | "HIT" | "STALE",
+  expireSeconds?: number,
+  responseHeaders?: Record<string, string | number | boolean | string[]>,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
       kind: "response",
-      response: buildPagesDataNotFoundResponse(options.deploymentId),
+      response: mergePagesNotFoundSourceHeaders(
+        buildPagesDataNotFoundResponse(options.deploymentId),
+        responseHeaders,
+      ),
     };
   }
 
-  return { kind: "notFound" };
+  return {
+    kind: "notFound",
+    revalidateSeconds,
+    expireSeconds,
+    cacheState,
+    responseHeaders,
+  };
+}
+
+export function mergePagesNotFoundSourceHeaders(
+  response: Response,
+  sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
+): Response {
+  if (!sourceHeaders) return response;
+
+  const headers = new Headers(response.headers);
+
+  for (const [name, value] of Object.entries(sourceHeaders)) {
+    const lowerName = name.toLowerCase();
+    if (lowerName === "set-cookie") {
+      headers.delete("set-cookie");
+      const cookies = Array.isArray(value) ? value : [value];
+      for (const cookie of cookies) headers.append("set-cookie", String(cookie));
+    } else {
+      headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+    }
+  }
+
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function applyPagesTerminalMissHeaders(
+  response: Response,
+  revalidateSeconds: number | false,
+  isrCachePathname: string,
+  expireSeconds?: number,
+): Response {
+  const stem = isrCachePathname.endsWith("/") ? isrCachePathname.slice(0, -1) : isrCachePathname;
+  applyCdnResponseHeaders(response.headers, {
+    cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
+    tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+  });
+  for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
+    response.headers.set(name, value);
+  }
+  return response;
+}
+
+function applyCachedPagesRepresentationHeaders(
+  response: Response,
+  cacheState: "HIT" | "STALE",
+  entry: CacheHandlerValue,
+  options: Pick<ResolvePagesPageDataOptions, "expireSeconds">,
+): Response {
+  const { cacheControl } = decideIsr({
+    cacheState,
+    kind: "pages",
+    revalidateSeconds: entry.cacheControl?.revalidate ?? 60,
+    // Persisted Pages metadata is authoritative. A missing expire is how
+    // `revalidate: false` is represented and must not inherit expireTime.
+    expireSeconds: entry.cacheControl?.expire === undefined ? undefined : options.expireSeconds,
+    cacheControlMeta: entry.cacheControl,
+  });
+  applyCdnResponseHeaders(response.headers, { cacheControl });
+  for (const [name, value] of Object.entries(buildCacheStateHeaders(cacheState))) {
+    response.headers.set(name, value);
+  }
+  return response;
+}
+
+function buildCachedPagesNotFoundResult(
+  options: ResolvePagesPageDataOptions,
+  entry: CacheHandlerValue,
+  cacheState: "HIT" | "STALE",
+): ResolvePagesPageDataResult {
+  const revalidateSeconds = entry.cacheControl?.revalidate ?? 60;
+  const result = buildPagesNotFoundResult(
+    options,
+    revalidateSeconds,
+    cacheState,
+    entry.cacheControl?.expire,
+  );
+  if (result.kind === "response") {
+    return {
+      kind: "response",
+      response: applyCachedPagesRepresentationHeaders(result.response, cacheState, entry, options),
+    };
+  }
+  return result;
 }
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
   return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
+}
+
+/** Validate and normalize the redirect metadata returned by gSP/gSSP. */
+export function resolvePagesRedirect(
+  redirect: PagesRedirectResult,
+  options: {
+    method: "getStaticProps" | "getServerSideProps";
+    routeUrl: string;
+    sanitizeDestination: (destination: string) => string;
+  },
+): ResolvedPagesRedirect {
+  const errors: string[] = [];
+  const hasPermanent = redirect.permanent !== undefined;
+  const hasStatusCode = redirect.statusCode !== undefined;
+
+  if (hasPermanent && hasStatusCode) {
+    errors.push("`permanent` and `statusCode` can not both be provided");
+  } else if (hasPermanent && typeof redirect.permanent !== "boolean") {
+    errors.push("`permanent` must be `true` or `false`");
+  } else if (
+    hasStatusCode &&
+    !ALLOWED_PAGES_REDIRECT_STATUS_CODES.has(redirect.statusCode as number)
+  ) {
+    errors.push(
+      `\`statusCode\` must undefined or one of ${[...ALLOWED_PAGES_REDIRECT_STATUS_CODES].join(", ")}`,
+    );
+  }
+  if (typeof redirect.destination !== "string") {
+    errors.push(`\`destination\` should be string but received ${typeof redirect.destination}`);
+  }
+  if (redirect.basePath !== undefined && typeof redirect.basePath !== "boolean") {
+    errors.push(
+      `\`basePath\` should be undefined or a false, received ${typeof redirect.basePath}`,
+    );
+  }
+  if (errors.length > 0) {
+    throw new Error(
+      `Invalid redirect object returned from ${options.method} for ${options.routeUrl}\n${errors.join(" and ")}\nSee more info here: https://nextjs.org/docs/messages/invalid-redirect-gssp`,
+    );
+  }
+
+  return {
+    destination: options.sanitizeDestination(redirect.destination),
+    statusCode: resolvePagesRedirectStatus(redirect),
+    ...(redirect.basePath === undefined ? {} : { basePath: redirect.basePath }),
+  };
+}
+
+export function resolvePagesRedirectLocation(
+  redirect: ResolvedPagesRedirect,
+  configuredBasePath = "",
+): string {
+  let destination = redirect.destination;
+  if (configuredBasePath && redirect.basePath !== false && redirect.destination.startsWith("/")) {
+    destination = `${configuredBasePath}${redirect.destination}`;
+  }
+  if (!destination.startsWith("/")) return destination;
+
+  const urlParts = destination.split("?");
+  const urlNoQuery = urlParts[0];
+  return (
+    urlNoQuery.replace(/\\/g, "/").replace(/\/\/+/g, "/") +
+    (urlParts[1] ? `?${urlParts.slice(1).join("?")}` : "")
+  );
+}
+
+export function buildPagesRedirectProps(
+  redirect: ResolvedPagesRedirect,
+  props: PagesRenderProps,
+): PagesRenderProps {
+  return {
+    ...props,
+    pageProps: {
+      ...(isUnknownRecord(props.pageProps) ? props.pageProps : {}),
+      __N_REDIRECT: redirect.destination,
+      __N_REDIRECT_STATUS: redirect.statusCode,
+      ...(redirect.basePath === undefined ? {} : { __N_REDIRECT_BASE_PATH: redirect.basePath }),
+    },
+  };
+}
+
+function normalizePagesRenderProps(props: Record<string, unknown>): PagesRenderProps {
+  if (!("pageProps" in props)) {
+    // Legacy vinext PAGES entries stored pageProps directly. Accept those
+    // during the migration window while all new writes use the full envelope.
+    return { pageProps: props };
+  }
+  return {
+    ...props,
+    pageProps: props.pageProps,
+  };
+}
+
+type PagesAppInitialPropsResult =
+  | { kind: "props"; pageProps: Record<string, unknown>; renderProps: PagesRenderProps }
+  | { kind: "response"; response: Promise<Response> };
+
+/**
+ * Load `_app.getInitialProps` and return the normalized render props and the
+ * extracted `pageProps`. This is shared between the foreground render path and
+ * the stale-while-revalidate background regeneration path so both produce the
+ * same full props envelope (app-level props plus the page's `pageProps`).
+ *
+ * `getSharedReqRes` lets callers share the same mock req/res with other
+ * data-fetching steps (e.g. `getServerSideProps`) when they run in the same
+ * request context.
+ */
+async function loadPagesAppInitialRenderProps(
+  options: Pick<
+    ResolvePagesPageDataOptions,
+    | "AppComponent"
+    | "createAppTree"
+    | "createPageElement"
+    | "err"
+    | "i18n"
+    | "pageModule"
+    | "query"
+    | "router"
+    | "routePattern"
+    | "routeUrl"
+    | "asPath"
+  >,
+  getSharedReqRes: () => PagesGsspContextResponse,
+): Promise<PagesAppInitialPropsResult> {
+  let pageProps: Record<string, unknown> = {};
+  let renderProps: PagesRenderProps = { pageProps };
+
+  if (!hasPagesGetInitialProps(options.AppComponent)) {
+    return { kind: "props", pageProps, renderProps };
+  }
+
+  const { req, res, responsePromise } = getSharedReqRes();
+  const initialProps = await loadPagesGetInitialProps(options.AppComponent, {
+    AppTree: options.createAppTree ?? options.createPageElement,
+    Component: options.pageModule.default,
+    router:
+      options.router ??
+      createPagesGetInitialPropsRouter(
+        options.routePattern,
+        options.query,
+        options.asPath ?? options.routeUrl,
+      ),
+    ctx: {
+      req,
+      res,
+      err: options.err,
+      pathname: options.routePattern,
+      query: options.query,
+      asPath: options.asPath ?? options.routeUrl,
+      locale: options.i18n.locale,
+      locales: options.i18n.locales,
+      defaultLocale: options.i18n.defaultLocale,
+    },
+  });
+
+  if (isResponseSent(res)) {
+    return { kind: "response", response: responsePromise };
+  }
+
+  if (initialProps) {
+    // `_app.getInitialProps` owns the complete render-props envelope. Next.js
+    // preserves that object even when a custom App omits `pageProps`; wrapping
+    // it would change the props passed to the App and mask its intentional
+    // missing-pageProps behavior.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+    renderProps = initialProps;
+    pageProps = isUnknownRecord(initialProps.pageProps) ? initialProps.pageProps : {};
+  }
+
+  return { kind: "props", pageProps, renderProps };
 }
 
 /**
@@ -312,32 +741,130 @@ function buildPagesRedirectResponse(
   redirect: PagesRedirectResult,
   options: Pick<
     ResolvePagesPageDataOptions,
-    "isDataReq" | "sanitizeDestination" | "safeJsonStringify" | "deploymentId"
+    | "isDataReq"
+    | "sanitizeDestination"
+    | "safeJsonStringify"
+    | "deploymentId"
+    | "basePath"
+    | "routeUrl"
   >,
+  props: PagesRenderProps = { pageProps: {} },
+  method: "getStaticProps" | "getServerSideProps" = "getStaticProps",
+  responseHeaders?: Headers,
 ): Response {
-  const destination = options.sanitizeDestination(redirect.destination);
+  const resolved = resolvePagesRedirect(redirect, {
+    method,
+    routeUrl: options.routeUrl,
+    sanitizeDestination: options.sanitizeDestination,
+  });
+  const redirectProps = buildPagesRedirectProps(resolved, props);
+
+  // Next.js currently passes these destinations through to both `Location`
+  // and the client-consumed `__N_REDIRECT` field. Vinext deliberately rejects
+  // executable schemes here: a data navigation would otherwise assign a
+  // request-controlled `javascript:` URL to `window.location.href`.
+  if (isDangerousScheme(resolved.destination)) {
+    const headers = new Headers(responseHeaders);
+    headers.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
+    headers.set("Content-Type", "text/plain; charset=utf-8");
+    if (options.deploymentId) {
+      headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
+    }
+    return new Response("Invalid redirect destination", { status: 500, headers });
+  }
 
   if (options.isDataReq) {
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
     // `_next/data` redirect exits for deployment-skew protection.
-    const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+    const headers = new Headers(responseHeaders);
     if (options.deploymentId) {
-      init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = options.deploymentId;
+      headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
-    return buildNextDataJsonResponse(
-      {
-        __N_REDIRECT: destination,
-        __N_REDIRECT_STATUS: resolvePagesRedirectStatus(redirect),
-      },
-      options.safeJsonStringify,
-      init,
-    );
+    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, { headers });
   }
 
-  return new Response(null, {
-    status: resolvePagesRedirectStatus(redirect),
-    headers: { Location: destination },
+  const location = resolvePagesRedirectLocation(resolved, options.basePath);
+  const headers = new Headers(responseHeaders);
+  headers.set("Location", location);
+  if (resolved.statusCode === 308) headers.set("Refresh", `0;url=${location}`);
+  return new Response(location, {
+    status: resolved.statusCode,
+    headers,
   });
+}
+
+function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(res.getHeaders())) {
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    } else {
+      headers.set(name, String(value));
+    }
+  }
+  return headers;
+}
+
+function buildCachedPagesRedirectResponse(
+  cached: CachedRedirectValue,
+  options: Pick<
+    ResolvePagesPageDataOptions,
+    | "isDataReq"
+    | "sanitizeDestination"
+    | "safeJsonStringify"
+    | "deploymentId"
+    | "basePath"
+    | "routeUrl"
+  >,
+): Response {
+  const props = normalizePagesRenderProps(cached.props as Record<string, unknown>);
+  const pageProps = isUnknownRecord(props.pageProps) ? props.pageProps : {};
+  const destination = pageProps.__N_REDIRECT;
+  const statusCode = pageProps.__N_REDIRECT_STATUS;
+  const redirectBasePath = pageProps.__N_REDIRECT_BASE_PATH;
+  if (typeof destination !== "string") {
+    throw new Error("Invalid cached Pages redirect: missing __N_REDIRECT");
+  }
+  return buildPagesRedirectResponse(
+    {
+      destination,
+      ...(typeof statusCode === "number" ? { statusCode } : {}),
+      ...(redirectBasePath === undefined ? {} : { basePath: redirectBasePath as boolean }),
+    },
+    options,
+    props,
+  );
+}
+
+function getCachedPagesRedirect(
+  cached: CacheHandlerValue["value"] | undefined,
+): CachedRedirectValue | null {
+  if (cached?.kind === "REDIRECT") return cached;
+  if (cached?.kind !== "PAGES") return null;
+
+  const locationHeader = cached.headers
+    ? Object.entries(cached.headers).find(([name]) => name.toLowerCase() === "location")?.[1]
+    : undefined;
+  const destination = Array.isArray(locationHeader) ? locationHeader[0] : locationHeader;
+  if (
+    typeof destination !== "string" ||
+    typeof cached.status !== "number" ||
+    !ALLOWED_PAGES_REDIRECT_STATUS_CODES.has(cached.status)
+  ) {
+    return null;
+  }
+
+  // Legacy vinext entries stored redirects as empty PAGES responses. Their
+  // Location value was already final and never received configured basePath
+  // processing, so retain that behavior with the explicit opt-out marker.
+  const props = normalizePagesRenderProps(cached.pageData as Record<string, unknown>);
+  return {
+    kind: "REDIRECT",
+    props: buildPagesRedirectProps(
+      { destination, statusCode: cached.status, basePath: false },
+      props,
+    ),
+  };
 }
 
 /**
@@ -355,21 +882,81 @@ function buildPagesRedirectResponse(
  * entry with a missing `params` key, return false rather than throwing — the
  * caller will respond with a 404 just like Next.js does for unlisted paths.
  */
-function matchesPagesStaticPath(
+export type PagesRouteParam = {
+  key: string;
+  repeat: boolean;
+  optional: boolean;
+};
+
+export function getPagesRouteParams(routePattern: string): PagesRouteParam[] {
+  return routePattern
+    .split("/")
+    .map((segment) => {
+      const optionalCatchAll = segment.match(/^\[\[\.\.\.(.+)\]\]$/);
+      if (optionalCatchAll) {
+        return { key: optionalCatchAll[1], repeat: true, optional: true };
+      }
+      const requiredCatchAll = segment.match(/^\[\.\.\.(.+)\]$/);
+      if (requiredCatchAll) {
+        return { key: requiredCatchAll[1], repeat: true, optional: false };
+      }
+      const dynamic = segment.match(/^\[(.+)\]$/);
+      if (dynamic) {
+        return { key: dynamic[1], repeat: false, optional: false };
+      }
+      return null;
+    })
+    .filter((param): param is PagesRouteParam => param !== null);
+}
+
+export function matchesPagesStaticPath(
   pathEntry: PagesStaticPathsEntry,
   params: Record<string, unknown>,
+  routeParams: PagesRouteParam[],
   routeUrl: string,
 ): boolean {
   if (typeof pathEntry === "string") {
-    return normalizeStaticPathname(pathEntry) === normalizeStaticPathname(routeUrl);
+    // Request routing intentionally preserves the raw encoded pathname until
+    // dynamic captures are decoded. Compare string-form getStaticPaths entries
+    // in the same segment-normalized space so a seeded literal value such as
+    // `[second]` matches a data URL containing `%5Bsecond%5D`. Segment-wise
+    // normalization keeps encoded delimiters such as `%2F` encoded, so they
+    // cannot become path separators during this comparison.
+    return (
+      normalizePathnameForRouteMatch(normalizeStaticPathname(pathEntry)) ===
+      normalizePathnameForRouteMatch(normalizeStaticPathname(routeUrl))
+    );
   }
   const entryParams = pathEntry.params;
   if (entryParams === undefined || entryParams === null) {
     return false;
   }
-  return Object.entries(entryParams).every(([key, value]) => {
+
+  return routeParams.every(({ key, repeat, optional }) => {
+    if (!Object.hasOwn(entryParams, key)) {
+      return false;
+    }
+
+    let value = entryParams[key];
+    // Mirrors Next.js build/static-paths/pages.ts: optional catch-all values
+    // explicitly returned as null, undefined, or false normalize to [].
+    if (optional && (value === null || value === undefined || value === false)) {
+      value = [];
+    }
+
+    if (repeat) {
+      if (!Array.isArray(value) || (!optional && value.length === 0)) {
+        return false;
+      }
+    } else if (typeof value !== "string") {
+      return false;
+    }
+
     const actual = params[key];
     if (Array.isArray(value)) {
+      if (optional && value.length === 0 && actual === undefined) {
+        return true;
+      }
       return Array.isArray(actual) && value.join("/") === actual.join("/");
     }
     return String(value) === String(actual);
@@ -380,10 +967,11 @@ function buildPagesCacheResponse(
   html: string,
   cacheState: "HIT" | "STALE",
   fontLinkHeader: string,
-  revalidateSeconds?: number,
+  revalidateSeconds?: number | false,
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
   status?: number,
+  cachedHeaders?: Record<string, string | string[]>,
 ): Response {
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
@@ -396,17 +984,32 @@ function buildPagesCacheResponse(
     cacheState,
     kind: "pages",
     revalidateSeconds: effectiveRevalidateSeconds,
-    expireSeconds,
+    expireSeconds: cacheControl?.expire === undefined ? undefined : expireSeconds,
     cacheControlMeta: cacheControl,
   });
   const headers = new Headers({
-    "Content-Type": "text/html",
+    "Content-Type": "text/html; charset=utf-8",
     ...buildCacheStateHeaders(cacheState),
   });
   applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);
+  }
+  if (cachedHeaders) {
+    for (const [name, value] of Object.entries(cachedHeaders)) {
+      const lowerName = name.toLowerCase();
+      // Pages cache values can originate from custom handlers. Only restore
+      // the representation headers needed by cached redirects/not-found
+      // responses; never replay Set-Cookie or other request-specific headers.
+      if (!isCachedPagesRepresentationHeader(lowerName)) continue;
+      if (Array.isArray(value)) {
+        headers.delete(name);
+        for (const item of value) headers.append(name, item);
+      } else {
+        headers.set(name, value);
+      }
+    }
   }
 
   return new Response(html, {
@@ -436,7 +1039,7 @@ function applyBotETagAndCheck(
   const etag = generatePagesETag(html);
   cachedResponse.headers.set("ETag", etag);
   const noCacheRequested = requestsNoCache(options.requestCacheControl);
-  if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+  if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
     return {
       kind: "response",
       response: new Response(null, {
@@ -448,6 +1051,76 @@ function applyBotETagAndCheck(
   return null;
 }
 
+/**
+ * Matches one serialized `next/head` tag. `getSSRHeadHTML()` stamps every tag
+ * it emits with `data-next-head=""` (see `shims/head.ts`), which is the same
+ * marker Next.js uses to reconcile the head on the client — so it is a stable
+ * anchor for finding the collector's output inside an already-rendered shell.
+ *
+ * Raw-content tags are safe to match non-greedily: `headChildToHTML()` escapes
+ * closing-tag sequences in `<style>`/`<script>` bodies, so the first `</style>`
+ * encountered is always the real terminator.
+ */
+const SSR_HEAD_TAG_PATTERN =
+  /<(title|meta|link|style|script|base|noscript)\b[^>]*?\sdata-next-head=""[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g;
+
+/**
+ * Matches a whole head element whose body may contain markup-looking text.
+ * Script/style are raw-text elements, title is RCDATA, and noscript is raw
+ * text while scripting is enabled. In all four, a literal `</head>` does not
+ * close the document head. `headChildToHTML()` only escapes the element's own
+ * closing sequence for script/style, while `dangerouslySetInnerHTML` may leave
+ * `</head>` intact in any of them.
+ */
+const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
+
+/**
+ * Replace the `next/head` region of a cached shell with a freshly collected
+ * one.
+ *
+ * ISR regeneration re-renders the page body but reuses the cached shell, so
+ * without this the `<head>` stays frozen at whatever the first cache-filling
+ * render produced — a page whose `<title>`/meta derive from `getStaticProps`
+ * data would serve an updated body under permanently stale metadata.
+ *
+ * The collector emits its tags as one contiguous run (`ssrHeadHTML` is
+ * concatenated ahead of trace meta and `_document` styles in
+ * `buildPagesShellHtml`), so replacing first-match-start through
+ * last-match-end swaps exactly that run and leaves `_document`-owned head
+ * markup either side of it untouched.
+ *
+ * Only the `next/head` run refreshes. `_document`-rendered head children and
+ * CSS-in-JS `styles` still come from the cached shell, because regeneration
+ * never re-renders `_document` — refreshing those means running the full
+ * document pipeline on regeneration the way Next.js does.
+ */
+function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
+  // An empty collection means the render produced no head at all; leave the
+  // cached head alone rather than deleting the tags we do have.
+  if (!freshHead) return cachedHtml;
+
+  // Blank out raw-text/RCDATA elements before locating the boundary so a
+  // `</head>` string inside one is not mistaken for the closing tag — that
+  // would truncate the scan and leave stale tags behind the fresh head. The
+  // replacement is length-preserving, so the index still maps onto
+  // `cachedHtml`.
+  const headEnd = cachedHtml
+    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
+    .indexOf("</head>");
+  if (headEnd < 0) return cachedHtml;
+
+  const matches = [...cachedHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
+  const first = matches[0];
+  const last = matches[matches.length - 1];
+  if (!first || !last || first.index === undefined || last.index === undefined) {
+    return cachedHtml;
+  }
+
+  return (
+    cachedHtml.slice(0, first.index) + freshHead + cachedHtml.slice(last.index + last[0].length)
+  );
+}
+
 function rewritePagesCachedHtml(
   cachedHtml: string,
   freshBody: string,
@@ -456,11 +1129,11 @@ function rewritePagesCachedHtml(
   const bodyMarker = '<div id="__next">';
   const bodyStart = cachedHtml.indexOf(bodyMarker);
   const contentStart = bodyStart >= 0 ? bodyStart + bodyMarker.length : -1;
-  // This intentionally looks for the bare inline __NEXT_DATA__ marker.
-  // Pages responses with scriptNonce are excluded from ISR writes, so cached
-  // HTML should never contain nonce-prefixed __NEXT_DATA__ scripts here.
-  const nextDataMarker = "<script>window.__NEXT_DATA__";
-  const nextDataStart = cachedHtml.indexOf(nextDataMarker);
+  const canonicalNextDataStart = cachedHtml.search(
+    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>/,
+  );
+  const legacyNextDataStart = cachedHtml.indexOf("<script>window.__NEXT_DATA__");
+  const nextDataStart = canonicalNextDataStart >= 0 ? canonicalNextDataStart : legacyNextDataStart;
 
   if (contentStart >= 0 && nextDataStart >= 0) {
     const region = cachedHtml.slice(contentStart, nextDataStart);
@@ -482,13 +1155,21 @@ function rewritePagesCachedHtml(
 }
 
 export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Promise<string> {
+  const renderProps = options.props ?? { pageProps: options.pageProps };
+  const collectHead = options.collectIsrHeadHTML;
+  let freshHead = "";
   const freshBody = await options.renderIsrPassToStringAsync(
-    options.createPageElement(options.pageProps),
+    options.createPageElement(renderProps),
+    collectHead &&
+      (async () => {
+        freshHead = collectHead();
+      }),
   );
   const nextDataScript = buildPagesNextDataScript({
     buildId: options.buildId,
     i18n: options.i18n,
     pageProps: options.pageProps,
+    props: renderProps,
     params: options.params,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
@@ -499,7 +1180,11 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     vinext: options.vinext,
   });
 
-  return rewritePagesCachedHtml(options.cachedHtml, freshBody, nextDataScript);
+  return rewritePagesCachedHtml(
+    refreshCachedHeadTags(options.cachedHtml, freshHead),
+    freshBody,
+    nextDataScript,
+  );
 }
 
 export async function resolvePagesPageData(
@@ -522,6 +1207,9 @@ export async function resolvePagesPageData(
   // (`/_next/data/...json`) still call `getStaticProps` so the client can
   // hydrate the page after the fallback shell ships.
   let isFallback = false;
+  let shouldPersistFallbackData = false;
+  let onDemandPreviousCacheEntry: ISRCacheEntry | null | undefined;
+  const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
 
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({
@@ -530,11 +1218,19 @@ export async function resolvePagesPageData(
     });
     const fallback = pathsResult?.fallback ?? false;
     const paths = pathsResult?.paths ?? [];
+    const routeParams = getPagesRouteParams(options.routePattern);
     const isValidPath = paths.some((pathEntry) =>
-      matchesPagesStaticPath(pathEntry, options.params, options.routeUrl),
+      matchesPagesStaticPath(pathEntry, options.params, routeParams, options.routeUrl),
     );
 
-    if (fallback === false && !isValidPath) {
+    if (fallback === false && !isValidPath && previewData === false) {
+      if (options.isOnDemandRevalidate && !options.revalidateOnlyGenerated) {
+        return {
+          kind: "response",
+          response: new Response("This page could not be found", { status: 404 }),
+          onDemandRevalidateSuccess: false,
+        };
+      }
       // For data requests (`/_next/data/...json`), return a JSON-shaped 404
       // so the client router can `res.json()` without blowing up — matches
       // Next.js' behavior. HTML navigations still get the configured 404 page.
@@ -544,35 +1240,108 @@ export async function resolvePagesPageData(
     // Render the fallback shell for unlisted paths under `fallback: true`.
     // Data requests resolve props normally so the client can fill in after
     // the loading shell ships (`fallback: 'blocking'` keeps SSRing as before).
-    if (fallback === true && !isValidPath && !options.isDataReq) {
+    const isBotRequest =
+      !!options.userAgent && isBotUserAgent(options.userAgent, options.htmlLimitedBots);
+    if (
+      fallback === true &&
+      !isValidPath &&
+      !options.isDataReq &&
+      !isBotRequest &&
+      previewData === false
+    ) {
       isFallback = true;
+    }
+    shouldPersistFallbackData = fallback === true && !isValidPath && options.isDataReq === true;
+  }
+
+  if (
+    typeof options.pageModule.getStaticProps === "function" &&
+    options.isOnDemandRevalidate &&
+    options.revalidateOnlyGenerated
+  ) {
+    const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
+    onDemandPreviousCacheEntry = await options.isrGet(options.isrCacheKey("pages", pathname));
+    if (!onDemandPreviousCacheEntry) {
+      return {
+        kind: "response",
+        response: new Response("This page could not be found", {
+          status: 404,
+          headers: { [NEXTJS_CACHE_HEADER]: "REVALIDATED" },
+        }),
+      };
     }
   }
 
   let pageProps: Record<string, unknown> = {};
   let gsspRes: PagesMutableGsspResponse | null = null;
+  const previewContext =
+    previewData === false
+      ? {}
+      : {
+          draftMode: true as const,
+          preview: true as const,
+          previewData,
+        };
+
+  let sharedReqRes: PagesGsspContextResponse | null = null;
+  function getSharedReqRes(): PagesGsspContextResponse {
+    sharedReqRes ??= options.createGsspReqRes();
+    return sharedReqRes;
+  }
+
+  let renderProps: PagesRenderProps = { pageProps };
+  if (previewData !== false) renderProps.__N_PREVIEW = true;
+
+  async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
+    const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
+    if (result.kind === "response") {
+      return {
+        kind: "response",
+        response: await result.response,
+      };
+    }
+    renderProps = result.renderProps;
+    pageProps = result.pageProps;
+    return null;
+  }
 
   if (isFallback) {
-    return {
-      kind: "render",
-      gsspRes: null,
-      isrRevalidateSeconds: null,
-      pageProps,
-      isFallback: true,
-    };
+    const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
+    const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
+    if (cached?.value.value?.kind !== "PAGES") {
+      const appShortCircuit = await loadForegroundAppInitialRenderProps();
+      if (appShortCircuit) return appShortCircuit;
+      pageProps = {};
+      renderProps = { ...renderProps, pageProps };
+      return {
+        kind: "render",
+        documentReqRes: sharedReqRes,
+        gsspRes: null,
+        isrRevalidateSeconds: null,
+        pageProps,
+        props: renderProps,
+        isFallback: true,
+      };
+    }
   }
 
   if (typeof options.pageModule.getServerSideProps === "function") {
-    const { req, res, responsePromise } = options.createGsspReqRes();
+    const shortCircuit = await loadForegroundAppInitialRenderProps();
+    if (shortCircuit) {
+      return shortCircuit;
+    }
+    renderProps = { ...renderProps, __N_SSP: true };
+    const { req, res, responsePromise } = getSharedReqRes();
     const result = await options.pageModule.getServerSideProps({
       params: userFacingParams,
       req,
       res,
       query: options.query,
-      resolvedUrl: options.routeUrl,
+      resolvedUrl: options.resolvedUrl ?? options.routeUrl,
       locale: options.i18n.locale,
       locales: options.i18n.locales,
       defaultLocale: options.i18n.defaultLocale,
+      ...previewContext,
     });
 
     if (isResponseSent(res)) {
@@ -587,18 +1356,32 @@ export async function resolvePagesPageData(
       // before serialising; otherwise pageProps would be a Promise and the
       // rendered page would receive empty props. See
       // packages/next/src/server/render.tsx (deferredContent).
-      pageProps = (await Promise.resolve(result.props)) as Record<string, unknown>;
+      pageProps = mergePagesDataProps(renderProps.pageProps, await Promise.resolve(result.props));
+      renderProps = { ...renderProps, pageProps };
     }
 
     if (result?.redirect) {
       return {
         kind: "response",
-        response: buildPagesRedirectResponse(result.redirect, options),
+        response: buildPagesRedirectResponse(
+          result.redirect,
+          options,
+          renderProps,
+          "getServerSideProps",
+          getPagesGsspResponseHeaders(res),
+        ),
       };
     }
 
     if (result?.notFound) {
-      return buildPagesNotFoundResult(options);
+      const responseHeaders = res.getHeaders();
+      return buildPagesNotFoundResult(
+        options,
+        undefined,
+        undefined,
+        undefined,
+        Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
+      );
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
@@ -609,20 +1392,177 @@ export async function resolvePagesPageData(
     // .nextjs-ref/packages/next/src/server/render.tsx (~line 1200) and
     // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
     // vinext#1478.
-    if (result?.props !== undefined) {
+    if (result?.props !== undefined && options.validatePropsSerialization !== false) {
       isSerializableProps(options.routePattern, "getServerSideProps", pageProps);
     }
 
     gsspRes = res;
   }
 
-  let isrRevalidateSeconds: number | null = null;
+  let isrRevalidateSeconds: number | false | null = null;
+  let isrExpireSeconds: number | undefined;
 
   if (typeof options.pageModule.getStaticProps === "function") {
-    const pathname = options.routeUrl.split("?")[0];
+    const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", pathname);
-    const cached = await options.isrGet(cacheKey);
+    const cached =
+      onDemandPreviousCacheEntry !== undefined
+        ? onDemandPreviousCacheEntry
+        : await options.isrGet(cacheKey);
     const cachedValue = cached?.value.value;
+    const isLegacyCachedNotFound =
+      cachedValue?.kind === "PAGES" &&
+      cachedValue.status === 404 &&
+      options.routePattern !== "/404" &&
+      options.routePattern !== "/_error";
+    const cachedRedirect = getCachedPagesRedirect(cachedValue);
+
+    const scheduleStaleRegeneration = () => {
+      options.triggerBackgroundRegeneration(
+        cacheKey,
+        async function () {
+          return options.runInFreshUnifiedContext(async () => {
+            options.applyRequestContexts();
+            const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
+              options.createGsspReqRes(),
+            );
+            if (freshAppResult.kind === "response") return;
+
+            let freshPageProps = freshAppResult.pageProps;
+            let freshRenderProps = freshAppResult.renderProps;
+            const freshResult = await options.pageModule.getStaticProps?.({
+              params: userFacingParams,
+              locale: options.i18n.locale,
+              locales: options.i18n.locales,
+              defaultLocale: options.i18n.defaultLocale,
+              revalidateReason: "stale",
+            });
+            if (!freshResult) return;
+            assertPages404DoesNotReturnNotFound(options.routePattern, freshResult);
+
+            const revalidateSeconds = resolvePagesRevalidateSeconds(freshResult, options.routeUrl);
+            const expireSeconds = resolvePagesExpireSeconds(freshResult, options.expireSeconds);
+
+            if (freshResult.redirect) {
+              const redirect = resolvePagesRedirect(freshResult.redirect, {
+                method: "getStaticProps",
+                routeUrl: options.routeUrl,
+                sanitizeDestination: options.sanitizeDestination,
+              });
+              await options.isrSet(
+                cacheKey,
+                {
+                  kind: "REDIRECT",
+                  props: buildPagesRedirectProps(redirect, freshRenderProps),
+                },
+                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+              );
+              return;
+            }
+
+            if (freshResult.notFound) {
+              await options.isrSet(cacheKey, null, {
+                cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+              });
+              return;
+            }
+
+            if (freshResult.props === undefined) return;
+            const resolvedFreshProps = await Promise.resolve(freshResult.props);
+            freshPageProps = mergePagesDataProps(freshRenderProps.pageProps, resolvedFreshProps);
+            freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
+            if (options.validatePropsSerialization !== false) {
+              isSerializableProps(options.routePattern, "getStaticProps", freshPageProps);
+            }
+
+            if (cachedValue?.kind === "PAGES" && !cachedValue.generatedFromDataRequest) {
+              const freshHtml = await renderPagesIsrHtml({
+                buildId: options.buildId,
+                cachedHtml: cachedValue.html,
+                createPageElement: options.createPageElement,
+                i18n: options.i18n,
+                pageProps: freshPageProps,
+                props: freshRenderProps,
+                params: options.params,
+                renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
+                collectIsrHeadHTML: options.collectIsrHeadHTML,
+                routePattern: options.routePattern,
+                safeJsonStringify: options.safeJsonStringify,
+                nextData: options.nextData,
+                vinext: options.vinext,
+              });
+              await options.isrSet(
+                cacheKey,
+                buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
+                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+              );
+              return;
+            }
+
+            // A cached redirect/not-found has no reusable HTML shell. Persist
+            // the resolved props and let the next foreground request render
+            // the canonical PAGES representation without re-running user code.
+            await options.isrSet(
+              cacheKey,
+              {
+                kind: "PAGES",
+                html: "",
+                pageData: freshRenderProps,
+                generatedFromDataRequest: true,
+                headers: undefined,
+                status: undefined,
+              },
+              { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+            );
+          });
+        },
+        {
+          routerKind: "Pages Router",
+          routePath: options.routePattern,
+          routeType: "render",
+        },
+      );
+    };
+
+    if (
+      !options.isOnDemandRevalidate &&
+      cached &&
+      !cached.isStale &&
+      !cached.isExpired &&
+      previewData === false
+    ) {
+      if (cachedValue === null) return buildCachedPagesNotFoundResult(options, cached.value, "HIT");
+      // Legacy vinext entries persisted the rendered custom 404 as PAGES.
+      // Treat those as canonical notFound markers so request-derived 404 props
+      // (cookies/auth headers) are never replayed from cache.
+      if (isLegacyCachedNotFound) {
+        return buildCachedPagesNotFoundResult(options, cached.value, "HIT");
+      }
+      if (cachedRedirect) {
+        return {
+          kind: "response",
+          response: applyCachedPagesRepresentationHeaders(
+            buildCachedPagesRedirectResponse(cachedRedirect, options),
+            "HIT",
+            cached.value,
+            options,
+          ),
+        };
+      }
+      if (options.isDataReq && cachedValue?.kind === "PAGES") {
+        const response = buildNextDataPropsJsonResponse(
+          normalizePagesRenderProps(cachedValue.pageData as Record<string, unknown>),
+          options.safeJsonStringify,
+          options.deploymentId
+            ? { headers: { [NEXTJS_DEPLOYMENT_ID_HEADER]: options.deploymentId } }
+            : undefined,
+        );
+        return {
+          kind: "response",
+          response: applyCachedPagesRepresentationHeaders(response, "HIT", cached.value, options),
+        };
+      }
+    }
 
     // On-demand revalidation (`res.revalidate()`) must regenerate the entry
     // synchronously with `revalidateReason: "on-demand"`, so the fresh/stale
@@ -631,11 +1571,15 @@ export async function resolvePagesPageData(
     // handling in render.tsx / base-server.ts.
     if (
       !options.isOnDemandRevalidate &&
+      cached?.isStale === false &&
+      !cached.isExpired &&
       cachedValue?.kind === "PAGES" &&
+      !cachedValue.generatedFromDataRequest &&
       cached &&
       !cached.isStale &&
       !options.scriptNonce &&
-      !options.isDataReq
+      !options.isDataReq &&
+      previewData === false
     ) {
       const hitResponse = buildPagesCacheResponse(
         cachedValue.html,
@@ -645,6 +1589,7 @@ export async function resolvePagesPageData(
         options.expireSeconds,
         cached.value.cacheControl,
         cachedValue.status,
+        cachedValue.headers,
       );
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
       // for bot UAs so they are consistent with fresh-MISS bot responses (which
@@ -660,64 +1605,60 @@ export async function resolvePagesPageData(
 
     if (
       !options.isOnDemandRevalidate &&
-      cachedValue?.kind === "PAGES" &&
       cached &&
       cached.isStale &&
+      !cached.isExpired &&
       !options.scriptNonce &&
-      !options.isDataReq
+      previewData === false &&
+      (cachedValue === null ||
+        cachedRedirect !== null ||
+        isLegacyCachedNotFound ||
+        options.isDataReq)
     ) {
-      options.triggerBackgroundRegeneration(
-        cacheKey,
-        async function () {
-          return options.runInFreshUnifiedContext(async () => {
-            const freshResult = await options.pageModule.getStaticProps?.({
-              params: userFacingParams,
-              locale: options.i18n.locale,
-              locales: options.i18n.locales,
-              defaultLocale: options.i18n.defaultLocale,
-              // Background regeneration for an entry that is already in the
-              // cache is always a stale-while-revalidate refresh — mirrors
-              // Next.js `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`,
-              // and we're not at build time here).
-              revalidateReason: "stale",
-            });
+      scheduleStaleRegeneration();
+      if (cachedValue === null)
+        return buildCachedPagesNotFoundResult(options, cached.value, "STALE");
+      if (isLegacyCachedNotFound) {
+        return buildCachedPagesNotFoundResult(options, cached.value, "STALE");
+      }
+      if (cachedRedirect) {
+        return {
+          kind: "response",
+          response: applyCachedPagesRepresentationHeaders(
+            buildCachedPagesRedirectResponse(cachedRedirect, options),
+            "STALE",
+            cached.value,
+            options,
+          ),
+        };
+      }
+      if (cachedValue?.kind === "PAGES") {
+        const response = buildNextDataPropsJsonResponse(
+          normalizePagesRenderProps(cachedValue.pageData as Record<string, unknown>),
+          options.safeJsonStringify,
+          options.deploymentId
+            ? { headers: { [NEXTJS_DEPLOYMENT_ID_HEADER]: options.deploymentId } }
+            : undefined,
+        );
+        return {
+          kind: "response",
+          response: applyCachedPagesRepresentationHeaders(response, "STALE", cached.value, options),
+        };
+      }
+    }
 
-            if (
-              freshResult?.props &&
-              typeof freshResult.revalidate === "number" &&
-              freshResult.revalidate > 0
-            ) {
-              options.applyRequestContexts();
-              const freshHtml = await renderPagesIsrHtml({
-                buildId: options.buildId,
-                cachedHtml: cachedValue.html,
-                createPageElement: options.createPageElement,
-                i18n: options.i18n,
-                pageProps: freshResult.props,
-                params: options.params,
-                renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
-                routePattern: options.routePattern,
-                safeJsonStringify: options.safeJsonStringify,
-                nextData: options.nextData,
-                vinext: options.vinext,
-              });
-
-              await options.isrSet(
-                cacheKey,
-                buildPagesCacheValue(freshHtml, freshResult.props, options.statusCode),
-                freshResult.revalidate,
-                undefined,
-                options.expireSeconds,
-              );
-            }
-          });
-        },
-        {
-          routerKind: "Pages Router",
-          routePath: options.routePattern,
-          routeType: "render",
-        },
-      );
+    if (
+      !options.isOnDemandRevalidate &&
+      cachedValue?.kind === "PAGES" &&
+      !cachedValue.generatedFromDataRequest &&
+      cached &&
+      cached.isStale &&
+      !cached.isExpired &&
+      !options.scriptNonce &&
+      !options.isDataReq &&
+      previewData === false
+    ) {
+      scheduleStaleRegeneration();
 
       const staleResponse = buildPagesCacheResponse(
         cachedValue.html,
@@ -727,6 +1668,7 @@ export async function resolvePagesPageData(
         options.expireSeconds,
         cached.value.cacheControl,
         cachedValue.status,
+        cachedValue.headers,
       );
       // Bot / crawler ETag consistency: same as the HIT branch — attach an
       // ETag to STALE responses for bot UAs and honour If-None-Match / 304.
@@ -738,37 +1680,95 @@ export async function resolvePagesPageData(
       };
     }
 
-    const result = await options.pageModule.getStaticProps({
-      params: userFacingParams,
-      locale: options.i18n.locale,
-      locales: options.i18n.locales,
-      defaultLocale: options.i18n.defaultLocale,
-      // Maps Next.js's resolution in `render.tsx`:
-      //   isOnDemandRevalidate ? "on-demand"
-      //     : isBuildTimeSSG    ? "build"
-      //                         : "stale"
-      // We pick "stale" as the default at runtime so existing-but-missing
-      // (cache evicted) entries surface as a regeneration rather than a build.
-      revalidateReason: options.isOnDemandRevalidate
-        ? "on-demand"
-        : options.isBuildTimePrerendering
-          ? "build"
-          : "stale",
-    });
+    const generatedPageData =
+      !options.isOnDemandRevalidate &&
+      previewData === false &&
+      cached?.isStale === false &&
+      !cached.isExpired &&
+      cachedValue?.kind === "PAGES" &&
+      cachedValue.generatedFromDataRequest &&
+      isUnknownRecord(cachedValue.pageData)
+        ? cachedValue.pageData
+        : null;
+    if (!generatedPageData) {
+      const shortCircuit = await loadForegroundAppInitialRenderProps();
+      if (shortCircuit) return shortCircuit;
+    }
+    const result = generatedPageData
+      ? null
+      : await options.pageModule.getStaticProps({
+          params: userFacingParams,
+          locale: options.i18n.locale,
+          locales: options.i18n.locales,
+          defaultLocale: options.i18n.defaultLocale,
+          ...previewContext,
+          revalidateReason: options.isOnDemandRevalidate
+            ? "on-demand"
+            : options.isBuildTimePrerendering
+              ? "build"
+              : "stale",
+        });
+    assertPages404DoesNotReturnNotFound(options.routePattern, result);
 
-    if (result?.props) {
-      pageProps = result.props;
+    if (generatedPageData) {
+      renderProps = normalizePagesRenderProps(generatedPageData);
+      pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
+    }
+
+    if (result?.props !== undefined) {
+      pageProps = mergePagesDataProps(renderProps.pageProps, await Promise.resolve(result.props));
+      renderProps = { ...renderProps, pageProps };
     }
 
     if (result?.redirect) {
+      const response = buildPagesRedirectResponse(result.redirect, options, renderProps);
+      if (previewData === false) {
+        const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
+        const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
+        const redirect = resolvePagesRedirect(result.redirect, {
+          method: "getStaticProps",
+          routeUrl: options.routeUrl,
+          sanitizeDestination: options.sanitizeDestination,
+        });
+        await options.isrSet(
+          cacheKey,
+          {
+            kind: "REDIRECT",
+            props: buildPagesRedirectProps(redirect, renderProps),
+          },
+          { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+        );
+        applyPagesTerminalMissHeaders(response, revalidateSeconds, pathname, expireSeconds);
+      }
       return {
         kind: "response",
-        response: buildPagesRedirectResponse(result.redirect, options),
+        response,
       };
     }
 
     if (result?.notFound) {
-      return buildPagesNotFoundResult(options);
+      const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
+      const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
+      if (previewData === false) {
+        await options.isrSet(cacheKey, null, {
+          cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+        });
+      }
+      const notFoundResult = buildPagesNotFoundResult(
+        options,
+        revalidateSeconds,
+        previewData === false ? "MISS" : undefined,
+        expireSeconds,
+      );
+      if (notFoundResult.kind === "response" && previewData === false) {
+        applyPagesTerminalMissHeaders(
+          notFoundResult.response,
+          revalidateSeconds,
+          pathname,
+          expireSeconds,
+        );
+      }
+      return notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
@@ -779,21 +1779,62 @@ export async function resolvePagesPageData(
     // .nextjs-ref/packages/next/src/server/render.tsx (~line 982) and
     // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
     // vinext#1478.
-    if (result?.props !== undefined) {
+    if (result?.props !== undefined && options.validatePropsSerialization !== false) {
       isSerializableProps(options.routePattern, "getStaticProps", pageProps);
     }
 
-    if (typeof result?.revalidate === "number" && result.revalidate > 0) {
-      isrRevalidateSeconds = result.revalidate;
+    if (previewData === false && result) {
+      isrRevalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
+      isrExpireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
+    } else if (previewData === false && options.isOnDemandRevalidate) {
+      // `revalidate: false` (and an omitted `revalidate`) still participates in
+      // on-demand regeneration. Persist the current invocation's normalized
+      // lifetime instead of inheriting stale metadata from the previous entry.
+      isrRevalidateSeconds = false;
+    } else if (
+      previewData === false &&
+      cachedValue?.kind === "PAGES" &&
+      cachedValue.generatedFromDataRequest
+    ) {
+      isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? false;
+      isrExpireSeconds = cached?.value.cacheControl?.expire;
+    }
+
+    if (shouldPersistFallbackData && previewData === false) {
+      const revalidateSeconds = isrRevalidateSeconds ?? false;
+      await options.isrSet(
+        cacheKey,
+        {
+          kind: "PAGES",
+          html: "",
+          pageData: renderProps,
+          generatedFromDataRequest: true,
+          headers: undefined,
+          status: undefined,
+        },
+        { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds: isrExpireSeconds }) },
+      );
     }
   }
 
   if (
     typeof options.pageModule.getServerSideProps !== "function" &&
     typeof options.pageModule.getStaticProps !== "function" &&
+    hasPagesGetInitialProps(options.AppComponent)
+  ) {
+    const shortCircuit = await loadForegroundAppInitialRenderProps();
+    if (shortCircuit) {
+      return shortCircuit;
+    }
+  }
+
+  if (
+    typeof options.pageModule.getServerSideProps !== "function" &&
+    typeof options.pageModule.getStaticProps !== "function" &&
+    !hasPagesGetInitialProps(options.AppComponent) &&
     hasPagesGetInitialProps(options.pageModule.default)
   ) {
-    const { req, res, responsePromise } = options.createGsspReqRes();
+    const { req, res, responsePromise } = getSharedReqRes();
     const initialProps = await loadPagesGetInitialProps(options.pageModule.default, {
       req,
       res,
@@ -815,14 +1856,18 @@ export async function resolvePagesPageData(
 
     if (initialProps) {
       pageProps = { ...pageProps, ...initialProps };
+      renderProps = { ...renderProps, pageProps };
     }
   }
 
   return {
     kind: "render",
+    documentReqRes: sharedReqRes,
     gsspRes,
     isrRevalidateSeconds,
+    isrExpireSeconds,
     pageProps,
+    props: renderProps,
     isFallback: false,
   };
 }

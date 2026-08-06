@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import type { Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
@@ -198,6 +199,27 @@ describe("clientReferenceDedupPlugin", () => {
       );
       expect(result).toBe("\0vinext:dedup/@mantine/core");
     });
+
+    it.runIf(process.platform === "win32")(
+      "redirects Vite-normalized Windows drive paths from proxy modules",
+      async () => {
+        const ctx = createContext("client");
+        const viteId = path.join(
+          "C:\\project",
+          "node_modules",
+          "@testmodule",
+          "core",
+          "esm",
+          "test.mjs",
+        );
+        const result = await resolveId.call(
+          ctx,
+          viteId,
+          "\0virtual:vite-rsc/client-in-server-package-proxy/abc123",
+        );
+        expect(result).toBe("\0vinext:dedup/@testmodule/core");
+      },
+    );
 
     it("preserves package subpaths when package exports map them", async () => {
       const subpathPlugin = clientReferenceDedupPlugin({

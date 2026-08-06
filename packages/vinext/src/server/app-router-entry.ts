@@ -1,7 +1,11 @@
 /**
- * Default Cloudflare Worker entry point for vinext App Router.
+ * Router-specific Cloudflare Worker entry point for vinext App Router.
  *
- * Use this directly in wrangler.jsonc:
+ * New projects should usually use the router-selected entry in wrangler.jsonc:
+ *   "main": "vinext/server/fetch-handler"
+ *
+ * This App Router entry remains available for existing configs and for custom
+ * workers that need to opt into the App Router handler explicitly:
  *   "main": "vinext/server/app-router-entry"
  *
  * Or import and delegate to it from a custom worker:
@@ -22,22 +26,41 @@ import "./server-globals.js";
 import rscHandler, {
   __assetPrefix as __rscAssetPrefix,
   __basePath as __rscBasePath,
+  __imageAllowedWidths as __rscImageAllowedWidths,
+  __imageConfig as __rscImageConfig,
 } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
-import { resolveStaticAssetSignal } from "./worker-utils.js";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
+import {
+  getImageOptimizer,
+  handleConfiguredImageOptimization,
+  isImageOptimizationPath,
+} from "./image-optimization.js";
+import {
+  createStaticAssetRequest,
+  finalizeMissingStaticAssetResponse,
+  resolveStaticAssetSignal,
+} from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
+import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import {
+  readTrustedPrerenderRouteParams,
+  serializePrerenderRouteParamsHeader,
+} from "./prerender-route-params.js";
 import {
   badRequestResponse,
   notFoundResponse,
   notFoundStaticAssetResponse,
 } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -66,12 +89,34 @@ export default {
 async function handleRequest(
   request: Request,
   env: WorkerAssetEnv | undefined,
-  ctx: ExecutionContextLike | undefined,
+  platformCtx: ExecutionContextLike | undefined,
 ): Promise<Response> {
+  // The Node production server calls this Worker-style entry with a
+  // server-owned loopback origin and must retain its HTTP revalidation path.
+  // Cloudflare requests instead receive an in-process dispatcher so the
+  // credential never leaves the Worker isolate.
+  const ctx = platformCtx?.trustedRevalidateOrigin
+    ? platformCtx
+    : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
+        handleRequest(internalRequest, env, internalCtx),
+      );
+
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
+  registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
 
   const url = new URL(request.url);
+
+  if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
+    const assetFetcher = env.ASSETS;
+    return handleConfiguredImageOptimization(
+      request,
+      (assetPath) =>
+        Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
+      __rscImageAllowedWidths,
+      __rscImageConfig,
+    );
+  }
 
   // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,
   // /%5Cevil.com/, /%2F/evil.com/). Check BEFORE decode so both literal and
@@ -91,20 +136,31 @@ async function handleRequest(
     return badRequestResponse();
   }
 
-  // Invalid `_next/static/*` paths short-circuit with a plain-text 404
-  // instead of falling through to the RSC handler (which would render the
-  // full HTML 404 page). Valid assets are served by Cloudflare's ASSETS
-  // binding BEFORE the worker is invoked; only misses reach this code.
-  // Matches Next.js: packages/next/src/server/lib/router-server.ts.
-  if (isNextStaticPath(url.pathname, __workerBasePath, __workerAssetPathPrefix)) {
-    return notFoundStaticAssetResponse();
-  }
+  // Valid assets are served by Cloudflare's ASSETS binding before the worker
+  // is invoked. Missing asset-shaped requests still need to reach middleware
+  // so it can rewrite or respond; a final 404 is converted back to Next.js's
+  // canonical plain-text static-file response below.
+  const missingBuildAsset = isNextStaticPath(
+    url.pathname,
+    __workerBasePath,
+    __workerAssetPathPrefix,
+  );
 
   // Strip internal headers from inbound requests before any handler or
   // middleware sees them. Must happen before the RSC handler runs.
   // Builds a new Headers — Request.headers is immutable in Workers.
   {
-    const filteredHeaders = filterInternalHeaders(request.headers);
+    const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
+    const filteredHeaders = ctx.isInternalPagesRevalidation
+      ? new Headers(request.headers)
+      : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+      prerenderRouteParamsPayload,
+    );
+    if (prerenderRouteParamsHeader !== null) {
+      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+    }
     request = cloneRequestWithHeaders(request, filteredHeaders);
   }
 
@@ -121,19 +177,20 @@ async function handleRequest(
   const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
   if (result instanceof Response) {
+    let response = result;
     if (env?.ASSETS) {
       const assetFetcher = env.ASSETS;
-      const assetResponse = await resolveStaticAssetSignal(result, {
+      const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path) =>
-          Promise.resolve(assetFetcher.fetch(new Request(new URL(path, request.url)))),
+          Promise.resolve(assetFetcher.fetch(createStaticAssetRequest(path, request))),
       });
-      if (assetResponse) return assetResponse;
+      if (assetResponse) response = assetResponse;
     }
-    return result;
+    return finalizeMissingStaticAssetResponse(response, missingBuildAsset);
   }
 
   if (result === null || result === undefined) {
-    return notFoundResponse();
+    return missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse();
   }
 
   return new Response(String(result), { status: 200 });

@@ -9,8 +9,7 @@ export type PrerenderRouteParamsPayload = {
   routePattern: string;
 };
 
-/** @public exported for #1716 serving consumers; not yet referenced in-repo */
-export type PrerenderRouteParamsRouteMatch =
+type PrerenderRouteParamsRouteMatch =
   | {
       kind: "exact";
       params: PrerenderRouteParams;
@@ -129,12 +128,12 @@ function decodedPrerenderRouteParamEquals(
 
     return prerenderValue.every((item, index) => {
       const decoded = decodePrerenderRouteParam(item);
-      return decoded !== null && decoded === matchedValue[index];
+      return item === matchedValue[index] || (decoded !== null && decoded === matchedValue[index]);
     });
   }
 
   const decoded = decodePrerenderRouteParam(prerenderValue);
-  return decoded !== null && decoded === matchedValue;
+  return prerenderValue === matchedValue || (decoded !== null && decoded === matchedValue);
 }
 
 export function prerenderRouteParamsPayloadMatchesRoute(

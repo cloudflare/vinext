@@ -28,12 +28,15 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
       http.get("https://fonts.googleapis.com/*", ({ request }) => {
         const url = request.url;
         if (url.includes("Geist") && !url.includes("Mono")) {
-          return HttpResponse.text("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
-            headers: { "content-type": "text/css" },
-          });
+          return HttpResponse.text(
+            "/* latin */\n@font-face { font-family: 'Geist'; src: url(/geist.woff2); }",
+            {
+              headers: { "content-type": "text/css" },
+            },
+          );
         }
         return HttpResponse.text(
-          "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
+          "/* latin */\n@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
           { headers: { "content-type": "text/css" } },
         );
       }),
@@ -65,6 +68,23 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
   }
 }
 
+// Concatenate every emitted `.js` file under `dir`. The server build is
+// code-split across `_next/static/*` chunks, so the transformed font output is
+// no longer guaranteed to live in `index.js` alone — the markers can land in
+// any chunk (e.g. the layout/page chunks).
+async function readAllJs(dir: string): Promise<string> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const parts = await Promise.all(
+    entries.map(async (entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return readAllJs(full);
+      if (entry.name.endsWith(".js")) return fs.readFile(full, "utf-8");
+      return "";
+    }),
+  );
+  return parts.join("\n");
+}
+
 describe("font-google build integration", () => {
   let buildOutputPath: string;
   let outDir: string;
@@ -79,7 +99,7 @@ describe("font-google build integration", () => {
     buildOutputPath = await buildFontGoogleMultipleFixture();
     outDir = path.dirname(path.dirname(buildOutputPath));
 
-    const content = await fs.readFile(buildOutputPath, "utf-8");
+    const content = await readAllJs(path.dirname(buildOutputPath));
     expect(content).toContain("Geist");
     expect(content).toContain("_vinext");
     expect(content).toContain("selfHostedCSS");

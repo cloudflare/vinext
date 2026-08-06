@@ -1,6 +1,6 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import { markAppPagePropsForUseCache } from "vinext/shims/cache-runtime";
-import { isNextRouterError } from "vinext/shims/navigation";
+import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
+import { isNextRouterError } from "vinext/shims/navigation-server";
 import { collectAppPageSearchParams } from "./app-page-head.js";
 import {
   probeAppPageComponent,
@@ -17,6 +17,7 @@ const DEFAULT_SUBTREE_PROBE_MAX_NODES = 1000;
 const REACT_FORWARD_REF_TYPE = Symbol.for("react.forward_ref");
 const REACT_LAZY_TYPE = Symbol.for("react.lazy");
 const REACT_MEMO_TYPE = Symbol.for("react.memo");
+const REACT_CLIENT_REFERENCE_TYPE = Symbol.for("react.client.reference");
 
 type ProbeReactServerSubtreeOptions = Readonly<{
   maxDepth?: number;
@@ -72,6 +73,10 @@ function isObjectLike(value: unknown): value is object {
 
 function isUnknownFunction(value: unknown): value is UnknownFunction {
   return typeof value === "function";
+}
+
+function isReactClientReference(value: unknown): boolean {
+  return isObjectLike(value) && Reflect.get(value, "$$typeof") === REACT_CLIENT_REFERENCE_TYPE;
 }
 
 function readReactMemoType(value: unknown): ReactMemoType | null {
@@ -144,6 +149,10 @@ export async function probeReactServerSubtree(
   ): Promise<boolean> => {
     if (wrapperDepth > maxDepth) {
       throw new AppPageSubtreeProbeLimitError("App page layout subtree probe exceeded max depth");
+    }
+
+    if (isReactClientReference(type)) {
+      return false;
     }
 
     if (isUnknownFunction(type)) {
@@ -269,7 +278,15 @@ export function probeAppPage(options: {
 
 type AppPageProbeModule = Readonly<{ default?: unknown }> | null | undefined;
 
-type AppPageProbeSlot = Readonly<{ page?: AppPageProbeModule }> | null | undefined;
+type AppPageProbeSlot =
+  | Readonly<{
+      page?: AppPageProbeModule;
+      loading?: AppPageProbeModule;
+      loadings?: readonly AppPageProbeModule[] | null;
+      loadingTreePositions?: readonly number[] | null;
+    }>
+  | null
+  | undefined;
 
 type AppPageProbeRoute = Readonly<{
   slots?: Readonly<Record<string, AppPageProbeSlot>> | null;
@@ -278,6 +295,7 @@ type AppPageProbeRoute = Readonly<{
 type AppPageProbeIntercept =
   | Readonly<{
       page?: AppPageProbeModule;
+      interceptLoadings?: readonly AppPageProbeModule[] | null;
       matchedParams?: unknown;
       /**
        * Key of the parallel-route slot this interception overrides. At render
@@ -366,6 +384,9 @@ export function buildAppPageProbes(options: {
     if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
       continue;
     }
+    if (slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)) {
+      continue;
+    }
     probes.push(
       probeAppPage({
         pageComponent: slot?.page?.default,
@@ -375,7 +396,18 @@ export function buildAppPageProbes(options: {
     );
   }
 
-  if (intercept) {
+  const interceptedSlot = intercept?.slotKey ? route.slots?.[intercept.slotKey] : null;
+  const interceptedSlotHasRootLoading = Boolean(
+    interceptedSlot?.loading?.default ||
+    interceptedSlot?.loadings?.some(
+      (loading, index) => loading?.default && interceptedSlot.loadingTreePositions?.[index] === 0,
+    ),
+  );
+  const interceptHasLoadingBoundary = Boolean(
+    intercept?.interceptLoadings?.some((loading) => loading?.default) ||
+    interceptedSlotHasRootLoading,
+  );
+  if (intercept && !interceptHasLoadingBoundary) {
     probes.push(
       probeAppPage({
         pageComponent: intercept.page?.default,
@@ -395,6 +427,8 @@ type ProbeAppPageBeforeRenderResult = {
 
 type ProbeAppPageBeforeRenderOptions = {
   hasLoadingBoundary: boolean;
+  probePageBeforeRender?: boolean;
+  skipProbes?: boolean;
   layoutCount: number;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
@@ -413,6 +447,10 @@ export async function probeAppPageBeforeRender(
   options: ProbeAppPageBeforeRenderOptions,
 ): Promise<ProbeAppPageBeforeRenderResult> {
   let layoutFlags: LayoutFlags = {};
+
+  if (options.skipProbes) {
+    return { response: null, layoutFlags };
+  }
 
   // Layouts render before their children in Next.js, so layout-level special
   // errors must be handled before probing the page component itself.
@@ -452,7 +490,7 @@ export async function probeAppPageBeforeRender(
   // onError callback, and a short race window after shell-ready lets the
   // lifecycle swap the response to a 307/404 before bytes are flushed.
   // This mirrors Next.js's "until-first-byte-is-flushed" swap behavior.
-  if (options.hasLoadingBoundary) {
+  if (options.hasLoadingBoundary || options.probePageBeforeRender === false) {
     return { response: null, layoutFlags };
   }
 

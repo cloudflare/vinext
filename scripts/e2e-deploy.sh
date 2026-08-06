@@ -164,6 +164,17 @@ ensure_python_command_for_native_builds() {
   echo "Added python -> ${python3_bin} shim for native addon builds" >> "${BUILD_LOG}"
 }
 
+detach_symlinked_node_modules() {
+  if [ ! -L "node_modules" ]; then
+    return
+  fi
+
+  local target
+  target="$(readlink "node_modules" || true)"
+  rm -f "node_modules"
+  echo "Detached symlinked node_modules${target:+ -> ${target}} before install; pnpm will create a local modules directory." >> "${BUILD_LOG}"
+}
+
 read_build_id() {
   if [ -f "dist/server/BUILD_ID" ]; then
     cat "dist/server/BUILD_ID"
@@ -229,18 +240,22 @@ cleanup_on_error() {
 
   {
     echo
-    echo "=== vinext deploy debug ==="
+    echo "=== vinext e2e deploy debug ==="
     if [ -f "${BUILD_LOG}" ]; then
+      local build_log_tail
+      build_log_tail="$(tail -80 "${BUILD_LOG}" 2>/dev/null || true)"
       echo "--- last 80 lines of ${BUILD_LOG} ---"
-      tail -80 "${BUILD_LOG}" 2>/dev/null || true
+      printf '%s\n' "${build_log_tail}"
       echo "--- end ${BUILD_LOG} (persisted to ${DEBUG_RUN_DIR}/${BUILD_LOG}) ---"
     fi
     if [ -f "${SERVER_LOG}" ]; then
+      local server_log_tail
+      server_log_tail="$(tail -40 "${SERVER_LOG}" 2>/dev/null || true)"
       echo "--- last 40 lines of ${SERVER_LOG} ---"
-      tail -40 "${SERVER_LOG}" 2>/dev/null || true
+      printf '%s\n' "${server_log_tail}"
       echo "--- end ${SERVER_LOG} (persisted to ${DEBUG_RUN_DIR}/${SERVER_LOG}) ---"
     fi
-    echo "=== end vinext deploy debug ==="
+    echo "=== end vinext e2e deploy debug ==="
     echo
   } >&2
 }
@@ -288,10 +303,31 @@ const vinextPkg = JSON.parse(
 const cloudflarePkg = JSON.parse(
   fs.readFileSync(path.join(vinextDir, 'packages', 'cloudflare', 'package.json'), 'utf8'),
 )
+const typesPkg = JSON.parse(
+  fs.readFileSync(path.join(vinextDir, 'packages', 'types', 'package.json'), 'utf8'),
+)
 const workspaceConfig = fs.readFileSync(
   path.join(vinextDir, 'pnpm-workspace.yaml'),
   'utf8',
 )
+
+// The deploy adapter always installs with pnpm below. Some Next.js fixtures pin
+// packageManager to npm/yarn/bun to exercise Next's own install command, but
+// pnpm refuses to run in those projects before it can link vinext.
+const originalPackageManager =
+  typeof pkg.packageManager === 'string' && pkg.packageManager.length > 0
+    ? pkg.packageManager
+    : null
+const harnessPackageManager =
+  typeof rootPkg.packageManager === 'string' && rootPkg.packageManager.length > 0
+    ? rootPkg.packageManager
+    : 'pnpm@11.1.1'
+if (originalPackageManager && !originalPackageManager.startsWith('pnpm@')) {
+  pkg.packageManager = harnessPackageManager
+  console.log(
+    `Replaced packageManager ${originalPackageManager} with ${harnessPackageManager} for vinext e2e deploy harness pnpm install`,
+  )
+}
 
 // Minimal YAML parser for the pnpm workspace catalog. Assumes the simple
 // block mapping format used in this repo's pnpm-workspace.yaml (2-space
@@ -327,14 +363,29 @@ function parseCatalog(yaml) {
 }
 
 const catalog = parseCatalog(workspaceConfig)
+const localVinextPkgDir = path.join(process.cwd(), '.vinext-local-package')
 const localCloudflarePkgDir = path.join(process.cwd(), '.vinext-local-cloudflare-package')
+const localTypesPkgDir = path.join(process.cwd(), '.vinext-local-types-package')
+const localWorkspacePackages = new Map([
+  [vinextPkg.name, localVinextPkgDir],
+  [cloudflarePkg.name, localCloudflarePkgDir],
+  [typesPkg.name, localTypesPkgDir],
+])
 
-function workspaceDependencySpecFor(name) {
-  if (name === cloudflarePkg.name) {
-    return 'file:../.vinext-local-cloudflare-package'
-  }
+function workspaceDependencySpecFor(name, fromPackageDir) {
+  const targetPackageDir = localWorkspacePackages.get(name)
+  if (!targetPackageDir) throw new Error(`Unable to resolve workspace dependency spec for ${name}`)
 
-  throw new Error(`Unable to resolve workspace dependency spec for ${name}`)
+  const relativeDir = path.relative(fromPackageDir, targetPackageDir).split(path.sep).join('/') || '.'
+  return `file:${relativeDir}`
+}
+
+function manifestDependencySpecFor(name, spec, fromPackageDir) {
+  if (spec.startsWith('workspace:')) return workspaceDependencySpecFor(name, fromPackageDir)
+  if (spec !== 'catalog:') return spec
+  if (catalog[name]) return catalog[name]
+
+  throw new Error(`Unable to resolve dependency spec for ${name}`)
 }
 
 function dependencySpecFor(name) {
@@ -347,34 +398,31 @@ function dependencySpecFor(name) {
   ]) {
     const spec = deps?.[name]
     if (!spec) continue
-    if (spec.startsWith('workspace:')) return workspaceDependencySpecFor(name)
-    if (spec !== 'catalog:') return spec
-    if (catalog[name]) return catalog[name]
+    return manifestDependencySpecFor(name, spec, localVinextPkgDir)
   }
 
-  if (catalog[name]) {
-    return catalog[name]
-  }
+  if (catalog[name]) return catalog[name]
 
   throw new Error(`Unable to resolve dependency spec for ${name}`)
 }
 
-function resolveManifestDeps(deps) {
+function resolveManifestDeps(deps, packageDir) {
   if (!deps) return undefined
 
   return Object.fromEntries(
     Object.entries(deps).map(([name, spec]) => [
       name,
-      spec === 'catalog:' || spec.startsWith('workspace:') ? dependencySpecFor(name) : spec,
+      manifestDependencySpecFor(name, spec, packageDir),
     ]),
   )
 }
 
-const localVinextPkgDir = path.join(process.cwd(), '.vinext-local-package')
 fs.rmSync(localVinextPkgDir, { recursive: true, force: true })
 fs.rmSync(localCloudflarePkgDir, { recursive: true, force: true })
+fs.rmSync(localTypesPkgDir, { recursive: true, force: true })
 fs.mkdirSync(localVinextPkgDir, { recursive: true })
 fs.mkdirSync(localCloudflarePkgDir, { recursive: true })
+fs.mkdirSync(localTypesPkgDir, { recursive: true })
 fs.cpSync(
   path.join(vinextDir, 'packages', 'cloudflare', 'dist'),
   path.join(localCloudflarePkgDir, 'dist'),
@@ -394,8 +442,37 @@ fs.writeFileSync(
       type: cloudflarePkg.type,
       files: ['dist'],
       exports: cloudflarePkg.exports,
-      peerDependencies: resolveManifestDeps(cloudflarePkg.peerDependencies),
+      peerDependencies: resolveManifestDeps(cloudflarePkg.peerDependencies, localCloudflarePkgDir),
       engines: cloudflarePkg.engines,
+    },
+    null,
+    2,
+  ) + '\n',
+)
+for (const entry of typesPkg.files ?? []) {
+  const source = path.join(vinextDir, 'packages', 'types', entry)
+  if (!fs.existsSync(source)) {
+    throw new Error(`Missing @vinext/types package file: ${source}`)
+  }
+  fs.cpSync(source, path.join(localTypesPkgDir, entry), { recursive: true })
+}
+fs.writeFileSync(
+  path.join(localTypesPkgDir, 'package.json'),
+  JSON.stringify(
+    {
+      name: typesPkg.name,
+      version: typesPkg.version,
+      description: typesPkg.description,
+      license: typesPkg.license,
+      repository: typesPkg.repository,
+      files: typesPkg.files,
+      type: typesPkg.type,
+      sideEffects: typesPkg.sideEffects,
+      exports: typesPkg.exports,
+      dependencies: resolveManifestDeps(typesPkg.dependencies, localTypesPkgDir),
+      peerDependencies: resolveManifestDeps(typesPkg.peerDependencies, localTypesPkgDir),
+      peerDependenciesMeta: typesPkg.peerDependenciesMeta,
+      engines: typesPkg.engines,
     },
     null,
     2,
@@ -419,8 +496,8 @@ fs.writeFileSync(
       bin: vinextPkg.bin,
       files: ['dist'],
       exports: vinextPkg.exports,
-      dependencies: resolveManifestDeps(vinextPkg.dependencies),
-      peerDependencies: resolveManifestDeps(vinextPkg.peerDependencies),
+      dependencies: resolveManifestDeps(vinextPkg.dependencies, localVinextPkgDir),
+      peerDependencies: resolveManifestDeps(vinextPkg.peerDependencies, localVinextPkgDir),
       peerDependenciesMeta: vinextPkg.peerDependenciesMeta,
       engines: vinextPkg.engines,
     },
@@ -618,9 +695,22 @@ ensure_python_command_for_native_builds
 # (ERR_PNPM_IGNORED_BUILDS). The install still completes — packages are
 # written to node_modules — but the exit code is 1. Tolerate this by
 # verifying that the vinext local package was linked into node_modules.
-run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile >> "${BUILD_LOG}" 2>&1 || true
+INSTALL_LOG="$(mktemp)"
+detach_symlinked_node_modules
+run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile > "${INSTALL_LOG}" 2>&1 || true
+# Dependency-manager deprecation summaries describe the deploy harness's own
+# transitive dependencies, not the application under test. Keep the rest of
+# the install output available for diagnostics without polluting cliOutput
+# assertions that specifically inspect application deprecation warnings.
+"${VINEXT_DIR}/scripts/filter-e2e-install-log.sh" < "${INSTALL_LOG}" >> "${BUILD_LOG}"
+rm -f "${INSTALL_LOG}"
 if [ ! -d "node_modules/vinext" ]; then
   echo "pnpm install failed: node_modules/vinext not found" >&2
+  exit 1
+fi
+VINEXT_BIN="./node_modules/.bin/vinext"
+if [ ! -x "${VINEXT_BIN}" ]; then
+  echo "pnpm install failed: ${VINEXT_BIN} not found or not executable" >&2
   exit 1
 fi
 if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.setup ? 0 : 1)" >/dev/null 2>&1; then
@@ -636,9 +726,9 @@ fi
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
-run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
+"${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
 
-run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
+"${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests
 # (e.g. test/e2e/prerender) assert these strings appear in the build output,
@@ -665,7 +755,7 @@ BUILD_ID="$(read_build_id)"
 
 echo "${PORT}" > "${PORT_FILE}"
 
-run_pnpm exec vinext start --port "${PORT}" --hostname 127.0.0.1 >> "${SERVER_LOG}" 2>&1 &
+"${VINEXT_BIN}" start --port "${PORT}" --hostname 127.0.0.1 >> "${SERVER_LOG}" 2>&1 &
 SERVER_PID="$!"
 echo "${SERVER_PID}" > "${PID_FILE}"
 

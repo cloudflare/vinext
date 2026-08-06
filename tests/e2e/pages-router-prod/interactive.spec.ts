@@ -3,18 +3,11 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4175";
 
 test.describe("Pages Router Production — Interactive", () => {
-  // NOTE: Pages Router production build (vinext build + vinext start) does not
-  // currently hydrate client components — interactive useState/onClick don't work.
-  // The SSR HTML renders correctly, but client JS bundles aren't loaded.
-  // This is a known gap — production hydration only works on Cloudflare Workers
-  // (via the vinext:cloudflare-build client environment). Phase 9 DX work should
-  // add production hydration for the Node.js server too.
-  test("counter page SSR renders correctly in production", async ({ page }) => {
+  test("counter page hydrates in production", async ({ page }) => {
     await page.goto(`${BASE}/counter`);
-    // SSR content is present
     await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 0");
-    await expect(page.locator('[data-testid="increment"]')).toBeVisible();
-    await expect(page.locator('[data-testid="decrement"]')).toBeVisible();
+    await page.locator('[data-testid="increment"]').click();
+    await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 1");
   });
 
   test("Link click navigates to correct page", async ({ page }) => {

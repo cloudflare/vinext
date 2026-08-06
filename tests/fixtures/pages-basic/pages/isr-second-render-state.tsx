@@ -21,7 +21,7 @@ export default function ISRSecondRenderStatePage({ timestamp }: ISRSecondRenderS
   return (
     <>
       <Head>
-        <title>ISR Second Render State</title>
+        <title>ISR Second Render State {timestamp}</title>
       </Head>
       <h1>ISR Second Render State</h1>
       <p data-testid="head-before">{headBefore}</p>

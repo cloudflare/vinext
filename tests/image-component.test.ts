@@ -17,6 +17,10 @@ import Image, { getImageProps, type StaticImageData } from "../packages/vinext/s
 function optUrl(src: string, w: number, q = 75): string {
   return `/_next/image?url=${encodeURIComponent(src)}&w=${w}&q=${q}`;
 }
+
+function deployedOptUrl(src: string, w: number, q: number, deploymentId: string): string {
+  return `${optUrl(src, w, q)}&dpl=${deploymentId}`;
+}
 /** Same as optUrl but with HTML entity encoding (for SSR output assertions). */
 function optUrlHtml(src: string, w: number, q = 75): string {
   return optUrl(src, w, q).replace(/&/g, "&amp;");
@@ -36,6 +40,13 @@ describe("default loader emits /_next/image URLs (issue #1513)", () => {
     expect(url).toContain("url=%2Fphoto.png");
     expect(url).toContain("w=828");
     expect(url).toContain("q=85");
+  });
+
+  it("keeps the deployment ID outside the optimized source URL", async () => {
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrl("/_next/static/media/test.hash.png?dpl=deploy-1", 828, 85)).toBe(
+      deployedOptUrl("/_next/static/media/test.hash.png", 828, 85, "deploy-1"),
+    );
   });
 
   it("Image SSR src starts with /_next/image, not /_vinext/image", () => {
@@ -66,7 +77,7 @@ describe("Image SSR rendering", () => {
     );
     expect(html).toContain('alt="a nice image"');
     // Local images are routed through the optimization endpoint
-    expect(html).toContain(`src="${optUrlHtml("/test.png", 100)}"`);
+    expect(html).toContain(`src="${optUrlHtml("/test.png", 256)}"`);
     expect(html).toContain('width="100"');
     expect(html).toContain('height="100"');
     expect(html).toContain('decoding="async"');
@@ -90,7 +101,8 @@ describe("Image SSR rendering", () => {
     expect(html).toContain('<link rel="preload"');
     expect(html).toContain('as="image"');
     expect(html).toContain('fetchPriority="high"');
-    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero.png", 640)} 640w`);
+    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero.png", 828)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/hero.png", 1920)} 2x`);
     expect(html).not.toContain(`href="${optUrlHtml("/hero.png", 800)}"`);
     expect(html).toContain('loading="eager"');
     expect(html).toContain('fetchPriority="high"');
@@ -109,7 +121,8 @@ describe("Image SSR rendering", () => {
     );
     expect(html).toContain('<link rel="preload"');
     expect(html).toContain('as="image"');
-    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero-preload.png", 640)} 640w`);
+    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero-preload.png", 828)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/hero-preload.png", 1920)} 2x`);
     expect(html).not.toContain('loading="lazy"');
     expect(html).not.toContain('fetchPriority="high"');
   });
@@ -166,6 +179,8 @@ describe("Image SSR rendering", () => {
       }),
     );
     expect(html).toContain('sizes="(max-width: 768px) 100vw, 50vw"');
+    expect(html).toContain(`${optUrlHtml("/img.png", 640)} 640w`);
+    expect(html).not.toContain(`${optUrlHtml("/img.png", 640)} 1x`);
   });
 
   it("renders with blur placeholder styles", () => {
@@ -214,11 +229,25 @@ describe("Image SSR rendering", () => {
         placeholder: "blur",
       }),
     );
-    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 800)}"`);
+    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 1920)}"`);
 
     expect(html).toContain('width="800"');
     expect(html).toContain('height="600"');
     expect(html).toContain("data:image/png;base64,xyz");
+  });
+
+  it("bypasses optimization for deployment-tagged SVG static imports", () => {
+    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "static svg",
+        src: { src, width: 32, height: 32 },
+      }),
+    );
+
+    expect(html).toContain(`src="${src.replaceAll("&", "&amp;")}"`);
+    expect(html).toContain(`srcSet="${src.replaceAll("&", "&amp;")}`);
+    expect(html).not.toContain("/_next/image?");
   });
 
   it("applies className and custom style", () => {
@@ -264,7 +293,27 @@ describe("Image SSR rendering", () => {
 // ─── srcSet generation ──────────────────────────────────────────────────
 
 describe("Image srcSet generation", () => {
-  it("generates srcSet for local images with width", () => {
+  // Ported from Next.js: test/e2e/app-dir/next-image/next-image.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-image/next-image.test.ts
+  it("uses fixed-image x descriptors for a 400px static import", () => {
+    const src = "/_next/static/media/test.hash.png?dpl=deploy-1";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "static import",
+        src: { src, width: 400, height: 400 },
+        quality: 85,
+      }),
+    );
+
+    expect(html).toContain(
+      `src="${deployedOptUrl("/_next/static/media/test.hash.png", 828, 85, "deploy-1").replaceAll("&", "&amp;")}"`,
+    );
+    expect(html).toContain(
+      `${deployedOptUrl("/_next/static/media/test.hash.png", 640, 85, "deploy-1").replaceAll("&", "&amp;")} 1x, ${deployedOptUrl("/_next/static/media/test.hash.png", 828, 85, "deploy-1").replaceAll("&", "&amp;")} 2x`,
+    );
+  });
+
+  it("generates fixed-size 1x and 2x srcSet entries", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "test",
@@ -273,12 +322,9 @@ describe("Image srcSet generation", () => {
         height: 400,
       }),
     );
-    // RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840]
-    // Filter: widths <= 500 * 2 = 1000 → [640, 750, 828]
     expect(html).toContain("srcSet");
-    expect(html).toContain(`${optUrlHtml("/photo.png", 640)} 640w`);
-    expect(html).toContain(`${optUrlHtml("/photo.png", 750)} 750w`);
-    expect(html).toContain(`${optUrlHtml("/photo.png", 828)} 828w`);
+    expect(html).toContain(`${optUrlHtml("/photo.png", 640)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/photo.png", 1080)} 2x`);
     // Should not include widths > 1000
     expect(html).not.toContain("1080w");
   });
@@ -292,12 +338,11 @@ describe("Image srcSet generation", () => {
         height: 1500,
       }),
     );
-    // widths <= 4000: all of them
-    expect(html).toContain(`${optUrlHtml("/large.png", 640)} 640w`);
-    expect(html).toContain(`${optUrlHtml("/large.png", 3840)} 3840w`);
+    expect(html).toContain(`${optUrlHtml("/large.png", 2048)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/large.png", 3840)} 2x`);
   });
 
-  it("generates fallback srcSet for very small images", () => {
+  it("uses Next.js default image sizes for small fixed images", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "tiny",
@@ -306,9 +351,10 @@ describe("Image srcSet generation", () => {
         height: 16,
       }),
     );
-    // widths <= 32: none of RESPONSIVE_WIDTHS qualify
-    // Falls back to single: optimized icon.png at 16w
-    expect(html).toContain(`${optUrlHtml("/icon.png", 16)} 16w`);
+    // Next.js 16 removed 16 from the defaults. Both the 1x and 2x targets
+    // therefore snap to 32 and collapse into one candidate.
+    expect(html).toContain(`${optUrlHtml("/icon.png", 32)} 1x`);
+    expect(html).not.toContain(optUrlHtml("/icon.png", 16));
   });
 
   it("does not generate srcSet for fill mode", () => {
@@ -336,7 +382,7 @@ describe("getImageProps", () => {
     });
 
     expect(props.alt).toBe("a nice desc");
-    expect(props.src).toBe(optUrl("/test.png", 100));
+    expect(props.src).toBe(optUrl("/test.png", 256));
     expect(props.width).toBe(100);
     expect(props.height).toBe(200);
     expect(props.loading).toBe("lazy");
@@ -439,9 +485,20 @@ describe("getImageProps", () => {
       src: staticImage,
     });
 
-    expect(props.src).toBe(optUrl("/static/photo.png", 1920));
+    expect(props.src).toBe(optUrl("/static/photo.png", 3840));
     expect(props.width).toBe(1920);
     expect(props.height).toBe(1080);
+  });
+
+  it("getImageProps bypasses optimization for deployment-tagged SVG imports", () => {
+    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
+    const { props } = getImageProps({
+      alt: "static svg",
+      src: { src, width: 32, height: 32 },
+    });
+
+    expect(props.src).toBe(src);
+    expect(props.srcSet).toBeUndefined();
   });
 
   it("generates srcSet for local images", () => {
@@ -653,6 +710,152 @@ describe("onLoadingComplete prop", () => {
     expect(html).not.toContain("onLoadingComplete");
     expect(html).not.toContain("onloadingcomplete");
     expect(html).toContain('alt="remote"');
+  });
+});
+
+// Ported from Next.js: test/e2e/next-image-new/unoptimized/unoptimized.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/next-image-new/unoptimized/unoptimized.test.ts
+describe("unoptimized remote images", () => {
+  it("preserves a Cloudflare Images variant URL without generating srcSet", () => {
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+        placeholder: "blur",
+        blurDataURL: "data:image/png;base64,test",
+        style: { borderRadius: 8 },
+      }),
+    );
+
+    expect(html).toContain(`src="${src}"`);
+    expect(html).toContain('width="100"');
+    expect(html).toContain('height="100"');
+    expect(html).toContain('loading="lazy"');
+    expect(html).toContain('data-nimg="1"');
+    expect(html).toContain("background-image:url(data:image/png;base64,test)");
+    expect(html).toContain("border-radius:8px");
+    expect(html).not.toContain("public=undefined");
+    expect(html).not.toContain("srcSet");
+    expect(html).not.toContain("sizes=");
+
+    const { props } = getImageProps({
+      alt: "cloudflare image",
+      src,
+      width: 100,
+      height: 100,
+      unoptimized: true,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,test",
+      style: { borderRadius: 8 },
+    });
+    expect(props.src).toBe(src);
+    expect(props.srcSet).toBeUndefined();
+    expect(props.sizes).toBeUndefined();
+    expect(props.style).toMatchObject({
+      backgroundImage: "url(data:image/png;base64,test)",
+      borderRadius: 8,
+    });
+  });
+
+  it("does not invoke a custom loader", () => {
+    const loader = vi.fn(() => "https://cdn.example.com/transformed.jpg");
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+        loader,
+      }),
+    );
+
+    expect(loader).not.toHaveBeenCalled();
+    expect(html).toContain(`src="${src}"`);
+
+    const { props } = getImageProps({
+      alt: "cloudflare image",
+      src,
+      width: 100,
+      height: 100,
+      unoptimized: true,
+      loader,
+    });
+    expect(loader).not.toHaveBeenCalled();
+    expect(props.src).toBe(src);
+  });
+
+  // Ported from Next.js: test/unit/next-image-get-img-props.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/unit/next-image-get-img-props.test.ts
+  it("honors overrideSrc", () => {
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const overrideSrc = "https://cdn.example.com/original.jpg";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cloudflare image",
+        src,
+        overrideSrc,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+        priority: true,
+      }),
+    );
+
+    expect(html).toContain(`src="${overrideSrc}"`);
+    expect(html).not.toContain(`src="${src}"`);
+
+    const { props } = getImageProps({
+      alt: "cloudflare image",
+      src,
+      overrideSrc,
+      width: 100,
+      height: 100,
+      unoptimized: true,
+    });
+    expect(props.src).toBe(overrideSrc);
+    expect(props.srcSet).toBeUndefined();
+  });
+
+  it("bypasses remote pattern validation in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
+      { hostname: "allowed.example.com" },
+    ]);
+
+    vi.resetModules();
+    const { default: UnoptimizedImage, getImageProps: getUnoptimizedImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(UnoptimizedImage, {
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+      }),
+    );
+
+    expect(html).toContain(`src="${src}"`);
+    expect(
+      getUnoptimizedImageProps({
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+      }).props.src,
+    ).toBe(src);
+
+    vi.unstubAllEnvs();
+    delete process.env.__VINEXT_IMAGE_REMOTE_PATTERNS;
+    vi.resetModules();
   });
 });
 

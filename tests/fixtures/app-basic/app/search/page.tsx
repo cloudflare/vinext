@@ -3,9 +3,9 @@ import SearchForm from "./search-form";
 export default async function SearchPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; lang?: string; source?: string }>;
+  searchParams: Promise<{ q?: string; lang?: string; source?: string; term?: string }>;
 }) {
-  const { q, lang, source } = await searchParams;
+  const { q, lang, source, term } = await searchParams;
   return (
     <main>
       <h1>Search</h1>
@@ -14,6 +14,7 @@ export default async function SearchPage({
       {!q && <p id="search-empty">Enter a search term</p>}
       {lang && <p id="search-lang">Lang: {lang}</p>}
       {source && <p id="search-source">Source: {source}</p>}
+      {term && <p id="search-term">Term: {term}</p>}
     </main>
   );
 }

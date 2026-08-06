@@ -21,7 +21,12 @@ import Link, {
   resolveLinkPrefetchMode,
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
-import { navigatePagesRouterLink } from "../packages/vinext/src/client/pages-router-link-navigation.js";
+import { RouterContext } from "../packages/vinext/src/shims/internal/router-context.js";
+import {
+  navigatePagesRouterLink,
+  navigatePagesRouterLinkWithFallback,
+  resolvePagesRouterQueryOnlyHref,
+} from "../packages/vinext/src/client/pages-router-link-navigation.js";
 
 // Internal helpers re-exported or accessible via the router shim
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
@@ -30,6 +35,7 @@ import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/ro
 // rendering occurs (same as dev-server.ts and pages-server-entry.ts do).
 import { runWithI18nState } from "../packages/vinext/src/shims/i18n-state.js";
 import { setI18nContext } from "../packages/vinext/src/shims/i18n-context.js";
+import { addLocalePrefix } from "../packages/vinext/src/utils/domain-locale.js";
 
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -268,7 +274,7 @@ describe("Link App Router prefetch mode", () => {
     expect(resolveLinkPrefetchMode(true, true)).toBe("disabled");
   });
 
-  it("allows automatic full RSC prefetch only for routes without loading-shell prefetches", () => {
+  it("allows automatic full RSC prefetch for routes that do not require fresh navigation", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -280,6 +286,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: true, patternParts: ["docs", ":slug+"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["teams", ":team", "dashboard"],
+          isDynamic: true,
+          requiresDynamicNavigationRequest: true,
+        },
         { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
@@ -289,7 +301,8 @@ describe("Link App Router prefetch mode", () => {
       expect(canAutoPrefetchFullAppRoute("/blog/hello-world")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/docs/a/b")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/products/1")).toBe(true);
-      expect(canAutoPrefetchFullAppRoute("/settings")).toBe(true);
+      expect(canAutoPrefetchFullAppRoute("/teams/vercel/dashboard")).toBe(false);
+      expect(canAutoPrefetchFullAppRoute("/settings")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/missing")).toBe(false);
     } finally {
       if (originalWindow === undefined) {
@@ -300,7 +313,7 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
-  it("allows automatic dynamic App Router routes without loading shells to seed navigation cache", () => {
+  it("shell-prefetches dynamic routes that require fresh navigation and routes with loading boundaries", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -312,6 +325,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["teams", ":team", "dashboard"],
+          isDynamic: true,
+          requiresDynamicNavigationRequest: true,
+        },
         { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
@@ -319,21 +338,29 @@ describe("Link App Router prefetch mode", () => {
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
-        cacheForNavigation: true,
+        cacheForNavigation: false,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
         cacheForNavigation: true,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
@@ -342,11 +369,22 @@ describe("Link App Router prefetch mode", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
+        cacheForNavigation: false,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
         prefetchShellFirst: false,
         shouldPrefetch: false,
       });
@@ -378,6 +416,79 @@ describe("Link resolveHref", () => {
     );
     // URLSearchParams preserves insertion order
     expect(html).toMatch(/href="\/items\?page=2&(?:amp;)?sort=name"/);
+  });
+
+  // Ported from Next.js: test/e2e/dynamic-routing/pages/index.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/pages/index.js
+  it("interpolates dynamic segments from object href query values", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        RouterContext.Provider,
+        { value: {} as never },
+        React.createElement(
+          Link,
+          {
+            href: {
+              pathname: "/[a]/[b]/c",
+              query: { a: "a", b: "b", q: "q" },
+            },
+          },
+          "hello",
+        ),
+      ),
+    );
+
+    expect(html).toContain('href="/a/b/c?q=q"');
+  });
+
+  it("does not interpolate dynamic object hrefs outside the Pages Router context", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: { pathname: "/posts/[id]", query: { id: "42" } } }, "post"),
+    );
+
+    expect(html).toContain('href="/posts/[id]?id=42"');
+  });
+
+  it("does not interpolate dynamic-looking external hrefs in the Pages Router", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        RouterContext.Provider,
+        { value: {} as never },
+        React.createElement(Link, { href: "https://example.com/[id]?id=42" }, "external"),
+      ),
+    );
+
+    expect(html).toContain('href="https://example.com/[id]?id=42"');
+  });
+
+  it("interpolates same-origin absolute dynamic hrefs in the Pages Router", () => {
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      addEventListener() {},
+      location: {
+        hash: "",
+        href: "https://local.test/current",
+        hostname: "local.test",
+        origin: "https://local.test",
+        pathname: "/current",
+        search: "",
+      },
+    };
+
+    try {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(
+          RouterContext.Provider,
+          { value: {} as never },
+          React.createElement(Link, { href: "https://local.test/posts/[id]?id=42" }, "post"),
+        ),
+      );
+
+      expect(html).toContain('href="/posts/42"');
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
   });
 
   it("object href preserves array query values as repeated params", () => {
@@ -446,6 +557,74 @@ describe("Link resolveHref", () => {
       React.createElement(Link, { href: { query: { page: "2", sort: "name" } } }, "x"),
     );
     expect(html).toMatch(/href="\?page=2&(?:amp;)?sort=name"/);
+  });
+
+  it("resolves query-only Pages Links against a rewritten path before locale application", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = {
+      location: {
+        pathname: "/docs/fr/rewrite-navigation/0",
+        search: "?existing=1",
+        hash: "",
+        href: "http://localhost/docs/fr/rewrite-navigation/0?existing=1",
+        origin: "http://localhost",
+        hostname: "localhost",
+      },
+      history: {
+        state: null,
+        pushState() {},
+        replaceState() {},
+      },
+      addEventListener() {},
+      next: { router: { asPath: "/rewrite-navigation/0?existing=1", reload() {} } },
+      __VINEXT_LOCALE__: "fr",
+      __VINEXT_LOCALES__: ["en", "fr", "de"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    };
+    try {
+      const resolvedHref = resolvePagesRouterQueryOnlyHref("?id=1", {
+        asPath: "/rewrite-navigation/0?existing=1",
+        basePath: "/docs",
+        fallbackHref: (globalThis as any).window.location.href,
+        locales: ["en", "fr", "de"],
+      });
+      const localizedHref = addLocalePrefix(resolvedHref, "de", "en");
+
+      expect(
+        toBrowserNavigationHref(localizedHref, (globalThis as any).window.location.href, "/docs"),
+      ).toBe("/docs/de/rewrite-navigation/0?id=1");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+    }
+  });
+
+  it("preserves a bare query delimiter when resolving Pages Links", () => {
+    expect(
+      resolvePagesRouterQueryOnlyHref("?", {
+        asPath: "/rewrite-navigation/0?existing=1",
+        basePath: "",
+        fallbackHref: "http://localhost/rewrite-navigation/0?existing=1",
+      }),
+    ).toBe("/rewrite-navigation/0?");
+  });
+
+  it("resolves hash-only Pages Links against locale-free router.asPath", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    expect(
+      resolvePagesRouterQueryOnlyHref("#newhash", {
+        asPath: "/about?tab=details",
+        basePath: "",
+        fallbackHref: "http://localhost/fr/about?tab=details#hash",
+        locales: ["en", "fr"],
+      }),
+    ).toBe("/about?tab=details#newhash");
   });
 });
 
@@ -611,6 +790,20 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/fr/about"');
   });
 
+  it("preserves URL-object hashes while applying a locale", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: { pathname: "/about", hash: "#hash" }, locale: "fr" } as any,
+        "x",
+      ),
+    );
+    expect(html).toContain('href="/fr/about#hash"');
+  });
+
   it("locale string does not double-prefix", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Link, { href: "/fr/about", locale: "fr" } as any, "x"),
@@ -760,6 +953,36 @@ describe("Link locale handling", () => {
 
     expect(push).toHaveBeenCalledWith("/fr/about", undefined, { scroll: true, locale: "fr" });
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("rethrows missing-required-param interpolation errors instead of using Link fallback", async () => {
+    const interpolationError = new Error(
+      "The provided `href` (/catalog/[category]/[item]?category=music) value is missing query values (item) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed",
+    );
+    const fallback = vi.fn();
+    const loadRouter = vi.fn();
+    const router = {
+      push: vi.fn(async () => {
+        throw interpolationError;
+      }),
+      replace: vi.fn(async () => true),
+    };
+
+    await expect(
+      navigatePagesRouterLinkWithFallback({
+        router,
+        loadRouter,
+        navigation: {
+          href: "/catalog/books/old?category=music",
+          replace: false,
+          scroll: true,
+          interpolateDynamicRoute: true,
+        },
+        fallback,
+      }),
+    ).rejects.toBe(interpolationError);
+    expect(loadRouter).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   // Regression for #1332 sub-problem 3: `<Link shallow>` must reach

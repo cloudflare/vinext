@@ -9,16 +9,48 @@
  *
  * Extracted from index.ts.
  */
+import { readFile } from "node:fs/promises";
 import {
+  apiRouter,
   pagesRouter,
   patternToNextFormat as pagesPatternToNextFormat,
   type Route,
 } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
-import type { VinextLinkPrefetchRoute } from "../client/vinext-next-data.js";
+import type {
+  VinextLinkPrefetchRoute,
+  VinextPagesLinkPrefetchRoute,
+} from "../client/vinext-next-data.js";
+import { toClientRewrites } from "../client/client-rewrites.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
+import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
+import { resolveClientRuntimeModule } from "./runtime-entry-module.js";
+
+/**
+ * Project a Pages `Route` down to the public `VinextPagesLinkPrefetchRoute`
+ * shape used for client-side hybrid ownership decisions. Mirrors
+ * `toLinkPrefetchRoute` in `app-browser-entry.ts`.
+ *
+ * Lives here (not in `routing/pages-router.ts`) so the routing module
+ * stays free of `vitext/client` type imports.
+ */
+function toPagesLinkPrefetchRoute(route: Route): VinextPagesLinkPrefetchRoute {
+  return {
+    canPrefetchLoadingShell: false,
+    isDynamic: route.isDynamic,
+    patternParts: [...route.patternParts],
+  };
+}
+
+async function hasGetStaticPropsExport(filePath: string): Promise<boolean> {
+  return hasExportedName(await readFile(filePath, "utf8"), "getStaticProps");
+}
+
+async function hasGetServerSidePropsExport(filePath: string): Promise<boolean> {
+  return hasExportedName(await readFile(filePath, "utf8"), "getServerSideProps");
+}
 
 export async function generateClientEntry(
   pagesDir: string,
@@ -27,33 +59,68 @@ export async function generateClientEntry(
   options: {
     appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[];
     instrumentationClientPath?: string | null;
+    middlewareMatcher?: StaticMiddlewareMatcher | undefined;
+    reactPreamble?: boolean;
   } = {},
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   const hasApp = appFilePath !== null;
   const appPrefetchRoutes = options.appPrefetchRoutes ?? [];
+  const pagesPrefetchRoutes: VinextPagesLinkPrefetchRoute[] = [
+    ...pageRoutes.map(toPagesLinkPrefetchRoute),
+    ...apiRoutes.map((route) => ({ ...toPagesLinkPrefetchRoute(route), documentOnly: true })),
+  ];
+  const pagesSsgPatterns = (
+    await Promise.all(
+      pageRoutes.map(async (route) =>
+        (await hasGetStaticPropsExport(route.filePath))
+          ? pagesPatternToNextFormat(route.pattern)
+          : null,
+      ),
+    )
+  ).filter((pattern): pattern is string => pattern !== null);
+  const pagesSspPatterns = (
+    await Promise.all(
+      pageRoutes.map(async (route) =>
+        (await hasGetServerSidePropsExport(route.filePath))
+          ? pagesPatternToNextFormat(route.pattern)
+          : null,
+      ),
+    )
+  ).filter((pattern): pattern is string => pattern !== null);
   const instrumentationClientPath = options.instrumentationClientPath ?? null;
+  const clientRewrites = toClientRewrites(nextConfig.rewrites);
+  const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
 
   // Build a map of route pattern -> dynamic import.
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
   // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
   const loaderEntries = pageRoutes.map((r: Route) => {
-    const absPath = normalizePathSeparators(r.filePath);
+    const absPath = r.filePath;
     const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
     // JSON.stringify safely escapes quotes, backslashes, and special chars in
     // both the route pattern and the absolute file path.
     // lgtm[js/bad-code-sanitization]
     return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
   });
+  loaderEntries.push(
+    errorFilePath !== null
+      ? `  "/_error": () => import(${JSON.stringify(errorFilePath)})`
+      : '  "/_error": () => import("next/error")',
+  );
 
-  const appFileBase = appFilePath ? normalizePathSeparators(appFilePath) : undefined;
+  const appFileBase = appFilePath ?? undefined;
 
   // Refs #1474: Side-effect-import the user's `instrumentation-client.{ts,js}`
-  // (when present at project root or in `src/`) BEFORE any other module so its
-  // top-level statements run before `hydrateRoot()` is called. Mirrors
-  // Next.js's `page-bootstrap.ts`, which side-effect-imports
+  // (when present at project root or in `src/`) before the Pages application
+  // runtime so its top-level statements run before `hydrateRoot()` is called.
+  // The framework-owned React instance bootstrap is intentionally earlier so
+  // Module Federation remotes observe the host React from instrumentation too.
+  // This mirrors Next.js's `page-bootstrap.ts`, which side-effect-imports
   // `require-instrumentation-client` ahead of `initialize`/`hydrate`
   // (.nextjs-ref/packages/next/src/client/page-bootstrap.ts L1).
   //
@@ -65,27 +132,29 @@ export async function generateClientEntry(
   // makes the contract explicit: bare side-effect imports are always
   // preserved by Vite/Rolldown's import-analysis pipeline.
   const userInstrumentationImport = instrumentationClientPath
-    ? `import ${JSON.stringify(normalizePathSeparators(instrumentationClientPath))};\n`
+    ? `import ${JSON.stringify(toSlash(instrumentationClientPath))};\n`
     : "";
+  const reactPreambleImport =
+    options.reactPreamble === false ? "" : 'import "@vitejs/plugin-react/preamble";\n';
 
-  return `${userInstrumentationImport}
+  // Pages Router React Strict Mode flag. Next.js resolves the `null`/unset
+  // default to OFF for the Pages Router (`reactStrictMode === null ? false` in
+  // .nextjs-ref/packages/next/src/build/define-env.ts), so the wrap is enabled
+  // only when the option is explicitly `true`. The actual <React.StrictMode>
+  // wrap lives in `wrapWithRouterContext` (next/router), which runs for both
+  // the initial hydration here and every client-side navigation — mirroring
+  // Next.js's `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`.
+  const reactStrictModeEnabled = nextConfig.reactStrictMode === true;
+
+  return `import ${JSON.stringify(reactInstanceBootstrapPath)};
+${userInstrumentationImport}${reactPreambleImport}
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import { installPagesRouterRuntime } from "vinext/pages-router-runtime";
-// Statically import next/router as the very first vinext shim so that
-// (a) installWindowNext runs at top-level — \`window.next.router\` is
-//     available to test harnesses and third-party scripts BEFORE
-//     hydrate() resolves (see .nextjs-ref/packages/next/src/client/next.ts
-//     line 13, which also sets window.next as a top-level side effect),
-// and (b) the popstate handler is registered before
-//     installPagesRouterRuntime() runs, removing the race window where a
-//     popstate event could fire between hydration and runtime install.
-//
-// Mirrors Next.js's bootstrap order: client/next.ts statically imports
-// from './' before calling initialize/hydrate, so window.next is set up
-// before any async work.
-import { wrapWithRouterContext } from "next/router";
+import Router, {
+  wrapWithRouterContext,
+  _initializePagesRouterReadyFromNextData,
+} from "next/router";
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}
@@ -110,10 +179,16 @@ const appLoader = undefined;
 // Object.keys(pageLoaders), exposed separately so navigateClient() can iterate
 // it without re-keying the map. Ordering is the insertion order of pageRoutes,
 // which pagesRouter() has already sorted by specificity (static → dynamic →
-// catch-all → optional catch-all) via compareRoutes — so matchPagesPattern()
+// catch-all → optional catch-all) via sortRoutes — so matchPagesPattern()
 // can iterate in order and trust the first match.
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
+// reactStrictMode flag — read by wrapWithRouterContext (next/router) so the
+// <React.StrictMode> wrap is applied on initial hydration and every navigation.
+window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictModeEnabled)};
+window.__VINEXT_PAGES_SSG_PATTERNS__ = ${JSON.stringify(pagesSsgPatterns)};
+window.__VINEXT_PAGES_SSP_PATTERNS__ = ${JSON.stringify(pagesSspPatterns)};
+window.__VINEXT_MIDDLEWARE_MATCHER__ = ${JSON.stringify(options.middlewareMatcher)};
 window.__VINEXT_APP_LOADER__ = appLoader;
 // Expose the App Router prefetch manifest so Pages Router \`<Link>\`s and
 // \`Router.prefetch\` can detect when a prefetch target is actually an App
@@ -130,6 +205,21 @@ window.__VINEXT_APP_LOADER__ = appLoader;
 // when the user lands on an App Router page (see app-browser-entry.ts) — the
 // two writes do not race because only one entry executes per page load.
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
+// Pages route manifest, exposed so the App Router runtime can decide when
+// a soft-navigated URL is actually owned by Pages (and must hard-navigate
+// instead of issuing an RSC request). Set here AND in app-browser-entry.ts
+// so whichever entry runs first emits the Pages manifest.
+window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
+window.__VINEXT_CLIENT_REDIRECTS__ = ${JSON.stringify(nextConfig.redirects)};
+window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
+
+const nextDataElement = document.getElementById("__NEXT_DATA__");
+if (nextDataElement?.textContent) {
+  window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
+  window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
+  window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
+  window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
+}
 
 async function hydrate() {
   const nextData = window.__NEXT_DATA__;
@@ -137,6 +227,8 @@ async function hydrate() {
     console.error("[vinext] No __NEXT_DATA__ found");
     return;
   }
+
+  _initializePagesRouterReadyFromNextData(nextData);
 
   let hydrateRootOptions;
   if (import.meta.env.DEV) {
@@ -150,7 +242,9 @@ async function hydrate() {
     };
   }
 
-  const { pageProps } = nextData.props;
+  const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
+  const rawPageProps = props.pageProps;
+  const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};
   const loader = pageLoaders[nextData.page];
   if (!loader) {
     console.error("[vinext] No page loader for route:", nextData.page);
@@ -172,7 +266,11 @@ async function hydrate() {
     const appModule = await appLoader();
     const AppComponent = appModule.default;
     window.__VINEXT_APP__ = AppComponent;
-    element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+    element = React.createElement(AppComponent, {
+      ...props,
+      Component: PageComponent,
+      router: Router,
+    });
   } catch {
     element = React.createElement(PageComponent, pageProps);
   }
@@ -182,8 +280,16 @@ async function hydrate() {
   `
   }
 
+  let resolveHydrationCommit;
+  const hydrationCommitted = new Promise((resolve) => {
+    resolveHydrationCommit = resolve;
+  });
+
   // Wrap with RouterContext.Provider so next/router and next/compat/router work during hydration.
-  element = wrapWithRouterContext(element);
+  // When reactStrictMode is enabled, wrapWithRouterContext also wraps the tree
+  // in <React.StrictMode> (see next/router) — applied here and on every
+  // navigation render, matching Next.js.
+  element = wrapWithRouterContext(element, resolveHydrationCommit);
 
   const container = document.getElementById("__next");
   if (!container) {
@@ -193,12 +299,22 @@ async function hydrate() {
 
   const root = hydrateRoot(container, element, hydrateRootOptions);
   window.__VINEXT_ROOT__ = root;
-  installPagesRouterRuntime();
+  await hydrationCommitted;
   const hydratedAt = performance.now();
   window.__VINEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED = true;
   window.__NEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED_CB?.();
+
+  if (nextData.isFallback) {
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const routeUrl = nextData.__vinext?.routeUrl;
+    await Router.replace(
+      routeUrl || currentUrl,
+      routeUrl ? currentUrl : undefined,
+      { _h: 1, scroll: false },
+    );
+  }
 }
 
 hydrate();

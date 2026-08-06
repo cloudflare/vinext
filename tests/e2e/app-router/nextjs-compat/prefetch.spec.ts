@@ -13,6 +13,8 @@ const BASE = "http://localhost:4174";
 
 type PrefetchTestState = {
   fetchUrls: string[];
+  loadingShellResponseText?: string;
+  prefetchHeaders?: Record<string, string>;
   requestIdleCallbackCalls: number;
 };
 
@@ -33,6 +35,46 @@ type PrefetchTestWindow = Window & {
 };
 
 test.describe("Next.js compat: prefetch (browser)", () => {
+  test("does not treat a partial router prefetch as full across a parallel layout", async ({
+    page,
+  }) => {
+    const clientCachePath = "/nextjs-compat/client-cache";
+    const rscRequests: Array<{ pathname: string; prefetch: string | undefined }> = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (!url.searchParams.has("_rsc") || request.headers()["rsc"] !== "1") return;
+      rscRequests.push({
+        pathname: url.pathname,
+        prefetch: request.headers()["next-router-prefetch"],
+      });
+    });
+
+    await page.goto(`${BASE}${clientCachePath}`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#client-cache-home")).toBeVisible();
+    await page.evaluate((href) => {
+      const router = (window as PrefetchTestWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      router.prefetch(href);
+    }, `${clientCachePath}/0`);
+    await expect
+      .poll(() =>
+        rscRequests.some(
+          (request) => request.pathname === `${clientCachePath}/0` && request.prefetch === "1",
+        ),
+      )
+      .toBe(true);
+
+    rscRequests.length = 0;
+    await page.click("#client-cache-full");
+    await expect(page.locator("#client-cache-id")).toHaveText("0");
+    expect(
+      rscRequests.some(
+        (request) => request.pathname === `${clientCachePath}/0` && request.prefetch === undefined,
+      ),
+    ).toBe(true);
+  });
+
   // Next.js: 'should navigate when prefetch is false'
   test("should navigate when prefetch is false", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
@@ -55,6 +97,36 @@ test.describe("Next.js compat: prefetch (browser)", () => {
     await expect(page.locator("#prefetch-target")).toHaveText("Prefetch Target Page", {
       timeout: 10_000,
     });
+  });
+
+  test("normal router prefetch sends router state and reaches loading-shell rendering", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
+    await waitForAppRouterHydration(page);
+
+    const programmaticTarget =
+      "/nextjs-compat/prefetch-test/programmatic-target?prefetch-source=router-prefetch-protocol";
+    const prefetchResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/nextjs-compat/prefetch-test/programmatic-target" &&
+        url.searchParams.get("prefetch-source") === "router-prefetch-protocol" &&
+        url.searchParams.has("_rsc")
+      );
+    });
+    await page.evaluate((target) => {
+      const router = (window as PrefetchTestWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      router.prefetch(target);
+    }, programmaticTarget);
+
+    const response = await prefetchResponse;
+    const headers = await response.request().allHeaders();
+    expect(headers["next-router-prefetch"]).toBe("1");
+    expect(headers["next-url"]).toBe("/nextjs-compat/prefetch-test");
+    expect(headers["next-router-state-tree"]).toBeTruthy();
+    expect(await response.text()).toContain("Loading programmatic prefetch target");
   });
 
   // Test that prefetched navigation preserves client state (no full reload)
@@ -81,7 +153,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
   // Ported from Next.js:
   // test/e2e/app-dir/segment-cache/max-prefetch-inlining/max-prefetch-inlining.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/max-prefetch-inlining/max-prefetch-inlining.test.ts
-  test("navigation reuses an in-flight RSC prefetch without a duplicate request", async ({
+  test("navigation does not consume an in-flight partial prefetch as a full payload", async ({
     page,
   }) => {
     await page.addInitScript(() => {
@@ -106,11 +178,11 @@ test.describe("Next.js compat: prefetch (browser)", () => {
         }
 
         if (
-          url.pathname === "/nextjs-compat/prefetch-test/target" &&
+          url.pathname === "/nextjs-compat/prefetch-test/programmatic-target" &&
           url.searchParams.has("_rsc") &&
           headers.get("rsc") === "1"
         ) {
-          if (state.targetPrefetchRequests === 0) {
+          if (headers.get("next-router-prefetch") === "1") {
             state.targetPrefetchRequests += 1;
             await new Promise<void>((resolve) => {
               state.releasePrefetch = resolve;
@@ -130,7 +202,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
     await page.evaluate(() => {
       const router = (window as PrefetchTestWindow).next?.router;
       if (router === undefined) throw new Error("Missing app router instance");
-      router.prefetch("/nextjs-compat/prefetch-test/target");
+      router.prefetch("/nextjs-compat/prefetch-test/programmatic-target");
     });
 
     await expect
@@ -143,16 +215,25 @@ test.describe("Next.js compat: prefetch (browser)", () => {
       )
       .toBe(1);
 
-    await page.click("#prefetch-link");
+    await page.evaluate(() => {
+      const router = (window as PrefetchTestWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      void router.push("/nextjs-compat/prefetch-test/programmatic-target");
+    });
 
-    await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 100)));
-    expect(
-      await page.evaluate(() => {
-        const state = (window as PrefetchTestWindow).__VINEXT_PENDING_PREFETCH_REUSE_TEST__;
-        if (state === undefined) throw new Error("Missing pending prefetch test state");
-        return state.targetNavigationRequests;
-      }),
-    ).toBe(0);
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const state = (window as PrefetchTestWindow).__VINEXT_PENDING_PREFETCH_REUSE_TEST__;
+          if (state === undefined) throw new Error("Missing pending prefetch test state");
+          return state.targetNavigationRequests;
+        }),
+      )
+      .toBe(1);
+
+    await expect(page.getByRole("heading", { name: "Programmatic Prefetch Target" })).toBeVisible({
+      timeout: 10_000,
+    });
 
     await page.evaluate(() => {
       const state = (window as PrefetchTestWindow).__VINEXT_PENDING_PREFETCH_REUSE_TEST__;
@@ -162,16 +243,13 @@ test.describe("Next.js compat: prefetch (browser)", () => {
       state.releasePrefetch();
     });
 
-    await expect(page.locator("#prefetch-target")).toHaveText("Prefetch Target Page", {
-      timeout: 10_000,
-    });
     expect(
       await page.evaluate(() => {
         const state = (window as PrefetchTestWindow).__VINEXT_PENDING_PREFETCH_REUSE_TEST__;
         if (state === undefined) throw new Error("Missing pending prefetch test state");
         return state.targetNavigationRequests;
       }),
-    ).toBe(0);
+    ).toBe(1);
   });
 
   test("Link with prefetch={false} does not prefetch RSC payload in dev", async ({ page }) => {

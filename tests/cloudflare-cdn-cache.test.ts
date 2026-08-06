@@ -1,12 +1,12 @@
 /**
- * CloudflareCdnCacheAdapter + auto-detection tests.
+ * CloudflareCdnCacheAdapter tests.
  *
  * Covers the edge-managed adapter backed by the Workers Cache (ctx.cache):
  *  - get null / set no-op / ownsBackgroundRevalidation false
  *  - buildResponseHeaders emits a cacheable Cache-Control + Cache-Tag
  *  - revalidateTag purges via ctx.cache.purge({ tags })
- *  - getCdnCacheAdapter() auto-switches to the Cloudflare adapter when the
- *    VINEXT_CDN_CACHE_AUTO_DETECT flag is set and ctx.cache exists.
+ *  - getCdnCacheAdapter() only selects the Cloudflare adapter when it is
+ *    explicitly configured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
@@ -16,9 +16,9 @@ import {
   DefaultCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { finalizeAppPageRscCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
-const AUTO_DETECT_ENV = "VINEXT_CDN_CACHE_AUTO_DETECT";
 
 function resetActiveAdapter(): void {
   delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
@@ -98,10 +98,176 @@ describe("CloudflareCdnCacheAdapter", () => {
       "private, no-cache, no-store, max-age=0, must-revalidate",
     ]) {
       const headers = adapter.buildResponseHeaders({ cacheControl: cc, tags: ["x"] });
-      expect(headers).toEqual({ "Cache-Control": cc });
-      expect(headers["CDN-Cache-Control"]).toBeUndefined();
-      expect(headers["Cache-Tag"]).toBeUndefined();
+      expect(headers).toEqual({
+        "Cache-Control": cc,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      });
     }
+  });
+
+  it.each(["MISS", "STATIC"] as const)(
+    "keeps mounted-slot %s RSC responses out of the edge cache",
+    async (cacheState) => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      const isrSet = vi.fn();
+
+      const response = finalizeAppPageRscCacheResponse(
+        new Response("slot-specific-flight", {
+          headers: {
+            "Cache-Control": "s-maxage=60, stale-while-revalidate",
+            "Cache-Tag": "/dashboard",
+            "CDN-Cache-Control": "public, max-age=60",
+            "Content-Type": "text/x-component",
+            "X-Vinext-Cache": cacheState,
+          },
+        }),
+        {
+          capturedRscDataPromise: Promise.resolve(
+            new TextEncoder().encode("slot-specific-flight").buffer,
+          ),
+          cleanPathname: "/dashboard",
+          consumeDynamicUsage() {
+            return false;
+          },
+          dynamicUsedDuringBuild: false,
+          getPageTags() {
+            return ["/dashboard"];
+          },
+          isrRscKey: vi.fn(),
+          isrSet,
+          mountedSlotsHeader: "slot:auth:/",
+          preserveClientResponseHeaders: cacheState !== "MISS",
+          revalidateSeconds: 60,
+        },
+      );
+
+      expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("Cache-Tag")).toBeNull();
+      expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+      await expect(response.text()).resolves.toBe("slot-specific-flight");
+      expect(isrSet).not.toHaveBeenCalled();
+    },
+  );
+
+  it("clears middleware CDN overrides for mounted slots with the default adapter", async () => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+
+    const response = finalizeAppPageRscCacheResponse(
+      new Response("slot-specific-flight", {
+        headers: {
+          "Cache-Control": "s-maxage=60",
+          "Cache-Tag": "/dashboard",
+          "CDN-Cache-Control": "public, max-age=60",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+          "X-Vinext-Cache": "STATIC",
+        },
+      }),
+      {
+        capturedRscDataPromise: Promise.resolve(
+          new TextEncoder().encode("slot-specific-flight").buffer,
+        ),
+        cleanPathname: "/dashboard",
+        consumeDynamicUsage() {
+          return false;
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags() {
+          return ["/dashboard"];
+        },
+        isrRscKey: vi.fn(),
+        isrSet: vi.fn(),
+        mountedSlotsHeader: "slot:auth:/",
+        preserveClientResponseHeaders: true,
+        revalidateSeconds: 60,
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("slot-specific-flight");
+  });
+
+  it("keeps mounted dynamic responses headerless while clearing CDN overrides", async () => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+
+    const response = finalizeAppPageRscCacheResponse(
+      new Response("dynamic-slot-flight", {
+        headers: {
+          "Cache-Control": "no-store, must-revalidate",
+          "Cache-Tag": "/dashboard",
+          "CDN-Cache-Control": "public, max-age=60",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+        },
+      }),
+      {
+        capturedRscDataPromise: null,
+        cleanPathname: "/dashboard",
+        consumeDynamicUsage() {
+          return true;
+        },
+        dynamicUsedDuringBuild: true,
+        getPageTags() {
+          return ["/dashboard"];
+        },
+        isrRscKey: vi.fn(),
+        isrSet: vi.fn(),
+        mountedSlotsHeader: "slot:auth:/",
+        preserveClientResponseHeaders: true,
+        revalidateSeconds: null,
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("X-Vinext-Cache")).toBeNull();
+    expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("dynamic-slot-flight");
+  });
+
+  it("clears middleware CDN overrides for pending dynamic misses", async () => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+
+    const response = finalizeAppPageRscCacheResponse(
+      new Response("pending-dynamic-flight", {
+        headers: {
+          "Cache-Control": "s-maxage=60",
+          "Cache-Tag": "/dashboard",
+          "CDN-Cache-Control": "public, max-age=60",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        capturedRscDataPromise: null,
+        cleanPathname: "/dashboard",
+        consumeDynamicUsage() {
+          return false;
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags() {
+          return ["/dashboard"];
+        },
+        isrRscKey: vi.fn(),
+        isrSet: vi.fn(),
+        preserveClientResponseHeaders: false,
+        revalidateSeconds: 60,
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("pending-dynamic-flight");
   });
 
   it("revalidateTag purges the Workers Cache by tag via ctx.cache.purge", async () => {
@@ -134,26 +300,10 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 });
 
-// ─── Auto-detection (flag-gated) ───────────────────────────────────────────
+// ─── Adapter selection ────────────────────────────────────────────────────
 
-describe("auto-switch to the Cloudflare adapter when ctx.cache exists", () => {
-  afterEach(() => {
-    delete process.env[AUTO_DETECT_ENV];
-  });
-
-  it("selects the Cloudflare adapter when the flag is on and ctx.cache exists", async () => {
-    process.env[AUTO_DETECT_ENV] = "1";
-    resetActiveAdapter();
-
-    const adapter = await runWithExecutionContext(
-      { waitUntil() {}, cache: { async purge() {} } },
-      async () => getCdnCacheAdapter(),
-    );
-    expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
-  });
-
-  it("does NOT auto-detect when the flag is off, even with ctx.cache present", async () => {
-    delete process.env[AUTO_DETECT_ENV];
+describe("CDN cache adapter selection", () => {
+  it("uses the default adapter even when ctx.cache exists", async () => {
     resetActiveAdapter();
 
     const adapter = await runWithExecutionContext(
@@ -163,17 +313,14 @@ describe("auto-switch to the Cloudflare adapter when ctx.cache exists", () => {
     expect(adapter).toBeInstanceOf(DefaultCdnCacheAdapter);
   });
 
-  it("falls back to the default adapter when ctx.cache is absent (flag on)", async () => {
-    process.env[AUTO_DETECT_ENV] = "1";
+  it("uses the default adapter when ctx.cache is absent", () => {
     resetActiveAdapter();
-    // No request context / no ctx.cache → no auto-detection.
     expect(getCdnCacheAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
   });
 
-  it("an explicitly set adapter wins over auto-detection", async () => {
-    process.env[AUTO_DETECT_ENV] = "1";
+  it("uses an explicitly configured adapter", async () => {
     resetActiveAdapter();
-    const explicit = new DefaultCdnCacheAdapter();
+    const explicit = new CloudflareCdnCacheAdapter();
     setCdnCacheAdapter(explicit);
 
     const adapter = await runWithExecutionContext(

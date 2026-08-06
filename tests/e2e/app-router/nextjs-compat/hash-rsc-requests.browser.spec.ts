@@ -1,23 +1,20 @@
 import fs from "node:fs/promises";
-import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../../helpers";
+import {
+  startChildProductionServer,
+  stopChildProductionServer,
+  type ChildProductionServer,
+} from "../../production-server";
 
 type ProductionApp = {
   baseUrl: string;
   fixtureRoot: string;
-  server: Server;
+  server: ChildProductionServer;
 };
-
-async function closeServer(server: Server): Promise<void> {
-  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-  server.closeIdleConnections();
-  server.closeAllConnections();
-  await closed;
-}
 
 async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   const sourceNodeModules = path.resolve(process.cwd(), "tests/fixtures/app-basic/node_modules");
@@ -26,7 +23,7 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   await fs.mkdir(targetNodeModules, { recursive: true });
 
   for (const entry of await fs.readdir(sourceNodeModules, { withFileTypes: true })) {
-    if (entry.name === ".vite-temp") continue;
+    if (entry.name === ".vite" || entry.name === ".vite-temp") continue;
 
     await fs.symlink(
       path.join(sourceNodeModules, entry.name),
@@ -93,7 +90,7 @@ export default function HashRscRequestsPage() {
         To non-existent
       </Link>
       <div>
-        <Link href="?with-query-param#hash-160" id="link-to-query-param">
+        <Link href="?with-query-param#hash-160" id="link-to-query-param" prefetch={false}>
           To 160 (with query param)
         </Link>
       </div>
@@ -169,20 +166,12 @@ async function buildAndServeHashRscFixture(): Promise<ProductionApp> {
   );
   await runPrerender({ root: fixtureRoot });
 
-  const { startProdServer } = await import(
-    pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href
-  );
-  const started = await startProdServer({
-    host: "127.0.0.1",
-    port: 0,
-    outDir: path.join(fixtureRoot, "dist"),
-    noCompression: true,
-  });
+  const started = await startChildProductionServer(fixtureRoot);
 
   return {
     baseUrl: `http://127.0.0.1:${started.port}`,
     fixtureRoot,
-    server: started.server,
+    server: started,
   };
 }
 
@@ -222,11 +211,10 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
       await page.goto(`${app.baseUrl}/nextjs-compat/hash-rsc-requests`);
       await waitForAppRouterHydration(page);
       await expect(page.locator("p")).toHaveText("Hash Page");
-      // Wait for all initial network activity (including the query-param link's
-      // viewport prefetch) to settle *before* clearing the tracked RSC requests.
-      // Otherwise the prefetch can land after the clear on slower runtimes
-      // (e.g. WebKit) and be misattributed to the hash-only navigations below.
-      // Mirrors upstream's `waitForIdleNetwork()` in the ported Next.js test.
+      // Wait for initial network activity to settle before tracking navigation
+      // requests. The query-param Link disables automatic prefetching so a
+      // delayed WebKit viewport prefetch cannot be misattributed to the
+      // hash-only navigations below.
       await page.waitForLoadState("networkidle");
       rscRequestUrls.clear();
 
@@ -259,8 +247,11 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
       // Close the page before the server so late idle-scheduled Link
       // prefetches can't hit a closed port.
       await page.close();
-      await closeServer(app.server);
-      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      try {
+        await stopChildProductionServer(app.server);
+      } finally {
+        await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      }
     }
   });
 });

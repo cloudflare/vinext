@@ -3,6 +3,30 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4179";
 
 test.describe("Pages Router on Cloudflare Workers (vite dev)", () => {
+  test("client bootstrap hydrates the server-rendered page", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+
+    await expect(page.locator("#count")).toHaveText("0");
+    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+    await page.locator("#increment").click();
+    await expect(page.locator("#count")).toHaveText("1");
+  });
+
+  test("client bootstrap does not load server runtime modules", async ({ page }) => {
+    const loadedServerModules: string[] = [];
+    page.on("request", (request) => {
+      const url = request.url();
+      if (url.includes("/packages/vinext/dist/server/")) {
+        loadedServerModules.push(url);
+      }
+    });
+
+    await page.goto(`${BASE}/`);
+    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+
+    expect(loadedServerModules).toEqual([]);
+  });
+
   test("home page is server-rendered inside the Cloudflare Worker", async ({ request }) => {
     const res = await request.get(`${BASE}/`);
     expect(res.status()).toBe(200);
@@ -10,6 +34,23 @@ test.describe("Pages Router on Cloudflare Workers (vite dev)", () => {
     const html = await res.text();
     expect(html).toContain("Hello from Pages Router on Workers!");
     expect(html).toContain("__NEXT_DATA__");
+  });
+
+  test("public-file mutations are handled inside the Cloudflare Worker", async ({ request }) => {
+    const res = await request.post(`${BASE}/static.txt`);
+
+    expect(res.status()).toBe(405);
+    expect(res.headers()["allow"]).toBe("GET, HEAD");
+    expect(await res.text()).toBe("Method Not Allowed");
+  });
+
+  test("encoded public-file mutations are handled inside the Cloudflare Worker", async ({
+    request,
+  }) => {
+    const res = await request.post(`${BASE}/hello%20copy.txt`);
+
+    expect(res.status()).toBe(405);
+    expect(res.headers()["allow"]).toBe("GET, HEAD");
   });
 
   test("GSSP runs inside the Cloudflare Worker", async ({ request }) => {

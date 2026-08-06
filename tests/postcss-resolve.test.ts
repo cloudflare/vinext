@@ -101,6 +101,25 @@ module.exports.postcss = true;
     }
   });
 
+  it("loads a CommonJS postcss.config.js in an ESM project", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.js",
+      `const plugins = require("./plugins.js");
+module.exports = { plugins };
+`,
+    );
+    const fsp = await import("node:fs/promises");
+    await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(path.join(dir, "plugins.js"), `module.exports = ["mock-postcss-plugin"];`);
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result?.plugins).toHaveLength(1);
+      expect(result?.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
   // --- Object form (should be skipped) ---
 
   it("returns undefined for object-form plugins (postcss-load-config handles these)", async () => {
@@ -190,6 +209,46 @@ module.exports.postcss = true;
       // Should be the result of calling the function (a plugin object)
       expect(result!.plugins[0]).toHaveProperty("postcssPlugin", "mock-plugin");
     } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("loads CommonJS .js plugins from read-only symlink targets in an ESM monorepo", async () => {
+    const fsp = await import("node:fs/promises");
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-postcss-local-cjs-"));
+    const packageDir = path.join(dir, "packages", "local-plugin");
+    const pluginLink = path.join(dir, "node_modules", "local-plugin");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(path.dirname(pluginLink), { recursive: true });
+    await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "local-plugin", main: "plugin.js", type: "module" }),
+    );
+    await fsp.writeFile(path.join(packageDir, "name.js"), `module.exports = "local-cjs-plugin";`);
+    await fsp.writeFile(
+      path.join(packageDir, "plugin.js"),
+      `const name = require("./name.js");
+const plugin = () => ({ postcssPlugin: name, Once() {} });
+plugin.postcss = true;
+module.exports = plugin;`,
+    );
+    await fsp.symlink(packageDir, pluginLink, "junction");
+    await fsp.writeFile(
+      path.join(dir, "postcss.config.cjs"),
+      `module.exports = { plugins: [require.resolve("local-plugin")] };`,
+    );
+    await fsp.chmod(packageDir, 0o555);
+
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result?.plugins).toHaveLength(1);
+      expect(result?.plugins[0]).toHaveProperty("postcssPlugin", "local-cjs-plugin");
+      expect(
+        (await fsp.readdir(packageDir)).some((name) => name.startsWith(".vinext-postcss-")),
+      ).toBe(false);
+    } finally {
+      await fsp.chmod(packageDir, 0o755).catch(() => {});
       await cleanupDir(dir);
     }
   });
@@ -344,6 +403,67 @@ module.exports.postcss = true;`,
       expect(postcssObj.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
     } finally {
       await server.close();
+    }
+  }, 30000);
+
+  it("applies a local CommonJS PostCSS plugin to CSS and SCSS modules in an ESM app", async () => {
+    // Ported from Next.js: test/e2e/app-dir/css-modules-rsc-postcss/css-modules-rsc-postcss.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/css-modules-rsc-postcss/css-modules-rsc-postcss.test.ts
+    const fsp = await import("node:fs/promises");
+    const { build } = await import("vite");
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-css-modules-rsc-postcss-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(dir, "node_modules"), "junction");
+    await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(
+      path.join(dir, "plugin.js"),
+      `const plugin = () => ({
+  postcssPlugin: "color-change",
+  Declaration: { color(declaration) { declaration.value = "green"; } },
+});
+plugin.postcss = true;
+module.exports = plugin;`,
+    );
+    await fsp.writeFile(
+      path.join(dir, "postcss.config.cjs"),
+      `module.exports = { plugins: [require.resolve("./plugin")] };`,
+    );
+    await fsp.writeFile(path.join(dir, "page.module.css"), `.main { color: red; }`);
+    await fsp.writeFile(path.join(dir, "other.module.scss"), `.other { color: red; }`);
+    await fsp.writeFile(
+      path.join(dir, "entry.js"),
+      `import styles from "./page.module.css";
+import other from "./other.module.scss";
+console.log(styles.main, other.other);`,
+    );
+
+    try {
+      await build({
+        root: dir,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        logLevel: "silent",
+        build: {
+          outDir: "dist",
+          rolldownOptions: { input: path.join(dir, "entry.js") },
+        },
+      });
+      const distDir = path.join(dir, "dist");
+      const entries = await fsp.readdir(distDir, { recursive: true, withFileTypes: true });
+      const cssEntries = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".css"));
+      expect(cssEntries.length).toBeGreaterThan(0);
+      const css = (
+        await Promise.all(
+          cssEntries.map((entry) => fsp.readFile(path.join(entry.parentPath, entry.name), "utf8")),
+        )
+      ).join("\n");
+      expect(css).toContain("color:green");
+      expect(css).toMatch(/_main[_-]/);
+      expect(css).toMatch(/_other[_-]/);
+      expect(css).not.toContain("color:red");
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
     }
   }, 30000);
 });

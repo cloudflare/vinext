@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import os from "node:os";
 import zlib from "node:zlib";
 import { StaticFileCache } from "../packages/vinext/src/server/static-file-cache.js";
@@ -73,9 +74,12 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/_next/static/index-abc123.js");
 
     expect(entry).toBeDefined();
-    expect(entry!.original.headers["Content-Type"]).toBe("application/javascript");
+    expect(entry!.original.headers["Content-Type"]).toBe("application/javascript; charset=utf-8");
     expect(entry!.original.headers["Content-Length"]).toBe("12"); // "const x = 1;"
-    expect(entry!.original.path).toBe(path.join(clientDir, "_next/static/index-abc123.js"));
+    expect(Date.parse(entry!.original.headers["Last-Modified"])).not.toBeNaN();
+    expect(entry!.original.path).toBe(
+      toSlash(path.join(clientDir, "_next/static/index-abc123.js")),
+    );
   });
 
   it("returns undefined for non-existent files", async () => {
@@ -84,6 +88,44 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
 
     expect(cache.lookup("/_next/static/missing-xyz789.js")).toBeUndefined();
+  });
+
+  it("ignores precompressed variants that are not smaller than the original", async () => {
+    await writeFile(clientDir, "_next/static/app-abc123.js", "small original");
+    await writeFile(clientDir, "_next/static/app-abc123.js.br", "larger brotli representation");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/app-abc123.js");
+
+    expect(entry?.br).toBeUndefined();
+    expect(entry?.original.headers.Vary).toBeUndefined();
+  });
+
+  it("ignores variants whose savings do not cover response-header overhead", async () => {
+    await writeFile(clientDir, "_next/static/app-abc123.js", "x".repeat(1000));
+    await writeFile(clientDir, "_next/static/app-abc123.js.br", "y".repeat(955));
+    await writeFile(clientDir, "_next/static/app-abc123.js.gz", "z".repeat(953));
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/app-abc123.js");
+
+    expect(entry?.br).toBeUndefined();
+    expect(entry?.gz).toBeUndefined();
+    expect(entry?.original.headers.Vary).toBeUndefined();
+  });
+
+  it("does not serve temporary files left by interrupted precompression", async () => {
+    const basename = "app-abc123.js.br.123.123e4567-e89b-42d3-a456-426614174000.tmp";
+    const temporaryPath = `_next/static/${basename}`;
+    await writeFile(clientDir, temporaryPath, "partial compressed content");
+    await writeFile(clientDir, `downloads/${basename}`, "legitimate public content");
+
+    const cache = await StaticFileCache.create(clientDir);
+
+    expect(cache.lookup("/" + temporaryPath)).toBeUndefined();
+    expect(cache.lookup(`/downloads/${basename}`)?.original.buffer?.toString()).toBe(
+      "legitimate public content",
+    );
   });
 
   it("sets immutable cache-control for hashed assets under /assets/", async () => {
@@ -114,6 +156,15 @@ describe("StaticFileCache", () => {
     expect(entry!.etag).toBe('W/"abc123"');
   });
 
+  it("generates stable weak etag for dot-delimited managed image hashes", async () => {
+    await writeFile(clientDir, "_next/static/media/photo.0123abcd.png", "image bytes");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/media/photo.0123abcd.png");
+
+    expect(entry!.etag).toBe('W/"0123abcd"');
+  });
+
   it("falls back to mtime etag for non-hashed files", async () => {
     await writeFile(clientDir, "favicon.ico", "icon");
 
@@ -142,6 +193,26 @@ describe("StaticFileCache", () => {
     expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
 
+  it("does not treat arbitrary dot suffixes as managed image hashes", async () => {
+    await writeFile(clientDir, "_next/static/media/photo.deadbeefg.png", "image bytes");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/media/photo.deadbeefg.png");
+
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
+  });
+
+  it("does not trust exact dot-hash suffixes outside managed media", async () => {
+    await writeFile(clientDir, "_next/static/config.deadbeef.json", '{"version":1}');
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/config.deadbeef.json");
+
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
+    expect(entry!.etag).not.toBe('W/"deadbeef"');
+    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+  });
+
   // ── Precompressed variants ─────────────────────────────────────
 
   it("detects brotli precompressed variant", async () => {
@@ -154,7 +225,7 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/_next/static/app-abc123.js");
 
-    expect(entry!.br?.path).toBe(path.join(clientDir, "_next/static/app-abc123.js.br"));
+    expect(entry!.br?.path).toBe(toSlash(path.join(clientDir, "_next/static/app-abc123.js.br")));
     expect(entry!.br?.headers["Content-Length"]).toBe(String(brContent.length));
   });
 
@@ -167,7 +238,9 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/_next/static/styles-def456.css");
 
-    expect(entry!.gz?.path).toBe(path.join(clientDir, "_next/static/styles-def456.css.gz"));
+    expect(entry!.gz?.path).toBe(
+      toSlash(path.join(clientDir, "_next/static/styles-def456.css.gz")),
+    );
     expect(entry!.gz?.headers["Content-Length"]).toBe(String(gzContent.length));
   });
 
@@ -180,7 +253,7 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/_next/static/app-zstd.js");
 
-    expect(entry!.zst?.path).toBe(path.join(clientDir, "_next/static/app-zstd.js.zst"));
+    expect(entry!.zst?.path).toBe(toSlash(path.join(clientDir, "_next/static/app-zstd.js.zst")));
     expect(entry!.zst?.headers["Content-Length"]).toBe(String(zstdContent.length));
   });
 
@@ -244,8 +317,8 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/about");
 
     expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(path.join(clientDir, "about.html"));
-    expect(entry!.original.headers["Content-Type"]).toBe("text/html");
+    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "about.html")));
+    expect(entry!.original.headers["Content-Type"]).toBe("text/html; charset=utf-8");
   });
 
   it("resolves /index.html fallback for directory paths", async () => {
@@ -255,7 +328,7 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/blog");
 
     expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(path.join(clientDir, "blog/index.html"));
+    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "blog/index.html")));
   });
 
   // ── Directory traversal protection ─────────────────────────────
@@ -288,10 +361,10 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
 
     expect(cache.lookup("/_next/static/style-aaa.css")!.original.headers["Content-Type"]).toBe(
-      "text/css",
+      "text/css; charset=utf-8",
     );
     expect(cache.lookup("/_next/static/data-bbb.json")!.original.headers["Content-Type"]).toBe(
-      "application/json",
+      "application/json; charset=utf-8",
     );
     expect(cache.lookup("/logo.svg")!.original.headers["Content-Type"]).toBe("image/svg+xml");
     expect(cache.lookup("/photo.webp")!.original.headers["Content-Type"]).toBe("image/webp");
@@ -305,6 +378,34 @@ describe("StaticFileCache", () => {
     expect(cache.lookup("/_next/static/data-ccc.xyz")!.original.headers["Content-Type"]).toBe(
       "application/octet-stream",
     );
+  });
+
+  it("serves common web assets with their standard content types", async () => {
+    await Promise.all([
+      writeFile(clientDir, "module.wasm", "wasm"),
+      writeFile(clientDir, "movie.mp4", "video"),
+      writeFile(clientDir, "document.pdf", "pdf"),
+      writeFile(clientDir, "site.webmanifest", "{}"),
+      writeFile(clientDir, "feed.xml", "<feed />"),
+    ]);
+
+    const cache = await StaticFileCache.create(clientDir);
+
+    expect(cache.lookup("/module.wasm")!.original.headers["Content-Type"]).toBe("application/wasm");
+    expect(cache.lookup("/movie.mp4")!.original.headers["Content-Type"]).toBe("video/mp4");
+    expect(cache.lookup("/document.pdf")!.original.headers["Content-Type"]).toBe("application/pdf");
+    expect(cache.lookup("/site.webmanifest")!.original.headers["Content-Type"]).toBe(
+      "application/manifest+json",
+    );
+    expect(cache.lookup("/feed.xml")!.original.headers["Content-Type"]).toBe("application/xml");
+  });
+
+  it("matches file extensions case-insensitively", async () => {
+    await writeFile(clientDir, "logo.SVG", "<svg />");
+
+    const cache = await StaticFileCache.create(clientDir);
+
+    expect(cache.lookup("/logo.SVG")!.original.headers["Content-Type"]).toBe("image/svg+xml");
   });
 
   // ── Nested directory scanning ──────────────────────────────────

@@ -50,6 +50,18 @@ run_pnpm() {
   corepack pnpm "$@"
 }
 
+detach_symlinked_node_modules() {
+  if [ ! -L "node_modules" ]; then
+    return
+  fi
+
+  local target
+  target="$(readlink "node_modules" || true)"
+  echo ">>> $(date -Iseconds) Detaching symlinked node_modules${target:+ -> ${target}} before prepare install"
+  echo ">>> This preserves the shared target; pnpm will create a local node_modules for this disposable checkout."
+  rm -f "node_modules"
+}
+
 if [ "${VINEXT_BUILD:-1}" = "1" ]; then
   (
     cd "${REPO_DIR}"
@@ -61,6 +73,7 @@ if [ "${NEXTJS_PREPARE:-0}" = "1" ]; then
   (
     cd "${NEXTJS_DIR}"
     echo ">>> $(date -Iseconds) pnpm install"
+    detach_symlinked_node_modules
     run_pnpm install
     echo ">>> $(date -Iseconds) bump playwright to 1.60.0"
     run_pnpm add -w playwright@1.60.0 playwright-chromium@1.60.0
@@ -79,6 +92,10 @@ fi
 export VINEXT_DIR="${VINEXT_DIR:-${REPO_DIR}}"
 export ADAPTER_DIR="${ADAPTER_DIR:-${REPO_DIR}}"
 export NEXT_TEST_MODE="${NEXT_TEST_MODE:-deploy}"
+# The custom deploy path does not receive next-deploy's Vercel-only
+# NEXT_PRIVATE_TEST_MODE build variable. Match the dev/start harnesses so
+# test-only client instrumentation is compiled into targeted deploy builds.
+export __NEXT_TEST_MODE="${__NEXT_TEST_MODE:-e2e}"
 export NEXT_E2E_TEST_TIMEOUT="${NEXT_E2E_TEST_TIMEOUT:-240000}"
 export NEXT_EXTERNAL_TESTS_FILTERS="${NEXT_EXTERNAL_TESTS_FILTERS:-test/deploy-tests-manifest.json}"
 export NEXT_TEST_JOB="${NEXT_TEST_JOB:-1}"

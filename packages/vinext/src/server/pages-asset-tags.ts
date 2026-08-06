@@ -11,21 +11,22 @@
 
 import { createNonceAttribute } from "./html.js";
 import { assetServingUrlFromBaseAnchored } from "../utils/manifest-paths.js";
+import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
+import { getPagesClientAssets } from "./pages-client-assets.js";
 
 // ---------------------------------------------------------------------------
 // Manifest helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the effective SSR manifest: prefer the caller-supplied object (dev
- * or test) and fall back to the Worker-embedded `globalThis.__VINEXT_SSR_MANIFEST__`
- * injected by `vinext:cloudflare-build` at build time.
+ * Resolve the effective SSR manifest: prefer the caller-supplied object and
+ * fall back to the registered client build metadata.
  */
 export function resolveSsrManifest(
   manifest: Record<string, string[]> | null | undefined,
 ): Record<string, string[]> | null {
   if (manifest && Object.keys(manifest).length > 0) return manifest;
-  return (typeof globalThis !== "undefined" ? globalThis.__VINEXT_SSR_MANIFEST__ : null) ?? null;
+  return getPagesClientAssets().ssrManifest ?? null;
 }
 
 /**
@@ -64,6 +65,7 @@ export function resolveClientModuleUrl(
   moduleId: string | null | undefined,
   basePath = "",
   assetPrefix = "",
+  _deploymentId?: string,
 ): string | undefined {
   const files = getManifestFilesForModule(resolveSsrManifest(manifest), moduleId);
   if (!files) return undefined;
@@ -82,7 +84,7 @@ export function resolveClientModuleUrl(
 type CollectAssetTagsOptions = {
   /**
    * SSR manifest mapping module file paths to their associated asset list.
-   * When empty/null the Worker-embedded `__VINEXT_SSR_MANIFEST__` is used.
+   * When empty/null the registered client build manifest is used.
    */
   manifest: Record<string, string[]> | null | undefined;
   /**
@@ -106,6 +108,8 @@ type CollectAssetTagsOptions = {
    */
   basePath?: string;
   assetPrefix?: string;
+  deploymentId?: string;
+  crossOrigin?: string;
 };
 
 /**
@@ -115,8 +119,7 @@ type CollectAssetTagsOptions = {
  * - CSS files → `<link rel="stylesheet">`.
  * - JS files → `<link rel="modulepreload">` + `<script type="module" defer>`.
  * - Lazy chunks (behind `React.lazy` / `next/dynamic`) are skipped.
- * - The Worker-embedded client-entry bootstrap (`__VINEXT_CLIENT_ENTRY__`) is
- *   injected first so hydration starts as early as possible.
+ * - The registered client-entry bootstrap is injected first.
  * - Shared framework / vinext runtime chunks are always included alongside
  *   page-specific chunks.
  *
@@ -134,36 +137,57 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // upstream tests (e.g. test/e2e/optimized-loading) assert the literal `defer`
   // attribute, and adding it preserves parity without changing browser behaviour.
   const deferAttr = options.disableOptimizedLoading ? "" : " defer";
+  const scriptCrossOriginAttr = options.crossOrigin
+    ? ` crossorigin="${options.crossOrigin}"`
+    : " crossorigin";
+  const preloadCrossOriginAttr = options.crossOrigin ? ` crossorigin="${options.crossOrigin}"` : "";
 
   // SSR-manifest / client-entry values are base-anchored (so the lazy-chunk
-  // membership test below matches the base-anchored __VINEXT_LAZY_CHUNKS__), but
+  // membership test below matches the base-anchored lazy chunk registry), but
   // the EMITTED href must point where the asset is actually served. assetPrefix
   // replaces basePath for asset URLs, so re-anchor each href accordingly. With
   // no assetPrefix this is the legacy `"/" + value`.
   const basePath = options.basePath ?? "";
   const assetPrefix = options.assetPrefix ?? "";
-  const href = (value: string): string =>
-    assetServingUrlFromBaseAnchored(value, basePath, assetPrefix);
+  const href = (value: string): string => {
+    const url = assetServingUrlFromBaseAnchored(value, basePath, assetPrefix);
+    // Native ESM resolves relative imports without inheriting the importing
+    // module's query string. Querying Pages JavaScript entries therefore gives
+    // the entry and its imports different module identities, which can execute
+    // the hydration bootstrap twice when a lazy page chunk imports shared code.
+    return value.endsWith(".js") ? url : appendDeploymentIdQuery(url, options.deploymentId);
+  };
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
   // tags — they are fetched on demand when the dynamic import() executes.
-  const lazyChunks =
-    (typeof globalThis !== "undefined" && globalThis.__VINEXT_LAZY_CHUNKS__) || null;
+  const runtimeAssets = getPagesClientAssets();
+  const lazyChunks = runtimeAssets.lazyChunks ?? null;
   const lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
 
-  // Inject the client entry script if embedded by vinext:cloudflare-build.
-  if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
-    const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
-    seen.add(entry);
-    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(entry) + '" />');
+  // Development adapters provide the Vite-served virtual entry explicitly.
+  // Production builds use the client entry registered from the emitted sidecar.
+  const clientEntry = runtimeAssets.clientEntry;
+  if (clientEntry) {
+    seen.add(clientEntry);
+    tags.push(
+      '<link rel="modulepreload"' +
+        nonceAttr +
+        ' href="' +
+        href(clientEntry) +
+        '"' +
+        preloadCrossOriginAttr +
+        " />",
+    );
     tags.push(
       '<script type="module"' +
         deferAttr +
         nonceAttr +
         ' src="' +
-        href(entry) +
-        '" crossorigin></script>',
+        href(clientEntry) +
+        '"' +
+        scriptCrossOriginAttr +
+        "></script>",
     );
   }
 
@@ -226,16 +250,26 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         // Membership test uses the base-anchored `tf` (same key-space as
-        // __VINEXT_LAZY_CHUNKS__), NOT the re-anchored href.
+        // lazy chunk registry), NOT the re-anchored href.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(tf) + '" />');
+        tags.push(
+          '<link rel="modulepreload"' +
+            nonceAttr +
+            ' href="' +
+            href(tf) +
+            '"' +
+            preloadCrossOriginAttr +
+            " />",
+        );
         tags.push(
           '<script type="module"' +
             deferAttr +
             nonceAttr +
             ' src="' +
             href(tf) +
-            '" crossorigin></script>',
+            '"' +
+            scriptCrossOriginAttr +
+            "></script>",
         );
       }
     }

@@ -11,6 +11,21 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
+  ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+    ? {
+        basePath: "/docs",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      }
+    : {}),
+  // Used by E2E: nextjs-compat/gesture-transitions.spec.ts — enabled
+  // fixture-wide solely for that spec (the only observable effect is the
+  // optional `experimental_gesturePush` method being attached). Note this
+  // means the fixture does NOT represent the default (gate-off) config, so
+  // don't assert the method's absence against this fixture.
+  experimental: {
+    gestureTransition: true,
+  },
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 
@@ -81,8 +96,21 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        // Encoded App Page params must have the same canonical representation
+        // on direct requests and config rewrites.
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity/rewrite/:path*"
+            : "/encoded-parity/rewrite/:path*",
+          destination: "/encoded-parity/page/:path*",
+        },
         // Used by Vitest: app-router.test.ts
-        { source: "/rewrite-about", destination: "/about" },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/rewrite-about"
+            : "/rewrite-about",
+          destination: "/about",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
@@ -105,6 +133,13 @@ const nextConfig: NextConfig = {
           source: "/mw-gated-before",
           has: [{ type: "cookie", key: "mw-before-user" }],
           destination: "/about",
+        },
+        // Used by Vitest: app-router-next-config-dev.test.ts — unused source
+        // params must be appended to the destination query and exposed through
+        // App Router searchParams, matching Next.js prepareDestination.
+        {
+          source: "/rewrite-search-param/:term",
+          destination: "/search?q=from-rewrite",
         },
       ],
       afterFiles: [
@@ -168,7 +203,19 @@ const nextConfig: NextConfig = {
       // Used by Vitest: app-router.test.ts
       {
         source: "/about",
-        headers: [{ key: "X-Page-Header", value: "about-page" }],
+        headers: [
+          { key: "X-Page-Header", value: "about-page" },
+          { key: "X-Action-Header-Collision", value: "target" },
+        ],
+      },
+      // Server-action redirect parity: source headers are forwarded into the
+      // internal target GET and retained unless the target replaces them.
+      {
+        source: "/nextjs-compat/action-redirect-middleware",
+        headers: [
+          { key: "X-Action-Source-Only", value: "yes" },
+          { key: "X-Action-Header-Collision", value: "source" },
+        ],
       },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {

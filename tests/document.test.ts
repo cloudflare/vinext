@@ -29,6 +29,40 @@ describe("NextScript", () => {
     // Dev-server replaces this HTML comment with __NEXT_DATA__ + module script tags
     expect(html).toContain("<!-- __NEXT_SCRIPTS__ -->");
   });
+
+  it("preserves nonce and crossOrigin for document asset propagation", () => {
+    const html = render(
+      React.createElement(NextScript, { nonce: "test-nonce", crossOrigin: "anonymous" }),
+    );
+    expect(html).toContain('data-vinext-script-nonce="test-nonce"');
+    expect(html).toContain('data-vinext-script-cross-origin="anonymous"');
+  });
+
+  // Ported from Next.js: test/unit/htmlescape.test.ts and
+  // packages/next/src/pages/_document.tsx (NextScript.getInlineScriptSource).
+  // https://github.com/vercel/next.js/blob/canary/test/unit/htmlescape.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
+  it("HTML-escapes getInlineScriptSource output and preserves its JSON value", () => {
+    // Custom _document implementations embed this string in an inline
+    // <script>; an unescaped "</script>" in page data would end the tag.
+    const pageData = {
+      props: {
+        evil: "</script><script>alert(1)</script>",
+        html: "<>&",
+        separators: "\u2028\u2029",
+      },
+    };
+    const source = NextScript.getInlineScriptSource({
+      __NEXT_DATA__: pageData,
+    } as unknown as Parameters<typeof NextScript.getInlineScriptSource>[0]);
+
+    expect(source).not.toContain("</script>");
+    expect(source).not.toMatch(/[<>&\u2028\u2029]/u);
+    expect(source).toContain("\\u003c/script\\u003e");
+    expect(source).toContain("\\u0026");
+    expect(source).toContain("\\u2028\\u2029");
+    expect(JSON.parse(source)).toEqual(pageData);
+  });
 });
 
 describe("Head", () => {
@@ -53,6 +87,14 @@ describe("Head", () => {
     // pipeline as user-supplied tags.
     expect(html).not.toContain("charSet=");
     expect(html).not.toContain('name="viewport"');
+  });
+
+  it("preserves nonce and crossOrigin for document preload propagation", () => {
+    const html = render(
+      React.createElement(Head, { nonce: "test-nonce", crossOrigin: "anonymous" }),
+    );
+    expect(html).toContain('data-vinext-head-nonce="test-nonce"');
+    expect(html).toContain('data-vinext-head-cross-origin="anonymous"');
   });
 });
 
@@ -132,14 +174,12 @@ describe("Document base class", () => {
     expect(html).toContain("__NEXT_SCRIPTS__");
   });
 
-  it("exposes a static getInitialProps that resolves to a DocumentInitialProps-shaped value", async () => {
-    // The runtime contract: subclasses commonly delegate via
-    // `await Document.getInitialProps(ctx)` and destructure `html` from the
-    // result. The stub returns an empty html shell — the test pins the shape
-    // so wiring up the full Pages Router renderPage flow later doesn't
-    // silently regress consumers that destructure `html`.
-    const result = await Document.getInitialProps({});
-    expect(typeof result.html).toBe("string");
+  it("delegates static getInitialProps to ctx.defaultGetInitialProps", async () => {
+    const defaultGetInitialProps = async () => ({ html: "<main>page</main>" });
+    const context = { defaultGetInitialProps } as never;
+    await expect(Document.getInitialProps(context)).resolves.toEqual({
+      html: "<main>page</main>",
+    });
   });
 });
 
@@ -161,15 +201,10 @@ describe("loadUserDocumentInitialProps", () => {
         return { ...base, docValue: await Promise.resolve("doc value") };
       }
     }
-    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
     expect(props).not.toBeNull();
     expect(props!.docValue).toBe("doc value");
-    // The base Document.getInitialProps contract is to return { html: "" } so
-    // `await Document.getInitialProps(ctx)` spreads `{ html: "" }` into the
-    // resulting props. This pins that contract — the dev-server / prod
-    // response builder render `<Document {...docProps} />` and consumers may
-    // read either field.
-    expect(typeof props!.html).toBe("string");
+    expect(props!.html).toBe("");
   });
 
   it("returns null when the user did not override the base getInitialProps", async () => {
@@ -181,7 +216,7 @@ describe("loadUserDocumentInitialProps", () => {
         return React.createElement("html");
       }
     }
-    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
     expect(props).toBeNull();
   });
 
@@ -197,8 +232,8 @@ describe("loadUserDocumentInitialProps", () => {
     // 500 to the caller. vinext matches that contract so user bugs in
     // `_document.tsx`'s getInitialProps are visible instead of silently
     // erasing docProps from every render.
-    await expect(loadUserDocumentInitialProps(BadDocument as React.ComponentType)).rejects.toThrow(
-      "boom",
-    );
+    await expect(
+      loadUserDocumentInitialProps(BadDocument as unknown as React.ComponentType),
+    ).rejects.toThrow("boom");
   });
 });

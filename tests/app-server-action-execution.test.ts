@@ -8,6 +8,7 @@ import {
   readActionFormDataWithLimit,
   type HandleProgressiveServerActionRequestOptions,
 } from "../packages/vinext/src/server/app-server-action-execution.js";
+import { getRootParam, runWithRootParamsScope } from "../packages/vinext/src/shims/root-params.js";
 import {
   createServerActionNotFoundResponse,
   throwOnServerActionNotFound,
@@ -20,9 +21,27 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { refresh, revalidatePath, revalidateTag } from "../packages/vinext/src/shims/cache.js";
 import {
-  cookies,
+  cacheTag,
+  getAndClearActionRevalidationKind,
+  refresh,
+  revalidatePath,
+  revalidateTag,
+  unstable_cache,
+  updateTag,
+} from "../packages/vinext/src/shims/cache.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import {
+  getDataCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import {
+  getHeadersContext,
+  headersContextFromRequest,
   setHeadersAccessPhase,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
@@ -33,9 +52,12 @@ type TestRoute = {
   page?: unknown;
   params: readonly string[];
   pattern: string;
+  rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments?: readonly string[];
   runtime?: "edge" | "experimental-edge" | "nodejs" | null;
+  /** Manifest lazy-module thunk; set when the route's page is not yet hydrated. */
+  __loadPage?: unknown;
 };
 
 type TestInterceptOptions = {
@@ -211,13 +233,22 @@ function createRscOptions(
 > {
   const route: TestRoute = { id: "dashboard", page: {}, params: [], pattern: "/dashboard" };
 
+  const cleanPathname = overrides.cleanPathname ?? "/dashboard";
+  const matchRoute =
+    overrides.matchRoute ??
+    (() => ({
+      params: {},
+      route,
+    }));
+  const buildPageElement =
+    overrides.buildPageElement ??
+    (({ route: matchedRoute, params, interceptOpts }) =>
+      `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`);
+
   return {
     actionId: "action-id",
     allowedOrigins: [],
-    buildPageElement({ route: matchedRoute, params, interceptOpts }) {
-      return `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`;
-    },
-    cleanPathname: "/dashboard",
+    buildPageElement,
     clearRequestContext() {},
     contentType: "text/plain;charset=UTF-8",
     createNotFoundElement(routeId) {
@@ -234,6 +265,36 @@ function createRscOptions(
     },
     decodeReply() {
       return Promise.resolve([]);
+    },
+    draftModeSecret: "draft-secret",
+    async dispatchRedirectTargetRequest(request) {
+      const url = new URL(request.url);
+      const matched = matchRoute(url.pathname);
+      if (
+        !matched ||
+        matched.route.routeHandler ||
+        (!matched.route.page && !matched.route.__loadPage)
+      ) {
+        return new Response("not-rsc", {
+          status: 404,
+          headers: { "content-type": "text/plain" },
+        });
+      }
+      await overrides.ensureRouteLoaded?.(matched.route);
+      const root = buildPageElement({
+        cleanPathname: url.pathname,
+        interceptOpts: undefined,
+        isRscRequest: true,
+        mountedSlotsHeader: null,
+        params: matched.params,
+        request,
+        route: matched.route,
+        searchParams: url.searchParams,
+        renderMode: "navigation",
+      });
+      return new Response(JSON.stringify({ root, returnValue: { ok: true } }), {
+        headers: { "content-type": "text/x-component" },
+      });
     },
     findIntercept() {
       return null;
@@ -254,12 +315,10 @@ function createRscOptions(
     loadServerAction() {
       return Promise.resolve(() => "action-result");
     },
-    matchRoute() {
-      return { params: {}, route };
-    },
     maxActionBodySize: 1024,
     maxActionBodySizeLabel: "1kb",
     middlewareHeaders: null,
+    middlewareRequestHeaders: null,
     middlewareStatus: null,
     mountedSlotsHeader: null,
     readBodyWithLimit() {
@@ -283,10 +342,75 @@ function createRscOptions(
       return { slot: intercept.slotKey };
     },
     ...overrides,
+    cleanPathname,
+    currentRouteMatch:
+      overrides.currentRouteMatch !== undefined
+        ? overrides.currentRouteMatch
+        : matchRoute(cleanPathname),
+    currentRoutePathname: overrides.currentRoutePathname ?? cleanPathname,
+    matchRoute,
   };
 }
 
 describe("app server action execution helpers", () => {
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("rejects next/root-params inside progressive server actions", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => getRootParam("lang");
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "form-state", actionFailed: true });
+    expect(result && "actionError" in result ? result.actionError : null).toMatchObject({
+      name: "Error",
+      message:
+        "`import('next/root-params').lang()` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.",
+    });
+    errorSpy.mockRestore();
+  });
+
+  it("allows deferred root params reads after failed progressive actions", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleProgressiveServerActionRequest(
+        createOptions({
+          async decodeAction() {
+            return () => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw new Error("action failed");
+            };
+          },
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+    errorSpy.mockRestore();
+  });
+
   it("reads streamed action text bodies and enforces the byte limit", async () => {
     const validRequest = new Request("https://example.com/action", {
       method: "POST",
@@ -300,6 +424,14 @@ describe("app server action execution helpers", () => {
     await expect(readActionBodyWithLimit(oversizedRequest, 5)).rejects.toThrow(
       "Request body too large",
     );
+  });
+
+  it("rejects cloned streamed action text without waiting for the sibling branch", async () => {
+    const request = createStreamBodyRequest("hello!");
+    const sibling = request.clone();
+
+    await expect(readActionBodyWithLimit(request, 5)).rejects.toThrow("Request body too large");
+    await expect(sibling.text()).resolves.toBe("hello!");
   });
 
   it("reads multipart action form data and enforces the streamed byte limit", async () => {
@@ -320,6 +452,18 @@ describe("app server action execution helpers", () => {
     await expect(readActionFormDataWithLimit(oversizedRequest, 16)).rejects.toThrow(
       "Request body too large",
     );
+  });
+
+  it("rejects cloned multipart bodies without waiting for the sibling branch", async () => {
+    const request = createStreamBodyRequest("x".repeat(64), {
+      "content-type": "multipart/form-data; boundary=vinext",
+    });
+    const sibling = request.clone();
+
+    await expect(readActionFormDataWithLimit(request, 16)).rejects.toThrow(
+      "Request body too large",
+    );
+    await expect(sibling.text()).resolves.toBe("x".repeat(64));
   });
 
   it("identifies progressive multipart server action submissions", () => {
@@ -469,6 +613,54 @@ describe("app server action execution helpers", () => {
     expect((renderedModel.get().returnValue.data as Error).message).toContain("Body exceeded");
   });
 
+  it("bounds chunked multipart bodies after resolving a valid action", async () => {
+    const loadServerAction = vi.fn(() => Promise.resolve(() => "ok"));
+    const renderedModel = captureRenderedModel();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        contentType: "multipart/form-data; boundary=VINEXTDOS",
+        loadServerAction,
+        readFormDataWithLimit() {
+          throw new Error("Request body too large");
+        },
+        renderToReadableStream: renderedModel.capture,
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("content-type")).toBe("text/x-component");
+    expect(loadServerAction).toHaveBeenCalledTimes(1);
+    expect(renderedModel.get().returnValue.ok).toBe(false);
+    expect((renderedModel.get().returnValue.data as Error).message).toContain("Body exceeded");
+  });
+
+  it("rejects declared-oversized stale multipart actions before action lookup", async () => {
+    const loadServerAction = vi.fn();
+    const readFormDataWithLimit = vi.fn();
+    const renderedModel = captureRenderedModel();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "stale-action-id",
+        contentType: "multipart/form-data; boundary=VINEXTDOS",
+        loadServerAction,
+        maxActionBodySize: 10,
+        readFormDataWithLimit,
+        renderToReadableStream: renderedModel.capture,
+        request: createFetchActionRequest({
+          "content-length": "11",
+          "content-type": "multipart/form-data; boundary=VINEXTDOS",
+        }),
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(loadServerAction).not.toHaveBeenCalled();
+    expect(readFormDataWithLimit).not.toHaveBeenCalled();
+    expect(renderedModel.get().returnValue.ok).toBe(false);
+  });
+
   it("rejects malformed action payloads before decoding the action", async () => {
     const formData = new FormData();
     formData.set("0", '"$Q1"');
@@ -488,6 +680,30 @@ describe("app server action execution helpers", () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toBe("Invalid server action payload");
     expect(decodeAction).not.toHaveBeenCalled();
+  });
+
+  it("clears pending cookies and revalidation state for rejected progressive payloads", async () => {
+    const formData = new FormData();
+    formData.set("0", '"$Q1:x"');
+    const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
+    const previousPhase = setHeadersAccessPhase("action");
+    await Promise.resolve(revalidatePath("/stale"));
+    setHeadersAccessPhase(previousPhase);
+
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          getAndClearPendingCookies,
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(getAndClearPendingCookies).toHaveBeenCalledTimes(1);
+    expect(getAndClearActionRevalidationKind()).toBe(0);
   });
 
   it("executes decoded form actions and converts redirects into 303 responses", async () => {
@@ -603,6 +819,41 @@ describe("app server action execution helpers", () => {
       "session=new; Path=/; HttpOnly",
       "lang=en; Path=/",
     ]);
+  });
+
+  // Regression for issue #1976 — the no-JS (progressive) NON-redirect form-state
+  // path must dedupe same-name Set-Cookie entries (last value wins), matching the
+  // redirect path above and the RSC paths. Before the fix it returned the raw
+  // pending-cookie array, so two `cookies().set("foo", ...)` calls emitted two
+  // Set-Cookie headers for "foo" — diverging from Next.js' name-keyed
+  // ResponseCookies (last-wins) behaviour.
+  it("deduplicates pending Set-Cookie headers by name on non-redirect form-state actions (#1976)", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => undefined;
+        },
+        getAndClearPendingCookies() {
+          // Two sets for "foo" (last wins) plus a distinct "bar".
+          return ["foo=1; Path=/", "foo=2; Path=/; HttpOnly", "bar=3; Path=/"];
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "form-state",
+      formState: null,
+      pendingCookies: ["foo=2; Path=/; HttpOnly", "bar=3; Path=/"],
+      draftCookie: null,
+      // Non-zero revalidation kind because cookies were mutated.
+      revalidationKind: 1,
+    });
   });
 
   // Regression for issue #1483 — no-JS form POST actions that set cookies but
@@ -1019,7 +1270,255 @@ describe("app server action execution helpers", () => {
     expect(navigationContexts).toEqual([{ params: {}, pathname: "/dashboard" }]);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("rejects next/root-params inside fetch server actions", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const buildPageElement = vi.fn(() => "should-not-render");
+    let renderedModel: TestActionModel | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        decodeReply() {
+          return Promise.resolve([]);
+        },
+        loadServerAction() {
+          return Promise.resolve(() => getRootParam("lang"));
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("action-error-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(buildPageElement).not.toHaveBeenCalled();
+    expect(renderedModel).toEqual({
+      returnValue: expect.objectContaining({ ok: false }),
+    });
+    errorSpy.mockRestore();
+  });
+
+  it("rerenders the page for failed fetch actions that revalidate", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const buildPageElement = vi.fn(() => "rerendered-page");
+    let renderedModel: TestActionModel | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        getAndClearPendingCookies() {
+          return ["action=1; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw new Error("action failed");
+          });
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("action-error-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    expect(renderedModel).toEqual({
+      root: "rerendered-page",
+      returnValue: expect.objectContaining({ ok: false }),
+    });
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
+    errorSpy.mockRestore();
+  });
+
+  it("preserves an interception-only source tree during an action revalidation rerender", async () => {
+    const sourceRoute: TestRoute = {
+      id: "feed-recent",
+      page: {},
+      params: ["locale", "tab"],
+      pattern: "/:locale/feed/:tab",
+    };
+    const sourceParams = { locale: "en", tab: "recent" };
+    const buildPageElement = vi.fn(
+      ({
+        route,
+        params,
+        interceptOpts,
+      }: Parameters<
+        HandleServerActionRscRequestOptions<
+          string,
+          TestRoute,
+          TestInterceptOptions,
+          TestTemporaryReferences
+        >["buildPageElement"]
+      >[0]) => `${route.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`,
+    );
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        cleanPathname: "/photos/42",
+        currentRouteMatch: { params: sourceParams, route: sourceRoute },
+        currentRoutePathname: "/photos/42",
+        findIntercept() {
+          return {
+            matchedParams: { locale: "en", photoId: "42" },
+            sourceMatchedParams: sourceParams,
+            page: { default: "modal-photo" },
+            slotKey: "modal",
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return sourceRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/photos/42"));
+            return "revalidated";
+          });
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interceptOpts: { slot: "modal" },
+        params: sourceParams,
+        route: sourceRoute,
+      }),
+    );
+    await expect(response?.json()).resolves.toMatchObject({
+      root: 'feed-recent:{"locale":"en","tab":"recent"}:modal',
+      returnValue: { data: "revalidated", ok: true },
+    });
+  });
+
+  it("allows deferred root params reads after failed fetch actions", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw new Error("action failed");
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+    errorSpy.mockRestore();
+  });
+
+  it("allows deferred root params reads after external action redirects", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              redirect("https://other.example/target");
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("allows root params during the rerender after a successful fetch action", async () => {
+    let pageParam!: Promise<string | string[] | undefined>;
+    let metadataParam!: Promise<string | string[] | undefined>;
+    const buildPageElement = vi.fn(() => {
+      pageParam = getRootParam("lang");
+      metadataParam = getRootParam("lang");
+      return "rerendered-page";
+    });
+    const renderToReadableStream = vi.fn(
+      (model: TestActionModel) => new Response(JSON.stringify(model)).body,
+    );
+
+    const response = await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement,
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await Promise.resolve(revalidatePath("/dashboard"));
+              return "updated";
+            });
+          },
+          renderToReadableStream,
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    await expect(pageParam).resolves.toBe("en");
+    await expect(metadataParam).resolves.toBe("en");
+    expect(JSON.parse(await response!.text())).toEqual({
+      root: "rerendered-page",
+      returnValue: { ok: true, data: "updated" },
+    });
+  });
+
+  it("allows deferred post-action render work to read root params", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              await Promise.resolve(revalidatePath("/dashboard"));
+              return "updated";
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+  });
+
   it("skips page rerendering for fetch actions that do not revalidate", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
     const buildPageElement = vi.fn(() => "dashboard:{}:none");
     const setNavigationContext = vi.fn();
     const renderToReadableStream = vi.fn(
@@ -1030,6 +1529,12 @@ describe("app server action execution helpers", () => {
       const response = await handleServerActionRscRequest(
         createRscOptions({
           buildPageElement,
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              return "action-result";
+            });
+          },
           middlewareHeaders: new Headers([[VINEXT_RSC_COMPATIBILITY_ID_HEADER, "spoofed-compat"]]),
           renderToReadableStream,
           setNavigationContext,
@@ -1046,6 +1551,9 @@ describe("app server action execution helpers", () => {
       const model = JSON.parse(await response!.text()) as Partial<TestActionModel>;
       expect(model.returnValue).toEqual({ ok: true, data: "action-result" });
       expect(model).not.toHaveProperty("root");
+
+      releaseDeferred();
+      await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
     });
   });
 
@@ -1057,7 +1565,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "revalidated";
           });
         },
@@ -1099,15 +1607,156 @@ describe("app server action execution helpers", () => {
     });
   });
 
-  it("renders internal action redirects with a clean GET request and action cookies", async () => {
-    // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    const renderRequests: Request[] = [];
+  it("passes empty request APIs to force-static action rerender targets", async () => {
+    const buildInputs: Array<{ query: string; header: string | null }> = [];
+    const targetRoute: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
     const response = await handleServerActionRscRequest(
       createRscOptions({
-        buildPageElement({ request }) {
-          renderRequests.push(request);
-          return "redirect-target:{}:none";
+        buildPageElement({ searchParams }) {
+          buildInputs.push({
+            query: searchParams.toString(),
+            header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+          });
+          return "force-static-target";
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/dashboard"));
+            return "revalidated";
+          });
+        },
+        matchRoute() {
+          return { params: {}, route: targetRoute };
+        },
+        request: createFetchActionRequest({ "x-request-value": "present" }),
+        resolveRouteDynamicConfig() {
+          return "force-static";
+        },
+        searchParams: new URLSearchParams("user=alice"),
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(buildInputs).toEqual([{ query: "", header: null }]);
+  });
+
+  it("observes searchParams access for dynamic-error action rerender targets", async () => {
+    const buildInputs: Array<{
+      metadata: boolean | undefined;
+      page: boolean | undefined;
+      query: string;
+    }> = [];
+    const targetRoute: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement({
+          observeMetadataSearchParamsAccess,
+          observePageSearchParamsAccess,
+          searchParams,
+        }) {
+          buildInputs.push({
+            metadata: observeMetadataSearchParamsAccess,
+            page: observePageSearchParamsAccess,
+            query: searchParams.toString(),
+          });
+          return "dynamic-error-target";
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/dashboard"));
+            return "revalidated";
+          });
+        },
+        matchRoute() {
+          return { params: {}, route: targetRoute };
+        },
+        resolveRouteDynamicConfig() {
+          return "error";
+        },
+        searchParams: new URLSearchParams("user=alice"),
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(buildInputs).toEqual([{ metadata: true, page: true, query: "user=alice" }]);
+  });
+
+  it("uses empty action request APIs for force-static targets in draft mode", async () => {
+    const buildInputs: Array<{ query: string; header: string | null }> = [];
+    const route: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+    const request = createFetchActionRequest({
+      cookie: "__prerender_bypass=draft-secret",
+      "x-request-value": "present",
+    });
+    setHeadersContext(headersContextFromRequest(request));
+    try {
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({ searchParams }) {
+            buildInputs.push({
+              query: searchParams.toString(),
+              header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            });
+            return "draft-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await Promise.resolve(revalidatePath("/dashboard"));
+              return "revalidated";
+            });
+          },
+          matchRoute() {
+            return { params: {}, route };
+          },
+          request,
+          resolveRouteDynamicConfig() {
+            return "force-static";
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(200);
+      expect(buildInputs).toEqual([{ query: "", header: null }]);
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it("dispatches internal action redirects as full-tree RSC GET requests", async () => {
+    let targetRequest: Request | null = null;
+    const actionRequest = createFetchActionRequest({
+      cookie: "session=1; deleted=stale",
+      "next-action": "action-id",
+      "x-vinext-mw-ctx": "action-path-context",
+    });
+    Object.defineProperty(actionRequest, "cf", { value: { country: "AU" }, enumerable: true });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("target-flight", {
+            headers: {
+              "content-type": "text/x-component",
+              "x-target-pipeline": "1",
+            },
+          });
         },
         getAndClearPendingCookies() {
           return ["theme=dark; Path=/", "deleted=; Path=/; Max-Age=0"];
@@ -1115,89 +1764,174 @@ describe("app server action execution helpers", () => {
         loadServerAction() {
           return Promise.resolve(() => redirect("/redirect-target?from=action"));
         },
-        matchRoute(pathname) {
-          if (pathname === "/redirect-target") {
-            return {
-              params: {},
-              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
-            };
-          }
-          return {
-            params: {},
-            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
-          };
-        },
-        request: createFetchActionRequest({
-          accept: "text/x-component",
-          cookie: "session=1; deleted=stale",
-          "next-action": "action-id",
-          rsc: "1",
-        }),
+        request: actionRequest,
       }),
     );
 
     expect(response?.status).toBe(303);
     expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target?from=action");
-    const renderRequest = renderRequests[0];
-    if (!renderRequest) throw new Error("Expected redirect render request");
-
-    expect(renderRequest.method).toBe("GET");
-    expect(renderRequest.url).toBe("https://example.com/redirect-target?from=action");
-    expect(renderRequest.headers.get("next-action")).toBeNull();
-    expect(renderRequest.headers.get("x-rsc-action")).toBeNull();
-    expect(renderRequest.headers.get("rsc")).toBeNull();
-    expect(renderRequest.headers.get("content-type")).toBeNull();
-    expect(renderRequest.headers.get("origin")).toBeNull();
-    expect(renderRequest.headers.get("cookie")).toBe("session=1; theme=dark");
+    expect(response?.headers.get("x-target-pipeline")).toBe("1");
+    expect(await response?.text()).toBe("target-flight");
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.method).toBe("GET");
+    expect(new URL(targetRequest!.url).pathname).toBe("/redirect-target");
+    expect(new URL(targetRequest!.url).searchParams.get("from")).toBe("action");
+    expect(new URL(targetRequest!.url).searchParams.has("_rsc")).toBe(true);
+    expect(targetRequest!.headers.get("rsc")).toBe("1");
+    expect(targetRequest!.headers.get("next-action")).toBeNull();
+    expect(targetRequest!.headers.get("x-rsc-action")).toBeNull();
+    expect(targetRequest!.headers.get("next-router-state-tree")).toBeNull();
+    expect(targetRequest!.headers.get("x-vinext-mw-ctx")).toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("session=1; theme=dark");
+    expect(Reflect.get(targetRequest!, "cf")).toEqual({ country: "AU" });
   });
 
-  it("keeps redirected action render context alive until the Flight body is consumed", async () => {
-    // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
-    const clearRequestContext = vi.fn(() => setHeadersContext(null));
+  it("forwards source config headers before middleware and keeps target precedence", async () => {
+    let targetRequest: Request | null = null;
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("target-flight", {
+            headers: {
+              "content-type": "text/x-component",
+              "x-collision": "target",
+              "x-target-only": "yes",
+            },
+          });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        getAndClearPendingCookies() {
+          return ["source=action; Path=/", "action=1; Path=/"];
+        },
+        middlewareHeaders: new Headers({ accept: "application/custom" }),
+        sourceConfigHeaders: new Headers([
+          ["accept", "application/config"],
+          ["set-cookie", "config=1; Path=/"],
+          ["set-cookie", "source=config; Path=/"],
+          ["x-collision", "source"],
+          ["x-source-only", "yes"],
+        ]),
+      }),
+    );
 
-    try {
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("accept")).toBe("application/custom");
+    expect(targetRequest!.headers.get("cookie")).toBe("config=1; source=action; action=1");
+    expect(targetRequest!.headers.get("x-source-only")).toBe("yes");
+    expect(response?.headers.get("x-source-only")).toBe("yes");
+    expect(response?.headers.get("x-target-only")).toBe("yes");
+    expect(response?.headers.get("x-collision")).toBe("target");
+  });
+
+  it("falls back to a header-only redirect when internal target dispatch throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    errorSpy.mockClear();
+    const clearRequestContext = vi.fn();
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        clearRequestContext,
+        dispatchRedirectTargetRequest() {
+          return Promise.reject(new Error("target unavailable"));
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+
+  it("falls back to a header-only redirect for a malformed followed Location", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    errorSpy.mockClear();
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        dispatchRedirectTargetRequest() {
+          return Promise.resolve(
+            new Response(null, { status: 307, headers: { location: "http://[" } }),
+          );
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(errorSpy).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+
+  it.each(["../../admin", "/base/%2e%2e/admin", "https://example.com/admin"])(
+    "does not internally dispatch basePath escape %s",
+    async (target) => {
+      const dispatchRedirectTargetRequest = vi.fn(() =>
+        Promise.resolve(
+          new Response("should-not-dispatch", {
+            headers: { "content-type": "text/x-component" },
+          }),
+        ),
+      );
       const response = await handleServerActionRscRequest(
         createRscOptions({
-          clearRequestContext,
-          getAndClearPendingCookies() {
-            return ["theme=dark; Path=/"];
-          },
+          basePath: "/base",
+          dispatchRedirectTargetRequest,
           loadServerAction() {
-            return Promise.resolve(() => redirect("/redirect-target"));
+            return Promise.resolve(() => redirect(target));
           },
-          matchRoute(pathname) {
-            if (pathname === "/redirect-target") {
-              return {
-                params: {},
-                route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
-              };
-            }
-            return {
-              params: {},
-              route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
-            };
-          },
-          renderToReadableStream() {
-            return new ReadableStream<Uint8Array>({
-              async pull(controller) {
-                const cookieStore = await cookies();
-                controller.enqueue(
-                  new TextEncoder().encode(cookieStore.get("theme")?.value ?? "missing"),
-                );
-                controller.close();
-              },
-            });
-          },
+          request: new Request("https://example.com/base/account", {
+            body: "encoded-flight-body",
+            method: "POST",
+            headers: createFetchActionRequest().headers,
+          }),
         }),
       );
 
-      expect(clearRequestContext).not.toHaveBeenCalled();
-      expect(await response?.text()).toBe("dark");
-      expect(clearRequestContext).toHaveBeenCalledTimes(1);
-    } finally {
-      setHeadersContext(null);
-    }
+      expect(response?.status).toBe(303);
+      expect(response?.headers.get("x-action-redirect")).toBe(target);
+      expect(await response?.text()).toBe("");
+      expect(dispatchRedirectTargetRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps both request contexts alive until the dispatched Flight body is consumed", async () => {
+    const clearRequestContext = vi.fn();
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        clearRequestContext,
+        async dispatchRedirectTargetRequest() {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.enqueue(new TextEncoder().encode("streamed-target"));
+                controller.close();
+              },
+            }),
+            { headers: { "content-type": "text/x-component" } },
+          );
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(clearRequestContext).not.toHaveBeenCalled();
+    expect(await response?.text()).toBe("streamed-target");
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to header-only redirects when the target is not an App route", async () => {
@@ -1295,12 +2029,272 @@ describe("app server action execution helpers", () => {
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 
+  it("falls back to a header-only redirect when the target pipeline does not return Flight", async () => {
+    const buildPageElement = vi.fn(() => "should-not-render");
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        async dispatchRedirectTargetRequest() {
+          return new Response("unauthorized", {
+            status: 401,
+            headers: { "content-type": "text/plain" },
+          });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/protected"));
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/protected");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
+  it("forwards effective action headers and cookies to the target pipeline", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        middlewareHeaders: new Headers([
+          ["set-cookie", "session=; Max-Age=0"],
+          ["set-cookie", "csrf=rotated"],
+          ["set-cookie", "admin=1; Path=/account"],
+          ["set-cookie", "encoded=%2520; Path=/"],
+          ["x-action-auth-context", "member"],
+        ]),
+        middlewareRequestHeaders: new Headers({
+          "x-middleware-override-headers": "x-auth-context",
+          "x-middleware-request-x-auth-context": "sanitized",
+        }),
+        request: createFetchActionRequest({
+          cookie: "session=live; csrf=old; theme=dark",
+          "x-attacker-controlled": "forged",
+          "x-auth-context": "untrusted",
+        }),
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("csrf=rotated; admin=1; encoded=%20");
+    expect(targetRequest!.headers.get("x-auth-context")).toBe("sanitized");
+    expect(targetRequest!.headers.get("x-attacker-controlled")).toBeNull();
+    expect(targetRequest!.headers.get("x-action-auth-context")).toBe("member");
+  });
+
+  it("forwards an empty Cookie header to the target pipeline", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.has("cookie")).toBe(true);
+    expect(targetRequest!.headers.get("cookie")).toBe("");
+  });
+
+  it("collapses repeated response cookies before forwarding the target request", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        getAndClearPendingCookies() {
+          return ["foo=new; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        middlewareHeaders: new Headers({ "set-cookie": "foo=; Max-Age=0" }),
+        request: createFetchActionRequest({ cookie: "a=1; foo=old; b=2" }),
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("a=1; foo=new; b=2");
+  });
+
+  it("does not retain a stale cookie when the second response-cookie decode fails", async () => {
+    let targetRequest: Request | null = null;
+    await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        middlewareHeaders: new Headers([
+          ["set-cookie", "session=%25bad; Path=/"],
+          ["set-cookie", "raw=%; Path=/"],
+        ]),
+        request: createFetchActionRequest({ cookie: "session=old; raw=old" }),
+      }),
+    );
+
+    expect(targetRequest).not.toBeNull();
+    expect(targetRequest!.headers.get("cookie")).toBe("session=%25bad; raw=%25");
+  });
+
+  // Next.js follows same-origin redirects from its internal target fetch. The
+  // in-process dispatcher must do the same so config and middleware redirects
+  // can still produce a single action response containing the final Flight.
+  it("follows same-origin target redirects through the internal dispatcher", async () => {
+    const paths: string[] = [];
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        async dispatchRedirectTargetRequest(request) {
+          const url = new URL(request.url);
+          paths.push(url.pathname);
+          if (url.pathname === "/redirect-source") {
+            return new Response(null, { status: 307, headers: { location: "/redirect-target" } });
+          }
+          return new Response("redirect-target-flight", {
+            headers: { "content-type": "text/x-component", "x-final-target": "1" },
+          });
+        },
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-source"));
+        },
+      }),
+    );
+
+    expect(paths).toEqual(["/redirect-source", "/redirect-target"]);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-source");
+    expect(response?.headers.get("x-final-target")).toBe("1");
+    expect(await response?.text()).toBe("redirect-target-flight");
+  });
+
+  it("keeps action protocol headers when merging target pipeline headers", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/redirect-target") {
+            return {
+              params: {},
+              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
+            };
+          }
+          return {
+            params: {},
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+          };
+        },
+        middlewareHeaders: new Headers({
+          "content-encoding": "br",
+          location: "/mw-location",
+          "content-type": "text/html",
+          "set-cookie": "source=1; Path=/",
+          vary: "x-source",
+          "x-action-redirect": "/mw-hijack",
+          "x-action-mw": "1",
+        }),
+        async dispatchRedirectTargetRequest() {
+          return new Response("flight", {
+            headers: {
+              "accept-encoding": "gzip",
+              connection: "close",
+              "content-encoding": "gzip",
+              "content-type": "text/x-component",
+              "content-length": "0",
+              "set-cookie": "target=1; Path=/",
+              "transfer-encoding": "chunked",
+              vary: "x-target",
+              "x-action-redirect": "/target-hijack",
+              "x-target-mw": "1",
+            },
+          });
+        },
+      }),
+    );
+
+    // The wrapper's protocol headers steer the action client: a Location on the
+    // 303 would make fetch follow it before the client reads x-action-redirect,
+    // a foreign Content-Type flips the client to a hard navigation, a stale
+    // Content-Length misframes the generated Flight stream, and
+    // x-action-redirect is the destination itself. Ordinary middleware headers
+    // must still come through.
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
+    expect(response?.headers.get("location")).toBeNull();
+    expect(response?.headers.get("content-type")).toContain("text/x-component");
+    expect(response?.headers.get("accept-encoding")).toBeNull();
+    expect(response?.headers.get("connection")).toBeNull();
+    expect(response?.headers.get("content-encoding")).toBeNull();
+    expect(response?.headers.get("content-length")).toBeNull();
+    expect(response?.headers.getSetCookie()).toEqual(["source=1; Path=/"]);
+    expect(response?.headers.get("transfer-encoding")).toBeNull();
+    expect(response?.headers.get("vary")).toBe("x-target");
+    expect(response?.headers.get("x-action-mw")).toBe("1");
+    expect(response?.headers.get("x-target-mw")).toBe("1");
+  });
+
+  it("replaces a redirect-supplied _rsc value before target dispatch", async () => {
+    let targetRequest: Request | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target?_rsc=abc123&tab=x"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/redirect-target") {
+            return {
+              params: {},
+              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
+            };
+          }
+          return {
+            params: {},
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+          };
+        },
+        async dispatchRedirectTargetRequest(request) {
+          targetRequest = request;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+      }),
+    );
+
+    // The real pipeline strips `_rsc` before middleware, so matchers keyed on
+    // it would branch differently for the synthetic request than for the
+    // navigation it stands in for. The client-facing redirect header keeps the
+    // verbatim URL — a diverted re-request goes through real validation.
+    expect(targetRequest).not.toBeNull();
+    const targetUrl = new URL(targetRequest!.url);
+    expect(targetUrl.searchParams.get("_rsc")).not.toBe("abc123");
+    expect(targetUrl.searchParams.get("tab")).toBe("x");
+    expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target?_rsc=abc123&tab=x");
+  });
+
   it("does not emit x-action-revalidated when a fetch action revalidates a tag with a profile", async () => {
     const response = await handleServerActionRscRequest(
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", "hours");
+            await Promise.resolve(revalidateTag("dashboard", "hours"));
             return "revalidated";
           });
         },
@@ -1316,7 +2310,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", { expire: 0 });
+            await Promise.resolve(revalidateTag("dashboard", { expire: 0 }));
             return "revalidated";
           });
         },
@@ -1325,6 +2319,96 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
+  });
+
+  // Covers the read-your-own-writes ordering asserted by Next.js:
+  // test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  it("finishes updateTag invalidation before rendering the action response", async () => {
+    const previousHandler = getDataCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+    let invalidationFinished = false;
+    let markSameActionReadFinished!: () => void;
+    const sameActionReadFinished = new Promise<void>((resolve) => {
+      markSameActionReadFinished = resolve;
+    });
+    let sameActionValue: unknown;
+    let sameActionUseCacheValue: unknown;
+    const renderToReadableStream = vi.fn((model: TestActionModel) => {
+      expect(invalidationFinished).toBe(true);
+      return new Response(JSON.stringify(model)).body;
+    });
+    const cachedRead = unstable_cache(async () => "fresh", ["update-tag-read-your-own-writes"], {
+      tags: ["dashboard"],
+    });
+    const useCacheRead = registerCachedFunction(async () => {
+      cacheTag("dashboard");
+      return "fresh-use-cache";
+    }, "test:update-tag-read-your-own-writes");
+
+    setDataCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ v: "stale" }),
+              url: "unstable_cache:test",
+            },
+            tags: ["dashboard"],
+            revalidate: false,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+        invalidationFinished = true;
+      },
+    });
+
+    try {
+      const responsePromise = runWithRequestContext(createRequestContext(), () =>
+        handleServerActionRscRequest(
+          createRscOptions({
+            loadServerAction() {
+              return Promise.resolve(async () => {
+                expect(updateTag("dashboard")).toBeUndefined();
+                sameActionValue = await cachedRead();
+                sameActionUseCacheValue = await useCacheRead();
+                markSameActionReadFinished();
+                return "revalidated";
+              });
+            },
+            renderToReadableStream,
+          }),
+        ),
+      );
+
+      await invalidationStarted;
+      await sameActionReadFinished;
+      expect(sameActionValue).toBe("fresh");
+      expect(sameActionUseCacheValue).toBe("fresh-use-cache");
+      expect(renderToReadableStream).not.toHaveBeenCalled();
+      releaseInvalidation();
+
+      const response = await responsePromise;
+      expect(response?.status).toBe(200);
+      expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseInvalidation();
+      setDataCacheHandler(previousHandler);
+    }
   });
 
   it("emits dynamic-only x-action-revalidated when a fetch action refreshes", async () => {
@@ -1369,7 +2453,7 @@ describe("app server action execution helpers", () => {
         }),
       );
 
-      expect(response?.status).toBe(200);
+      expect(response?.status).toBe(500);
       expect(await response?.text()).toBe("too-many-args-flight");
       expect(action).not.toHaveBeenCalled();
       expect(renderedModel).toEqual({
@@ -1398,6 +2482,69 @@ describe("app server action execution helpers", () => {
     expect(response?.status).toBe(400);
     expect(await response?.text()).toBe("Invalid server action payload");
     expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  it("rejects adversarial multipart payloads through the real request reader", async () => {
+    const formData = new FormData();
+    formData.append("0", '["$Q1:x"]');
+    formData.append("0", "[]");
+    const request = createMultipartBodyRequest(formData);
+    const decodeReply = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        contentType: request.headers.get("content-type") ?? "",
+        decodeReply,
+        maxActionBodySize: 1024 * 1024,
+        readFormDataWithLimit: readActionFormDataWithLimit,
+        request,
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(await response?.text()).toBe("Invalid server action payload");
+    expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  it("rejects cyclic multipart graphs for valid action ids", async () => {
+    const formData = new FormData();
+    formData.set("0", '["$Q0"]');
+    const request = createMultipartBodyRequest(formData);
+    const decodeReply = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        contentType: request.headers.get("content-type") ?? "",
+        decodeReply,
+        maxActionBodySize: 1024 * 1024,
+        readFormDataWithLimit: readActionFormDataWithLimit,
+        request,
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(await response?.text()).toBe("Invalid server action payload");
+    expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  it("clears pending cookies and revalidation state for rejected fetch payloads", async () => {
+    const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
+    const previousPhase = setHeadersAccessPhase("action");
+    await Promise.resolve(revalidatePath("/stale"));
+    setHeadersAccessPhase(previousPhase);
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        getAndClearPendingCookies,
+        readBodyWithLimit() {
+          return Promise.resolve('{"0":"$Q1:x"}');
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(getAndClearPendingCookies).toHaveBeenCalledTimes(1);
+    expect(getAndClearActionRevalidationKind()).toBe(0);
   });
 
   // Regression coverage for #1340: realistic action ids include `#<exportName>`,
@@ -1441,6 +2588,7 @@ describe("app server action execution helpers", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   it("returns the Next.js action-not-found response for stale fetch action ids", async () => {
     const decodeReply = vi.fn();
+    const readFormDataWithLimit = vi.fn();
     const renderToReadableStream = vi.fn();
     const reportRequestError = vi.fn();
     const clearRequestContext = vi.fn();
@@ -1449,10 +2597,12 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         actionId: "stale-action-id",
         clearRequestContext,
+        contentType: "multipart/form-data; boundary=VINEXTDOS",
         decodeReply,
         loadServerAction() {
           return Promise.reject(new Error("[vite-rsc] invalid server reference 'stale-action-id'"));
         },
+        readFormDataWithLimit,
         renderToReadableStream,
         reportRequestError,
       }),
@@ -1462,6 +2612,7 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
     expect(response?.headers.get("content-type")).toBe("text/plain");
     expect(await response?.text()).toBe("Server action not found.");
+    expect(readFormDataWithLimit).not.toHaveBeenCalled();
     expect(decodeReply).not.toHaveBeenCalled();
     expect(renderToReadableStream).not.toHaveBeenCalled();
     expect(reportRequestError).not.toHaveBeenCalled();
@@ -1575,7 +2726,7 @@ describe("app server action execution helpers", () => {
       returnValue: { ok: true },
     });
     expect(clearContext).toHaveBeenCalledTimes(1);
-    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).not.toHaveBeenCalled();
   });
 
   it("emits x-action-revalidated when a redirecting fetch action revalidates a tag", async () => {
@@ -1583,7 +2734,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard");
+            await Promise.resolve(revalidateTag("dashboard"));
             throw { digest: "NEXT_REDIRECT;;%2Ftarget;307" };
           });
         },
@@ -1598,12 +2749,23 @@ describe("app server action execution helpers", () => {
   // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
   it("processes forwarded action POSTs but suppresses same-page rerenders", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
     const renderToReadableStream = vi.fn(
       (model: TestActionModel) => new Response(JSON.stringify(model)).body,
     );
 
     const response = await handleServerActionRscRequest(
       createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => {
+            deferredRead = deferred.then(() => getRootParam("lang"));
+            return "action-result";
+          });
+        },
         request: createFetchActionRequest({ "x-action-forwarded": "1" }),
         renderToReadableStream,
       }),
@@ -1614,6 +2776,47 @@ describe("app server action execution helpers", () => {
       returnValue: { ok: true, data: "action-result" },
     });
     expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    releaseDeferred();
+    await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
+  });
+
+  it("rerenders forwarded action HTTP fallbacks", async () => {
+    let renderedModel: TestActionModel | null = null;
+    let renderedRootParam: string | string[] | undefined;
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const fallbackError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+
+    const response = await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw fallbackError;
+            });
+          },
+          request: createFetchActionRequest({ "x-action-forwarded": "1" }),
+          async renderToReadableStream(model) {
+            renderedModel = model;
+            renderedRootParam = await getRootParam("lang");
+            return new Response("fallback-flight").body;
+          },
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(renderedRootParam).toBe("en");
+    expect(renderedModel).toEqual({
+      root: "dashboard:{}:none",
+      returnValue: { ok: false, data: fallbackError },
+    });
+    releaseDeferred();
+    await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
   });
 
   it("preserves forwarded action cookie and revalidation side effects without a rerender", async () => {
@@ -1627,7 +2830,7 @@ describe("app server action execution helpers", () => {
         },
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "forwarded-result";
           });
         },
@@ -1977,6 +3180,46 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("resolves the re-render target route's dynamic config and fetch cache mode for force-dynamic fetch defaults", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+
+    const targetRoute: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/dashboard"));
+            return "revalidated";
+          });
+        },
+        matchRoute() {
+          return { params: {}, route: targetRoute };
+        },
+        resolveRouteFetchCacheMode(route) {
+          return route === targetRoute ? "force-no-store" : null;
+        },
+        resolveRouteDynamicConfig(route) {
+          return route === targetRoute ? "force-dynamic" : null;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(modeSpy).toHaveBeenCalledWith("force-no-store");
+    expect(forceDynamicSpy).toHaveBeenCalledWith(true);
+
+    modeSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
   });
 });
 

@@ -1,11 +1,15 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
+import {
+  executeMiddleware,
+  type MiddlewareModule,
+  type MiddlewareResult,
+} from "./middleware-runtime.js";
 import { cloneRequestWithHeaders, processMiddlewareHeaders } from "./request-pipeline.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 
@@ -19,16 +23,22 @@ export type ApplyAppMiddlewareOptions = {
   basePath?: string;
   cleanPathname: string;
   context: AppMiddlewareContext;
+  hadBasePath?: boolean;
   i18nConfig?: NextI18nConfig | null;
   /**
-   * Whether the inbound request was a `_next/data` fetch. Captured from the
-   * raw incoming headers by the caller, because `x-nextjs-data` is in
-   * INTERNAL_HEADERS and is stripped before this function runs.
+   * Whether the inbound request was recognized as a `_next/data` fetch from
+   * trusted URL normalization before internal headers were stripped.
    */
   isDataRequest?: boolean;
+  filePath?: string;
   isProxy: boolean;
+  /** Request URL for external proxying, retaining internal transport query params. */
+  externalRewriteRequest?: Request;
+  /** An App Router-created body branch dedicated to middleware. */
+  middlewareRequest?: Request;
   module: MiddlewareModule;
   request: Request;
+  validateExternalRewriteRequest?: () => Promise<Response | null>;
   /**
    * Forwarded to `executeMiddleware` so the NextRequest exposes a NextURL with
    * the configured trailingSlash policy. This is what makes
@@ -42,6 +52,7 @@ export type ApplyAppMiddlewareResult =
   | {
       kind: "continue";
       cleanPathname: string;
+      rewritten: boolean;
       search: string | null;
     }
   | {
@@ -64,7 +75,7 @@ function isForwardedMiddlewareContext(value: unknown): value is ForwardedMiddlew
   return !!value && typeof value === "object";
 }
 
-function requestWithoutFlightHeaders(request: Request): Request {
+function requestWithoutFlightHeaders(request: Request, isolateBody = false): Request {
   let hasFlightHeader = false;
   const headers = new Headers();
 
@@ -76,9 +87,15 @@ function requestWithoutFlightHeaders(request: Request): Request {
     }
   }
 
-  if (!hasFlightHeader) return request;
-  const source = request.body ? request.clone() : request;
+  const source = isolateBody && request.body && !request.bodyUsed ? request.clone() : request;
+  if (!hasFlightHeader) return source;
   return cloneRequestWithHeaders(source, headers);
+}
+
+function cancelRequestBody(request: Request): void {
+  if (request.body && !request.body.locked) {
+    void request.body.cancel().catch(() => {});
+  }
 }
 
 function appendForwardedHeader(headers: Headers, value: unknown): void {
@@ -118,9 +135,7 @@ function requestWithMiddlewareRequestHeaders(
   middlewareHeaders: Headers | null,
 ): Request {
   const nextHeaders = middlewareHeaders
-    ? buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders, {
-        preserveCredentialHeaders: true,
-      })
+    ? buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders)
     : null;
   if (!nextHeaders) return request;
 
@@ -136,18 +151,39 @@ function requestWithMiddlewareRequestHeaders(
   return new Request(request.url, init);
 }
 
+function restoreFlightHeaders(request: Request, source: Request): Request {
+  const headers = new Headers(request.headers);
+  let changed = false;
+
+  for (const name of FLIGHT_HEADERS) {
+    const value = source.headers.get(name);
+    if (value === null) {
+      if (headers.has(name)) {
+        headers.delete(name);
+        changed = true;
+      }
+    } else if (headers.get(name) !== value) {
+      headers.set(name, value);
+      changed = true;
+    }
+  }
+
+  return changed ? cloneRequestWithHeaders(request, headers) : request;
+}
+
 export async function proxyExternalMiddlewareRewrite(
   request: Request,
   rewriteUrl: string,
   context: AppMiddlewareContext,
 ): Promise<Response> {
-  const proxyRequest = requestWithMiddlewareRequestHeaders(
+  const proxyRequest = restoreFlightHeaders(
+    requestWithMiddlewareRequestHeaders(request, context.requestHeaders ?? context.headers),
     request,
-    context.requestHeaders ?? context.headers,
   );
   setHeadersContext(null);
   setNavigationContext(null);
 
+  const { proxyExternalRequest } = await import("../config/config-matchers.js");
   const proxyResponse = await proxyExternalRequest(proxyRequest, rewriteUrl);
   const headers = new Headers(proxyResponse.headers);
   processMiddlewareHeaders(headers);
@@ -166,6 +202,25 @@ export async function proxyExternalMiddlewareRewrite(
   return new Response(proxyResponse.body, {
     status: proxyResponse.status,
     statusText: proxyResponse.statusText,
+    headers,
+  });
+}
+
+function validationResponseWithMiddlewareHeaders(
+  response: Response,
+  context: AppMiddlewareContext,
+): Response {
+  if (!context.headers) return response;
+
+  const headers = new Headers(response.headers);
+  const location = headers.get("location");
+  const middlewareHeaders = new Headers(context.headers);
+  processMiddlewareHeaders(middlewareHeaders);
+  mergeMiddlewareResponseHeaders(headers, middlewareHeaders);
+  if (location !== null) headers.set("location", location);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
     headers,
   });
 }
@@ -208,24 +263,35 @@ export async function applyAppMiddleware(
   options: ApplyAppMiddlewareOptions,
 ): Promise<ApplyAppMiddlewareResult> {
   const forwarded = applyForwardedMiddlewareContext(options.request, options.context);
-  const middlewareRequest = requestWithoutFlightHeaders(options.request);
   let cleanPathname = options.cleanPathname;
+  let rewritten = false;
   let search: string | null = null;
 
   if (forwarded.rewriteUrl) {
     try {
-      if (isExternalMiddlewareRewrite(forwarded.rewriteUrl, middlewareRequest)) {
+      if (isExternalMiddlewareRewrite(forwarded.rewriteUrl, options.request)) {
+        const validationResponse = await options.validateExternalRewriteRequest?.();
+        if (validationResponse) {
+          if (options.middlewareRequest) cancelRequestBody(options.middlewareRequest);
+          return {
+            kind: "response",
+            response: validationResponseWithMiddlewareHeaders(validationResponse, options.context),
+          };
+        }
+        if (options.middlewareRequest) cancelRequestBody(options.middlewareRequest);
+        const externalRequest = options.externalRewriteRequest ?? options.request;
         return {
           kind: "response",
           response: await proxyExternalMiddlewareRewrite(
-            middlewareRequest,
+            externalRequest,
             forwarded.rewriteUrl,
             options.context,
           ),
         };
       }
-      const rewriteParsed = new URL(forwarded.rewriteUrl, middlewareRequest.url);
+      const rewriteParsed = new URL(forwarded.rewriteUrl, options.request.url);
       cleanPathname = rewriteParsed.pathname;
+      rewritten = true;
       search = rewriteParsed.search;
     } catch (e) {
       console.error("[vinext] Failed to apply forwarded middleware rewrite:", e);
@@ -234,24 +300,37 @@ export async function applyAppMiddleware(
   }
 
   if (!forwarded.applied) {
-    const result = await executeMiddleware({
-      basePath: options.basePath,
-      // The App Router only reaches middleware when the request was under
-      // basePath (already stripped by normalizeRscRequest) or basePath is
-      // empty — see the basePathState comment in app-rsc-handler.ts. The
-      // request URL here is basePath-stripped, so hadBasePath cannot be
-      // derived from it and must be asserted explicitly.
-      hadBasePath: true,
-      i18nConfig: options.i18nConfig,
-      isDataRequest: options.isDataRequest,
-      isProxy: options.isProxy,
-      module: options.module,
-      normalizedPathname: cleanPathname,
-      request: middlewareRequest,
-      trailingSlash: options.trailingSlash,
-    });
+    // App Router may have created the one genuine middleware/downstream branch
+    // before URL normalization. Other callers branch here. Either way,
+    // executeMiddleware takes ownership instead of teeing a second time.
+    const middlewareRequest = requestWithoutFlightHeaders(
+      options.middlewareRequest ?? options.request,
+      options.middlewareRequest === undefined,
+    );
+    let result: MiddlewareResult;
+    try {
+      result = await executeMiddleware({
+        basePath: options.basePath,
+        hadBasePath: options.hadBasePath ?? true,
+        filePath: options.filePath,
+        i18nConfig: options.i18nConfig,
+        isDataRequest: options.isDataRequest,
+        isProxy: options.isProxy,
+        module: options.module,
+        normalizedPathname: cleanPathname,
+        requestBodyAlreadyIsolated: true,
+        request: middlewareRequest,
+        trailingSlash: options.trailingSlash,
+      });
+    } finally {
+      // Matcher misses and validation failures return before executeMiddleware
+      // transfers this branch into NextRequest. Once transferred it is locked,
+      // so this is a no-op and executeMiddleware owns the cancellation instead.
+      cancelRequestBody(middlewareRequest);
+    }
 
     if (!result.continue) {
+      cancelRequestBody(options.request);
       if (result.redirectUrl) {
         return { kind: "response", response: responseFromMiddlewareRedirect(result) };
       }
@@ -274,10 +353,18 @@ export async function applyAppMiddleware(
         options.context.status = result.rewriteStatus;
       }
       if (isExternalUrl(result.rewriteUrl)) {
+        const validationResponse = await options.validateExternalRewriteRequest?.();
+        if (validationResponse) {
+          return {
+            kind: "response",
+            response: validationResponseWithMiddlewareHeaders(validationResponse, options.context),
+          };
+        }
+        const externalRequest = options.externalRewriteRequest ?? options.request;
         return {
           kind: "response",
           response: await proxyExternalMiddlewareRewrite(
-            middlewareRequest,
+            externalRequest,
             result.rewriteUrl,
             options.context,
           ),
@@ -285,8 +372,13 @@ export async function applyAppMiddleware(
       }
       const rewriteParsed = new URL(result.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
+      rewritten = true;
       search = rewriteParsed.search;
     }
+  }
+
+  if (forwarded.applied && options.middlewareRequest) {
+    cancelRequestBody(options.middlewareRequest);
   }
 
   if (options.context.headers) {
@@ -295,5 +387,5 @@ export async function applyAppMiddleware(
     processMiddlewareHeaders(options.context.headers);
   }
 
-  return { kind: "continue", cleanPathname, search };
+  return { kind: "continue", cleanPathname, rewritten, search };
 }

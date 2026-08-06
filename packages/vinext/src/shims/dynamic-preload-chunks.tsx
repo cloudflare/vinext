@@ -25,8 +25,10 @@
  * is safe. This is an intentional, documented difference, not a parity bug.
  */
 import React from "react";
+import { getPagesClientAssets } from "vinext/server/pages-client-assets";
 import * as ReactDOM from "react-dom";
 import { useScriptNonce } from "./script-nonce-context.js";
+import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 
 function dynamicPreloadHref(file: string): string {
   if (
@@ -43,7 +45,7 @@ function dynamicPreloadHref(file: string): string {
 function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): string[] {
   if (!moduleIds || moduleIds.length === 0) return [];
 
-  const preloadMap = globalThis.__VINEXT_DYNAMIC_PRELOADS__;
+  const preloadMap = getPagesClientAssets().dynamicPreloads;
   if (!preloadMap) return [];
 
   // NB: a missing key is NOT necessarily an error — a Server Component that
@@ -79,8 +81,9 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
 
   const stylesheets: React.ReactNode[] = [];
   for (const file of files) {
-    const href = dynamicPreloadHref(file);
-    if (href.endsWith(".css")) {
+    const assetHref = dynamicPreloadHref(file);
+    if (assetHref.endsWith(".css")) {
+      const href = appendAssetDeploymentIdQuery(assetHref);
       stylesheets.push(
         React.createElement("link", {
           key: href,
@@ -93,7 +96,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
       continue;
     }
 
-    if (href.endsWith(".js") && typeof ReactDOM.preload === "function") {
+    if (assetHref.endsWith(".js") && typeof ReactDOM.preload === "function") {
       // Pass `nonce` directly (React omits the attribute when it is undefined),
       // matching the stylesheet branch above.
       const preloadOptions: ReactDOM.PreloadOptions = {
@@ -101,7 +104,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
         fetchPriority: "low",
         nonce,
       };
-      ReactDOM.preload(href, preloadOptions);
+      ReactDOM.preload(assetHref, preloadOptions);
     }
   }
 

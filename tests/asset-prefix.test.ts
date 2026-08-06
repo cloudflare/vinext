@@ -38,6 +38,7 @@ import {
 import { manifestFileWithAssetPrefix } from "../packages/vinext/src/utils/manifest-paths.js";
 import { resolveAppRouterAssetPath } from "../packages/vinext/src/server/prod-server.js";
 import { normalizeAssetPrefix } from "../packages/vinext/src/config/next-config.js";
+import { renderVinextBuiltUrl } from "../packages/vinext/src/utils/built-asset-url.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
@@ -106,6 +107,47 @@ describe("resolveAssetsDir", () => {
   it("returns `_next/static` for absolute-URL prefixes — the CDN owns the URL prefix", () => {
     expect(resolveAssetsDir("https://cdn.example.com")).toBe(ASSET_PREFIX_URL_DIR);
     expect(resolveAssetsDir("https://cdn.example.com/sub")).toBe(ASSET_PREFIX_URL_DIR);
+  });
+});
+
+describe("renderVinextBuiltUrl", () => {
+  it("appends deployment IDs without an asset prefix", () => {
+    expect(renderVinextBuiltUrl("_next/static/chunk.js", "", "dpl_123")).toBe(
+      "/_next/static/chunk.js?dpl=dpl_123",
+    );
+  });
+
+  it("preserves one native ESM module identity for JavaScript hosts", () => {
+    expect(renderVinextBuiltUrl("_next/static/chunk.js", "", "dpl_123", "js")).toBe(
+      "/_next/static/chunk.js",
+    );
+  });
+
+  it("combines path asset prefixes and deployment IDs", () => {
+    expect(renderVinextBuiltUrl("cdn/_next/static/chunk.js", "/cdn", "dpl_123")).toBe(
+      "/cdn/_next/static/chunk.js?dpl=dpl_123",
+    );
+  });
+
+  it("combines absolute asset prefixes and deployment IDs", () => {
+    expect(
+      renderVinextBuiltUrl("_next/static/chunk.js", "https://cdn.example.com", "dpl_123"),
+    ).toBe("https://cdn.example.com/_next/static/chunk.js?dpl=dpl_123");
+  });
+
+  it("is installed for deployment-only builds", async () => {
+    const plugins = vinext({
+      nextConfig: () => ({ deploymentId: "dpl_123" }),
+    }) as any[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    const config = await configPlugin.config(
+      { root: APP_FIXTURE_DIR, plugins: [] },
+      { command: "build", mode: "production" },
+    );
+    const renderBuiltUrl = config.experimental?.renderBuiltUrl;
+
+    expect(renderBuiltUrl).toBeTypeOf("function");
+    expect(renderBuiltUrl("_next/static/chunk.js", {})).toBe("/_next/static/chunk.js?dpl=dpl_123");
   });
 });
 
@@ -346,6 +388,53 @@ describe("assetPrefix end-to-end build", () => {
   });
   const register = (cleanup: () => void) => cleanups.push(cleanup);
 
+  // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
+  it("deployment ID: keeps native ESM URLs on one module identity", async () => {
+    const built = await buildFixtureWithConfig(`deploymentId: "dpl_123",`, register);
+    const clientDir = path.join(built.outDir, "client");
+    const builtFiles: string[] = [];
+    const collectFiles = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) collectFiles(entryPath);
+        else if (entry.isFile() && /\.(?:js|css|html)$/.test(entry.name))
+          builtFiles.push(entryPath);
+      }
+    };
+    collectFiles(clientDir);
+    for (const file of builtFiles.filter((file) => /\.[cm]?js$/.test(file))) {
+      expect(fs.readFileSync(file, "utf8"), file).not.toContain("?dpl=dpl_123");
+    }
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server } = await startProdServer({
+      port: 0,
+      outDir: built.outDir,
+      noCompression: true,
+    });
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const response = await fetch(`http://localhost:${port}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const assetUrls = Array.from(
+        html.matchAll(/<(?:script|link)[^>]+(?:src|href)="([^"]*\/_next\/static\/[^"]+)"/g),
+        (match) => match[1],
+      );
+      expect(assetUrls.length).toBeGreaterThan(0);
+      const bootstrapModuleUrl = html.match(/<script[^>]+type="module"[^>]+src="([^"]+)"/)?.[1];
+      expect(bootstrapModuleUrl).toBeDefined();
+      expect(bootstrapModuleUrl).not.toContain("dpl=");
+      for (const assetUrl of assetUrls.filter((url) => /\.js(?:[?#]|$)/.test(url))) {
+        expect(assetUrl).not.toContain("dpl=");
+      }
+    } finally {
+      server.close();
+    }
+  }, 180_000);
+
   it("path-prefix: emits assets under <prefix>/_next/static/ on disk and in HTML", async () => {
     const built = await buildFixtureWithConfig(`assetPrefix: "/custom-asset-prefix",`, register);
 
@@ -580,8 +669,14 @@ describe("assetPrefix end-to-end build", () => {
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
       expect(bundleRes.status).toBe(200);
 
-      // Invalid `_next/static/*` paths return plain-text 404 (Next.js
-      // parity — see packages/next/src/server/lib/router-server.ts).
+      // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+      const rewrittenMissingAsset = await fetch(`${baseUrl}/_next/static/middleware-rewrite.js`);
+      expect(rewrittenMissingAsset.status).toBe(200);
+      expect(await rewrittenMissingAsset.text()).toBe("rewritten missing asset");
+
+      // Unhandled `_next/static/*` paths still return the canonical plain-text
+      // 404 after middleware and routing have had a chance to handle them.
       const invalidRes = await fetch(`${baseUrl}/_next/static/does-not-exist.js`);
       expect(invalidRes.status).toBe(404);
       expect(invalidRes.headers.get("content-type")).toBe("text/plain; charset=utf-8");
@@ -626,6 +721,21 @@ export default function HomePage() {
 }
 `,
     );
+    fs.writeFileSync(
+      path.join(tmpDir, "middleware.ts"),
+      `import { NextResponse } from "next/server";
+
+export default function middleware(request: Request) {
+  const url = new URL(request.url);
+  if (url.pathname.endsWith("/_next/static/middleware-rewrite.js")) {
+    return new Response("rewritten missing asset", {
+      headers: { "content-type": "text/plain" },
+    });
+  }
+  return NextResponse.next({ headers: { "x-middleware-ran": "1" } });
+}
+`,
+    );
 
     const outDir = path.join(tmpDir, "dist");
 
@@ -639,7 +749,7 @@ export default function HomePage() {
       build: {
         outDir: path.join(outDir, "server"),
         ssr: "virtual:vinext-server-entry",
-        rollupOptions: { output: { entryFileNames: "entry.js" } },
+        rolldownOptions: { output: { entryFileNames: "entry.js" } },
       },
     });
     await build({
@@ -651,7 +761,7 @@ export default function HomePage() {
         outDir: path.join(outDir, "client"),
         manifest: true,
         ssrManifest: true,
-        rollupOptions: { input: "virtual:vinext-client-entry" },
+        rolldownOptions: { input: "virtual:vinext-client-entry" },
       },
     });
 
@@ -691,10 +801,24 @@ export default function HomePage() {
       for (const url of assetUrls) {
         const assetRes = await fetch(`${baseUrl}${url}`);
         expect(assetRes.status, `expected 200 for ${url}`).toBe(200);
+        expect(assetRes.headers.get("x-middleware-ran")).toBeNull();
         if (url.endsWith(".js")) {
           expect(assetRes.headers.get("content-type")).toContain("javascript");
         }
       }
+
+      // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+      const rewrittenMissingAsset = await fetch(
+        `${baseUrl}/docs/_next/static/middleware-rewrite.js`,
+      );
+      expect(rewrittenMissingAsset.status).toBe(200);
+      expect(await rewrittenMissingAsset.text()).toBe("rewritten missing asset");
+
+      const unhandledMissingAsset = await fetch(`${baseUrl}/docs/_next/static/missing.js`);
+      expect(unhandledMissingAsset.status).toBe(404);
+      expect(unhandledMissingAsset.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+      expect(await unhandledMissingAsset.text()).toBe("Not Found");
     } finally {
       server.close();
     }

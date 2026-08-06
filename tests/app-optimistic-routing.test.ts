@@ -139,6 +139,33 @@ function createBlogLoadingShellElements(): AppElements {
   };
 }
 
+function staticSettingsManifest(): RouteManifest {
+  return manifest([
+    route({
+      id: "route:/settings",
+      isDynamic: false,
+      pattern: "/settings",
+      patternParts: ["settings"],
+    }),
+  ]);
+}
+
+function createSettingsLoadingShellElements(): AppElements {
+  const routeId = AppElementsWire.encodeRouteId("/settings", null);
+  const pageId = AppElementsWire.encodePageId("/settings", null);
+  return {
+    ...AppElementsWire.createMetadataEntries({
+      interceptionContext: null,
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId,
+    }),
+    [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+    [pageId]: null,
+    [routeId]: createElement("p", { id: "loading-message" }, "Loading settings..."),
+  };
+}
+
 describe("App Router optimistic routing", () => {
   it("matches dynamic route params while keeping static siblings authoritative", () => {
     const routes = blogManifest();
@@ -326,6 +353,49 @@ describe("App Router optimistic routing", () => {
     });
   });
 
+  it("learns optimistic templates from an implicit children slot", () => {
+    const childrenSlotId = "slot:children:/blog";
+    const routeManifest = manifest([
+      route({
+        id: "route:/blog/:slug",
+        isDynamic: true,
+        paramNames: ["slug"],
+        pattern: "/blog/:slug",
+        patternParts: ["blog", ":slug"],
+        slotIds: [childrenSlotId],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/blog"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [childrenSlotId]: createElement("article", null, "Post 1"),
+      [routeId]: createElement(
+        Suspense,
+        { fallback: createElement("p", null, "Loading") },
+        createElement("main", null, "Route"),
+      ),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    expect(template?.pageElementIds).toEqual([childrenSlotId]);
+    expect(createOptimisticRouteElements(template!)[childrenSlotId]).not.toBe(
+      elements[childrenSlotId],
+    );
+  });
+
   it("does not learn routes without a loading boundary", () => {
     const routeManifest = blogManifest();
     const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
@@ -404,6 +474,48 @@ describe("App Router optimistic routing", () => {
       pageElementIds: [AppElementsWire.encodePageId("/blog/post-1", null)],
       routeId: "route:/blog/:slug",
     });
+  });
+
+  it("learns static route templates from loading-shell prefetch payloads", () => {
+    const routeManifest = staticSettingsManifest();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: createSettingsLoadingShellElements(),
+      href: "/settings.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    expect(template).toMatchObject<Partial<OptimisticRouteTemplate>>({
+      pageElementIds: [AppElementsWire.encodePageId("/settings", null)],
+      routeId: "route:/settings",
+    });
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const navigationPayload = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: "/settings?tab=billing",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+      templates: new Map([
+        [
+          getOptimisticRouteTemplateKey({
+            interceptionContext: null,
+            mountedSlotsHeader: null,
+            routeId: template.routeId,
+          }),
+          template,
+        ],
+      ]),
+    });
+
+    expect(navigationPayload?.params).toEqual({});
+    expect(navigationPayload?.template).toBe(template);
   });
 
   it("keeps learned templates distinct across mounted slot headers", () => {

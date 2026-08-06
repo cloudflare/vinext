@@ -42,6 +42,22 @@ function mockGoogleFontsCSS(
   return { urls, count: () => urls.length };
 }
 
+function mockGoogleFontFiles(body = new Uint8Array([0, 1, 2, 3])): { urls: string[] } {
+  const urls: string[] = [];
+  server.use(
+    http.get("https://fonts.gstatic.com/*", ({ request }) => {
+      urls.push(request.url);
+      return new HttpResponse(body, {
+        headers: {
+          "content-type": "font/woff2",
+          "cache-control": "public, max-age=31536000",
+        },
+      });
+    }),
+  );
+  return { urls };
+}
+
 /** Extract the vinext:google-fonts plugin from the plugin array */
 function getGoogleFontsPlugin(): Plugin {
   const plugins = vinext() as Plugin[];
@@ -727,6 +743,16 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root");
     initPlugin(plugin, { command: "build", root });
 
+    mockGoogleFontsCSS(
+      [
+        "@font-face {",
+        "  font-family: 'Inter';",
+        "  src: url(https://fonts.gstatic.com/s/inter/v19/inter-latin-400.woff2) format('woff2');",
+        "}",
+      ].join("\n"),
+    );
+    mockGoogleFontFiles();
+
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter } from 'next/font/google';`,
@@ -960,6 +986,95 @@ describe("vinext:google-fonts plugin", () => {
       expect(result.code).not.toMatch(/,\s*,/);
       // Verify the generated code is syntactically valid by checking structure
       expect(result.code).toContain('selfHostedCSS: "');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not produce double-comma when a trailing comma is hidden behind a block comment", async () => {
+    // Regression for #1973: `.trim()` strips whitespace but not comments, so a
+    // trailing comma followed by a block comment, e.g. Inter({ subsets: ["latin"], /* c */ }),
+    // was not detected and a second ", " was inserted → `, /* c */ , _vinext` (invalid JS).
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-block-comment");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  subsets: ["latin"], /* c */`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      // No comma must be inserted right after the block comment's close.
+      expect(result.code).not.toMatch(/\*\/\s*,/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not produce double-comma when a trailing comma is hidden behind a line comment", async () => {
+    // Regression for #1973: a trailing comma followed by a `// line comment`
+    // also escaped detection → a second comma was inserted on the next line.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-line-comment");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  subsets: ["latin"], // c`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      // No comma must be inserted on the line following the line comment.
+      expect(result.code).not.toMatch(/\/\/ c\n\s*,/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not produce double-comma when a string option value contains `//` before a trailing comma", async () => {
+    // Hardening for #1973: a whole-slice comment strip also deletes the `//`
+    // inside a string literal (e.g. Inter({ variable: "--font//x", })) and the
+    // rest of that line — swallowing the REAL trailing comma and injecting a
+    // second one (`, , selfHostedCSS` → invalid JS). The string-aware, end-only
+    // scan is not fooled by the in-string `//`.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-string-slashes");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  subsets: ["latin"],`,
+        `  variable: "--font//x",`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      // The real trailing comma must be detected → no double comma injected.
+      expect(result.code).not.toMatch(/,\s*,/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1257,6 +1372,16 @@ describe("fetchAndCacheFont", () => {
     // Use the plugin's transform which internally calls fetchAndCacheFont
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS(
+      [
+        "@font-face {",
+        "  font-family: 'Inter';",
+        "  src: url(https://fonts.gstatic.com/s/inter/v19/inter-latin-400.woff2) format('woff2');",
+        "}",
+      ].join("\n"),
+    );
+    mockGoogleFontFiles();
 
     const transform = unwrapHook(plugin.transform);
     const code = [

@@ -20,6 +20,11 @@ export default function UriFragmentsPage() {
               Section 3
             </Link>
           </li>
+          <li>
+            <Link href="#svg-target" id="to-svg-target">
+              SVG target
+            </Link>
+          </li>
         </ol>
       </nav>
 
@@ -32,6 +37,10 @@ export default function UriFragmentsPage() {
         <p style={{ height: "100vh" }}>Section 2 body</p>
         <h2 id="section-3">Section 3</h2>
         <p style={{ height: "100vh" }}>Section 3 body</p>
+        <svg id="svg-target" height="20" width="20" aria-label="SVG hash target" />
+        <button id="after-svg-target" type="button">
+          After SVG target
+        </button>
       </article>
     </>
   );

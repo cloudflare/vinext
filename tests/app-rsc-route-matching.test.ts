@@ -50,10 +50,14 @@ describe("App RSC route matching", () => {
     });
   });
 
-  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour
+  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour.
+  // Route Handlers expose decoded params, unlike App Pages, whose params use
+  // the canonical encoded representation.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts#L25-L27
-  it("decodes matched params via decodeURIComponent (mirrors Next.js)", () => {
-    const matcher = createAppRscRouteMatcher([route("/files/:name", ["files", ":name"])]);
+  it("decodes rewritten Route Handler params via decodeURIComponent", () => {
+    const matcher = createAppRscRouteMatcher([
+      { ...route("/files/:name", ["files", ":name"]), routeHandler: {} },
+    ]);
 
     expect(matcher.matchRoute("/files/a%2Fb")).toMatchObject({
       params: { name: "a/b" },
@@ -76,7 +80,99 @@ describe("App RSC route matching", () => {
       params: { subdomain: "demo" },
     });
     expect(matcher.matchRoute("/files/a%252Fb")).toMatchObject({
+      params: { name: "a%252Fb" },
+    });
+  });
+
+  it("classifies lazy Route Handlers consistently before and after their first load", () => {
+    const lazyRoute: TestRoute = {
+      ...route("/api/:path*", ["api", ":path*"]),
+      __loadRouteHandler: async () => ({}),
+      routeHandler: null,
+    };
+    const matcher = createAppRscRouteMatcher([lazyRoute]);
+
+    expect(matcher.matchRequestRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+    lazyRoute.routeHandler = {};
+    expect(matcher.matchRequestRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+    expect(matcher.matchRequestRoute("/api")).toMatchObject({ params: {} });
+  });
+
+  it("keeps rewritten App Page params canonical while Route Handlers decode once", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/page/:path+", ["page", ":path+"]),
+      {
+        ...route("/api/:path+", ["api", ":path+"]),
+        __loadRouteHandler: async () => ({}),
+      },
+    ]);
+
+    expect(matcher.matchRoute("/page/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%2561", "b%2Fc"] },
+    });
+    expect(matcher.matchRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+  });
+
+  it("matches encoded request pathnames with Next.js App Router semantics", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/admin", ["admin"]),
+      route("/files/:name", ["files", ":name"]),
+      { ...route("/api/:name", ["api", ":name"]), routeHandler: {} },
+    ]);
+
+    expect(matcher.matchRoute("/%61dmin")).toMatchObject({
+      route: { pattern: "/admin" },
+    });
+    expect(matcher.matchRequestRoute("/%61dmin")).toBeNull();
+    expect(matcher.matchRequestRoute("/%2561dmin")).toBeNull();
+    expect(matcher.matchRequestRoute("/files/%61")).toMatchObject({
+      params: { name: "a" },
+    });
+    expect(matcher.matchRequestRoute("/files/a%2561")).toMatchObject({
+      params: { name: "a%2561" },
+    });
+    expect(matcher.matchRequestRoute("/files/a%2Fb")).toMatchObject({
       params: { name: "a%2Fb" },
+    });
+    expect(matcher.matchRequestRoute("/api/a%2561")).toMatchObject({
+      params: { name: "a%61" },
+    });
+    expect(matcher.matchRequestRoute("/api/a%2Fb")).toMatchObject({
+      params: { name: "a/b" },
+    });
+  });
+
+  it("preserves encoded interception target identity and canonicalizes target params", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/feed/:slug", ["feed", ":slug"], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/a%2562", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "a%2562" },
+    });
+    expect(matcher.findIntercept("/photos/a%2Fb", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "a%2Fb" },
+    });
+    expect(matcher.findIntercept("/ph%6Ftos/a", "/feed/a%2561")).toBeNull();
+    expect(matcher.findIntercept("/photos/%e2%9c%93", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "%E2%9C%93" },
     });
   });
 
@@ -123,6 +219,192 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("prefers static interception targets over dynamic targets", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    // https://github.com/vercel/next.js/blob/ee6e79b1792a4d401ddf2480f40a83549fe8e722/test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    const matcher = createAppRscRouteMatcher([
+      route("/", [], {
+        modal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/",
+              targetPattern: "/:username/:id",
+              interceptLayouts: [],
+              page: "dynamic-page",
+              params: ["username", "id"],
+            },
+            {
+              sourceMatchPattern: "/",
+              targetPattern: "/explicit-layout/deeper",
+              interceptLayouts: ["explicit-layout"],
+              page: "static-page",
+              params: [],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/explicit-layout/deeper", "/")).toMatchObject({
+      targetPattern: "/explicit-layout/deeper",
+      interceptLayouts: ["explicit-layout"],
+      page: "static-page",
+      matchedParams: {},
+    });
+  });
+
+  it("orders overlapping interception targets segment by segment", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/", [], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/:name/static",
+              interceptLayouts: [],
+              page: "dynamic-prefix",
+              params: ["name"],
+            },
+            {
+              targetPattern: "/foo/:id",
+              interceptLayouts: [],
+              page: "static-prefix",
+              params: ["id"],
+            },
+            {
+              targetPattern: "/files/:slug*",
+              interceptLayouts: [],
+              page: "optional-catch-all",
+              params: ["slug"],
+            },
+            {
+              targetPattern: "/files/:slug+",
+              interceptLayouts: [],
+              page: "catch-all",
+              params: ["slug"],
+            },
+            {
+              targetPattern: "/files/:id",
+              interceptLayouts: [],
+              page: "dynamic",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/foo/static", "/")).toMatchObject({
+      targetPattern: "/foo/:id",
+      page: "static-prefix",
+      matchedParams: { id: "static" },
+    });
+    expect(matcher.findIntercept("/files/one", "/")).toMatchObject({
+      targetPattern: "/files/:id",
+      page: "dynamic",
+      matchedParams: { id: "one" },
+    });
+    expect(matcher.findIntercept("/files/one/two", "/")).toMatchObject({
+      targetPattern: "/files/:slug+",
+      page: "catch-all",
+      matchedParams: { slug: ["one", "two"] },
+    });
+    expect(matcher.findIntercept("/files", "/")).toMatchObject({
+      targetPattern: "/files/:slug*",
+      page: "optional-catch-all",
+      matchedParams: {},
+    });
+  });
+
+  it("orders equally specific dynamic interception segments lexicographically", () => {
+    // Mirrors Next.js compareRouteSegments, including dynamic parameter names:
+    // packages/next/src/shared/lib/router/utils/sortable-routes.ts
+    const matcher = createAppRscRouteMatcher([
+      route("/", [], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/:name/foo",
+              interceptLayouts: [],
+              page: "name-page",
+              params: ["name"],
+            },
+            {
+              targetPattern: "/:id/foo",
+              interceptLayouts: [],
+              page: "id-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/value/foo", "/")).toMatchObject({
+      targetPattern: "/:id/foo",
+      page: "id-page",
+      matchedParams: { id: "value" },
+    });
+  });
+
+  it("preserves declaration order for identical interception targets", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/", [], {
+        first: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: [],
+              page: "first-page",
+              params: ["id"],
+            },
+          ],
+        },
+        second: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: [],
+              page: "second-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/42", "/")).toMatchObject({
+      slotKey: "first",
+      page: "first-page",
+      matchedParams: { id: "42" },
+    });
+  });
+
+  it("shares lazy intercept load state across fresh match objects", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/feed", ["feed"], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: [null],
+              __loadInterceptLayouts: [async () => "modal-layout"],
+              page: null,
+              __pageLoader: async () => "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const first = matcher.findIntercept("/photos/42", "/feed");
+    const second = matcher.findIntercept("/photos/42", "/feed");
+
+    expect(first).not.toBe(second);
+    expect(first?.__loadState).toBe(second?.__loadState);
+  });
+
   it("does not treat a target match as an intercept without a matching source route", () => {
     const matcher = createAppRscRouteMatcher([
       route("/feed", ["feed"], {
@@ -143,7 +425,27 @@ describe("App RSC route matching", () => {
     expect(matcher.findIntercept("/photos/42", "/gallery")).toBeNull();
   });
 
-  it("canonicalizes encoded source path parts for interception params", () => {
+  it("does not use an unrelated concrete route for legacy interception entries", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/feed", ["feed"], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+      route("/gallery", ["gallery"]),
+    ]);
+
+    expect(matcher.findIntercept("/photos/42", "/gallery")).toBeNull();
+  });
+
+  it("normalizes source path parts separately from encoded interception targets", () => {
     const matcher = createAppRscRouteMatcher([
       route("/_sites/:tenant", ["_sites", ":tenant"], {
         modal: {
@@ -161,7 +463,66 @@ describe("App RSC route matching", () => {
 
     expect(matcher.findIntercept("/photos/a%2Fb", "/%5Fsites/acme")).toMatchObject({
       targetPattern: "/photos/:id",
-      matchedParams: { tenant: "acme", id: "a/b" },
+      matchedParams: { tenant: "acme", id: "a%2Fb" },
+    });
+  });
+
+  it("decodes an interception source exactly once", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/admin", ["admin"], {
+        modal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/admin",
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/%2561dmin")).toBeNull();
+  });
+
+  it("renders a root-slot interception from the concrete matched source route", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/", [], {
+        modal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/",
+              targetPattern: "/org/:orgId/team/:teamId/settings",
+              interceptLayouts: ["modal-layout"],
+              page: "settings-modal",
+              params: ["orgId", "teamId"],
+            },
+          ],
+        },
+      }),
+      route("/org/:orgId/team/:teamId", ["org", ":orgId", "team", ":teamId"], {
+        modal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/",
+              targetPattern: "/org/:orgId/team/:teamId/settings",
+              interceptLayouts: ["modal-layout"],
+              page: "settings-modal",
+              params: ["orgId", "teamId"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(
+      matcher.findIntercept("/org/acme/team/engineering/settings", "/org/acme/team/engineering"),
+    ).toMatchObject({
+      sourceRouteIndex: 1,
+      matchedParams: { orgId: "acme", teamId: "engineering" },
     });
   });
 
@@ -287,6 +648,188 @@ describe("App RSC route matching", () => {
       expect(matcher.findIntercept("/feed/abc/photos/1", "/other")).toBeNull();
     });
 
+    it("does not leak descendant source params into the interception branch", () => {
+      const intercept = {
+        sourceMatchPattern: "/:locale/feed",
+        targetPattern: "/photos/:photoId",
+        interceptLayouts: ["layout"],
+        page: "modal-photo",
+        params: ["photoId"],
+      };
+      const matcher = createAppRscRouteMatcher([
+        route("/:locale/feed", [":locale", "feed"], {
+          modal: { intercepts: [intercept] },
+        }),
+        route("/:locale/feed/:tab", [":locale", "feed", ":tab"], {
+          modal: { intercepts: [intercept] },
+        }),
+      ]);
+
+      expect(matcher.findIntercept("/photos/42", "/en/feed/recent")).toMatchObject({
+        sourceRouteIndex: 1,
+        matchedParams: { locale: "en", photoId: "42" },
+        sourceMatchedParams: { locale: "en", tab: "recent" },
+      });
+    });
+
+    it("never promotes a Route Handler as the concrete interception source", () => {
+      // The source pathname arrives as an unauthenticated client header
+      // (X-Vinext-Interception-Context / Next-URL), and the resolved source
+      // route is what later renders or dispatches. A `route.ts` has no page,
+      // layouts, or slots, so it can never own an interception source tree;
+      // resolving one would let a crafted context execute a Route Handler that
+      // merely lives under the intercepting route. Next.js rewrites the
+      // intercepted target to a fixed destination (the intercepting route), so
+      // falling back to the slot owner is also the parity-correct choice.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+      const matcher = createAppRscRouteMatcher([
+        route("/feed", ["feed"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/hidden",
+                interceptLayouts: ["layout"],
+                page: "modal-hidden",
+                params: [],
+              },
+            ],
+          },
+        }),
+        { ...route("/feed/admin", ["feed", "admin"]), routeHandler: {} },
+        route("/feed/:tab", ["feed", ":tab"]),
+      ]);
+
+      // A Route Handler descendant falls back to the slot owner (index 0).
+      expect(matcher.findIntercept("/hidden", "/feed/admin")).toMatchObject({
+        sourceRouteIndex: 0,
+      });
+      // A lazy Route Handler is classified the same before its first load.
+      const lazyMatcher = createAppRscRouteMatcher([
+        route("/feed", ["feed"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/hidden",
+                interceptLayouts: ["layout"],
+                page: "modal-hidden",
+                params: [],
+              },
+            ],
+          },
+        }),
+        { ...route("/feed/admin", ["feed", "admin"]), __loadRouteHandler: async () => ({}) },
+      ]);
+      expect(lazyMatcher.findIntercept("/hidden", "/feed/admin")).toMatchObject({
+        sourceRouteIndex: 0,
+      });
+      // Page descendants still resolve concretely, preserving their params.
+      expect(matcher.findIntercept("/hidden", "/feed/recent")).toMatchObject({
+        sourceRouteIndex: 2,
+        sourceMatchedParams: { tab: "recent" },
+      });
+    });
+
+    it.each([
+      {
+        ownerPattern: "/feed",
+        ownerParts: ["feed"],
+        sourcePathname: "/feed",
+        targetPattern: "/feed/hidden",
+        targetPathname: "/feed/hidden",
+      },
+      {
+        ownerPattern: "/:locale/feed",
+        ownerParts: [":locale", "feed"],
+        sourcePathname: "/en/feed",
+        targetPattern: "/:locale/feed/hidden",
+        targetPathname: "/en/feed/hidden",
+      },
+      {
+        ownerPattern: "/docs/:slug+",
+        ownerParts: ["docs", ":slug+"],
+        sourcePathname: "/docs/a/b",
+        targetPattern: "/hidden",
+        targetPathname: "/hidden",
+      },
+      {
+        ownerPattern: "/:locale*",
+        ownerParts: [":locale*"],
+        sourcePathname: "/en/us",
+        targetPattern: "/hidden",
+        targetPathname: "/hidden",
+      },
+    ])(
+      "never promotes a Route Handler slot owner for $ownerPattern",
+      ({ ownerParts, ownerPattern, sourcePathname, targetPathname, targetPattern }) => {
+        // The route graph retains parallel slots discovered beside `route.ts`.
+        // Next.js accepts this filesystem shape and rewrites the intercepted
+        // target to the modal page; it never executes the owning handler.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+        const matcher = createAppRscRouteMatcher([
+          {
+            ...route(ownerPattern, ownerParts, {
+              modal: {
+                intercepts: [
+                  {
+                    sourceMatchPattern: ownerPattern,
+                    targetPattern,
+                    interceptLayouts: ["layout"],
+                    page: "modal-page",
+                    params: [],
+                  },
+                ],
+              },
+            }),
+            __loadRouteHandler: async () => ({}),
+          },
+        ]);
+
+        expect(matcher.findIntercept(targetPathname, sourcePathname)).toBeNull();
+      },
+    );
+
+    it("keeps the slot owner's dynamic params when falling back from a descendant", () => {
+      // The slot owner is what renders once a descendant source is rejected, and
+      // `matchInterceptRoute` reads the promoted route's params solely from
+      // `sourceMatchedParams`. An exact pattern match against the owner cannot
+      // succeed here — the approved source carries extra segments by definition —
+      // so the owner's params come from the prefix the source gate already
+      // approved. Otherwise `/:locale/feed` would render with no `locale`.
+      const matcher = createAppRscRouteMatcher([
+        route("/:locale/feed", [":locale", "feed"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/:locale/feed",
+                targetPattern: "/:locale/hidden",
+                interceptLayouts: ["layout"],
+                page: "modal-hidden",
+                params: ["locale"],
+              },
+            ],
+          },
+        }),
+        { ...route("/:locale/feed/admin", [":locale", "feed", "admin"]), routeHandler: {} },
+      ]);
+
+      expect(matcher.findIntercept("/en/hidden", "/en/feed/admin")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceMatchedParams: { locale: "en" },
+      });
+      // A descendant with no concrete route at all takes the same fallback.
+      expect(matcher.findIntercept("/en/hidden", "/en/feed/unknown/deep")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceMatchedParams: { locale: "en" },
+      });
+      // An exact source still matches the owner directly.
+      expect(matcher.findIntercept("/en/hidden", "/en/feed")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceMatchedParams: { locale: "en" },
+      });
+    });
+
     it("treats a sourceMatchPattern of `/` as matching any source", () => {
       // Slot at root (`/@modal/(.)groups/[id]/new`) yields intercepting route `/`,
       // which Next.js implements as `^/.*$` — i.e. any source.
@@ -316,20 +859,28 @@ describe("App RSC route matching", () => {
     it("findIntercept matches sibling intercept on soft-nav and misses on hard-nav", () => {
       const routes: TestRoute[] = [
         {
+          ids: { route: "graph-route:/foo/bar" },
           pattern: "/foo/bar",
           patternParts: ["foo", "bar"],
           siblingIntercepts: [
             {
               targetPattern: "/hoge",
               sourceMatchPattern: "/foo/bar",
+              sourcePageSegments: ["foo", "bar", "(..)(..)hoge"],
               slotId: "slot:__vinext_sibling_intercept:/foo/bar",
-              interceptLayouts: [],
+              interceptLayouts: [{ default: () => null }],
+              interceptLayoutSegments: [["[photo]"]],
+              interceptBranchSegments: ["[photo]", "[comment]"],
               page: { default: () => null },
               params: [],
             },
           ],
         },
-        { pattern: "/hoge", patternParts: ["hoge"] },
+        {
+          ids: { route: "graph-route:/hoge" },
+          pattern: "/hoge",
+          patternParts: ["hoge"],
+        },
       ];
       const matcher = createAppRscRouteMatcher(routes as any);
 
@@ -337,12 +888,101 @@ describe("App RSC route matching", () => {
       const hit = matcher.findIntercept("/hoge", "/foo/bar");
       expect(hit).not.toBeNull();
       expect(hit?.slotKey).toBe(SIBLING_PAGE_INTERCEPT_SLOT_KEY);
+      expect(hit?.sourcePageSegments).toEqual(["foo", "bar", "(..)(..)hoge"]);
+      expect(hit?.interceptLayoutSegments).toEqual([["[photo]"]]);
+      expect(hit?.interceptBranchSegments).toEqual(["[photo]", "[comment]"]);
+      expect(hit?.targetRouteGraphId).toBe("graph-route:/hoge");
 
       // Hard-nav (no source): must return null
       expect(matcher.findIntercept("/hoge", null)).toBeNull();
 
       // Wrong source: must return null
       expect(matcher.findIntercept("/hoge", "/other")).toBeNull();
+    });
+
+    it("resolves intercepted graph identities across different parameter names", () => {
+      // Ported from Next.js: packages/next/src/build/validate-app-paths.test.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/validate-app-paths.test.ts
+      const routes: TestRoute[] = [
+        {
+          ids: { route: "graph-route:/feed" },
+          pattern: "/feed",
+          patternParts: ["feed"],
+          slots: {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/feed",
+                  targetPattern: "/blog/:slug/post",
+                  interceptLayouts: ["layout"],
+                  page: "modal-post",
+                  params: ["slug"],
+                },
+                {
+                  sourceMatchPattern: "/feed",
+                  targetPattern: "/files/:path+",
+                  interceptLayouts: ["layout"],
+                  page: "modal-file",
+                  params: ["path"],
+                },
+              ],
+            },
+          },
+        },
+        {
+          ids: { route: "graph-route:/blog/:id/post" },
+          pattern: "/blog/:id/post",
+          patternParts: ["blog", ":id", "post"],
+        },
+        {
+          ids: { route: "graph-route:/files/:segments+" },
+          pattern: "/files/:segments+",
+          patternParts: ["files", ":segments+"],
+        },
+      ];
+      const matcher = createAppRscRouteMatcher(routes as any);
+
+      expect(matcher.findIntercept("/blog/value/post", "/feed")?.targetRouteGraphId).toBe(
+        "graph-route:/blog/:id/post",
+      );
+      expect(matcher.findIntercept("/files/a/b", "/feed")?.targetRouteGraphId).toBe(
+        "graph-route:/files/:segments+",
+      );
+    });
+
+    it("carries sibling interception identity when the direct target uses a broader catch-all", () => {
+      // Ported from Next.js: test/e2e/app-dir/interception-routes-multiple-catchall
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-routes-multiple-catchall/interception-routes-multiple-catchall.test.ts
+      const interceptionGraphId =
+        "interception:slot:__vinext_sibling_intercept:/templates:/templates->/showcase/:catchAll+";
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/templates/:source+" },
+          pattern: "/templates/:source+",
+          patternParts: ["templates", ":source+"],
+          siblingIntercepts: [
+            {
+              id: interceptionGraphId,
+              targetPattern: "/showcase/:catchAll+",
+              sourceMatchPattern: "/templates",
+              sourcePageSegments: ["templates", "(..)showcase", "[...catchAll]"],
+              slotId: "slot:__vinext_sibling_intercept:/templates",
+              interceptLayouts: [],
+              page: "intercept-page",
+              params: ["catchAll"],
+            },
+          ],
+        },
+        {
+          ids: { route: "graph-route:/:catchAll+" },
+          pattern: "/:catchAll+",
+          patternParts: [":catchAll+"],
+        },
+      ] as any);
+
+      const hit = matcher.findIntercept("/showcase/single", "/templates/multi/slug");
+      expect(hit?.targetRouteGraphId).toBeNull();
+      expect(hit?.interceptionGraphId).toBe(interceptionGraphId);
     });
 
     it("matches dynamic segments in the intercepting route pattern", () => {
@@ -389,15 +1029,21 @@ function route(
 type TestSiblingIntercept = {
   targetPattern: string;
   sourceMatchPattern: string | null;
+  sourcePageSegments?: readonly string[];
   slotId: string | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   page: unknown;
   params: string[];
 };
 
 type TestRoute = {
+  __loadRouteHandler?: unknown;
+  ids?: { route: string };
   pattern: string;
   patternParts: string[];
+  routeHandler?: unknown;
   slots?: Record<string, { intercepts?: TestIntercept[] }>;
   siblingIntercepts?: TestSiblingIntercept[];
 };
@@ -412,6 +1058,10 @@ type TestIntercept = {
    */
   sourceMatchPattern?: string;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
+  __loadInterceptLayouts?: readonly (() => Promise<unknown>)[];
   page: unknown;
+  __pageLoader?: () => Promise<unknown>;
   params: string[];
 };
