@@ -46,24 +46,19 @@ test.describe('production "use cache" server function references', () => {
     await expect(page.getByTestId("mixed-flexible-result")).toHaveText(cachedResult);
   });
 
-  test('caches an inline "use cache" function inside a file-level "use server" module', async ({
+  test('caches an inline "use cache" function during server render inside a file-level "use server" module', async ({
     page,
   }) => {
     await page.goto("/use-cache-transform-coverage");
 
     const aggregateResult = await page.getByTestId("use-cache-transform-coverage").innerText();
-    const serverResult = aggregateResult.split("|")[4];
+    const serverResult = aggregateResult.split("|")[1];
     if (!serverResult) throw new Error("Missing server-boundary result");
     expect(serverResult).toMatch(/^server-boundary:[0-9.e+-]+$/);
 
-    await page.locator("#call-cached-server-boundary").click();
-    await expect(page.getByTestId("cached-server-boundary-call-count")).toHaveText("1");
-    const firstActionResult = await page.getByTestId("cached-server-boundary-result").innerText();
-    expect(firstActionResult).toMatch(/^server-boundary:[0-9.e+-]+$/);
-
-    await page.locator("#call-cached-server-boundary").click();
-    await expect(page.getByTestId("cached-server-boundary-call-count")).toHaveText("2");
-    await expect(page.getByTestId("cached-server-boundary-result")).toHaveText(firstActionResult);
+    await page.reload();
+    const repeatedResult = await page.getByTestId("use-cache-transform-coverage").innerText();
+    expect(repeatedResult.split("|")[1]).toBe(serverResult);
   });
 
   test("replays cached RSC through SSR and invokes nested functions from the browser", async ({

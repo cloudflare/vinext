@@ -4566,7 +4566,7 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2);
   });
 
-  it("registerCachedFunction excludes arguments beyond declared arity from cache keys", async () => {
+  it("registerCachedFunction excludes arguments beyond declared arity", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     let calls = 0;
@@ -4577,11 +4577,11 @@ describe('"use cache" runtime', () => {
       },
       "test:declared-arity",
       "",
-      { parameters: { count: 1, hasRest: false } },
+      { argumentCount: 1 },
     );
 
-    expect(await cached(1, "first")).toEqual({ value: 1, extra: ["first"] });
-    expect(await cached(1, "second")).toEqual({ value: 1, extra: ["first"] });
+    expect(await cached(1, "first")).toEqual({ value: 1, extra: [] });
+    expect(await cached(1, "second")).toEqual({ value: 1, extra: [] });
     expect(calls).toBe(1);
   });
 
@@ -4596,11 +4596,11 @@ describe('"use cache" runtime', () => {
       },
       "test:zero-arity",
       "",
-      { parameters: { count: 0, hasRest: false } },
+      { argumentCount: 0 },
     );
 
-    expect(await cached("first")).toEqual(["first"]);
-    expect(await cached("second")).toEqual(["first"]);
+    expect(await cached("first")).toEqual([]);
+    expect(await cached("second")).toEqual([]);
     expect(calls).toBe(1);
   });
 
@@ -4615,7 +4615,7 @@ describe('"use cache" runtime', () => {
       },
       "test:rest-args",
       "",
-      { parameters: { count: 1, hasRest: true } },
+      {},
     );
 
     expect(await cached(1, 2)).toEqual([1, 2]);

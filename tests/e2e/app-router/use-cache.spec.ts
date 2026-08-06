@@ -186,18 +186,11 @@ test.describe('"use cache" direct client imports', () => {
 });
 
 test.describe('"use cache" transform coverage', () => {
-  test("supports advanced function and export forms", async ({ page }) => {
+  test("supports released transform forms and use-server boundaries", async ({ page }) => {
     await page.goto(`${BASE}/use-cache-transform-coverage`);
     await expect(page.getByTestId("use-cache-transform-coverage")).toHaveText(
-      /^destructured\|export-star\|object-method\|static-method\|server-boundary:[0-9.e+-]+\|custom-kind$/,
+      /^destructured\|server-boundary:[0-9.e+-]+\|custom-kind$/,
     );
-    await expect(async () => {
-      await page.locator("#call-cached-server-boundary").click();
-      await expect(page.getByTestId("cached-server-boundary-result")).toHaveText(
-        /^server-boundary:[0-9.e+-]+$/,
-        { timeout: 2000 },
-      );
-    }).toPass({ timeout: 15_000 });
   });
 
   test("removes and restores directive metadata during HMR", async ({ page, request }) => {

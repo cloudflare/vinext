@@ -39,11 +39,11 @@ catalog:
   "@typescript/native-preview": ^7.0.0-dev.20260213.1
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
-  "@vitejs/plugin-react": https://pkg.pr.new/@vitejs/plugin-react@82d2c578
+  "@vitejs/plugin-react": ^6.0.1
   "@next/mdx": 16.2.7
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1
-  "@vitejs/plugin-rsc": https://pkg.pr.new/@vitejs/plugin-rsc@50eaf476
+  "@vitejs/plugin-rsc": ^0.5.33
   "@vitest/coverage-istanbul": 4.1.6
   better-auth: ^1.5.6
   better-sqlite3: ^12.0.0

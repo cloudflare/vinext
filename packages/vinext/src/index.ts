@@ -117,10 +117,7 @@ import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-on
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
-import {
-  createServerFunctionDirectivePlugin,
-  type ServerFunctionDirectiveContext,
-} from "./plugins/server-function-directives.js";
+import { createUseCacheCallablePlugin } from "./plugins/server-function-directives.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -189,13 +186,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
-import { normalizePathSeparators, stripViteModuleQuery } from "./utils/path.js";
-
-function parseUseCacheVariant(directive: string): string {
-  return directive === "use cache"
-    ? ""
-    : directive.replace("use cache:", "").replace("use cache: ", "").trim();
-}
+import { normalizePathSeparators } from "./utils/path.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -206,11 +197,6 @@ function parseUseCacheVariant(directive: string): string {
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-
-function isInsideDirectory(dir: string, filePath: string): boolean {
-  const relativePath = path.relative(dir, filePath);
-  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
-}
 
 // Detect a module-level `"use server"` directive (a Server Actions module).
 // Directives form the leading prologue of string-literal ExpressionStatements,
@@ -946,77 +932,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
-        const serverFunctionPlugin = await createServerFunctionDirectivePlugin({
+        const useCachePlugin = await createUseCacheCallablePlugin({
           projectRoot: earlyBaseDir,
-          definitions: [
-            {
-              directive: /^use cache.*$/,
-              test: (code: string) => code.includes("use cache"),
-              filter: (id: string) =>
-                /\.(tsx?|jsx?|mjs)$/.test(id) && !id.includes("/node_modules/"),
-              rejectNonAsyncFunction: true,
-              rejectNonAsyncModule: false,
-              runtime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-runtime")).href,
-              validate: ({ directive }: { directive: string }) => {
-                if (!/^use cache(?:: ([^\s].*))?$/.test(directive)) {
-                  const cacheKind = directive.includes(":")
-                    ? directive.slice(directive.indexOf(":") + 1).trim()
-                    : directive.slice("use cache".length).trim();
-                  const expected = cacheKind ? `use cache: ${cacheKind}` : "use cache";
-                  throw new Error(
-                    `Invalid cache directive ${JSON.stringify(directive)}. Did you mean ${JSON.stringify(expected)}?`,
-                  );
-                }
-              },
-              clientError: ({ id, environment }: { id: string; environment: string }) =>
-                `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${environment}: ${id})`,
-              wrap: ({
-                value,
-                name,
-                id,
-                directiveMatch,
-                location,
-                hasBoundArgs,
-                parameters,
-                runtime,
-              }: ServerFunctionDirectiveContext) => {
-                const variant = parseUseCacheVariant(directiveMatch[0]);
-                const modulePath = stripViteModuleQuery(id);
-                const moduleFileName = path.basename(modulePath);
-                const isAppPageDefault =
-                  location === "module" &&
-                  name === "default" &&
-                  hasAppDir &&
-                  isInsideDirectory(appDir, modulePath) &&
-                  path.parse(moduleFileName).name === "page" &&
-                  fileMatcher.extensionRegex.test(moduleFileName);
-                const runtimeOptions = {
-                  ...(isAppPageDefault ? { appPageDefaultExport: true } : {}),
-                  ...(parameters && !hasBoundArgs ? { parameters } : {}),
-                };
-                const pageOptions =
-                  Object.keys(runtimeOptions).length > 0
-                    ? `, ${JSON.stringify(runtimeOptions)}`
-                    : "";
-                return `${runtime}.registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${pageOptions})`;
-              },
-              filterExport: ({ name, id, meta }) => {
-                if (meta.isFunction === false) return false;
-                if (/\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id) && name === "default") {
-                  return false;
-                }
-                return true;
-              },
-            },
-          ],
-          serverEnvironmentName: "rsc",
-          browserEnvironmentName: "client",
+          cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
+            .href,
+          appDir,
+          matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
         });
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
         if (useServerIndex === -1) {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
-        plugins.splice(useServerIndex, 0, serverFunctionPlugin);
+        plugins.splice(useServerIndex, 0, useCachePlugin);
         return plugins;
       })
       .catch((cause) => {

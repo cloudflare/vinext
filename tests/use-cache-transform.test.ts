@@ -133,27 +133,6 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(merged.exportNames).toHaveLength(new Set(merged.exportNames).size);
   });
 
-  it("preserves the vinext claim when transformed code enters a proxy graph", async () => {
-    const plugins = await getPlugins();
-    const manager = await configurePluginRsc(plugins);
-    const useCachePlugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
-    const rscContext = { environment: { name: "rsc", mode: "build" } };
-    const transformed = await unwrapHook(useCachePlugin.transform)!.call(
-      rscContext,
-      inlineCacheCode,
-      moduleId,
-    );
-    const ownedExportNames = manager.serverReferences.metaMap.get(moduleId)!.exportNames;
-
-    const ssrContext = { environment: { name: "ssr", mode: "build" } };
-    await unwrapHook(useCachePlugin.transform)!.call(ssrContext, transformed!.code, moduleId);
-    await unwrapHook(useServerPlugin.transform)!.call(ssrContext, transformed!.code, moduleId);
-    expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual(ownedExportNames);
-  });
-
   it("removes the vinext claim when the directive is removed", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
@@ -265,33 +244,8 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(manager.serverReferences.metaMap.get(moduleId)).toEqual({
       importId: moduleId,
       referenceKey: expectedKey,
-      exportNames: [expect.stringMatching(/^\$\$hoist_[a-z0-9]+_0_getData$/)],
+      exportNames: ["$$hoist_0_getData"],
     });
-  });
-
-  it("keeps hoist names stable when unrelated cached functions are inserted", async () => {
-    const plugins = await getPlugins();
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const transform = unwrapHook(plugin.transform)!;
-    const original = await transform.call(
-      { environment: { name: "rsc", mode: "build" } },
-      inlineCacheCode,
-      moduleId,
-    );
-    const withUnrelated = await transform.call(
-      { environment: { name: "rsc", mode: "build" } },
-      [`async function unrelated() {`, `  "use cache";`, `  return 0;`, `}`, inlineCacheCode].join(
-        "\n",
-      ),
-      moduleId,
-    );
-    const getDataName = (code: string) =>
-      code.match(/function (\$\$hoist_[a-z0-9]+_0_getData)/)?.[1];
-    expect(getDataName(original!.code)).toBeDefined();
-    expect(getDataName(withUnrelated!.code)).toBe(getDataName(original!.code));
   });
 
   it("removes its claim when the directive is removed", async () => {
@@ -315,7 +269,7 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(manager.serverReferences.metaMap.get(moduleId)).toBeUndefined();
   });
 
-  it("encrypts closure captures and reports bound-argument metadata to vinext", async () => {
+  it("encrypts closure captures through the cache runtime envelope", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
     const plugin = plugins.find(
@@ -341,16 +295,15 @@ describe("plugin-rsc inline use-cache references", () => {
     );
     expect(result).not.toBeNull();
     expect(result!.code).toMatch(
-      /\.bind\(null,\s*__vite_rsc_encryption_runtime\.encryptActionBoundArgs\(\[capturedSecret\]\)\)/,
+      /\.bind\(null,\s*\$\$cacheRuntime\.encryptCacheCaptures\(\[capturedSecret\]\)\)/,
     );
     expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
-    expect(result!.code).toContain("decryptActionBoundArgs($$encoded)");
-    expect(result!.code).toContain("...$$args.slice(0, 0)");
+    expect(result!.code).toContain("const [capturedSecret] = $$hoist_encoded");
     const boundRegistration = result!.code.match(
       /registerCachedFunction\(\$\$hoist_[^,]+_getMessage\$\$impl,[^)]*\)/,
     )?.[0];
     expect(boundRegistration).toBeDefined();
-    expect(boundRegistration).not.toContain('"parameters"');
+    expect(boundRegistration).toContain('"argumentCount":0');
   });
 
   it.each(["ssr", "client"])(
@@ -482,64 +435,6 @@ describe("plugin-rsc inline use-cache references", () => {
     },
   );
 
-  it.each([
-    [
-      "object method",
-      [
-        `const object = {`,
-        `  async getData() {`,
-        `    "use cache";`,
-        `    return 1;`,
-        `  },`,
-        `};`,
-        `export { object };`,
-      ].join("\n"),
-    ],
-    [
-      "static class method",
-      [
-        `export class CacheClass {`,
-        `  static async getData() {`,
-        `    "use cache";`,
-        `    return 1;`,
-        `  }`,
-        `}`,
-      ].join("\n"),
-    ],
-  ])("handles inline directives in %s syntax", async (_label, code) => {
-    const plugins = await getPlugins();
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const transform = unwrapHook(plugin.transform)!;
-    const result = await transform.call(
-      { environment: { name: "rsc", mode: "build" } },
-      code,
-      moduleId,
-    );
-    expect(result?.code).toContain("registerCachedFunction");
-    expect(() => parseAst(result!.code)).not.toThrow();
-  });
-
-  it("rejects inline directives in class instance methods", async () => {
-    const plugins = await getPlugins();
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const transform = unwrapHook(plugin.transform)!;
-    await expect(
-      transform.call(
-        { environment: { name: "rsc", mode: "build" } },
-        [`export class CacheClass {`, `  async getData() {`, `    "use cache";`, `  }`, `}`].join(
-          "\n",
-        ),
-        moduleId,
-      ),
-    ).rejects.toThrow(/class instance methods/);
-  });
-
   it("preserves inline cache semantics inside a module-level use-server boundary", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
@@ -604,7 +499,7 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result).not.toBeNull();
     expect(result!.code).toContain("$$VinextReactServer.registerServerReference");
     expect(result!.code).toContain("registerCachedFunction");
-    expect(result!.code).not.toContain('"use cache";');
+    expect(result!.code).toContain('"use cache";');
     expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual(["getData"]);
   });
 

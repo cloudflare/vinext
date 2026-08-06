@@ -410,7 +410,7 @@ export function markAppPagePropsForUseCache<T extends object>(props: T): T {
 // Core runtime: registerCachedFunction
 // ---------------------------------------------------------------------------
 
-type RegisterCachedFunctionOptions = {
+export type RegisterCachedFunctionOptions = {
   /**
    * Internal transform metadata for file-level `"use cache"` default exports
    * in App Router `page.*` files. Page components receive framework-owned
@@ -419,8 +419,9 @@ type RegisterCachedFunctionOptions = {
    * rather than on the intermediate createElement config object.
    */
   appPageDefaultExport?: boolean;
-  /** Declared function parameter shape supplied by the directive transform. */
-  parameters?: { count: number; hasRest: boolean };
+  /** Number of declared arguments supplied by the directive transform. */
+  argumentCount?: number;
+  decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
 };
 
 /**
@@ -452,21 +453,27 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   const cachedFn = async (...args: TArgs): Promise<TResult> => {
     const rsc = await getRscModule();
     const keySeed = getUseCacheKeySeed();
+    const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
+    const hasCaptureEnvelope = captures !== undefined;
+    const admittedArgs =
+      options.argumentCount === undefined
+        ? args
+        : hasCaptureEnvelope
+          ? [args[0], ...args.slice(1, 1 + options.argumentCount)]
+          : args.slice(0, options.argumentCount);
+    const executionArgs = hasCaptureEnvelope ? [captures, ...admittedArgs.slice(1)] : admittedArgs;
+    const callArgs = executionArgs as TArgs;
 
     // Build the cache key. Use encodeReply (RSC protocol) when available —
     // it correctly handles React elements as temporary references (excluded
     // from key). Falls back to stableStringify when RSC is unavailable.
     let cacheKey: string;
     try {
-      const keyArgs =
-        options.parameters && !options.parameters.hasRest
-          ? args.slice(0, options.parameters.count)
-          : args;
       const processedArgs =
-        keyArgs.length > 0
-          ? unwrapThenableObjectArray(keyArgs, { omitAppPageSearchParamsFromFirstArg })
+        executionArgs.length > 0
+          ? unwrapThenableObjectArray(executionArgs, { omitAppPageSearchParamsFromFirstArg })
           : [];
-      if (rsc && keyArgs.length > 0) {
+      if (rsc && executionArgs.length > 0) {
         // Temporary references let encodeReply handle non-serializable values
         // (like React elements in args) by excluding them from the key.
         const tempRefs = rsc.createClientTemporaryReferenceSet();
@@ -488,7 +495,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
     } catch {
       // Non-serializable arguments — run without caching
-      return fn(...args);
+      return fn(...callArgs);
     }
 
     // "use cache: private" uses per-request in-memory cache
@@ -513,7 +520,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         return privateHit as TResult;
       }
 
-      const result = await executeWithContext(fn, args, cacheVariant);
+      const result = await executeWithContext(fn, callArgs, cacheVariant);
       privateCache.set(cacheKey, result);
       return result;
     }
@@ -521,7 +528,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // In dev mode, always execute fresh — skip shared cache lookup/storage.
     // This ensures HMR changes are reflected immediately.
     if (isDev) {
-      return executeWithContext(fn, args, cacheVariant);
+      return executeWithContext(fn, callArgs, cacheVariant);
     }
 
     // Shared cache ("use cache" / "use cache: remote")
@@ -565,7 +572,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // Cache miss (or stale) — execute with context
     const { result, ctx, effectiveLife } = await runCachedFunctionWithContext(
       fn,
-      args,
+      callArgs,
       cacheVariant,
     );
 
