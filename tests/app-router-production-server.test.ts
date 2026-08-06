@@ -351,6 +351,14 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain("<script");
   });
 
+  it("preserves CJS dependency globals in a hybrid Pages production route", async () => {
+    const res = await fetch(`${baseUrl}/cjs-dependency-globals`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toMatch(
+      /<p id="runtime-path">.*dist\/server(?:\/ssr)?\/runtime\.js<\/p>/,
+    );
+  });
+
   it("keeps source-page paths and cache observations out of document HTML", async () => {
     const res = await fetch(`${baseUrl}/features`);
     expect(res.status).toBe(200);

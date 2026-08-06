@@ -14,7 +14,8 @@
 import { parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
-import { pathToFileURL } from "node:url";
+import fs from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
@@ -29,6 +30,8 @@ import {
 } from "./ast-utils.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
+
+type ServerRuntime = "node" | "worker";
 
 type RewriteResult = {
   code: string;
@@ -48,6 +51,18 @@ type ImportMetaUrlCacheEntry = {
   results: Map<ImportMetaUrlEnvironment, { value: RewriteResult | null }>;
 };
 
+export type ImportMetaUrlCapability = {
+  /** The Vite app plugin. Owns source, dev-dependency, and build-chunk identity. */
+  vitePlugin: Plugin;
+  /** Thin adapter for Vite's independent dependency-optimizer Rolldown pipeline. */
+  optimizeDepsPlugin: Plugin;
+  /** Cached dependency-format classifier shared by both plugin pipelines. */
+  isBundledCommonJsDependencyId: (id: string) => boolean;
+};
+
+const MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES = 512;
+const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
+
 const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -58,13 +73,43 @@ const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
   ".ts",
   ".tsx",
 ]);
-export function createImportMetaUrlPlugin(options: { getRoot: () => string | undefined }): Plugin {
+export function createImportMetaUrlPlugin(options: {
+  getRoot: () => string | undefined;
+  getServerRuntime?: () => ServerRuntime;
+}): ImportMetaUrlCapability {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
   // Keep path dependencies as separate equality fields so cache hits avoid
   // allocating and hashing a composite string containing both full paths.
   // Replacing the entry also bounds each raw id to one source/path combination.
   const transformCache = new Map<string, ImportMetaUrlCacheEntry>();
+  // Package metadata is immutable for the lifetime of a Vite config. A config
+  // restart creates a new capability and cache, so package.json edits are not
+  // retained across restarts. Cap the rare token-bearing dependency set to
+  // avoid retaining arbitrary ids from long-running dev servers.
+  const dependencyFormatCache = new Map<string, string | null>();
+
+  function commonJsDependencyCanonicalId(id: string): string | null {
+    const cleanId = cleanModuleId(id);
+    if (dependencyFormatCache.has(cleanId)) {
+      return dependencyFormatCache.get(cleanId) ?? null;
+    }
+    const canonicalId = canonicalDependencyModuleId(cleanId);
+    const result = canonicalId && isCommonJsDependency(canonicalId) ? canonicalId : null;
+    setBoundedCacheEntry(
+      dependencyFormatCache,
+      cleanId,
+      result,
+      MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES,
+    );
+    return result;
+  }
+
+  function dependencyCjsGlobalInitializers(canonicalId: string): CjsGlobalInitializers {
+    return options.getServerRuntime?.() === "worker"
+      ? EDGE_CJS_GLOBAL_INITIALIZERS
+      : sourcePathCjsGlobalInitializers(canonicalId);
+  }
 
   function getRootPaths(): RootPaths | undefined {
     const root = options.getRoot();
@@ -75,7 +120,7 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
     return rootPaths;
   }
 
-  return {
+  const vitePlugin: Plugin = {
     name: "vinext:import-meta-url",
     enforce: "post",
     configResolved(config) {
@@ -83,18 +128,43 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
       outputDirs = [config.build.outDir];
       rootPaths = createRootPaths(root, { outputDirs });
     },
+    watchChange() {
+      // Package scope and symlink targets can change while a dev server stays
+      // alive. The next rare CJS-global-bearing dependency reclassifies from
+      // disk; ordinary transforms still use the cache between watch events.
+      dependencyFormatCache.clear();
+    },
     transform: {
       filter: {
         id: {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
-          exclude: [/[\\/]node_modules[\\/]/, VIRTUAL_MODULE_ID_RE],
+          exclude: VIRTUAL_MODULE_ID_RE,
         },
         code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
       },
       handler(code, id) {
+        // Keep this before module-id canonicalization and package-scope work.
+        // The native code filter normally handles this, while the guard keeps
+        // direct hook callers and older Vite versions on the same cheap path.
+        if (!mayContainSourceIdentityToken(code)) return null;
+
+        const cleanId = cleanModuleId(id);
+        if (isNodeModulesId(cleanId)) {
+          if (
+            !mayContainServerCjsGlobal(code) ||
+            this.environment?.mode !== "dev" ||
+            this.environment.config.consumer === "client"
+          ) {
+            return null;
+          }
+          const canonicalId = commonJsDependencyCanonicalId(cleanId);
+          return canonicalId
+            ? rewriteCjsGlobals(code, dependencyCjsGlobalInitializers(canonicalId))
+            : null;
+        }
+
         const paths = getRootPaths();
         if (!paths) return null;
-        const cleanId = cleanModuleId(id);
         const canonicalId = transformableModuleCanonicalId(cleanId, paths);
         if (!canonicalId) return null;
 
@@ -113,17 +183,65 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
             canonicalId,
             results: new Map(),
           };
-          transformCache.set(id, entry);
+          setBoundedCacheEntry(transformCache, id, entry, MAX_TRANSFORM_CACHE_ENTRIES);
         }
 
         const cached = entry.results.get(environment);
         if (cached) return cached.value;
 
-        const value = rewriteCanonicalSourceIdentity(code, canonicalId, paths, environment);
+        const value = rewriteCanonicalSourceIdentity(
+          code,
+          canonicalId,
+          paths,
+          environment,
+          options.getServerRuntime?.() === "worker" ? "worker" : "node",
+        );
         entry.results.set(environment, { value });
         return value;
       },
     },
+    renderChunk: {
+      order: "post",
+      handler(code, _chunk, outputOptions) {
+        if (
+          !mayContainServerCjsGlobal(code) ||
+          this.environment?.config.consumer !== "server" ||
+          outputOptions.format !== "es"
+        ) {
+          return null;
+        }
+        return rewriteBuildChunkCjsGlobals(
+          code,
+          options.getServerRuntime?.() === "worker" ? "worker" : "node",
+        );
+      },
+    },
+  };
+
+  // optimizeDeps is a separate raw Rolldown pipeline: it does not run Vite's
+  // app-level hooks and has no reliable Vite Environment on the hook context.
+  // Keep this as a stateless adapter over the same parser/analyzer/inserter.
+  const optimizeDepsPlugin: Plugin = {
+    name: "vinext:import-meta-url:optimize-deps",
+    transform: {
+      filter: {
+        id: /(?:^|[/\\])node_modules[/\\].*\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
+        code: /__filename|__dirname/,
+      },
+      handler(code, id) {
+        if (!mayContainServerCjsGlobal(code)) return null;
+        const canonicalId = commonJsDependencyCanonicalId(id);
+        return canonicalId
+          ? rewriteCjsGlobals(code, dependencyCjsGlobalInitializers(canonicalId))
+          : null;
+      },
+    },
+  };
+
+  return {
+    vitePlugin,
+    optimizeDepsPlugin,
+    isBundledCommonJsDependencyId: (id) => commonJsDependencyCanonicalId(id) !== null,
   };
 }
 
@@ -162,11 +280,83 @@ export function rewriteServerCjsGlobals(
   return rewriteCanonicalSourceIdentity(code, canonicalId, rootPaths, "server");
 }
 
+// Test-only entry point. The optimizer plugin delegates to this function so
+// parser and package-format checks are directly testable without a build.
+export function rewriteBundledDependencyCjsGlobals(code: string, id: string): RewriteResult | null {
+  if (!mayContainServerCjsGlobal(code)) return null;
+
+  const canonicalId = canonicalDependencyModuleId(id);
+  if (!canonicalId || !isCommonJsDependency(canonicalId)) return null;
+  return rewriteCanonicalCjsGlobals(code, canonicalId);
+}
+
+function rewriteCanonicalCjsGlobals(code: string, canonicalId: string): RewriteResult | null {
+  return rewriteCjsGlobals(code, sourcePathCjsGlobalInitializers(canonicalId));
+}
+
+// Test-only entry point. The build plugin delegates to this function so the
+// final-chunk free-global analysis is covered without a parallel implementation.
+export function rewriteBuildChunkCjsGlobals(
+  code: string,
+  runtime: ServerRuntime = "node",
+): RewriteResult | null {
+  if (!mayContainServerCjsGlobal(code)) return null;
+  return rewriteCjsGlobals(
+    code,
+    runtime === "worker" ? EDGE_CJS_GLOBAL_INITIALIZERS : NODE_CHUNK_CJS_GLOBAL_INITIALIZERS,
+  );
+}
+
 function rewriteCanonicalSourceIdentity(
   code: string,
   canonicalId: string,
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
+  runtime: ServerRuntime = "node",
+): RewriteResult | null {
+  return rewriteModuleIdentity(code, {
+    importMetaUrlReplacement: mayContainImportMetaUrl(code)
+      ? JSON.stringify(importMetaUrlValue(canonicalId, rootPaths, environment))
+      : undefined,
+    cjsGlobalInitializers:
+      environment === "server" && mayContainServerCjsGlobal(code)
+        ? runtime === "worker"
+          ? EDGE_CJS_GLOBAL_INITIALIZERS
+          : sourcePathCjsGlobalInitializers(canonicalId)
+        : undefined,
+  });
+}
+
+type CjsGlobalInitializers = Record<CjsGlobalName, string>;
+
+const NODE_CHUNK_CJS_GLOBAL_INITIALIZERS: CjsGlobalInitializers = {
+  __filename: "import.meta.filename",
+  __dirname: "import.meta.dirname",
+};
+
+// Next's Edge webpack build has no filesystem module identity. Webpack mocks
+// these globals as `/index.js` and `/`; Next gives Rspack the same explicit
+// values. Keep Worker dev/optimizer/build behavior on that stable logical
+// identity instead of leaking build-host paths.
+// https://github.com/vercel/next.js/blob/d470d18941a46a6bdd655ec63179eb60e6b44577/packages/next/src/build/webpack-config.ts#L2314-L2325
+const EDGE_CJS_GLOBAL_INITIALIZERS: CjsGlobalInitializers = {
+  __filename: JSON.stringify("/index.js"),
+  __dirname: JSON.stringify("/"),
+};
+
+function rewriteCjsGlobals(
+  code: string,
+  cjsGlobalInitializers: CjsGlobalInitializers,
+): RewriteResult | null {
+  return rewriteModuleIdentity(code, { cjsGlobalInitializers });
+}
+
+function rewriteModuleIdentity(
+  code: string,
+  options: {
+    importMetaUrlReplacement?: string;
+    cjsGlobalInitializers?: CjsGlobalInitializers;
+  },
 ): RewriteResult | null {
   let ast: unknown;
   try {
@@ -178,22 +368,18 @@ function rewriteCanonicalSourceIdentity(
   const output = new MagicString(code);
   let changed = false;
 
-  // Skip the import.meta.url AST walk for modules that don't contain the token
-  // (the widened CJS-global gate admits many such modules). A range can only
-  // exist when the substring is present, so this is behavior-preserving.
-  if (mayContainImportMetaUrl(code)) {
+  if (options.importMetaUrlReplacement !== undefined) {
     const importMetaRanges = collectImportMetaUrlRanges(ast);
     if (importMetaRanges.length > 0) {
-      const replacement = JSON.stringify(importMetaUrlValue(canonicalId, rootPaths, environment));
       for (const range of importMetaRanges) {
-        output.overwrite(range.start, range.end, replacement);
+        output.overwrite(range.start, range.end, options.importMetaUrlReplacement);
         changed = true;
       }
     }
   }
 
-  if (environment === "server" && mayContainServerCjsGlobal(code)) {
-    const injected = injectServerCjsGlobals(ast, canonicalId);
+  if (options.cjsGlobalInitializers) {
+    const injected = injectServerCjsGlobals(ast, options.cjsGlobalInitializers);
     if (injected) {
       output.appendLeft(findDirectivePrologueEnd(ast), `\n${injected}`);
       changed = true;
@@ -209,6 +395,72 @@ function rewriteCanonicalSourceIdentity(
 
 function cleanModuleId(id: string): string {
   return id.split("?", 1)[0];
+}
+
+function isNodeModulesId(id: string): boolean {
+  return id.includes("/node_modules/") || id.includes("\\node_modules\\");
+}
+
+function setBoundedCacheEntry<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
+  if (!cache.has(key) && cache.size >= limit) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) cache.delete(oldestKey);
+  }
+  cache.set(key, value);
+}
+
+function canonicalDependencyModuleId(id: string): string | null {
+  const cleanId = cleanModuleId(id);
+  if (!cleanId || cleanId.startsWith(VIRTUAL_PREFIX)) return null;
+
+  let filePath: string;
+  try {
+    filePath = cleanId.startsWith("file:") ? toSlash(fileURLToPath(cleanId)) : toSlash(cleanId);
+  } catch {
+    return null;
+  }
+
+  if (!path.isAbsolute(filePath) || !filePath.includes("/node_modules/")) return null;
+  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(filePath))) return null;
+  return canonicalizePath(filePath);
+}
+
+export function isBundledCommonJsDependencyId(id: string): boolean {
+  const canonicalId = canonicalDependencyModuleId(id);
+  return canonicalId !== null && isCommonJsDependency(canonicalId);
+}
+
+function isCommonJsDependency(canonicalId: string): boolean {
+  const extension = path.extname(canonicalId);
+  if (extension === ".cjs" || extension === ".cts") return true;
+  if (extension === ".mjs" || extension === ".mts") return false;
+
+  // For ambiguous .js/.jsx/.ts/.tsx files, Node's nearest package scope is
+  // the authoritative module-format metadata. Default to CommonJS exactly as
+  // Node does when the package omits `type` or has no package.json.
+  let directory = path.dirname(canonicalId);
+  for (;;) {
+    const packageJsonPath = path.join(directory, "package.json");
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+          type?: unknown;
+        };
+        return packageJson.type !== "module";
+      } catch {
+        return true;
+      }
+    }
+
+    // Node package scopes never cross a node_modules boundary. An unpackaged
+    // dependency therefore keeps Node's default CommonJS format even when the
+    // application above node_modules is declared as type: module.
+    if (path.basename(directory) === "node_modules") return true;
+
+    const parent = path.dirname(directory);
+    if (parent === directory) return true;
+    directory = parent;
+  }
 }
 
 function createRootPaths(root: string, options: { outputDirs?: string[] } = {}): RootPaths {
@@ -245,6 +497,10 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
 
 function mayContainImportMetaUrl(code: string): boolean {
   return code.includes("import.meta.url") || code.includes("import.meta?.url");
+}
+
+function mayContainSourceIdentityToken(code: string): boolean {
+  return mayContainImportMetaUrl(code) || mayContainServerCjsGlobal(code);
 }
 
 function mayContainServerCjsGlobal(code: string): boolean {
@@ -353,15 +609,18 @@ function isCjsGlobalName(name: unknown): name is CjsGlobalName {
   return name === "__filename" || name === "__dirname";
 }
 
-function injectServerCjsGlobals(ast: unknown, canonicalId: string): string | null {
-  const analysis = analyzeServerCjsGlobals(ast);
-  const values: Record<CjsGlobalName, string> = {
-    __filename: canonicalId,
-    __dirname: path.dirname(canonicalId),
+function sourcePathCjsGlobalInitializers(canonicalId: string): CjsGlobalInitializers {
+  return {
+    __filename: JSON.stringify(canonicalId),
+    __dirname: JSON.stringify(path.dirname(canonicalId)),
   };
+}
+
+function injectServerCjsGlobals(ast: unknown, initializers: CjsGlobalInitializers): string | null {
+  const analysis = analyzeServerCjsGlobals(ast);
   const parts = CJS_GLOBALS.filter(
     (name) => analysis.reads.has(name) && !analysis.moduleBindings.has(name),
-  ).map((name) => `var ${name} = ${JSON.stringify(values[name])};`);
+  ).map((name) => `var ${name} = ${initializers[name]};`);
   return parts.length ? parts.join("") : null;
 }
 

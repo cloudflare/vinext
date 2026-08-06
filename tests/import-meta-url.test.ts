@@ -1,9 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   createImportMetaUrlPlugin,
+  rewriteBuildChunkCjsGlobals,
+  rewriteBundledDependencyCjsGlobals,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
@@ -19,6 +22,9 @@ describe("vinext:import-meta-url plugin", () => {
   let linkedRoot: string;
   let pagePath: string;
   let canonicalPagePath: string;
+  let cjsDependencyPath: string;
+  let esmDependencyPath: string;
+  let unpackagedDependencyPath: string;
 
   beforeAll(async () => {
     tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-import-meta-url-"));
@@ -28,6 +34,30 @@ describe("vinext:import-meta-url plugin", () => {
 
     await fsp.mkdir(path.dirname(pagePath), { recursive: true });
     await fsp.writeFile(pagePath, `export const url = import.meta.url;\n`);
+    const cjsDependencyDir = path.join(realRoot, "node_modules", "cjs-source-identity");
+    const esmDependencyDir = path.join(realRoot, "node_modules", "esm-source-identity");
+    cjsDependencyPath = path.join(cjsDependencyDir, "index.js");
+    esmDependencyPath = path.join(esmDependencyDir, "index.js");
+    const typeModuleAppDir = path.join(tmpDir, "type-module-app");
+    unpackagedDependencyPath = path.join(
+      typeModuleAppDir,
+      "node_modules",
+      "unpackaged-dependency",
+      "index.js",
+    );
+    await Promise.all([
+      fsp.mkdir(cjsDependencyDir, { recursive: true }),
+      fsp.mkdir(esmDependencyDir, { recursive: true }),
+      fsp.mkdir(path.dirname(unpackagedDependencyPath), { recursive: true }),
+    ]);
+    await Promise.all([
+      fsp.writeFile(path.join(cjsDependencyDir, "package.json"), '{"type":"commonjs"}\n'),
+      fsp.writeFile(path.join(esmDependencyDir, "package.json"), '{"type":"module"}\n'),
+      fsp.writeFile(cjsDependencyPath, "exports.paths = [__filename, __dirname];\n"),
+      fsp.writeFile(esmDependencyPath, "export const path = __dirname;\n"),
+      fsp.writeFile(path.join(typeModuleAppDir, "package.json"), '{"type":"module"}\n'),
+      fsp.writeFile(unpackagedDependencyPath, "exports.path = __dirname;\n"),
+    ]);
     // The plugin emits canonical forward-slash paths, so expectations are
     // built from the slash form (path.dirname preserves separators on win32).
     canonicalPagePath = toSlash(await fsp.realpath(pagePath));
@@ -114,6 +144,205 @@ describe("vinext:import-meta-url plugin", () => {
     );
     expect(result?.code).not.toContain("linked-app");
     expect(result?.code).toContain(`console.log(__filename, __dirname);`);
+  });
+
+  it("injects source paths for a CommonJS dependency optimizer input", async () => {
+    const canonicalDependencyPath = toSlash(await fsp.realpath(cjsDependencyPath));
+    const result = rewriteBundledDependencyCjsGlobals(
+      `"use strict";\nexports.paths = [__filename, __dirname];\n`,
+      `${cjsDependencyPath}?v=test`,
+    );
+
+    expect(result?.code).toContain(`"use strict";\nvar __filename`);
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalDependencyPath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(toSlash(path.dirname(canonicalDependencyPath)))};`,
+    );
+  });
+
+  it("defaults an unpackaged node_modules dependency to CommonJS", async () => {
+    const canonicalDependencyPath = toSlash(await fsp.realpath(unpackagedDependencyPath));
+    const result = rewriteBundledDependencyCjsGlobals(
+      `exports.path = __dirname;\n`,
+      unpackagedDependencyPath,
+    );
+
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(toSlash(path.dirname(canonicalDependencyPath)))};`,
+    );
+  });
+
+  it("does not inject CommonJS globals into a dependency declared as ESM", () => {
+    const result = rewriteBundledDependencyCjsGlobals(
+      `export const paths = [__filename, __dirname];\n`,
+      esmDependencyPath,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject dependency globals mentioned only in comments and strings", () => {
+    const result = rewriteBundledDependencyCjsGlobals(
+      `// __filename\nexports.note = "__dirname";\n`,
+      cjsDependencyPath,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("defines free CommonJS globals relative to an emitted ESM chunk", () => {
+    const result = rewriteBuildChunkCjsGlobals(
+      `"use strict";\nconst value = await Promise.resolve(__dirname + __filename);\n`,
+    );
+
+    expect(result?.code).toContain(
+      `"use strict";\nvar __filename = import.meta.filename;var __dirname = import.meta.dirname;`,
+    );
+  });
+
+  it("does not redefine CommonJS globals already bound by an emitted chunk", () => {
+    const result = rewriteBuildChunkCjsGlobals(
+      `const __dirname = import.meta.dirname;\nawait Promise.resolve(__dirname);\n`,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("uses one Vite capability plus a filtered optimizer adapter", () => {
+    const { vitePlugin, optimizeDepsPlugin } = createImportMetaUrlPlugin({
+      getRoot: () => realRoot,
+    });
+    const viteFilter = (
+      vitePlugin.transform as {
+        filter: { id: { include: RegExp; exclude: RegExp }; code: RegExp };
+      }
+    ).filter;
+    const optimizerFilter = (
+      optimizeDepsPlugin.transform as { filter: { id: RegExp; code: RegExp } }
+    ).filter;
+
+    expect(vitePlugin.name).toBe("vinext:import-meta-url");
+    expect(optimizeDepsPlugin.name).toBe("vinext:import-meta-url:optimize-deps");
+    expect(viteFilter.id.include.test(pagePath)).toBe(true);
+    expect(viteFilter.id.include.test(cjsDependencyPath)).toBe(true);
+    expect(viteFilter.id.exclude.test("\0virtual:fixture.ts")).toBe(true);
+    expect(viteFilter.code.test("export const value = 1")).toBe(false);
+    expect(viteFilter.code.test("export const value = __dirname")).toBe(true);
+    expect(optimizerFilter.id.test(pagePath)).toBe(false);
+    expect(optimizerFilter.id.test(cjsDependencyPath)).toBe(true);
+    expect(optimizerFilter.code.test("exports.value = 1")).toBe(false);
+  });
+
+  it("keeps unaffected modules on the pre-parse fast path", () => {
+    let rootReads = 0;
+    const { vitePlugin } = createImportMetaUrlPlugin({
+      getRoot: () => {
+        rootReads += 1;
+        return realRoot;
+      },
+    });
+    const transform = unwrapHook(vitePlugin.transform);
+
+    expect(
+      transform.call(
+        { environment: { mode: "dev", config: { consumer: "server" } } },
+        "this is not valid javascript",
+        cjsDependencyPath,
+      ),
+    ).toBeNull();
+    expect(rootReads).toBe(0);
+  });
+
+  it("caches dependency package-format reads within the capability", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const readFileSync = vi.spyOn(fs, "readFileSync");
+    try {
+      const before = readFileSync.mock.calls.length;
+
+      expect(capability.isBundledCommonJsDependencyId(cjsDependencyPath)).toBe(true);
+      const afterFirst = readFileSync.mock.calls.length;
+      expect(capability.isBundledCommonJsDependencyId(`${cjsDependencyPath}?v=second`)).toBe(true);
+
+      expect(afterFirst - before).toBe(1);
+      expect(readFileSync.mock.calls.length).toBe(afterFirst);
+    } finally {
+      readFileSync.mockRestore();
+    }
+  });
+
+  it("invalidates dependency format identity after a watched symlink retarget", async () => {
+    const versionA = path.join(realRoot, "node_modules/dependency-version-a");
+    const versionB = path.join(realRoot, "node_modules/dependency-version-b");
+    const current = path.join(realRoot, "node_modules/current-dependency");
+    const currentEntry = path.join(current, "index.js");
+    await Promise.all([
+      fsp.mkdir(versionA, { recursive: true }),
+      fsp.mkdir(versionB, { recursive: true }),
+    ]);
+    await Promise.all([
+      fsp.writeFile(path.join(versionA, "package.json"), '{"type":"commonjs"}\n'),
+      fsp.writeFile(path.join(versionA, "index.js"), "exports.path = __dirname;\n"),
+      fsp.writeFile(path.join(versionB, "package.json"), '{"type":"module"}\n'),
+      fsp.writeFile(path.join(versionB, "index.js"), "export const path = __dirname;\n"),
+    ]);
+    await fsp.symlink(versionA, current, "junction");
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    expect(capability.isBundledCommonJsDependencyId(currentEntry)).toBe(true);
+
+    await fsp.unlink(current);
+    await fsp.symlink(versionB, current, "junction");
+    unwrapHook(capability.vitePlugin.watchChange).call({}, currentEntry, { event: "update" });
+
+    expect(capability.isBundledCommonJsDependencyId(currentEntry)).toBe(false);
+  });
+
+  it("uses runtime-specific dependency globals only in server development", () => {
+    const nodeCapability = createImportMetaUrlPlugin({
+      getRoot: () => realRoot,
+      getServerRuntime: () => "node",
+    });
+    const nodeTransform = unwrapHook(nodeCapability.vitePlugin.transform);
+    const source = "exports.path = __dirname;";
+
+    expect(
+      nodeTransform.call(
+        { environment: { mode: "dev", config: { consumer: "server" } } },
+        source,
+        cjsDependencyPath,
+      )?.code,
+    ).toContain("var __dirname =");
+    expect(
+      nodeTransform.call(
+        { environment: { mode: "dev", config: { consumer: "client" } } },
+        source,
+        cjsDependencyPath,
+      ),
+    ).toBeNull();
+    expect(
+      nodeTransform.call(
+        { environment: { mode: "build", config: { consumer: "server" } } },
+        source,
+        cjsDependencyPath,
+      ),
+    ).toBeNull();
+
+    const workerCapability = createImportMetaUrlPlugin({
+      getRoot: () => realRoot,
+      getServerRuntime: () => "worker",
+    });
+    expect(
+      unwrapHook(workerCapability.vitePlugin.transform).call(
+        { environment: { mode: "dev", config: { consumer: "server" } } },
+        source,
+        cjsDependencyPath,
+      )?.code,
+    ).toContain('var __dirname = "/";');
+
+    expect(rewriteBuildChunkCjsGlobals(source, "worker")?.code).toContain('var __dirname = "/";');
+    expect(rewriteBuildChunkCjsGlobals("exports.path = __filename;", "worker")?.code).toContain(
+      'var __filename = "/index.js";',
+    );
   });
 
   it("does not inject when __filename or __dirname are declared at top level", () => {
@@ -571,7 +800,7 @@ describe("vinext:import-meta-url plugin", () => {
   });
 
   it("reuses the cached plugin transform result per environment kind", () => {
-    const plugin = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const { vitePlugin: plugin } = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const configResolved = unwrapHook(plugin.configResolved).bind(plugin);
     configResolved({ root: realRoot, build: { outDir: "dist" } });
     const transform = unwrapHook(plugin.transform);
@@ -616,7 +845,7 @@ describe("vinext:import-meta-url plugin", () => {
     ]);
     await fsp.symlink(versionA, current, "junction");
 
-    const plugin = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const { vitePlugin: plugin } = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const configResolved = unwrapHook(plugin.configResolved).bind(plugin);
     configResolved({ root: realRoot, build: { outDir: "dist" } });
     const transform = unwrapHook(plugin.transform);

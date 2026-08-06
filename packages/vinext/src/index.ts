@@ -618,9 +618,14 @@ function isScriptModuleId(id: string): boolean {
   return SCRIPT_IMPORT_RE.test(stripViteModuleQuery(id).toLowerCase());
 }
 
-function skipCommonjsForLocalCjs(id: string): false | undefined {
-  const cleanId = toSlash(stripViteModuleQuery(id));
-  return /\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules") ? false : undefined;
+function skipCommonjsForLocalCjs(
+  id: string,
+  transformBundledDependencies = false,
+  isBundledCommonJsDependency: (id: string) => boolean = () => false,
+): boolean | undefined {
+  const cleanId = stripViteModuleQuery(id);
+  if (/\.c[jt]s$/i.test(cleanId) && !/[\\/]node_modules[\\/]/.test(cleanId)) return false;
+  return transformBundledDependencies && isBundledCommonJsDependency(cleanId) ? true : undefined;
 }
 
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
@@ -1459,6 +1464,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let nitroTraceDepsFromServerExternals: string[] = [];
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
+  const importMetaUrlCapability = createImportMetaUrlPlugin({
+    getRoot: () => root,
+    // Workers do not expose filesystem-backed module identity. The capability
+    // uses Next's Edge-compatible logical globals instead of Node import.meta
+    // path APIs or build-host paths when this reports a Worker target.
+    getServerRuntime: () => (hasCloudflarePlugin ? "worker" : "node"),
+  });
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
@@ -1814,6 +1826,41 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     ReturnType<typeof replaceTypeofWindow>
   >();
 
+  // vite-plugin-commonjs calls its user filter synchronously, before its first
+  // async boundary, but the filter itself receives only an id. Bridge the
+  // current Vite environment into that call without creating per-environment
+  // plugin instances: environment plugins cannot run the configResolved hook
+  // that vite-plugin-commonjs requires to initialize its resolver.
+  let transformBundledCommonJsDependencies = false;
+  const commonJsPlugin = commonjs({
+    filter(id: string) {
+      return skipCommonjsForLocalCjs(
+        id,
+        transformBundledCommonJsDependencies,
+        importMetaUrlCapability.isBundledCommonJsDependencyId,
+      );
+    },
+  });
+  const commonJsTransform = commonJsPlugin.transform;
+  if (typeof commonJsTransform === "function") {
+    commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      if (!id.includes("/node_modules/") && !id.includes("\\node_modules\\")) {
+        return commonJsTransform.call(this, code, id, ...args);
+      }
+      const previous = transformBundledCommonJsDependencies;
+      transformBundledCommonJsDependencies =
+        this.environment.mode === "dev" && this.environment.config.consumer === "server";
+      try {
+        // Do not await here: the filter is consulted synchronously while this
+        // environment-scoped flag is set. The remaining async transform work
+        // does not read it, so concurrent module transforms cannot cross-talk.
+        return commonJsTransform.call(this, code, id, ...args);
+      } finally {
+        transformBundledCommonJsDependencies = previous;
+      }
+    };
+  }
+
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
@@ -1839,11 +1886,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // rewritten output as CommonJS, failing with "Cannot use export statement
     // outside a module". Returning `false` makes vite-plugin-commonjs skip these
     // project-local files so rolldown's own CJS interop bundles them instead.
-    // For everything else we return `undefined` to preserve the plugin's
-    // defaults — including its existing skip of node_modules `.cjs` files.
-    commonjs({
-      filter: skipCommonjsForLocalCjs,
-    }),
+    // For dependencies that Node identifies as CommonJS, return true so the
+    // files actually loaded through a bundled SSR graph are converted on
+    // demand instead of requiring Vite's environment-wide dependency crawl.
+    commonJsPlugin,
     {
       name: "vinext:global-not-found-css-isolation",
       apply: "build",
@@ -3381,7 +3427,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // optimizer avoids the "new dependencies optimized" full
                 // reload the first time a Pages Router page renders an
                 // <Image>.
-                exclude: ["ipaddr.js"],
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  ["react", "react-dom", "react-dom/server", "ipaddr.js"],
+                  Object.keys(nextShimMap),
+                ),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -3408,6 +3459,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configEnvironment(name, config) {
+        if (name !== "client" && config.consumer !== "client") {
+          // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
+          // container. Register only the thin adapter for the same module-
+          // identity capability; it selects Node or Worker identity from the
+          // actual runtime target.
+          config.optimizeDeps ??= {};
+          config.optimizeDeps.rolldownOptions ??= {};
+          const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;
+          config.optimizeDeps.rolldownOptions.plugins = [
+            ...(Array.isArray(configuredPlugins)
+              ? configuredPlugins
+              : configuredPlugins
+                ? [configuredPlugins]
+                : []),
+            importMetaUrlCapability.optimizeDepsPlugin,
+          ];
+        }
+
         if (
           isServeCommand &&
           hasCloudflarePlugin &&
@@ -6417,9 +6486,7 @@ export const loadServerActionClient = ${
         },
       },
     },
-    createImportMetaUrlPlugin({
-      getRoot: () => root,
-    }),
+    importMetaUrlCapability.vitePlugin,
     createExtensionlessDynamicImportPlugin(),
     // Expand Webpack's build-time `require.context(...)` into a static module
     // map backed by `import.meta.glob` — see src/plugins/require-context.ts

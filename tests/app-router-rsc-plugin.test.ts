@@ -49,6 +49,14 @@ describe("RSC plugin auto-registration", () => {
     expect(html).toContain("auto-rsc-test");
   });
 
+  it("preserves CJS dependency globals in a hybrid Pages route", async () => {
+    const res = await fetch(`${baseUrl}/cjs-dependency-globals`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toMatch(
+      /<p id="runtime-path">.*next\/dist\/compiled\/regenerator-runtime\/runtime\.js<\/p>/,
+    );
+  });
+
   it("serves the browser bootstrap in dev when deploymentId is configured", async () => {
     const { createServer } = await import("vite");
     const deploymentServer = await createServer({
