@@ -8860,6 +8860,12 @@ describe("middleware matcher patterns", () => {
       }),
     ).toBe(true);
     expect(
+      matchesMiddleware("/FR/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
       matchesMiddleware("/", "/", undefined, {
         locales: ["en", "fr"],
         defaultLocale: "en",
@@ -8892,13 +8898,19 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/other", matcher)).toBe(false);
   });
 
-  it("matchesMiddleware: trailing slashes in matcher sources are optional", async () => {
+  it("matchesMiddleware: preserves source slashes and allows one terminal delimiter", async () => {
     const { matchPattern, matchesMiddleware } =
       await import("../packages/vinext/src/server/middleware.js");
 
     // Next.js compiles middleware sources with an optional terminal delimiter.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
     expect(matchPattern("/api/admin/", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin//", "/api/admin")).toBe(false);
+    expect(matchPattern("/api/admin//", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin/?", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin/#", "/api/admin/")).toBe(true);
+    expect(matchPattern("/?", "/")).toBe(false);
+    expect(matchPattern("/#", "/")).toBe(false);
     expect(matchPattern("/api/admin/", "/api/admin\\/")).toBe(true);
     expect(matchPattern("/api/admin", "/api/admin\\/")).toBe(false);
     expect(matchPattern("/blog/post/", "/(.*)/")).toBe(true);
@@ -8908,9 +8920,9 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/api/123", "/api/:id/")).toBe(false);
     expect(matchPattern("/foo/", "/:path(.*\\/)")).toBe(true);
     expect(matchPattern("/foo", "/:path(.*\\/)")).toBe(false);
-    expect(matchesMiddleware("/api/admin", "/api/admin/")).toBe(true);
-    expect(matchesMiddleware("/api/admin", ["/api/admin/"])).toBe(true);
-    expect(matchesMiddleware("/api/admin", [{ source: "/api/admin/" }])).toBe(true);
+    expect(matchesMiddleware("/api/admin", "/api/admin/")).toBe(false);
+    expect(matchesMiddleware("/api/admin", ["/api/admin/"])).toBe(false);
+    expect(matchesMiddleware("/api/admin", [{ source: "/api/admin/" }])).toBe(false);
     expect(
       matchesMiddleware("/fr/api/admin/", "/api/admin\\/", undefined, {
         locales: ["en", "fr"],

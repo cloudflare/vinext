@@ -315,8 +315,15 @@ function writeEncodedSlashPagesFixture(rootDir: string): void {
   );
   fs.writeFileSync(
     path.join(rootDir, "middleware.ts"),
-    `export const config = { matcher: "/a/b" };
-export default function middleware() {
+    `import { NextResponse, type NextRequest } from "next/server";
+
+export const config = { matcher: "/a/b" };
+export default function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/a%2Fb") {
+    const response = NextResponse.next();
+    response.headers.set("x-encoded-slash-matcher", "matched");
+    return response;
+  }
   return new Response("nested blocked", { status: 418 });
 }
 `,
@@ -1174,6 +1181,7 @@ describe("Pages Router integration", () => {
 
       const encodedRes = await fetch(`${started.baseUrl}/a%2Fb`);
       expect(encodedRes.status).toBe(404);
+      expect(encodedRes.headers.get("x-encoded-slash-matcher")).toBe("matched");
       expect(await encodedRes.text()).not.toContain("nested blocked");
 
       const nestedRes = await fetch(`${started.baseUrl}/a/b`);
@@ -6808,6 +6816,7 @@ describe("Production server middleware (Pages Router)", () => {
 
       const encodedRes = await fetch(`${tempProdUrl}/a%2Fb`);
       expect(encodedRes.status).toBe(404);
+      expect(encodedRes.headers.get("x-encoded-slash-matcher")).toBe("matched");
       expect(await encodedRes.text()).not.toContain("nested blocked");
 
       const nestedRes = await fetch(`${tempProdUrl}/a/b`);
