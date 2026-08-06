@@ -283,6 +283,27 @@ describe("app route handler runtime helpers", () => {
     expect(tracked.didAccessDynamicRequest()).toBe(true);
   });
 
+  it("marks derived Headers, cookies, and searchParams before prototype access", () => {
+    const accesses: string[] = [];
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://example.com/demo?tenant=a", {
+        headers: { cookie: "session=a" },
+      }),
+      {
+        onDynamicAccess(access) {
+          accesses.push(access);
+        },
+      },
+    );
+
+    tracked.request.headers.valueOf();
+    tracked.request.cookies.valueOf();
+    tracked.request.nextUrl.searchParams.valueOf();
+
+    expect(accesses).toEqual(["request.headers", "request.cookies", "nextUrl.searchParams"]);
+    expect(tracked.didAccessDynamicRequest()).toBe(true);
+  });
+
   it("tracks body-reading request methods without breaking Request internals", async () => {
     const accesses: string[] = [];
     const tracked = createTrackedAppRouteRequest(
@@ -303,6 +324,48 @@ describe("app route handler runtime helpers", () => {
     expect(tracked.request.clone().headers.get("content-type")).toBe("application/json");
     await expect(tracked.request.json()).resolves.toEqual({ ok: true });
     expect(accesses).toEqual(["request.headers", "request.json"]);
+  });
+
+  // Regression: App Router route handlers commonly pass their request to
+  // fetch-based handler libraries (oRPC, Hono, …) that re-wrap it via
+  // `new Request(request, init)` (e.g. oRPC's BodyLimitPlugin). The tracked
+  // request must stay a genuine Request for that to work. When it was a Proxy,
+  // workerd coerced it to the URL string "[object Request]" and `new URL()`
+  // threw "Invalid URL: [object Request]"; Node's undici threw "Cannot read
+  // private member #state" — breaking every such handler in production.
+  it("stays re-wrappable via new Request(request, init) for fetch handler libraries", async () => {
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://example.com/api/rpc/toggle?a=1", {
+        method: "POST",
+        body: JSON.stringify({ hello: "world" }),
+        headers: { "content-type": "application/json", "x-test-ping": "pong" },
+      }),
+      {},
+    );
+
+    const rewrapped = new Request(tracked.request, {
+      body: tracked.request.body,
+      duplex: "half",
+    } as RequestInit);
+
+    expect(rewrapped instanceof Request).toBe(true);
+    expect(rewrapped.url).toBe("https://example.com/api/rpc/toggle?a=1");
+    expect(String(new URL(rewrapped.url))).toBe("https://example.com/api/rpc/toggle?a=1");
+    expect(rewrapped.method).toBe("POST");
+    expect(rewrapped.headers.get("x-test-ping")).toBe("pong");
+    await expect(rewrapped.json()).resolves.toEqual({ hello: "world" });
+  });
+
+  it("keeps a GET route handler request re-wrappable without a body", () => {
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://example.com/api/data?q=1"),
+      {},
+    );
+
+    const rewrapped = new Request(tracked.request);
+
+    expect(rewrapped.url).toBe("https://example.com/api/data?q=1");
+    expect(rewrapped.method).toBe("GET");
   });
 
   it("remembers known dynamic app routes for the process lifetime", () => {

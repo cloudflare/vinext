@@ -116,6 +116,42 @@ function bindMethodIfNeeded<T>(value: T, target: object): T {
   return typeof value === "function" ? (value.bind(target) as T) : value;
 }
 
+// Request properties whose access must be reported as dynamic in "auto" mode.
+// Kept in sync with RequestDynamicAccess so `request.${prop}` types correctly.
+const AUTO_TRACKED_REQUEST_PROPS = [
+  "headers",
+  "cookies",
+  "ip",
+  "geo",
+  "url",
+  "body",
+  "blob",
+  "json",
+  "text",
+  "arrayBuffer",
+  "formData",
+] as const;
+
+/**
+ * Walks the prototype chain (own properties first) to find a property's
+ * original descriptor before it is shadowed by an own tracking accessor, so the
+ * tracking getter can still read through to the real NextRequest/Request value.
+ */
+function resolveInheritedDescriptor(
+  target: object,
+  prop: PropertyKey,
+): PropertyDescriptor | undefined {
+  let current: object | null = target;
+  while (current) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, prop);
+    if (descriptor) {
+      return descriptor;
+    }
+    current = Object.getPrototypeOf(current) as object | null;
+  }
+  return undefined;
+}
+
 function buildNextConfig(options: TrackedAppRouteRequestOptions): {
   basePath?: string;
   i18n?: NextI18nConfig;
@@ -317,7 +353,83 @@ export function createTrackedAppRouteRequest(
       requestWithOverrides instanceof NextRequest
         ? requestWithOverrides
         : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
-    let proxiedNextUrl: NextURL | null = null;
+
+    // Route handlers routinely hand this request to fetch-based handler
+    // libraries (oRPC, Hono, …) that re-wrap it via `new Request(request, init)`.
+    // A Proxy is not a real Request: on workerd `new Request(proxy)` cannot read
+    // the native internal slots and coerces the proxy to the URL string
+    // "[object Request]" (Node's undici instead throws "Cannot read private
+    // member #state"), which crashes the handler. So in the common "auto" mode
+    // we track dynamic access with own accessor properties on the real
+    // NextRequest instead of a Proxy, keeping the object a genuine, re-wrappable
+    // Request.
+    //
+    // The value-substituting static-generation modes below deliberately keep the
+    // Proxy: own accessors can only *shadow* JS getters, but `new Request(req)`
+    // copies the native internal slots, bypassing them. So stubbing those modes
+    // with own accessors would silently leak the real URL (incl. credentials and
+    // query), headers, cookies, and body on re-wrap — exactly what force-static
+    // strips. Keeping the Proxy makes a re-wrap throw instead of leak (and in
+    // "error" mode throwing on request access is the intended behaviour), which
+    // is the safe outcome for the contradictory case of a static route handler
+    // that hands its request to a fetch-based library.
+    if (requestMode === "auto") {
+      let proxiedNextUrl: NextURL | null = null;
+      // Because the tracking getters live on the real instance, a getter that
+      // internally reads another tracked property (e.g. the shim's `ip`/`geo`
+      // reading `this.headers`) would re-mark it. Suppress marking while a
+      // tracked value is being resolved so only the outer access is reported —
+      // matching the previous Proxy behaviour that read through the untracked
+      // target.
+      let resolvingTrackedValue = false;
+      const readUntracked = <T>(read: () => T): T => {
+        const previous = resolvingTrackedValue;
+        resolvingTrackedValue = true;
+        try {
+          return read();
+        } finally {
+          resolvingTrackedValue = previous;
+        }
+      };
+      for (const prop of AUTO_TRACKED_REQUEST_PROPS) {
+        const original = resolveInheritedDescriptor(nextRequest, prop);
+        Object.defineProperty(nextRequest, prop, {
+          configurable: true,
+          get() {
+            if (!resolvingTrackedValue) {
+              markDynamicAccess(`request.${prop}`);
+            }
+            const value = readUntracked(() =>
+              original?.get ? original.get.call(nextRequest) : original?.value,
+            );
+            return bindMethodIfNeeded(value, nextRequest);
+          },
+        });
+      }
+      const originalNextUrl = resolveInheritedDescriptor(nextRequest, "nextUrl");
+      Object.defineProperty(nextRequest, "nextUrl", {
+        configurable: true,
+        get() {
+          proxiedNextUrl ??= wrapNextUrl(
+            readUntracked(() =>
+              originalNextUrl?.get ? originalNextUrl.get.call(nextRequest) : originalNextUrl?.value,
+            ) as NextURL,
+          );
+          return proxiedNextUrl;
+        },
+      });
+      // `clone` is always present on the Request prototype chain; capture it in a
+      // plain variable so calling it neither trips no-unsafe-optional-chaining nor
+      // references an unbound prototype method.
+      const originalClone = resolveInheritedDescriptor(nextRequest, "clone")
+        ?.value as () => Request;
+      Object.defineProperty(nextRequest, "clone", {
+        configurable: true,
+        value: () => wrapRequest(readUntracked(() => originalClone.call(nextRequest))),
+      });
+      return nextRequest;
+    }
+
     let forceStaticNextUrl: NextURL | null = null;
     let requireStaticNextUrl: NextURL | null = null;
     let forceStaticHeaders: Headers | null = null;
@@ -387,28 +499,10 @@ export function createTrackedAppRouteRequest(
           }
         }
 
-        switch (prop) {
-          case "nextUrl":
-            proxiedNextUrl ??= wrapNextUrl(target.nextUrl);
-            return proxiedNextUrl;
-          case "headers":
-          case "cookies":
-          case "ip":
-          case "geo":
-          case "url":
-          case "body":
-          case "blob":
-          case "json":
-          case "text":
-          case "arrayBuffer":
-          case "formData":
-            markDynamicAccess(`request.${String(prop)}` as RequestDynamicAccess);
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
-          case "clone":
-            return () => wrapRequest(target.clone());
-          default:
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
-        }
+        // "auto" mode is handled with own accessors before the Proxy is built,
+        // and force-static/error return within their branches above. Fall back
+        // to a transparent passthrough for any other property.
+        return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
       },
     };
 

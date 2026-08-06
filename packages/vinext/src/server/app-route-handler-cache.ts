@@ -45,6 +45,7 @@ type ReadAppRouteHandlerCacheOptions = {
   /** `null` for non-dynamic routes. See `AppRouteHandlerFunction` for details. */
   params: AppRouteParams | null;
   requestUrl: string;
+  requestMayBeUsed?: boolean;
   revalidateSearchParams: URLSearchParams;
   expireSeconds?: number;
   revalidateSeconds: number;
@@ -122,6 +123,7 @@ export async function readAppRouteHandlerCacheResponse(
             markDynamicUsage: options.markDynamicUsage,
             params: options.params === null ? null : makeThenableParams(options.params),
             request: new Request(options.requestUrl, { method: "GET" }),
+            requestMayBeUsed: options.requestMayBeUsed,
             routePattern: options.routePattern,
             setHeadersAccessPhase: options.setHeadersAccessPhase,
           });

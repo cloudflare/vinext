@@ -82,6 +82,73 @@ describe("app route handler execution helpers", () => {
     await expect(response.json()).resolves.toEqual({ header: "pong" });
   });
 
+  it("marks native Request re-wraps dynamic before request-specific data can cross-cache", async () => {
+    const dynamicUsage = createDynamicUsageState();
+
+    const { dynamicUsedInHandler, response } = await runAppRouteHandler({
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      async handlerFn(request) {
+        // Native Request constructors copy internal slots without invoking the
+        // tracked request's own URL/header/body accessors.
+        const rewrapped = new Request(request);
+        return Response.json({
+          body: await rewrapped.text(),
+          header: rewrapped.headers.get("x-tenant"),
+          tenant: new URL(rewrapped.url).searchParams.get("tenant"),
+        });
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      params: null,
+      request: new Request("https://example.com/api/demo?tenant=a", {
+        method: "POST",
+        headers: { "x-tenant": "a" },
+        body: "payload-a",
+      }),
+      requestMayBeUsed: true,
+    });
+
+    expect(dynamicUsedInHandler).toBe(true);
+    await expect(response.json()).resolves.toEqual({
+      body: "payload-a",
+      header: "a",
+      tenant: "a",
+    });
+  });
+
+  it("does not mark a statically proven unused request binding dynamic", async () => {
+    const dynamicUsage = createDynamicUsageState();
+
+    const { dynamicUsedInHandler } = await runAppRouteHandler({
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      handlerFn() {
+        return new Response("static");
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      params: null,
+      request: new Request("https://example.com/api/static"),
+      requestMayBeUsed: false,
+    });
+
+    expect(dynamicUsedInHandler).toBe(false);
+  });
+
+  it("invokes route handlers detached from the internal options object", async () => {
+    const dynamicUsage = createDynamicUsageState();
+
+    const { response } = await runAppRouteHandler({
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      handlerFn: function (this: unknown) {
+        return Response.json({ thisWasUndefined: this === undefined });
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      params: null,
+      request: new Request("https://example.com/api/static"),
+      requestMayBeUsed: false,
+    });
+
+    await expect(response.json()).resolves.toEqual({ thisWasUndefined: true });
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
   it("rejects next/root-params inside route handlers", async () => {

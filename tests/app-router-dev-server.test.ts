@@ -208,6 +208,16 @@ describe("App Router integration", () => {
     expect(data).toEqual({ echo: { test: true } });
   });
 
+  it("keeps transformed route-handler requests re-wrappable in dev", async () => {
+    const queryResponse = await fetch(`${baseUrl}/api/dynamic-request-url?ping=dev-query`);
+    expect(await queryResponse.json()).toEqual({ ping: "dev-query" });
+
+    const headerResponse = await fetch(`${baseUrl}/api/dynamic-request-headers`, {
+      headers: { "x-test-ping": "dev-header" },
+    });
+    expect(await headerResponse.json()).toEqual({ ping: "dev-header" });
+  });
+
   it("returns 404 for non-existent routes", async () => {
     const res = await fetch(`${baseUrl}/nonexistent`);
     expect(res.status).toBe(404);

@@ -1999,7 +1999,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
-  it("route handler ISR: direct request.headers access is not cached", async () => {
+  it("route handler ISR: re-wrapped request.headers access is not cross-cached", async () => {
     const res1 = await fetch(`${baseUrl}/api/dynamic-request-headers`, {
       headers: { "x-test-ping": "a" },
     });
@@ -2013,7 +2013,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
-  it("route handler ISR: request.url query access is not cached", async () => {
+  it("route handler ISR: re-wrapped request.url query access is not cross-cached", async () => {
     const res1 = await fetch(`${baseUrl}/api/dynamic-request-url?ping=a`);
     const res2 = await fetch(`${baseUrl}/api/dynamic-request-url?ping=b`);
 

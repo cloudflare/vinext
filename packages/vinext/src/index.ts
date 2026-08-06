@@ -165,6 +165,7 @@ import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-on
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
+import { createAppRouteRequestUsagePlugin } from "./plugins/app-route-request-usage.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -6235,6 +6236,11 @@ export const loadServerActionClient = ${
     // IDs through Vite's build manifest so it can emit boundary-scoped preload
     // hints with the request CSP nonce.
     createDynamicPreloadMetadataPlugin(),
+    // Route-handler request escape metadata. Runs only for route.* modules and
+    // uses the source already supplied to Vite's transform hook; the emitted
+    // O(1) flag keeps native Request re-wrapping compatible without allowing
+    // request-dependent responses into the pathname-keyed ISR cache.
+    createAppRouteRequestUsagePlugin(),
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
     // exports/functions with registerCachedFunction() from vinext/cache-runtime.

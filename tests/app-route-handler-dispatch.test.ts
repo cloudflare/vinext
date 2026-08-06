@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
+import { APP_ROUTE_REQUEST_USAGE_EXPORT } from "../packages/vinext/src/server/app-route-handler-request-usage.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import { revalidateTag } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -277,6 +278,7 @@ describe("app route handler dispatch", () => {
       route: {
         pattern: "/api/static",
         routeHandler: {
+          [APP_ROUTE_REQUEST_USAGE_EXPORT]: { GET: false },
           GET: handlerSpy,
           revalidate: 60,
         },
@@ -374,6 +376,7 @@ describe("app route handler dispatch", () => {
       route: {
         pattern: "/api/stale",
         routeHandler: {
+          [APP_ROUTE_REQUEST_USAGE_EXPORT]: { GET: false },
           GET: handlerSpy,
           revalidate: 60,
         },
@@ -537,6 +540,7 @@ describe("app route handler dispatch", () => {
       route: {
         pattern: "/api/stale-fetch-cache",
         routeHandler: {
+          [APP_ROUTE_REQUEST_USAGE_EXPORT]: { GET: false },
           fetchCache: "force-cache",
           revalidate: 60,
           GET() {
@@ -621,6 +625,7 @@ describe("app route handler dispatch", () => {
         route: {
           pattern: "/api/stale-revalidate",
           routeHandler: {
+            [APP_ROUTE_REQUEST_USAGE_EXPORT]: { GET: false },
             revalidate: 60,
             GET() {
               expect(revalidateTag("dashboard", { expire: 0 })).toBeUndefined();

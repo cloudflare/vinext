@@ -4,10 +4,15 @@ import {
   type RouteHandlerHttpMethod,
   type RouteHandlerModule,
 } from "./app-route-handler-runtime.js";
+import {
+  APP_ROUTE_REQUEST_USAGE_EXPORT,
+  type AppRouteRequestUsageMetadata,
+} from "./app-route-handler-request-usage.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 
 export type AppRouteHandlerModule = {
+  [APP_ROUTE_REQUEST_USAGE_EXPORT]?: AppRouteRequestUsageMetadata;
   dynamic?: string;
   fetchCache?: unknown;
   revalidate?: unknown;
@@ -31,6 +36,7 @@ type AppRouteHandlerCacheReadOptions = {
   isDraftMode?: boolean;
   isProduction: boolean;
   method: string;
+  requestMayBeUsed?: boolean;
   revalidateSeconds: number | null;
 };
 
@@ -121,6 +127,15 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
     options.revalidateSeconds > 0 &&
     options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
+    // Auto-mode request tracking uses own accessors so the value remains a
+    // genuine Request on workerd. Native `new Request(request)` copies internal
+    // slots without invoking those accessors, so handlers whose request binding
+    // may be used must execute before any pathname-keyed ISR entry can be read.
+    !(
+      options.requestMayBeUsed &&
+      options.dynamicConfig !== "force-static" &&
+      options.dynamicConfig !== "error"
+    ) &&
     !options.isDraftMode &&
     !options.isKnownDynamic &&
     (options.method === "GET" || options.isAutoHead) &&
