@@ -206,8 +206,8 @@ test.describe('"use cache" transform coverage', () => {
 
       await writeUseCacheHmrActions(USE_CACHE_HMR_PLAIN, true);
       await waitForUseCacheHmrTransform(request);
+      await page.reload();
       await expect(async () => {
-        await page.reload();
         await page.locator("#call-use-cache-hmr").click();
         await expect(page.getByTestId("use-cache-hmr-result")).toHaveText("plain", {
           timeout: 2000,
@@ -216,8 +216,8 @@ test.describe('"use cache" transform coverage', () => {
 
       await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED, true);
       await waitForUseCacheHmrTransform(request);
+      await page.reload();
       await expect(async () => {
-        await page.reload();
         await page.locator("#call-use-cache-hmr").click();
         await expect(page.getByTestId("use-cache-hmr-result")).toHaveText("cached", {
           timeout: 2000,
