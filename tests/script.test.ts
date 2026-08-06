@@ -753,6 +753,31 @@ describe("Script beforeInteractive registry (#2016)", () => {
 });
 
 describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
+  it("drops event-handler attributes from hoisted scripts", () => {
+    const captured: BeforeInteractiveInlineScript[] = [];
+    ReactDOMServer.renderToString(
+      React.createElement(
+        BeforeInteractiveContext.Provider,
+        { value: (script: BeforeInteractiveInlineScript) => captured.push(script) },
+        React.createElement(Script, {
+          strategy: "beforeInteractive",
+          onload: "globalThis.__onloadExecuted = true",
+          oNeRrOr: "globalThis.__onerrorExecuted = true",
+          "data-onload": "diagnostic",
+          dangerouslySetInnerHTML: {
+            __html: "globalThis.__beforeInteractiveExecuted = true",
+          },
+        } as ScriptProps),
+      ),
+    );
+
+    expect(captured).toHaveLength(1);
+    const html = renderBeforeInteractiveInlineScripts(captured);
+    expect(html).not.toMatch(/\sonload=/i);
+    expect(html).not.toMatch(/\sonerror=/i);
+    expect(html).toContain('data-onload="diagnostic"');
+  });
+
   it('marks every hoisted script with data-nscript="beforeInteractive"', () => {
     const html = renderBeforeInteractiveInlineScripts([{ id: "x", innerHTML: "console.log(1)" }]);
     expect(html).toContain('data-nscript="beforeInteractive"');

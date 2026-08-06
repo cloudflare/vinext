@@ -1,5 +1,6 @@
 import "./server-globals.js";
 import type { NextI18nConfig } from "../config/next-config.js";
+import { normalizeHost } from "../config/request-context.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import path from "pathslash";
 import {
@@ -14,7 +15,11 @@ import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
-import { matchesMiddleware, type MatcherConfig } from "./middleware-matcher.js";
+import {
+  matchesMiddleware,
+  type MatcherConfig,
+  type MiddlewareLocaleMatchContext,
+} from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
@@ -25,6 +30,7 @@ import {
   removeTrailingSlash,
   stripBasePath,
 } from "../utils/base-path.js";
+import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -275,9 +281,37 @@ function createNextRequest(
       }
     : undefined;
 
-  return mwRequest instanceof NextRequest
-    ? mwRequest
-    : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+  const nextRequest =
+    mwRequest instanceof NextRequest && (!mwRequest.body || mwRequest.bodyUsed)
+      ? mwRequest
+      : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+  if (mwRequest !== request && mwRequest.body && !mwRequest.bodyUsed && !mwRequest.body.locked) {
+    void mwRequest.body.cancel().catch(() => {});
+  }
+  return nextRequest;
+}
+
+function releaseMiddlewareRequestBody(
+  request: NextRequest,
+  waitUntilPromises: Promise<unknown>[],
+  retainedByResponse = false,
+): void {
+  const body = request.body;
+  if (!body || retainedByResponse) return;
+
+  const cancel = () => {
+    if (!body.locked) {
+      void body.cancel().catch(() => {});
+    }
+  };
+  if (waitUntilPromises.length === 0) {
+    cancel();
+    return;
+  }
+
+  // waitUntil work is allowed to keep reading the middleware request after
+  // the handler returns. Release the branch only once that work has settled.
+  void Promise.allSettled(waitUntilPromises).then(cancel);
 }
 
 export async function executeMiddleware(
@@ -292,6 +326,8 @@ export async function executeMiddleware(
   if (normalizedPathname instanceof Response) {
     return { continue: false, response: normalizedPathname };
   }
+  const requestUrl = new URL(options.request.url);
+  const requestPathname = requestUrl.pathname;
 
   // Default: derive in-basePath state from the request URL. The Pages
   // prod/deploy adapters pass the original URL — prefixed for in-basePath
@@ -299,8 +335,7 @@ export async function executeMiddleware(
   // source of truth. Callers that pass pre-stripped URLs (dev server, App
   // Router) override this with an explicit `hadBasePath: true`.
   const hadBasePath =
-    options.hadBasePath ??
-    (!options.basePath || hasBasePath(new URL(options.request.url).pathname, options.basePath));
+    options.hadBasePath ?? (!options.basePath || hasBasePath(requestPathname, options.basePath));
 
   // Matcher patterns use basePath-stripped paths (e.g. /about, not /root/about),
   // matching Next.js behavior where the matcher is evaluated against the path
@@ -313,15 +348,104 @@ export async function executeMiddleware(
     ? stripBasePath(normalizedPathname, options.basePath)
     : normalizedPathname;
   const matchPathname = basePathStrippedPathname;
+  // Next.js tests the normalized encoded pathname first, then retries after
+  // decoding the full path once. Testing only a segment-decoded form lets
+  // percent-encoded line terminators turn into characters that `.` cannot
+  // match, while preserving encoded delimiters misses matchers that Next.js
+  // evaluates against their decoded path structure.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/next-server.ts
+  // Next.js removes the request pathname's terminal slash before evaluating
+  // the compiled middleware matcher. The matcher compiler still appends its
+  // own optional terminal delimiter, so a source without a slash matches both
+  // request spellings while a source that includes a slash remains distinct.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/next-server.ts
+  const encodedRequestPathname = removeTrailingSlash(normalizePath(requestPathname));
+  const matcher = middlewareMatcher(options.module);
+  const prepareMatcherPathname = (candidate: string): string | null => {
+    if (!options.basePath) return candidate;
+    if (hasBasePath(candidate, options.basePath)) {
+      return stripBasePath(candidate, options.basePath);
+    }
+    if (
+      candidate.length === options.basePath.length + 1 &&
+      candidate.startsWith(options.basePath) &&
+      (candidate.endsWith("?") || candidate.endsWith("#"))
+    ) {
+      return "/";
+    }
+    // App Router and Pages dev may pass a URL that the adapter already
+    // stripped after recording that it crossed the configured basePath.
+    if (options.hadBasePath === true) return candidate;
+    // Next.js prefixes configured matchers with basePath at build time. Keep
+    // default middleware eligible on absolute paths, but custom matchers must
+    // not apply outside the basePath.
+    return matcher === undefined ? candidate : null;
+  };
+  const encodedMatchPathname = prepareMatcherPathname(encodedRequestPathname);
+  let decodedMatchPathname = encodedMatchPathname;
+  try {
+    if (encodedMatchPathname !== null) {
+      decodedMatchPathname = decodeURIComponent(encodedMatchPathname);
+    } else if (!options.i18nConfig) {
+      // Without i18n, Next.js can discover an encoded basePath on the decoded
+      // matcher attempt. With i18n, default-locale insertion has already made
+      // that path ineligible for the compiled basePath-prefixed matcher.
+      decodedMatchPathname = prepareMatcherPathname(decodeURIComponent(encodedRequestPathname));
+    }
+  } catch {
+    // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
+  }
 
-  if (
-    !matchesMiddleware(
-      matchPathname,
-      middlewareMatcher(options.module),
+  let localeContext: MiddlewareLocaleMatchContext | undefined;
+  if (options.i18nConfig && encodedMatchPathname !== null) {
+    const hostname = normalizeHost(options.request.headers.get("host"), requestUrl.hostname);
+    const firstSegment = encodedMatchPathname.split("/", 3)[1];
+    const hasLiteralLocale =
+      firstSegment !== undefined &&
+      options.i18nConfig.locales.some(
+        (locale) => locale.toLowerCase() === firstSegment.toLowerCase(),
+      );
+    if (hasLiteralLocale) {
+      localeContext = { kind: "literal" };
+    } else {
+      const localeDefaultedPathname = normalizeDefaultLocalePathname(
+        encodedMatchPathname,
+        options.i18nConfig,
+        { hostname },
+      );
+      localeContext =
+        localeDefaultedPathname === encodedMatchPathname
+          ? { kind: "internal" }
+          : {
+              defaultLocale: normalizeDefaultLocalePathname("/", options.i18nConfig, {
+                hostname,
+              }).slice(1),
+              kind: "defaulted",
+            };
+    }
+  }
+  const encodedMatches =
+    encodedMatchPathname !== null &&
+    matchesMiddleware(
+      encodedMatchPathname,
+      matcher,
       options.request,
       options.i18nConfig,
-    )
-  ) {
+      localeContext,
+    );
+  const decodedMatches =
+    !encodedMatches &&
+    decodedMatchPathname !== null &&
+    decodedMatchPathname !== encodedMatchPathname &&
+    matchesMiddleware(
+      decodedMatchPathname,
+      matcher,
+      options.request,
+      options.i18nConfig,
+      localeContext,
+    );
+
+  if (!encodedMatches && !decodedMatches) {
     return { continue: true };
   }
 
@@ -347,6 +471,7 @@ export async function executeMiddleware(
   } catch (e) {
     console.error("[vinext] Middleware error:", e);
     const waitUntilPromises = drainFetchEvent(fetchEvent);
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     const message = options.includeErrorDetails
       ? "Middleware Error: " + (e instanceof Error ? e.message : String(e))
       : "Internal Server Error";
@@ -355,22 +480,17 @@ export async function executeMiddleware(
       response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
-  } finally {
-    // Middleware may transfer its request stream directly into the response.
-    // In that case the response owns consumption; cancelling here would
-    // disturb the body before the server can send it.
-    if (nextRequest.body && response?.body !== nextRequest.body) {
-      void nextRequest.body.cancel().catch(() => {});
-    }
   }
 
   const waitUntilPromises = drainFetchEvent(fetchEvent);
 
   if (!response) {
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return { continue: true, waitUntilPromises };
   }
 
   if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return {
       continue: true,
       responseHeaders: collectMiddlewareHeaders(response),
@@ -423,6 +543,7 @@ export async function executeMiddleware(
       // Internal data headers are stripped before middleware runs, so this
       // protocol is gated on trusted classification threaded by the caller.
       if (options.isDataRequest) {
+        releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
         return {
           continue: false,
           response: dataRedirectResponse(normalizedLocation, response),
@@ -443,6 +564,11 @@ export async function executeMiddleware(
         statusText: response.statusText,
         headers: relativizedResponseHeaders,
       });
+      releaseMiddlewareRequestBody(
+        nextRequest,
+        waitUntilPromises,
+        response.body === nextRequest.body,
+      );
       return {
         continue: false,
         redirectUrl: normalizedLocation,
@@ -491,6 +617,7 @@ export async function executeMiddleware(
     } catch {
       rewritePath = rewriteUrl;
     }
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return {
       continue: true,
       rewriteUrl: rewritePath,
@@ -501,6 +628,7 @@ export async function executeMiddleware(
     };
   }
 
+  releaseMiddlewareRequestBody(nextRequest, waitUntilPromises, response.body === nextRequest.body);
   return {
     continue: false,
     response: stripMiddlewareHeadersFromResponse(response),

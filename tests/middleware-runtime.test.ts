@@ -2,6 +2,232 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
+describe("middleware pathname matching", () => {
+  const i18nConfig = {
+    defaultLocale: "en",
+    locales: ["en", "fr"],
+  };
+
+  async function middlewareWasInvoked(
+    pathname: string,
+    matcher: string | { locale: false; source: string },
+    options: { basePath?: string } = {},
+  ): Promise<boolean> {
+    let invoked = false;
+    await executeMiddleware({
+      ...options,
+      i18nConfig,
+      isProxy: false,
+      module: {
+        config: { matcher: typeof matcher === "string" ? matcher : [matcher] },
+        default() {
+          invoked = true;
+        },
+      },
+      request: new Request(`http://localhost:3000${pathname}`),
+    });
+    return invoked;
+  }
+
+  // Next.js determines locale provenance before decoding the pathname and
+  // reuses it for both matcher attempts. In particular, an encoded locale is
+  // not reclassified as a literal locale after decode.
+  // Ported from Next.js:
+  // packages/next/src/server/lib/router-utils/resolve-routes.ts
+  // packages/next/src/shared/lib/i18n/normalize-locale-path.ts
+  it.each([
+    ["normal /foo", "/foo", "/foo", true],
+    ["normal /foo", "/foo", "/en/foo", true],
+    ["normal /foo", "/foo", "/fr/foo", true],
+    ["normal /foo", "/foo", "/EN/foo", true],
+    ["normal /foo", "/foo", "/Fr/foo", true],
+    ["normal /foo", "/foo", "/%65n/foo", false],
+    ["normal /foo", "/foo", "/%66r/foo", false],
+    ["normal /foo", "/foo", "/zz/foo", false],
+    ["normal /foo", "/foo", "/fr/en/foo", false],
+    ["normal /en/foo", "/en/foo", "/foo", false],
+    ["normal /en/foo", "/en/foo", "/en/foo", false],
+    ["normal /en/foo", "/en/foo", "/fr/foo", false],
+    ["normal /en/foo", "/en/foo", "/%65n/foo", true],
+    ["normal /en/foo", "/en/foo", "/%66r/foo", false],
+    ["normal /en/foo", "/en/foo", "/zz/foo", false],
+    ["normal /en/foo", "/en/foo", "/fr/en/foo", true],
+    ["locale:false /en/foo", { locale: false, source: "/en/foo" }, "/foo", true],
+    ["locale:false /en/foo", { locale: false, source: "/en/foo" }, "/en/foo", true],
+    ["locale:false /en/foo", { locale: false, source: "/en/foo" }, "/fr/foo", false],
+    ["locale:false /en/foo", { locale: false, source: "/en/foo" }, "/%65n/foo", false],
+    ["locale:false /en/foo", { locale: false, source: "/en/foo" }, "/%66r/foo", false],
+    ["locale:false /en/foo", { locale: false, source: "/en/foo" }, "/zz/foo", false],
+    ["locale:false /en/foo", { locale: false, source: "/en/foo" }, "/fr/en/foo", false],
+    ["locale:false /foo", { locale: false, source: "/foo" }, "/foo", false],
+    ["locale:false /foo", { locale: false, source: "/foo" }, "/en/foo", false],
+    ["locale:false /foo", { locale: false, source: "/foo" }, "/fr/foo", false],
+    ["locale:false /foo", { locale: false, source: "/foo" }, "/%65n/foo", false],
+    ["locale:false /foo", { locale: false, source: "/foo" }, "/%66r/foo", false],
+    ["locale:false /foo", { locale: false, source: "/foo" }, "/zz/foo", false],
+    ["locale:false /foo", { locale: false, source: "/foo" }, "/fr/en/foo", false],
+    ["normal internal path", "/:path*", "/_next/static/chunk.js", false],
+    [
+      "locale:false internal path",
+      { locale: false, source: "/_next/:path*" },
+      "/_next/static/chunk.js",
+      true,
+    ],
+  ] as const)(
+    "matches Next.js i18n ordering for %s with %j at %s",
+    async (_name, matcher, path, expected) => {
+      await expect(middlewareWasInvoked(path, matcher)).resolves.toBe(expected);
+    },
+  );
+
+  it("does not discover an encoded basePath after i18n default-locale insertion", async () => {
+    await expect(middlewareWasInvoked("/%64ocs/foo", "/foo", { basePath: "/docs" })).resolves.toBe(
+      false,
+    );
+  });
+
+  it("uses the request domain's default locale for locale:false matchers", async () => {
+    let invoked = false;
+    await executeMiddleware({
+      i18nConfig: {
+        defaultLocale: "en",
+        domains: [{ defaultLocale: "fr", domain: "fr.example.com" }],
+        locales: ["en", "fr"],
+      },
+      isProxy: false,
+      module: {
+        config: { matcher: [{ locale: false, source: "/fr/foo" }] },
+        default() {
+          invoked = true;
+        },
+      },
+      request: new Request("https://internal.example/foo", {
+        headers: { host: "fr.example.com" },
+      }),
+    });
+
+    expect(invoked).toBe(true);
+  });
+
+  it.each(["%0A", "%0D", "%E2%80%A8", "%E2%80%A9"])(
+    "matches the encoded request pathname before the decoded %s form",
+    async (encoded) => {
+      let observedPathname: string | undefined;
+      const requestPathname = `/xx${encoded}/admin/dashboard`;
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: {
+          config: { matcher: "/((?!api|_next/static|_next/image|favicon.ico).*)" },
+          default(request: NextRequest) {
+            observedPathname = request.nextUrl.pathname;
+            return new Response("blocked", { status: 403 });
+          },
+        },
+        normalizedPathname: `/xx${decodeURIComponent(encoded)}/admin/dashboard`,
+        request: new Request(`http://localhost:3000${requestPathname}`),
+      });
+
+      expect(result.continue).toBe(false);
+      expect(result.response?.status).toBe(403);
+      expect(observedPathname).toBe(requestPathname);
+    },
+  );
+
+  it("does not widen a constrained matcher beyond Next.js semantics", async () => {
+    let invoked = false;
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        config: { matcher: "/orders/:id(\\d+)" },
+        default() {
+          invoked = true;
+        },
+      },
+      normalizedPathname: "/orders/42 ",
+      request: new Request("http://localhost:3000/orders/42%20"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(invoked).toBe(false);
+  });
+
+  it("retries matcher eligibility with Next.js's decoded delimiter candidate", async () => {
+    let invoked = false;
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        config: { matcher: "/foo/bar" },
+        default() {
+          invoked = true;
+          return new Response("blocked", { status: 403 });
+        },
+      },
+      normalizedPathname: "/foo%2Fbar",
+      request: new Request("http://localhost:3000/foo%2Fbar"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.response?.status).toBe(403);
+    expect(invoked).toBe(true);
+  });
+
+  it.each(["%2F", "%3F", "%23"])(
+    "matches a constrained route through Next.js's decoded %s suffix",
+    async (encoded) => {
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: {
+          config: { matcher: "/orders/:id(\\d+)" },
+          default: () => new Response("blocked", { status: 403 }),
+        },
+        normalizedPathname: `/orders/42${encoded}`,
+        request: new Request(`http://localhost:3000/orders/42${encoded}`),
+      });
+
+      expect(result.continue).toBe(false);
+      expect(result.response?.status).toBe(403);
+    },
+  );
+
+  it.each(["%5C", "%252F"])(
+    "does not overmatch the constrained route through decoded %s",
+    async (encoded) => {
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: {
+          config: { matcher: "/orders/:id(\\d+)" },
+          default: () => new Response("blocked", { status: 403 }),
+        },
+        normalizedPathname: `/orders/42${encoded}`,
+        request: new Request(`http://localhost:3000/orders/42${encoded}`),
+      });
+
+      expect(result.continue).toBe(true);
+    },
+  );
+
+  it.each(["%2F", "%3F", "%23"])(
+    "does not overmatch a root matcher when decoded %s occupies its own segment",
+    async (encoded) => {
+      await expect(middlewareWasInvoked(`/${encoded}`, "/")).resolves.toBe(false);
+      await expect(
+        middlewareWasInvoked(`/docs/${encoded}`, "/", { basePath: "/docs" }),
+      ).resolves.toBe(false);
+    },
+  );
+
+  it.each([
+    ["/foo", "/foo%2F%2F"],
+    ["/foo", "/foo/%2F"],
+    ["/orders/:id(\\d+)", "/orders/42%2F%2F"],
+  ] as const)(
+    "does not collapse multiple decoded trailing slashes for %s",
+    async (matcher, path) => {
+      await expect(middlewareWasInvoked(path, matcher)).resolves.toBe(false);
+    },
+  );
+});
+
 // Tests for the redirect protocol implemented in `executeMiddleware`. These
 // fixtures mirror the behaviour Next.js's edge adapter applies after a
 // middleware returns a redirect Response:
@@ -12,6 +238,136 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
 
 describe("middleware redirect protocol", () => {
+  it("releases an unread middleware body branch in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    let resolveCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      resolveCancelled = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("streaming"));
+      },
+      cancel() {
+        resolveCancelled();
+      },
+    });
+    const init: RequestInit = { body, method: "POST" };
+    Object.defineProperty(init, "duplex", { value: "half" });
+    const request = new Request("http://localhost:3000/action", init);
+
+    try {
+      await executeMiddleware({
+        isProxy: false,
+        module: { default: () => undefined },
+        request,
+      });
+      void request.body?.cancel().catch(() => {});
+
+      await expect(
+        Promise.race([
+          cancelled.then(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+        ]),
+      ).resolves.toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("releases the unread tail of a partially consumed middleware body", async () => {
+    let resolveCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      resolveCancelled = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("first"));
+      },
+      cancel() {
+        resolveCancelled();
+      },
+    });
+    const init: RequestInit = { body, method: "POST" };
+    Object.defineProperty(init, "duplex", { value: "half" });
+    const request = new Request("http://localhost:3000/action", init);
+
+    await executeMiddleware({
+      isProxy: false,
+      module: {
+        async default(middlewareRequest: NextRequest) {
+          const reader = middlewareRequest.body!.getReader();
+          await reader.read();
+          reader.releaseLock();
+        },
+      },
+      request,
+    });
+    void request.body?.cancel().catch(() => {});
+
+    await expect(
+      Promise.race([
+        cancelled.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps the middleware body readable until waitUntil work settles", async () => {
+    let continueWaitUntil!: () => void;
+    const waitUntilGate = new Promise<void>((resolve) => {
+      continueWaitUntil = resolve;
+    });
+    let bodyText: string | undefined;
+    const request = new Request("http://localhost:3000/action", {
+      body: "action-body",
+      method: "POST",
+    });
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default(
+          middlewareRequest: NextRequest,
+          event: { waitUntil(promise: Promise<void>): void },
+        ) {
+          event.waitUntil(
+            waitUntilGate.then(async () => {
+              bodyText = await middlewareRequest.text();
+            }),
+          );
+        },
+      },
+      request,
+    });
+
+    continueWaitUntil();
+    await Promise.all(result.waitUntilPromises ?? []);
+
+    expect(bodyText).toBe("action-body");
+    await expect(request.text()).resolves.toBe("action-body");
+  });
+
+  it("preserves a terminal middleware response backed by the request body", async () => {
+    const request = new Request("http://localhost:3000/action", {
+      body: "action-body",
+      method: "POST",
+    });
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default(middlewareRequest: NextRequest) {
+          return new Response(middlewareRequest.body);
+        },
+      },
+      request,
+    });
+
+    expect(result.continue).toBe(false);
+    await expect(result.response?.text()).resolves.toBe("action-body");
+    await expect(request.text()).resolves.toBe("action-body");
+  });
   it.each(["development", "production"])(
     "preserves a request body transferred into the middleware response in %s",
     async (nodeEnv) => {
@@ -361,6 +717,25 @@ describe("middleware nextUrl basePath", () => {
     expect(new URL(captured.request!.url).search).toBe("?q=1");
   });
 
+  it("preserves the downstream request body when restoring basePath", async () => {
+    const { module } = captureModule();
+    const request = new Request("http://localhost:3000/action", {
+      body: "action-body",
+      method: "POST",
+    });
+
+    await executeMiddleware({
+      basePath: "/app",
+      hadBasePath: true,
+      isProxy: false,
+      module,
+      normalizedPathname: "/action",
+      request,
+    });
+
+    await expect(request.text()).resolves.toBe("action-body");
+  });
+
   it("keeps basePath active for Pages flow requests whose URL carries the prefix", async () => {
     const { captured, module } = captureModule();
 
@@ -417,6 +792,53 @@ describe("middleware nextUrl basePath", () => {
     expect(captured.request?.nextUrl.basePath).toBe("/root");
     expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
   });
+
+  // Ported from Next.js:
+  // test/e2e/middleware-custom-matchers-basepath/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-basepath/test/index.test.ts
+  it("does not apply a custom matcher outside the configured basePath", async () => {
+    const { captured, module } = captureModule();
+
+    const result = await executeMiddleware({
+      basePath: "/docs",
+      isProxy: false,
+      module: { ...module, config: { matcher: "/hello" } },
+      request: new Request("http://localhost:3000/hello"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request).toBeUndefined();
+  });
+
+  it("matches a custom matcher after decoding its encoded basePath", async () => {
+    const { captured, module } = captureModule();
+
+    const result = await executeMiddleware({
+      basePath: "/docs",
+      isProxy: false,
+      module: { ...module, config: { matcher: "/hello" } },
+      request: new Request("http://localhost:3000/%64ocs/hello"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.pathname).toBe("/%64ocs/hello");
+  });
+
+  it.each(["%2F", "%3F", "%23"])(
+    "matches a basePath root matcher through decoded terminal %s",
+    async (encoded) => {
+      const { captured, module } = captureModule();
+
+      await executeMiddleware({
+        basePath: "/docs",
+        isProxy: false,
+        module: { ...module, config: { matcher: "/" } },
+        request: new Request(`http://localhost:3000/docs${encoded}`),
+      });
+
+      expect(captured.request?.nextUrl.pathname).toBe(`/docs${encoded}`);
+    },
+  );
 
   it("matches encoded aliases while exposing the raw pathname to middleware", async () => {
     // Next.js tries middleware matchers against both the request pathname and

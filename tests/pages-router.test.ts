@@ -315,8 +315,15 @@ function writeEncodedSlashPagesFixture(rootDir: string): void {
   );
   fs.writeFileSync(
     path.join(rootDir, "middleware.ts"),
-    `export const config = { matcher: "/a/b" };
-export default function middleware() {
+    `import { NextResponse, type NextRequest } from "next/server";
+
+export const config = { matcher: "/a/b" };
+export default function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/a%2Fb") {
+    const response = NextResponse.next();
+    response.headers.set("x-encoded-slash-matcher", "matched");
+    return response;
+  }
   return new Response("nested blocked", { status: 418 });
 }
 `,
@@ -980,11 +987,30 @@ describe("Pages Router integration", () => {
   it("getServerSideProps returning notFound renders custom 404 page", async () => {
     const res = await fetch(`${baseUrl}/posts/missing`);
     expect(res.status).toBe(404);
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(res.headers.get("content-type")).toBe("application/vnd.vinext.not-found+html");
+    expect(res.headers.get("set-cookie")).toContain("missing=one; Path=/");
+    expect(res.headers.get("set-cookie")).toContain("missing=two; Path=/");
+    expect(res.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
     const html = await res.text();
     // Should render the custom 404 page (pages/404.tsx), not plain text
     expect(html).toContain("Page Not Found");
     // Should be wrapped in the _app layout
     expect(html).toContain("app-wrapper");
+  });
+
+  it("preserves getServerSideProps headers on notFound data responses", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/posts/missing.json`, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(res.headers.get("content-type")).toBe("application/vnd.vinext.not-found+html");
+    expect(res.headers.get("set-cookie")).toContain("missing=one; Path=/");
+    expect(res.headers.get("set-cookie")).toContain("missing=two; Path=/");
+    expect(res.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
+    await expect(res.json()).resolves.toEqual({ notFound: true });
   });
 
   // Regression for #1465: a getServerSideProps `{ redirect }` on an HTML
@@ -1155,6 +1181,7 @@ describe("Pages Router integration", () => {
 
       const encodedRes = await fetch(`${started.baseUrl}/a%2Fb`);
       expect(encodedRes.status).toBe(404);
+      expect(encodedRes.headers.get("x-encoded-slash-matcher")).toBe("matched");
       expect(await encodedRes.text()).not.toContain("nested blocked");
 
       const nestedRes = await fetch(`${started.baseUrl}/a/b`);
@@ -6789,6 +6816,7 @@ describe("Production server middleware (Pages Router)", () => {
 
       const encodedRes = await fetch(`${tempProdUrl}/a%2Fb`);
       expect(encodedRes.status).toBe(404);
+      expect(encodedRes.headers.get("x-encoded-slash-matcher")).toBe("matched");
       expect(await encodedRes.text()).not.toContain("nested blocked");
 
       const nestedRes = await fetch(`${tempProdUrl}/a/b`);

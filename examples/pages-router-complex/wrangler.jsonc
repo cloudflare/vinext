@@ -4,6 +4,11 @@
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "main": "vinext/server/fetch-handler",
+  // Load this one runtime secret from .dev.vars/.env/process.env during local
+  // development without exposing the rest of the host process environment.
+  "secrets": {
+    "required": ["ATLAS_PURGE_BEARER"]
+  },
   "assets": {
     "directory": "dist/client",
     "not_found_handling": "none",
