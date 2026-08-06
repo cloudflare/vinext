@@ -2195,9 +2195,7 @@ describe("App Router Production server (startProdServer)", () => {
 
     // The flight payload embeds each cached function prop as a server
     // reference whose id is "<12-hex normalised key>#<hoisted export name>".
-    const refIds = [
-      ...new Set(html.match(/[0-9a-f]{12}#\$\$hoist_[a-z0-9]+_\d+_[A-Za-z0-9_$]+/g) ?? []),
-    ];
+    const refIds = [...new Set(html.match(/[0-9a-f]{12}#\$\$hoist_\d+_[A-Za-z0-9_$]+/g) ?? [])];
     expect(refIds.length).toBe(3);
     const [getDateRefId, getRandomRefId, getMessageRefId] = refIds;
 
@@ -2208,6 +2206,10 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).not.toContain(capturedScopeValue);
     const encryptedBoundArg = html.match(/rsc\.push\("[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/)?.[1];
     expect(encryptedBoundArg).toBeDefined();
+    const encryptedCaptureEnvelope = {
+      type: "use-cache-captures",
+      encrypted: encryptedBoundArg,
+    };
 
     const invokeAction = async (actionId: string, args: unknown[] = []): Promise<string> => {
       const actionRes = await fetch(`${baseUrl}/use-cache-nested-fn-props.rsc`, {
@@ -2243,7 +2245,7 @@ describe("App Router Production server (startProdServer)", () => {
     // cached function, so plaintext values still determine the cache key.
     const messageRegExpFor = (boundArg: string): RegExp =>
       new RegExp(`message:${boundArg}:[0-9.e+-]+`);
-    const message1 = (await invokeAction(getMessageRefId, [encryptedBoundArg])).match(
+    const message1 = (await invokeAction(getMessageRefId, [encryptedCaptureEnvelope])).match(
       messageRegExpFor(capturedScopeValue),
     )?.[0];
     expect(message1).toBeDefined();
@@ -2254,7 +2256,7 @@ describe("App Router Production server (startProdServer)", () => {
     // Math.random() suffix, so a second invocation with the same bound arg
     // can only return the identical value if the bound arg produced the same
     // cache key and the entry was hit (a recompute would change the suffix).
-    const message2 = (await invokeAction(getMessageRefId, [encryptedBoundArg])).match(
+    const message2 = (await invokeAction(getMessageRefId, [encryptedCaptureEnvelope])).match(
       messageRegExpFor(capturedScopeValue),
     )?.[0];
     expect(message2).toBe(message1);
