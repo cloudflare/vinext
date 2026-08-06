@@ -7,6 +7,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { toSlash } from "pathslash";
 import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import { createModuleDependencyCache } from "../packages/vinext/src/build/module-dependency-cache.js";
@@ -150,6 +151,12 @@ function getStylesheetHrefs(html: string): string[] {
     .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
     .map((tag) => getHtmlAttr(tag, "href"))
     .filter((href): href is string => href !== null);
+}
+
+function getStylesheetTags(html: string): string[] {
+  return Array.from(html.matchAll(/<link\b[^>]*>/gi), (match) => match[0]).filter(
+    (tag) => getHtmlAttr(tag, "rel") === "stylesheet",
+  );
 }
 
 function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
@@ -3618,8 +3625,17 @@ describe("Virtual server entry generation", () => {
       expect(res.status).toBe(200);
       expect(html).toContain("Global CSS Pages Test");
       const stylesheetHrefs = getStylesheetHrefs(html);
+      const stylesheetTags = getStylesheetTags(html);
+      expect(stylesheetHrefs).toHaveLength(fixture.devStylesheetHrefs.length);
+      expect(stylesheetHrefs).not.toContain("/styles/query.css?raw");
       for (const href of fixture.devStylesheetHrefs) {
         expect(stylesheetHrefs).toContain(href);
+        const tag = stylesheetTags.find((candidate) => getHtmlAttr(candidate, "href") === href);
+        expect(getHtmlAttr(tag ?? "", "data-vite-dev-id")).toBe(
+          toSlash(
+            fs.realpathSync.native(path.join(testServer.config.root, decodeURI(href).slice(1))),
+          ),
+        );
       }
       expect(html).not.toContain("type-only.module.css");
 
