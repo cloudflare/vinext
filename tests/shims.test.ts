@@ -797,6 +797,7 @@ describe("next/navigation shim", () => {
     const previousWindow = (globalThis as any).window;
     const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
     const historyTraversalIndexKey = "__vinext_historyIndex";
+    const shallowUrlKey = "__vinext_shallowUrl";
     const win = {
       location: {
         pathname: "/photo/1",
@@ -841,6 +842,7 @@ describe("next/navigation shim", () => {
       expect(win.history.state).toEqual({
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
+        [shallowUrlKey]: "http://localhost/photo/1?filter=active",
         myData: { foo: "bar" },
       });
 
@@ -848,24 +850,28 @@ describe("next/navigation shim", () => {
       expect(win.history.state).toEqual({
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
+        [shallowUrlKey]: "http://localhost/photo/1?filter=pending",
       });
 
       win.history.replaceState(null, "", "/photo/1?filter=archived");
       expect(win.history.state).toEqual({
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
+        [shallowUrlKey]: "http://localhost/photo/1?filter=archived",
       });
 
       win.history.replaceState(undefined, "", "/photo/1?filter=all");
       expect(win.history.state).toEqual({
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
+        [shallowUrlKey]: "http://localhost/photo/1?filter=all",
       });
 
       win.history.state = { [historyTraversalIndexKey]: 7 };
       win.history.pushState({ next: true }, "", "/photo/1?filter=done");
       expect(win.history.state).toEqual({
         [historyTraversalIndexKey]: 7,
+        [shallowUrlKey]: "http://localhost/photo/1?filter=done",
         next: true,
       });
     } finally {

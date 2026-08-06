@@ -669,6 +669,30 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
+  test("pushState pathname is restored by browser back and forward", async ({ page }) => {
+    // Ported from Next.js's shallow-routing compatibility coverage:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    const pathname = page.locator('[data-testid="pathname"]');
+    await expect(pathname).toHaveText("pathname: /shallow-test");
+
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await expect(pathname).toHaveText("pathname: /shallow-test/sub", { timeout: 10_000 });
+
+    await page.goBack();
+    await expect(pathname).toHaveText("pathname: /shallow-test", { timeout: 10_000 });
+
+    await page.goForward();
+    await expect(pathname).toHaveText("pathname: /shallow-test/sub", { timeout: 10_000 });
+  });
+
   test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 

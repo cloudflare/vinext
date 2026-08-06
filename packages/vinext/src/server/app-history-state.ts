@@ -6,6 +6,7 @@ const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
 const VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY = "__vinext_bfcacheIds";
 const VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY = "__vinext_bfcacheVersion";
+const VINEXT_SHALLOW_URL_HISTORY_STATE_KEY = "__vinext_shallowUrl";
 
 type HistoryStateRecord = {
   [key: string]: unknown;
@@ -246,22 +247,38 @@ export function createHistoryStateWithNavigationMetadata(
 export function createExternalHistoryStatePreservingMetadata(
   callerState: unknown,
   currentHistoryState: unknown,
+  shallowUrl?: string,
 ): unknown {
   const previousNextUrl = readHistoryStatePreviousNextUrl(currentHistoryState);
   const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
   const bfcacheIds = readHistoryStateBfcacheIds(currentHistoryState);
   const bfcacheVersion = readHistoryStateBfcacheVersion(currentHistoryState);
 
-  if (previousNextUrl === null && traversalIndex === null && bfcacheIds === null) {
+  if (
+    previousNextUrl === null &&
+    traversalIndex === null &&
+    bfcacheIds === null &&
+    shallowUrl === undefined
+  ) {
     return callerState;
   }
 
-  return createHistoryStateWithNavigationMetadata(callerState, {
-    bfcacheIds,
-    bfcacheVersion: bfcacheIds === null ? undefined : bfcacheVersion,
-    previousNextUrl,
-    traversalIndex,
-  });
+  const nextState =
+    createHistoryStateWithNavigationMetadata(callerState, {
+      bfcacheIds,
+      bfcacheVersion: bfcacheIds === null ? undefined : bfcacheVersion,
+      previousNextUrl,
+      traversalIndex,
+    }) ?? {};
+  if (shallowUrl !== undefined) {
+    nextState[VINEXT_SHALLOW_URL_HISTORY_STATE_KEY] = shallowUrl;
+  }
+  return Object.keys(nextState).length > 0 ? nextState : null;
+}
+
+export function readHistoryStateShallowUrl(state: unknown): string | null {
+  const value = readHistoryStateRecord(state)?.[VINEXT_SHALLOW_URL_HISTORY_STATE_KEY];
+  return typeof value === "string" ? value : null;
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {

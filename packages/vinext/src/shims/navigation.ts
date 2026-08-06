@@ -3027,7 +3027,11 @@ if (!isServer) {
     ): void {
       state.originalPushState.call(
         window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        createExternalHistoryStatePreservingMetadata(
+          data,
+          window.history.state,
+          new URL(url ?? window.location.href, window.location.href).href,
+        ),
         unused,
         url,
       );
@@ -3047,7 +3051,11 @@ if (!isServer) {
     ): void {
       state.originalReplaceState.call(
         window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        createExternalHistoryStatePreservingMetadata(
+          data,
+          window.history.state,
+          new URL(url ?? window.location.href, window.location.href).href,
+        ),
         unused,
         url,
       );
