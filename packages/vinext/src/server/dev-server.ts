@@ -93,6 +93,7 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { transformPagesHtml } from "./pages-html-proxy.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -596,7 +597,7 @@ async function streamPageToResponse(
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  let transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  let transformedShell = await transformPagesHtml(server, url, shellTemplate, scriptNonce);
   transformedShell = stripDocumentAssetPropsProtectionMarkers(
     applyDocumentAssetProps(transformedShell, documentAssetProps, {
       configuredCrossOrigin: crossOrigin,
@@ -2094,6 +2095,7 @@ async function renderErrorPage(
           scripts: errorScripts,
           DocumentComponent,
           statusCode,
+          scriptNonce,
           documentContext: {
             err,
             pathname: errorPage,
@@ -2150,7 +2152,7 @@ async function renderErrorPage(
 </html>`;
         const transformedHtml = stripDocumentAssetPropsProtectionMarkers(
           applyDocumentAssetProps(
-            await server.transformIndexHtml(url, html),
+            await transformPagesHtml(server, url, html, scriptNonce),
             {},
             {
               configuredCrossOrigin: context.crossOrigin,

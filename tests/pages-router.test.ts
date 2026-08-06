@@ -152,6 +152,14 @@ function getStylesheetHrefs(html: string): string[] {
     .filter((href): href is string => href !== null);
 }
 
+function getImmutablePagesHtmlProxyPaths(html: string): string[] {
+  expect(html).not.toContain("?html-proxy&index=");
+  return Array.from(
+    html.matchAll(/src="([^"]*__vinext_html_proxy_content_[^"]*\.js)"/g),
+    (match) => match[1]!,
+  );
+}
+
 function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
   const pagesDir = path.join(rootDir, "pages");
   const libDir = path.join(rootDir, "lib");
@@ -677,9 +685,32 @@ function findBuildManifestEntries(
 describe("Pages Router integration", () => {
   let server: ViteDevServer;
   let baseUrl: string;
+  let htmlProxyPreHookSequence = 0;
 
   beforeAll(async () => {
-    ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR));
+    ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR, {
+      plugins: [
+        {
+          name: "test:stateful-pages-html-pre-hook",
+          transformIndexHtml: {
+            order: "pre",
+            handler(html, context) {
+              if (
+                context.path.split(/[?#]/, 1)[0] !== "/html-proxy-recovery" ||
+                !html.includes("__VINEXT_HTML_PROXY_PRE_HOOK_SEQUENCE__")
+              ) {
+                return;
+              }
+              htmlProxyPreHookSequence += 1;
+              return html.replace(
+                "__VINEXT_HTML_PROXY_PRE_HOOK_SEQUENCE__",
+                String(htmlProxyPreHookSequence),
+              );
+            },
+          },
+        },
+      ],
+    }));
   });
 
   afterAll(async () => {
@@ -848,6 +879,11 @@ describe("Pages Router integration", () => {
     expect(html).toContain(
       '<script id="__NEXT_DATA__" type="application/json" nonce="pages-response">',
     );
+    const immutableProxyTags = html.match(
+      /<script\b[^>]*src="[^"]*__vinext_html_proxy_content_[^"]*"[^>]*><\/script>/g,
+    );
+    expect(immutableProxyTags).not.toBeNull();
+    expect(immutableProxyTags!.every((tag) => tag.includes('nonce="pages-response"'))).toBe(true);
   });
 
   it("renders Pages GSP HTML afresh for CSP nonce requests", async () => {
@@ -1077,6 +1113,153 @@ describe("Pages Router integration", () => {
     const html = await res.text();
     expect(html).toContain("custom pages/500");
     expect(html).not.toBe("Internal Server Error");
+  });
+
+  // Next.js Pages dev recovers in the same process after a render error:
+  // https://github.com/vercel/next.js/blob/canary/test/development/acceptance/error-recovery.test.ts
+  it("keeps overlapping success and error hydration modules isolated", async () => {
+    const raceId = `overlap-${Date.now()}`;
+    const requestUrl = `${baseUrl}/html-proxy-recovery?race=${raceId}`;
+    const controlUrl = `${baseUrl}/api/html-proxy-race-control?id=${raceId}`;
+    const delayedErrorResponse = fetch(requestUrl);
+
+    try {
+      await vi.waitFor(async () => {
+        const status = (await fetch(controlUrl).then((response) => response.json())) as {
+          firstRequestStarted: boolean;
+        };
+        expect(status.firstRequestStarted).toBe(true);
+      }, 5_000);
+
+      const successResponse = await fetch(requestUrl);
+      expect(successResponse.status).toBe(200);
+      const successHtml = await successResponse.text();
+      expect(successHtml).toContain("route render recovered");
+
+      await fetch(`${controlUrl}&action=release`);
+      const errorResponse = await delayedErrorResponse;
+      expect(errorResponse.status).toBe(500);
+      const errorHtml = await errorResponse.text();
+      expect(errorHtml).toContain("custom pages/500");
+
+      const getProxyPath = (html: string) => getImmutablePagesHtmlProxyPaths(html)[0];
+      const successProxyPath = getProxyPath(successHtml);
+      const errorProxyPath = getProxyPath(errorHtml);
+      expect(successProxyPath).toBeDefined();
+      expect(errorProxyPath).toBeDefined();
+      expect(successProxyPath).not.toBe(errorProxyPath);
+
+      const [successProxy, errorProxy] = await Promise.all(
+        [successProxyPath!, errorProxyPath!].map((proxyPath) =>
+          fetch(new URL(proxyPath, baseUrl)).then((response) => response.text()),
+        ),
+      );
+      expect(successProxy).toContain("/pages/html-proxy-recovery.tsx");
+      expect(successProxy).not.toContain("/pages/500.tsx");
+      expect(errorProxy).toContain("/pages/500.tsx");
+      expect(errorProxy).not.toContain("/pages/html-proxy-recovery.tsx");
+    } finally {
+      await fetch(`${controlUrl}&action=release`);
+    }
+  });
+
+  it("keeps request-dependent inline module proxies isolated", async () => {
+    const raceId = `inline-overlap-${Date.now()}`;
+    const requestUrl = `${baseUrl}/html-proxy-recovery?inlineRace=${raceId}`;
+    const controlUrl = `${baseUrl}/api/html-proxy-race-control?id=${raceId}`;
+    const delayedFirstResponse = fetch(requestUrl);
+
+    try {
+      await vi.waitFor(async () => {
+        const status = (await fetch(controlUrl).then((response) => response.json())) as {
+          firstRequestStarted: boolean;
+        };
+        expect(status.firstRequestStarted).toBe(true);
+      }, 5_000);
+
+      const secondResponse = await fetch(requestUrl);
+      expect(secondResponse.status).toBe(200);
+      const secondHtml = await secondResponse.text();
+
+      await fetch(`${controlUrl}&action=release`);
+      const firstResponse = await delayedFirstResponse;
+      expect(firstResponse.status).toBe(200);
+      const firstHtml = await firstResponse.text();
+
+      const getProxyPaths = getImmutablePagesHtmlProxyPaths;
+      const firstProxyPaths = getProxyPaths(firstHtml);
+      const secondProxyPaths = getProxyPaths(secondHtml);
+      expect(firstProxyPaths.length).toBeGreaterThanOrEqual(2);
+      expect(secondProxyPaths.length).toBe(firstProxyPaths.length);
+      expect(secondProxyPaths).not.toEqual(firstProxyPaths);
+
+      const [firstInlineModule, secondInlineModule] = await Promise.all([
+        fetch(new URL(firstProxyPaths[0]!, baseUrl)).then((response) => response.text()),
+        fetch(new URL(secondProxyPaths[0]!, baseUrl)).then((response) => response.text()),
+      ]);
+      expect(firstInlineModule).toContain('__HTML_PROXY_INLINE_VARIANT__ = "first"');
+      expect(firstInlineModule).not.toContain('__HTML_PROXY_INLINE_VARIANT__ = "second"');
+      expect(secondInlineModule).toContain('__HTML_PROXY_INLINE_VARIANT__ = "second"');
+      expect(secondInlineModule).not.toContain('__HTML_PROXY_INLINE_VARIANT__ = "first"');
+      expect(firstInlineModule).toContain('from "/html-proxy-relative.ts"');
+      const relativeModule = await fetch(`${baseUrl}/html-proxy-relative.ts`).then((response) =>
+        response.text(),
+      );
+      expect(relativeModule).toContain('htmlProxyRelativeValue = "relative import resolved"');
+    } finally {
+      await fetch(`${controlUrl}&action=release`);
+    }
+  });
+
+  it("captures stateful pre HTML hook output in immutable modules", async () => {
+    const requestUrl = `${baseUrl}/html-proxy-recovery?preHookProxy=1`;
+    const firstHtml = await fetch(requestUrl).then((response) => response.text());
+    const secondHtml = await fetch(requestUrl).then((response) => response.text());
+    const getProxyPaths = getImmutablePagesHtmlProxyPaths;
+    const firstProxyPaths = getProxyPaths(firstHtml);
+    const secondProxyPaths = getProxyPaths(secondHtml);
+    const loadPreHookModule = async (paths: string[]) => {
+      const sources = await Promise.all(
+        paths.map((proxyPath) =>
+          fetch(new URL(proxyPath, baseUrl)).then((response) => response.text()),
+        ),
+      );
+      return sources.find((source) => source.includes("__HTML_PROXY_PRE_HOOK_SEQUENCE__"));
+    };
+    const [firstModule, secondModule] = await Promise.all([
+      loadPreHookModule(firstProxyPaths),
+      loadPreHookModule(secondProxyPaths),
+    ]);
+    const sequence = (source: string | undefined) =>
+      source?.match(/__HTML_PROXY_PRE_HOOK_SEQUENCE__ = "(\d+)"/)?.[1];
+
+    expect(firstModule).toBeDefined();
+    expect(secondModule).toBeDefined();
+    expect(sequence(firstModule)).toBeDefined();
+    expect(sequence(secondModule)).toBeDefined();
+    expect(sequence(firstModule)).not.toBe(sequence(secondModule));
+  });
+
+  it("reuses hydration proxies when only non-module response data changes", async () => {
+    const raceId = `data-variant-${Date.now()}`;
+    const requestUrl = `${baseUrl}/html-proxy-recovery?dataRace=${raceId}`;
+
+    const firstResponse = await fetch(requestUrl);
+    expect(firstResponse.status).toBe(200);
+    const firstHtml = await firstResponse.text();
+    expect(firstHtml).toContain("first-data");
+
+    const secondResponse = await fetch(requestUrl);
+    expect(secondResponse.status).toBe(200);
+    const secondHtml = await secondResponse.text();
+    expect(secondHtml).toContain("second-data");
+    expect(secondHtml).not.toBe(firstHtml);
+
+    const getProxyPaths = getImmutablePagesHtmlProxyPaths;
+    const firstProxyPaths = getProxyPaths(firstHtml);
+    const secondProxyPaths = getProxyPaths(secondHtml);
+    expect(firstProxyPaths.length).toBeGreaterThan(0);
+    expect(secondProxyPaths).toEqual(firstProxyPaths);
   });
 
   it("renders dynamic routes with params", async () => {
@@ -1514,9 +1697,7 @@ export default function Page({ marker }: { marker: string }) {
   it("installs the vinext dev error overlay in the hydration script", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
-    const hydrationProxyPath = html.match(
-      /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
-    )?.[1];
+    const hydrationProxyPath = getImmutablePagesHtmlProxyPaths(html)[0];
     expect(hydrationProxyPath).toBeDefined();
 
     const hydrationProxy = await fetch(new URL(hydrationProxyPath!, baseUrl)).then((response) =>
@@ -1614,9 +1795,7 @@ export default class CustomDocument extends Document {
         const nextData = JSON.parse(nextDataMatch![1]);
         expect(nextData.__vinext.appModuleUrl).toBe("/pages/_app.page.tsx");
 
-        const hydrationProxyPath = html.match(
-          /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
-        )?.[1];
+        const hydrationProxyPath = getImmutablePagesHtmlProxyPaths(html)[0];
         expect(hydrationProxyPath).toBeDefined();
         const hydrationProxy = await fetch(new URL(hydrationProxyPath!, started.baseUrl)).then(
           (proxyResponse) => proxyResponse.text(),
@@ -1832,9 +2011,7 @@ export default class CustomDocument extends Document {
   it("includes hydration script for client-side rendering", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
-    // Vite extracts inline module scripts into html-proxy modules.
-    // The hydration script becomes a <script type="module" src="...html-proxy...">
-    expect(html).toMatch(/html-proxy.*\.js/);
+    expect(getImmutablePagesHtmlProxyPaths(html)).not.toHaveLength(0);
   });
 
   // --- Catch-all Routes ---
@@ -2557,10 +2734,10 @@ export default class CustomDocument extends Document {
     // and verify it contains our hydration code
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
-    const proxyMatch = html.match(/src="([^"]*html-proxy[^"]*)"/);
-    expect(proxyMatch).toBeTruthy();
+    const proxyPath = getImmutablePagesHtmlProxyPaths(html)[0];
+    expect(proxyPath).toBeDefined();
 
-    const scriptRes = await fetch(`${baseUrl}${proxyMatch![1]}`);
+    const scriptRes = await fetch(`${baseUrl}${proxyPath}`);
     expect(scriptRes.status).toBe(200);
     const scriptContent = await scriptRes.text();
     // The proxy module should contain our hydration imports

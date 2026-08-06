@@ -127,6 +127,7 @@ import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
+import { createPagesHtmlProxyCapturePlugin } from "./server/pages-html-proxy.js";
 
 import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
 
@@ -1815,6 +1816,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   >();
 
   const plugins: PluginOption[] = [
+    createPagesHtmlProxyCapturePlugin(),
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
