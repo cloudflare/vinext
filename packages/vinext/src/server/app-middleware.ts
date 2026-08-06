@@ -62,6 +62,7 @@ export type ApplyAppMiddlewareResult =
 
 type ForwardedMiddlewareContext = {
   h?: unknown;
+  q?: unknown;
   r?: unknown;
   s?: unknown;
 };
@@ -246,6 +247,12 @@ function applyForwardedMiddlewareContext(
         appendForwardedHeader(context.headers, entry);
       }
     }
+    if (Array.isArray(data.q) && data.q.length > 0) {
+      context.requestHeaders = new Headers();
+      for (const entry of data.q) {
+        appendForwardedHeader(context.requestHeaders, entry);
+      }
+    }
     if (typeof data.s === "number") {
       context.status = data.s;
     }
@@ -381,9 +388,11 @@ export async function applyAppMiddleware(
     cancelRequestBody(options.middlewareRequest);
   }
 
+  if (options.context.headers || options.context.requestHeaders) {
+    options.context.requestHeaders ??= new Headers(options.context.headers!);
+    applyMiddlewareRequestHeaders(options.context.requestHeaders);
+  }
   if (options.context.headers) {
-    options.context.requestHeaders = new Headers(options.context.headers);
-    applyMiddlewareRequestHeaders(options.context.headers);
     processMiddlewareHeaders(options.context.headers);
   }
 

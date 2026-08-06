@@ -66,6 +66,7 @@ const {
   authorizeOnDemandRevalidate,
   handleApiRoute,
   hasMiddleware,
+  matchApiRoute,
   matchPageRoute,
   normalizeDataRequest,
   publicFiles,
@@ -192,6 +193,7 @@ async function handleRequest(
       dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
       authorizeOnDemandRevalidate:
         typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
+      matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null,
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:
         typeof runMiddleware === "function"
