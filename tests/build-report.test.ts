@@ -9,6 +9,7 @@ import { describe, it, expect, afterEach } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
+import { parseSync } from "vite";
 import {
   hasExportedName,
   hasNamedExport,
@@ -21,7 +22,10 @@ import {
   buildReportRows,
   formatBuildReport,
   printBuildReport,
+  validatePrefetchProgram,
+  collectAppRouteConfigModulePaths,
 } from "../packages/vinext/src/build/report.js";
+import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
 
@@ -893,5 +897,206 @@ describe("classifyLayoutSegmentConfig", () => {
     expect(classifyLayoutSegmentConfig("export const revalidate = 60;")).toEqual({
       kind: "absent",
     });
+  });
+});
+
+// ─── validatePrefetchProgram ──────────────────────────────────────────────────
+
+function parse(code: string) {
+  return parseSync("page.tsx", code, { astType: "ts", lang: "tsx", sourceType: "module" }).program;
+}
+
+describe("validatePrefetchProgram", () => {
+  it("throws for prefetch in a 'use client' module (valid value, cacheComponents on)", () => {
+    expect(() =>
+      validatePrefetchProgram(
+        parse(`"use client";\nexport const prefetch = 'partial';`),
+        "app/page.tsx",
+        { cacheComponents: true },
+      ),
+    ).toThrow(
+      '[vinext] "app/page.tsx": `prefetch` is a route segment config that can only be used in a Server Component module. Remove the "use client" directive to use it.',
+    );
+  });
+
+  it("throws for any valid value without cacheComponents", () => {
+    expect(() =>
+      validatePrefetchProgram(parse("export const prefetch = 'auto';"), "app/page.tsx", {
+        cacheComponents: false,
+      }),
+    ).toThrow(
+      '[vinext] "app/page.tsx": `export const prefetch` requires `cacheComponents: true` in your next.config.',
+    );
+  });
+
+  it("throws for invalid values, listing the valid set", () => {
+    for (const value of ["static", "runtime", "nonsense"]) {
+      expect(() =>
+        validatePrefetchProgram(parse(`export const prefetch = '${value}';`), "app/page.tsx", {
+          cacheComponents: true,
+        }),
+      ).toThrow(
+        `[vinext] Invalid \`prefetch\` value "${value}" in "app/page.tsx". Must be "auto", "partial", "unstable_eager", "force-disabled", or "allow-runtime".`,
+      );
+    }
+  });
+
+  it("throws the no-value variant when the export is not a static string", () => {
+    expect(() =>
+      validatePrefetchProgram(parse("export const prefetch = 42;"), "app/page.tsx", {
+        cacheComponents: true,
+      }),
+    ).toThrow(
+      '[vinext] Invalid `prefetch` value in "app/page.tsx". Must be "auto", "partial", "unstable_eager", "force-disabled", or "allow-runtime".',
+    );
+  });
+
+  it("does not throw for each valid value with cacheComponents and no 'use client'", () => {
+    for (const value of ["auto", "partial", "unstable_eager", "force-disabled", "allow-runtime"]) {
+      expect(() =>
+        validatePrefetchProgram(parse(`export const prefetch = '${value}';`), "app/page.tsx", {
+          cacheComponents: true,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("does not throw when prefetch is absent", () => {
+    expect(() =>
+      validatePrefetchProgram(parse("export const dynamic = 'force-static';"), "app/page.tsx", {
+        cacheComponents: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it("throws the use-client error first when 'use client' and missing cacheComponents combine", () => {
+    expect(() =>
+      validatePrefetchProgram(
+        parse(`"use client";\nexport const prefetch = 'partial';`),
+        "app/page.tsx",
+        { cacheComponents: false },
+      ),
+    ).toThrow(/Server Component/);
+  });
+
+  it("detects 'use client' anywhere in the directive prologue", () => {
+    expect(() =>
+      validatePrefetchProgram(
+        parse(`"use strict";\n"use client";\nexport const prefetch = 'auto';`),
+        "app/page.tsx",
+        { cacheComponents: true },
+      ),
+    ).toThrow(/Server Component/);
+  });
+
+  it("ignores non-`export const` prefetch forms (specifier, re-export, type-only, let)", () => {
+    // Mirrors upstream: only statically extractable `export const` is analyzed.
+    for (const code of [
+      "const prefetch = 'auto'; export { prefetch };",
+      "export { prefetch } from './shared';",
+      "export type { prefetch } from './types';",
+      "export let prefetch = 'auto';",
+    ]) {
+      expect(() =>
+        validatePrefetchProgram(parse(code), "app/page.tsx", { cacheComponents: false }),
+      ).not.toThrow();
+    }
+  });
+});
+
+// ─── collectAppRouteConfigModulePaths ─────────────────────────────────────────
+
+describe("collectAppRouteConfigModulePaths", () => {
+  type ConfigRoute = Pick<AppRoute, "pagePath" | "layouts" | "parallelSlots">;
+  type Slot = AppRoute["parallelSlots"][number];
+
+  it("returns just the page path for a page-only route", () => {
+    const route: ConfigRoute = { pagePath: "/app/page.tsx", layouts: [], parallelSlots: [] };
+    expect(collectAppRouteConfigModulePaths(route)).toEqual(["/app/page.tsx"]);
+  });
+
+  it("includes layouts in order after the page", () => {
+    const route: ConfigRoute = {
+      pagePath: "/app/blog/page.tsx",
+      layouts: ["/app/layout.tsx", "/app/blog/layout.tsx"],
+      parallelSlots: [],
+    };
+    expect(collectAppRouteConfigModulePaths(route)).toEqual([
+      "/app/blog/page.tsx",
+      "/app/layout.tsx",
+      "/app/blog/layout.tsx",
+    ]);
+  });
+
+  it("includes slot layoutPath, configLayoutPaths, pagePath, defaultPath and drops nulls", () => {
+    const route: ConfigRoute = {
+      pagePath: null,
+      layouts: ["/app/layout.tsx"],
+      parallelSlots: [
+        {
+          layoutPath: "/app/@team/layout.tsx",
+          configLayoutPaths: ["/app/@team/members/layout.tsx"],
+          pagePath: "/app/@team/page.tsx",
+          defaultPath: null,
+        } as Slot,
+        {
+          layoutPath: null,
+          pagePath: null,
+          defaultPath: "/app/@analytics/default.tsx",
+        } as Slot,
+      ],
+    };
+    expect(collectAppRouteConfigModulePaths(route)).toEqual([
+      "/app/layout.tsx",
+      "/app/@team/layout.tsx",
+      "/app/@team/members/layout.tsx",
+      "/app/@team/page.tsx",
+      "/app/@analytics/default.tsx",
+    ]);
+  });
+
+  it("dedupes a path appearing in both layouts and a slot's configLayoutPaths", () => {
+    const route: ConfigRoute = {
+      pagePath: "/app/page.tsx",
+      layouts: ["/app/layout.tsx"],
+      parallelSlots: [
+        {
+          layoutPath: null,
+          configLayoutPaths: ["/app/layout.tsx"],
+          pagePath: null,
+          defaultPath: null,
+        } as Slot,
+      ],
+    };
+    expect(collectAppRouteConfigModulePaths(route)).toEqual(["/app/page.tsx", "/app/layout.tsx"]);
+  });
+
+  it("includes intercepting-route pages/layouts and sibling intercept pages", () => {
+    const route = {
+      pagePath: "/app/page.tsx",
+      layouts: [],
+      parallelSlots: [
+        {
+          layoutPath: null,
+          pagePath: null,
+          defaultPath: null,
+          interceptingRoutes: [
+            {
+              pagePath: "/app/@modal/(.)photos/[id]/page.tsx",
+              layoutPaths: ["/app/@modal/(.)photos/layout.tsx"],
+            },
+          ],
+        } as unknown as Slot,
+      ],
+      siblingIntercepts: [
+        { pagePath: "/app/(.)settings/page.tsx" },
+      ] as unknown as AppRoute["siblingIntercepts"],
+    };
+    expect(collectAppRouteConfigModulePaths(route)).toEqual([
+      "/app/page.tsx",
+      "/app/@modal/(.)photos/[id]/page.tsx",
+      "/app/@modal/(.)photos/layout.tsx",
+      "/app/(.)settings/page.tsx",
+    ]);
   });
 });

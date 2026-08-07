@@ -8,6 +8,7 @@ type AppRouteSegmentConfigModule = {
   dynamicParams?: unknown;
   fetchCache?: unknown;
   generateStaticParams?: unknown;
+  prefetch?: unknown;
   revalidate?: unknown;
   runtime?: unknown;
   unstable_dynamicStaleTime?: unknown;
@@ -20,6 +21,7 @@ type EffectiveAppPageSegmentConfig = {
   fetchCache?: FetchCacheMode;
   revalidateSeconds: number | null;
   runtime?: "edge" | "experimental-edge" | "nodejs";
+  prefetchConfig?: RouteSegmentPrefetch; // unconsumed no-op until #1819; 'auto' is the default
 };
 
 type ParallelAppPageSegmentConfigBranch = {
@@ -61,6 +63,23 @@ function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
 
 function isRouteSegmentRuntime(value: unknown): value is EffectiveAppPageSegmentConfig["runtime"] {
   return value === "edge" || value === "experimental-edge" || value === "nodejs";
+}
+
+const PREFETCH_VALUE_LIST = [
+  "auto",
+  "partial",
+  "unstable_eager",
+  "force-disabled",
+  "allow-runtime",
+] as const;
+type RouteSegmentPrefetch = (typeof PREFETCH_VALUE_LIST)[number];
+// ReadonlySet<unknown> (not RouteSegmentPrefetch) so `.has()` accepts the
+// untyped module exports probed by the guard, like DYNAMIC_VALUES above.
+// Also the single source for build-time validation (build/report.ts).
+export const PREFETCH_VALUES: ReadonlySet<unknown> = new Set(PREFETCH_VALUE_LIST);
+
+function isRouteSegmentPrefetch(value: unknown): value is RouteSegmentPrefetch {
+  return PREFETCH_VALUES.has(value);
 }
 
 function resolveRevalidateSeconds(current: number | null, value: unknown): number | null {
@@ -301,6 +320,10 @@ export function resolveAppPageSegmentConfig(
       config.revalidateSeconds,
       segment.revalidate,
     );
+
+    if (isRouteSegmentPrefetch(segment.prefetch)) {
+      config.prefetchConfig = segment.prefetch;
+    }
   }
 
   for (const segment of parallelSegments) {
@@ -351,6 +374,10 @@ export function resolveAppPageSegmentConfig(
       config.revalidateSeconds,
       segment.revalidate,
     );
+
+    if (config.prefetchConfig === undefined && isRouteSegmentPrefetch(segment.prefetch)) {
+      config.prefetchConfig = segment.prefetch;
+    }
   }
 
   for (const segment of [options.page, ...(options.parallelPages ?? [])]) {

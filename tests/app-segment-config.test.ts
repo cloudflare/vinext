@@ -17,7 +17,11 @@ describe("resolveAppPageSegmentConfig", () => {
     expect(
       resolveAppPageSegmentConfig({
         layouts: [
-          { revalidate: 120, dynamicParams: false, fetchCache: "default-cache" },
+          {
+            revalidate: 120,
+            dynamicParams: false,
+            fetchCache: "default-cache",
+          },
           { dynamic: "error", revalidate: 60 },
         ],
         page: { dynamic: "force-static", revalidate: 300 },
@@ -484,6 +488,88 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toBe("edge");
 
     expect(resolveAppPageSegmentConfig({ page: {} }).runtime).toBeUndefined();
+  });
+
+  describe("prefetch", () => {
+    it("captures 'partial' on the page segment", () => {
+      expect(resolveAppPageSegmentConfig({ page: { prefetch: "partial" } })).toEqual({
+        revalidateSeconds: null,
+        prefetchConfig: "partial",
+      });
+    });
+
+    it("captures 'allow-runtime' on the page segment", () => {
+      expect(resolveAppPageSegmentConfig({ page: { prefetch: "allow-runtime" } })).toEqual({
+        revalidateSeconds: null,
+        prefetchConfig: "allow-runtime",
+      });
+    });
+
+    it("captures 'auto' (the default no-op value) on the page segment", () => {
+      expect(resolveAppPageSegmentConfig({ page: { prefetch: "auto" } }).prefetchConfig).toBe(
+        "auto",
+      );
+    });
+
+    it("returns undefined prefetchConfig when not set", () => {
+      expect(resolveAppPageSegmentConfig({ page: {} }).prefetchConfig).toBeUndefined();
+    });
+
+    it("ignores unknown and removed legacy prefetch values", () => {
+      expect(
+        resolveAppPageSegmentConfig({ page: { prefetch: "nonsense" } }).prefetchConfig,
+      ).toBeUndefined();
+      expect(
+        resolveAppPageSegmentConfig({ page: { prefetch: "static" } }).prefetchConfig,
+      ).toBeUndefined();
+      expect(
+        resolveAppPageSegmentConfig({ page: { prefetch: "runtime" } }).prefetchConfig,
+      ).toBeUndefined();
+    });
+
+    it("lets the page segment override the layout (child wins)", () => {
+      expect(
+        resolveAppPageSegmentConfig({
+          layouts: [{ prefetch: "partial" }],
+          page: { prefetch: "unstable_eager" },
+        }).prefetchConfig,
+      ).toBe("unstable_eager");
+
+      expect(
+        resolveAppPageSegmentConfig({
+          layouts: [{ prefetch: "unstable_eager" }],
+          page: { prefetch: "force-disabled" },
+        }).prefetchConfig,
+      ).toBe("force-disabled");
+    });
+
+    it("coexists with other segment config fields without interference", () => {
+      expect(
+        resolveAppPageSegmentConfig({
+          layouts: [{ dynamic: "force-static", revalidate: 120 }],
+          page: { prefetch: "allow-runtime", revalidate: 60 },
+        }),
+      ).toEqual({
+        dynamicConfig: "force-static",
+        prefetchConfig: "allow-runtime",
+        revalidateSeconds: 60,
+      });
+    });
+
+    it("applies main-chain priority for parallel segments", () => {
+      expect(
+        resolveAppPageSegmentConfig({
+          page: { prefetch: "partial" },
+          parallelSegments: [{ prefetch: "force-disabled" }],
+        }).prefetchConfig,
+      ).toBe("partial");
+
+      expect(
+        resolveAppPageSegmentConfig({
+          parallelSegments: [{ prefetch: "force-disabled" }],
+        }).prefetchConfig,
+      ).toBe("force-disabled");
+    });
   });
 });
 

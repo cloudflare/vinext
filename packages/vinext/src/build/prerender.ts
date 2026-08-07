@@ -25,7 +25,13 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
-import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
+import {
+  classifyPagesRoute,
+  classifyAppRoute,
+  getAppRouteRenderEntryPath,
+  validateAppSegmentPrefetchConfig,
+  collectAppRouteConfigModulePaths,
+} from "./report.js";
 import {
   concatUint8Arrays,
   decodeRscEmbeddedChunk,
@@ -1194,6 +1200,10 @@ export async function prerenderApp({
     };
     const urlsToRender: UrlToRender[] = [];
 
+    // Build-wide dedupe: shared layouts are validated once.
+    const validatedPrefetchConfigPaths = new Set<string>();
+    const prefetchValidationErrors: string[] = [];
+
     for (const route of routes) {
       const renderEntryPath = getAppRouteRenderEntryPath(route);
 
@@ -1203,6 +1213,18 @@ export async function prerenderApp({
       }
 
       if (!renderEntryPath) continue;
+
+      for (const configModulePath of collectAppRouteConfigModulePaths(route)) {
+        if (validatedPrefetchConfigPaths.has(configModulePath)) continue;
+        validatedPrefetchConfigPaths.add(configModulePath);
+        try {
+          validateAppSegmentPrefetchConfig(configModulePath, {
+            cacheComponents: config.cacheComponents === true,
+          });
+        } catch (error) {
+          prefetchValidationErrors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
 
       // Use static analysis classification, but note its limitations for dynamic URLs:
       // classifyAppRoute() returns 'ssr' for dynamic URLs with no explicit config,
@@ -1405,6 +1427,11 @@ export async function prerenderApp({
           isSpeculative: false,
         });
       }
+    }
+
+    // Aggregate prefetch config violations so one build surfaces every violation.
+    if (prefetchValidationErrors.length > 0) {
+      throw new Error(prefetchValidationErrors.join("\n"));
     }
 
     // ── Render each URL via direct RSC handler invocation ─────────────────────
