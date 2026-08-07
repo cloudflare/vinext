@@ -243,6 +243,11 @@ import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
+import {
+  createDevPublicFileEtags,
+  resolveDevPublicIfNoneMatch,
+  updateDevPublicFileEtag,
+} from "./server/dev-public-etag.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
 import { methodNotAllowedResponse } from "./server/http-error-responses.js";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
@@ -4281,10 +4286,49 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        const etagPublicDir = server.config.publicDir || undefined;
+        let devPublicFileEtags = etagPublicDir
+          ? createDevPublicFileEtags(etagPublicDir)
+          : undefined;
+
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
+          if (!devPublicFileEtags) {
+            next();
+            return;
+          }
+          const normalizedIfNoneMatch = resolveDevPublicIfNoneMatch(
+            req.method,
+            req.url,
+            req.headers["if-none-match"],
+            devPublicFileEtags,
+            nextConfig?.basePath,
+          );
+          if (normalizedIfNoneMatch) {
+            // sirv compares If-None-Match to its generated weak ETag as an
+            // exact string. Resolve RFC weak/list/wildcard matching here, then
+            // give sirv the exact value so its normal 304 path handles the body.
+            req.headers["if-none-match"] = normalizedIfNoneMatch;
+          }
           next();
         });
+
+        const updateDevPublicEtag = (filePath: string) => {
+          if (!devPublicFileEtags || !etagPublicDir) return;
+          if (!updateDevPublicFileEtag(devPublicFileEtags, filePath)) {
+            devPublicFileEtags = createDevPublicFileEtags(
+              etagPublicDir,
+              undefined,
+              undefined,
+              devPublicFileEtags.viteUsesStatLookup,
+            );
+          }
+        };
+        server.watcher.on("add", updateDevPublicEtag);
+        server.watcher.on("change", updateDevPublicEtag);
+        server.watcher.on("unlink", updateDevPublicEtag);
+        server.watcher.on("addDir", updateDevPublicEtag);
+        server.watcher.on("unlinkDir", updateDevPublicEtag);
 
         // Watch route files for additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
