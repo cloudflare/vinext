@@ -24,6 +24,19 @@ test.describe('production "use cache" server function references', () => {
     await page.locator("#call-client-imported-cache").click();
     await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("3");
     await expect(page.getByTestId("client-imported-cache-result")).toHaveText(directResult);
+
+    await page.locator("#call-client-imported-server").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("4");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+      /^client-server:direct:[0-9.e+-]+$/,
+    );
+    const firstServerResult = await page.getByTestId("client-imported-cache-result").innerText();
+
+    await page.locator("#call-client-imported-server").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("5");
+    await expect(page.getByTestId("client-imported-cache-result")).not.toHaveText(
+      firstServerResult,
+    );
   });
 
   test("runs inline use-server and use-cache exports owned by different plugins", async ({

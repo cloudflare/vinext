@@ -70,7 +70,7 @@ async function transformRsc(source: string): Promise<string> {
 }
 
 describe("plugin-rsc inline use-cache references", () => {
-  it("keeps the vinext claim when rsc:use-server removes its own claim", async () => {
+  it("keeps the vinext claim through the built-in use-server transform", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
     const useCacheIndex = plugins.findIndex(
@@ -449,12 +449,13 @@ describe("plugin-rsc inline use-cache references", () => {
     },
   );
 
-  it("preserves inline cache semantics inside a module-level use-server boundary", async () => {
+  it("composes inline cache semantics with a module-level use-server boundary", async () => {
     const plugins = await getPlugins();
-    await configurePluginRsc(plugins);
+    const manager = await configurePluginRsc(plugins);
     const plugin = plugins.find(
       (candidate) => candidate.name === "vinext:server-function-directives",
     )!;
+    const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
     const context = { environment: { name: "rsc", mode: "build" } };
     const source = [
       `"use server";`,
@@ -465,7 +466,59 @@ describe("plugin-rsc inline use-cache references", () => {
     ].join("\n");
     const result = await unwrapHook(plugin.transform)!.call(context, source, moduleId);
     expect(result?.code).toContain("registerCachedFunction");
-    expect(result?.code).not.toContain("registerServerReference");
+    expect(result?.code).toMatch(/^"use server";\nimport /);
+
+    const useServerResult = await unwrapHook(useServerPlugin.transform)!.call(
+      context,
+      result!.code,
+      moduleId,
+    );
+    expect(useServerResult?.code).toContain("$$VinextReactServer.registerServerReference");
+    expect(() => parseAst(useServerResult!.code)).not.toThrow();
+    expect([...manager.serverReferences.claimMap.get(moduleId).keys()]).toEqual([
+      "vinext:server-function-directives",
+      "rsc:use-server",
+    ]);
+    const exportNames = manager.serverReferences.metaMap.get(moduleId)!.exportNames;
+    expect(exportNames).toContainEqual(expect.stringMatching(/getData/));
+    expect(exportNames).toHaveLength(new Set(exportNames).size);
+  });
+
+  it("leaves inline use-server exports to plugin-rsc inside a file-level cache boundary", async () => {
+    const plugins = await getPlugins();
+    const manager = await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
+    const context = { environment: { name: "rsc", mode: "build" } };
+    const source = [
+      `"use cache";`,
+      `export async function cached() {}`,
+      `export async function uncached() {`,
+      `  "use server";`,
+      `}`,
+    ].join("\n");
+
+    const result = await unwrapHook(plugin.transform)!.call(context, source, moduleId);
+    expect(result?.code).toContain("registerCachedFunction(cached");
+    expect(result?.code).not.toContain("registerCachedFunction(uncached");
+    expect(result?.code).toMatch(/^"use cache";\nimport /);
+
+    const useServerResult = await unwrapHook(useServerPlugin.transform)!.call(
+      context,
+      result!.code,
+      moduleId,
+    );
+    expect(() => parseAst(useServerResult!.code)).not.toThrow();
+    expect([...manager.serverReferences.claimMap.get(moduleId).keys()]).toEqual([
+      "vinext:server-function-directives",
+      "rsc:use-server",
+    ]);
+    const exportNames = manager.serverReferences.metaMap.get(moduleId)!.exportNames;
+    expect(exportNames).toContain("cached");
+    expect(exportNames).toContainEqual(expect.stringMatching(/uncached/));
+    expect(exportNames).toHaveLength(new Set(exportNames).size);
   });
 
   it("rejects conflicting file-level cache and use-server directives", async () => {

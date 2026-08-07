@@ -26,7 +26,6 @@ type CacheWrapperOptions = {
 };
 
 const PLUGIN_NAME = "vinext:server-function-directives";
-const USE_SERVER_PLUGIN_NAME = "rsc:use-server";
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
 
@@ -127,6 +126,27 @@ function shouldTransformModuleExport(name: string, id: string, meta: ModuleExpor
   return true;
 }
 
+function hasFunctionDirective(
+  meta: Pick<ModuleExportMeta, "valueNode">,
+  directive: string,
+): boolean {
+  const node = meta.valueNode;
+  if (
+    (node?.type !== "FunctionDeclaration" &&
+      node?.type !== "FunctionExpression" &&
+      node?.type !== "ArrowFunctionExpression") ||
+    node.body.type !== "BlockStatement"
+  ) {
+    return false;
+  }
+  return node.body.body.some(
+    (statement) =>
+      statement.type === "ExpressionStatement" &&
+      "directive" in statement &&
+      statement.directive === directive,
+  );
+}
+
 function getCacheWrapperOptions(
   options: Options,
   id: string,
@@ -218,7 +238,6 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           return;
         }
 
-        manager.serverReferences.deleteClaim(USE_SERVER_PLUGIN_NAME, id);
         manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
           ...reference,
           exportNames: result.exportNames,
@@ -253,14 +272,15 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
         isModuleDirective: boolean,
       ) => {
         const cached = wrap(value, name, directiveMatch, meta, isModuleDirective);
-        if (useServerBoundary) return cached;
         needsReactServer = true;
         return `$$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
       };
 
       const result = moduleDirective
         ? transforms.transformWrapExport(code, ast, {
-            filter: (name, meta) => shouldTransformModuleExport(name, id, meta),
+            filter: (name, meta) =>
+              !hasFunctionDirective(meta, "use server") &&
+              shouldTransformModuleExport(name, id, meta),
             runtime: (value, name, meta) =>
               runtime(value, name, matchUseCacheDirective(moduleDirective), meta, true),
           })
@@ -278,16 +298,13 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
         return;
       }
 
-      if (useServerBoundary) {
-        manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
-      } else {
-        manager.serverReferences.deleteClaim(USE_SERVER_PLUGIN_NAME, id);
-        manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
-          ...reference,
-          exportNames: "names" in result ? result.names : result.exportNames,
-        });
-      }
-      result.output.prepend(
+      manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
+        ...reference,
+        exportNames: "names" in result ? result.names : result.exportNames,
+      });
+      const importPosition = ast.body.find((node) => !("directive" in node))?.start ?? code.length;
+      result.output.prependLeft(
+        importPosition,
         [
           `import * as $$cacheRuntime from ${JSON.stringify(options.cacheRuntime)};`,
           needsReactServer &&
