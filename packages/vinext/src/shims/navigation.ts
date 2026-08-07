@@ -3020,6 +3020,16 @@ if (!isServer) {
       }
     });
 
+    // An externally-written entry needs its OWN traversal index (allocated by
+    // the App Router runtime when present) — inheriting the current entry's
+    // index aliases two entries onto one restorable-snapshot slot, so a later
+    // Back/Forward restores the other entry's router state (#1541). Suppressed
+    // (vinext-internal) writes manage their own metadata and never allocate.
+    const allocateExternalHistoryTraversalIndex = (): number | null | undefined => {
+      if (state.suppressUrlNotifyCount !== 0) return undefined;
+      return getNavigationRuntime()?.functions.allocateExternalHistoryTraversalIndex?.();
+    };
+
     window.history.pushState = function patchedPushState(
       data: unknown,
       unused: string,
@@ -3027,7 +3037,11 @@ if (!isServer) {
     ): void {
       state.originalPushState.call(
         window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        createExternalHistoryStatePreservingMetadata(
+          data,
+          window.history.state,
+          allocateExternalHistoryTraversalIndex(),
+        ),
         unused,
         url,
       );
@@ -3047,7 +3061,11 @@ if (!isServer) {
     ): void {
       state.originalReplaceState.call(
         window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        createExternalHistoryStatePreservingMetadata(
+          data,
+          window.history.state,
+          allocateExternalHistoryTraversalIndex(),
+        ),
         unused,
         url,
       );

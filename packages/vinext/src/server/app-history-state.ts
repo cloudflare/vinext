@@ -243,12 +243,29 @@ export function createHistoryStateWithNavigationMetadata(
   return Object.keys(nextState).length > 0 ? nextState : null;
 }
 
+/**
+ * Builds the history state for an app-called (external) `history.pushState` /
+ * `history.replaceState`, preserving vinext's navigation metadata alongside the
+ * caller's own state.
+ *
+ * `allocatedTraversalIndex` is the entry's OWN traversal index, allocated by
+ * the App Router runtime. When it is undefined (no App Router runtime — Pages
+ * Router or pre-hydration), the current entry's index is carried over as
+ * before. With the runtime present the caller must pass a fresh index: copying
+ * the current entry's index onto a NEW entry keys two distinct entries to one
+ * restorable-snapshot slot, so a later Back/Forward restores the OTHER entry's
+ * router state and `usePathname()` freezes on a stale pathname (#1541).
+ */
 export function createExternalHistoryStatePreservingMetadata(
   callerState: unknown,
   currentHistoryState: unknown,
+  allocatedTraversalIndex?: number | null,
 ): unknown {
   const previousNextUrl = readHistoryStatePreviousNextUrl(currentHistoryState);
-  const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
+  const traversalIndex =
+    allocatedTraversalIndex !== undefined
+      ? allocatedTraversalIndex
+      : readHistoryStateTraversalIndex(currentHistoryState);
   const bfcacheIds = readHistoryStateBfcacheIds(currentHistoryState);
   const bfcacheVersion = readHistoryStateBfcacheVersion(currentHistoryState);
 

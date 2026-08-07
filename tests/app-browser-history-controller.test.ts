@@ -9,6 +9,7 @@ import {
   createSnapshotPathAndSearch,
 } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
+  createExternalHistoryStatePreservingMetadata,
   createHistoryStateWithNavigationMetadata,
   readHistoryStateTraversalIndex,
 } from "../packages/vinext/src/server/app-history-state.js";
@@ -448,5 +449,81 @@ describe("history snapshot target normalization shared with same-route popstate 
 
     expect(plannerCurrentUrl.searchParams.toString()).toBe(snapshot.searchParams.toString());
     expect([...plannerCurrentUrl.searchParams]).toEqual([...snapshot.searchParams]);
+  });
+});
+
+describe("externally written history entries (shallow routing)", () => {
+  it("carries the current entry's traversal index over when no index was allocated", () => {
+    const currentEntryState = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 3,
+    });
+
+    const entryState = createExternalHistoryStatePreservingMetadata(
+      { app: true },
+      currentEntryState,
+    );
+
+    expect(readHistoryStateTraversalIndex(entryState)).toBe(3);
+  });
+
+  it("stamps the allocated traversal index instead of copying the current entry's", () => {
+    const currentEntryState = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 3,
+    });
+
+    const entryState = createExternalHistoryStatePreservingMetadata(null, currentEntryState, 4);
+
+    expect(readHistoryStateTraversalIndex(entryState)).toBe(4);
+  });
+
+  it("stamps the allocated traversal index even when the current entry carries no metadata", () => {
+    const entryState = createExternalHistoryStatePreservingMetadata(null, null, 4);
+
+    expect(readHistoryStateTraversalIndex(entryState)).toBe(4);
+  });
+
+  it("gives an externally pushed entry its own snapshot slot so a traversal restore cannot alias (#1541)", () => {
+    const { controller } = createController();
+    const homeState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/", {}),
+      routeId: "route:/",
+    });
+    controller.commitHistoryTraversalIndex(0);
+    controller.rememberHistoryStateSnapshot(homeState);
+
+    // Mirrors the allocateExternalHistoryTraversalIndex runtime function the
+    // patched history.pushState calls: the app-written entry gets a fresh
+    // index rather than inheriting index 0 from the entry it was pushed from.
+    const externalIndex = controller.allocateNavigationHistoryTraversalIndex("push");
+    controller.commitHistoryTraversalIndex(externalIndex);
+    expect(externalIndex).not.toBe(0);
+
+    const shallowState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/a", {}),
+      routeId: "route:/",
+    });
+    controller.rememberHistoryStateSnapshot(shallowState);
+
+    // Traversing back to the original entry restores the original state — with
+    // a copied index both entries share one slot and this restore would serve
+    // the state remembered while on the externally pushed entry.
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    const restored = controller.restoreHistorySnapshot({
+      historyState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      stageClientParams: vi.fn(),
+      approveVisibleRestore,
+    });
+
+    expect(restored).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(homeState);
+    expect(controller.currentHistoryTraversalIndex).toBe(0);
   });
 });

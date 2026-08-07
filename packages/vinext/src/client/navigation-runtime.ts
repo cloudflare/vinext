@@ -54,6 +54,16 @@ export type NavigationRuntimeNavigate = (
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
+  /**
+   * Allocates and commits a traversal index for a history entry created or
+   * rewritten by an app-called `history.pushState`/`history.replaceState`
+   * (shallow routing). Registered by the App Router browser entry, wired to
+   * `AppBrowserHistoryController`. The patched history methods in
+   * shims/navigation.ts call this so an externally-written entry gets its own
+   * identity instead of inheriting the current entry's traversal index, which
+   * would alias two entries onto one restorable-snapshot slot (#1541).
+   */
+  allocateExternalHistoryTraversalIndex?: () => number | null;
   clearNavigationCaches?: () => void;
   commitHashNavigation?: (
     href: string,
@@ -124,6 +134,7 @@ function readRuntimeWindow(): Window | null {
 function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
   if (!isUnknownRecord(value)) return false;
   return (
+    isOptionalRuntimeFunction(Reflect.get(value, "allocateExternalHistoryTraversalIndex")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&

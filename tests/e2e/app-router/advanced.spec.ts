@@ -669,6 +669,65 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
+  // Regression test for #1541: a pushState performed after a Back/Forward
+  // traversal used to inherit the traversed-to entry's traversal index, so the
+  // next Back restored the aliased entry's router snapshot and usePathname()
+  // froze on a stale pathname while the URL moved on.
+  test("usePathname stays in sync with the URL through back/forward around interleaved pushState", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    // Two shallow pushes: /shallow-test -> /shallow-test/sub -> ?filter=active
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+      { timeout: 10_000 },
+    );
+    await page.locator('[data-testid="push-filter"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test", {
+      timeout: 10_000,
+    });
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active");
+
+    // Traverse back, then push again from the restored entry.
+    await page.goBack();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+      { timeout: 10_000 },
+    );
+    await page.locator('[data-testid="push-filter"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test", {
+      timeout: 10_000,
+    });
+
+    // The Back after a post-traversal pushState is the aliasing case.
+    await page.goBack();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 10_000 })
+      .toBe("/shallow-test/sub");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+      { timeout: 10_000 },
+    );
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: ");
+
+    await page.goForward();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 10_000 })
+      .toBe("/shallow-test");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test", {
+      timeout: 10_000,
+    });
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active");
+  });
+
   test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 
