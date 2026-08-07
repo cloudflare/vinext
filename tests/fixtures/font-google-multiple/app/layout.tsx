@@ -5,7 +5,7 @@ import localFont from "next/font/local";
 const localSans = localFont({
   src: [
     {
-      path: "./local.woff2",
+      path: "./noto-sans-wdth-wght.ttf",
       style: "normal",
     },
   ],

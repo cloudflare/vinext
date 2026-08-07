@@ -216,7 +216,9 @@ describe("App Router Production server self-hosted next/font/google headers", ()
       expect(styleMatch![1]).toContain(href);
       const fontRes = await fetch(`${fontBaseUrl}${href}`);
       expect(fontRes.status, href).toBe(200);
-      expect(fontRes.headers.get("content-type")).toBe("font/woff2");
+      expect(fontRes.headers.get("content-type")).toBe(
+        href === localFontHref ? "font/ttf" : "font/woff2",
+      );
       expect(fontRes.headers.get("cache-control")).toContain("immutable");
     }
     const linkHrefs = [...link!.matchAll(/<([^>]+)>; rel=preload; as=font/g)].map((m) => m[1]);
