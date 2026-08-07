@@ -206,6 +206,17 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
       if (!pluginApi?.manager.serverReferences) {
         throw new Error("vinext: callable use cache requires @vitejs/plugin-rsc 0.5.34 or newer.");
       }
+      if (options.allowMissingRsc) {
+        const useCacheIndex = config.plugins.findIndex((plugin) => plugin.name === PLUGIN_NAME);
+        const useServerIndex = config.plugins.findIndex(
+          (plugin) => plugin.name === "rsc:use-server",
+        );
+        if (useServerIndex !== -1 && useCacheIndex > useServerIndex) {
+          throw new Error(
+            "vinext: when configuring @vitejs/plugin-rsc manually, vinext({ rsc: false }) must appear before rsc() in the Vite plugins array.",
+          );
+        }
+      }
       manager = pluginApi.manager;
     },
     transform: {

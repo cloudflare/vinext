@@ -67,17 +67,19 @@ const USE_CACHE_MIXED_HMR_SERVER = [
 ].join("\n");
 
 async function writeUseCacheHmrActions(content: string, forceUpdate = false) {
-  const nextContent = forceUpdate ? `${content}// hmr-update:${Date.now()}\n` : content;
+  const updateMarker = forceUpdate ? `// hmr-update:${Date.now()}` : undefined;
+  const nextContent = updateMarker ? `${content}${updateMarker}\n` : content;
   if ((await readFile(USE_CACHE_HMR_ACTIONS_FILE, "utf8")) !== nextContent) {
     await writeFile(USE_CACHE_HMR_ACTIONS_FILE, nextContent);
   }
+  return updateMarker;
 }
 
-async function waitForUseCacheHmrTransform(request: APIRequestContext) {
+async function waitForUseCacheHmrTransform(request: APIRequestContext, updateMarker?: string) {
   await expect
     .poll(async () => {
       const response = await request.get(`${BASE}/app/use-cache-hmr/actions.ts?t=${Date.now()}`);
-      return response.ok();
+      return response.ok() && (!updateMarker || (await response.text()).includes(updateMarker));
     })
     .toBe(true);
 }
@@ -208,8 +210,9 @@ test.describe('"use cache" transform coverage', () => {
   });
 
   test("removes and restores directive metadata during HMR", async ({ page, request }) => {
-    await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED, true);
+    const initialUpdate = await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED, true);
     try {
+      await waitForUseCacheHmrTransform(request, initialUpdate);
       await page.goto(`${BASE}/use-cache-hmr`);
       await expect(async () => {
         await page.locator("#call-use-cache-hmr").click();
@@ -218,8 +221,8 @@ test.describe('"use cache" transform coverage', () => {
         });
       }).toPass({ timeout: 15_000 });
 
-      await writeUseCacheHmrActions(USE_CACHE_HMR_PLAIN, true);
-      await waitForUseCacheHmrTransform(request);
+      const plainUpdate = await writeUseCacheHmrActions(USE_CACHE_HMR_PLAIN, true);
+      await waitForUseCacheHmrTransform(request, plainUpdate);
       await page.reload();
       await expect(async () => {
         await page.locator("#call-use-cache-hmr").click();
@@ -228,8 +231,8 @@ test.describe('"use cache" transform coverage', () => {
         });
       }).toPass({ timeout: 15_000 });
 
-      await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED, true);
-      await waitForUseCacheHmrTransform(request);
+      const cachedUpdate = await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED, true);
+      await waitForUseCacheHmrTransform(request, cachedUpdate);
       await page.reload();
       await expect(async () => {
         await page.locator("#call-use-cache-hmr").click();
@@ -247,9 +250,9 @@ test.describe('"use cache" transform coverage', () => {
     request,
   }) => {
     await writeFile(USE_CACHE_HMR_DEPENDENCY_FILE, USE_CACHE_HMR_DEPENDENCY_INITIAL);
-    await writeUseCacheHmrActions(USE_CACHE_HMR_IMPORTED, true);
+    const importedUpdate = await writeUseCacheHmrActions(USE_CACHE_HMR_IMPORTED, true);
     try {
-      await waitForUseCacheHmrTransform(request);
+      await waitForUseCacheHmrTransform(request, importedUpdate);
       await page.goto(`${BASE}/use-cache-hmr`);
       await expect(async () => {
         await page.locator("#call-use-cache-hmr").click();
