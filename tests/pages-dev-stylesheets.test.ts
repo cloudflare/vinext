@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createServer, type ViteDevServer } from "vite-plus";
 import fs from "node:fs";
 import os from "node:os";
@@ -144,6 +144,43 @@ describe("Pages dev stylesheet Vite ids", () => {
 
     // Manifest assets are resolved before their CSS module has been transformed.
     expect(graph.getModuleById(canonicalStylesheetPath)).toBeUndefined();
+  });
+
+  it("deduplicates a manifest fallback against the later resolved graph asset", async () => {
+    const entryPath = path.join(root, "manifest-transient-entry.js");
+    const cssPath = path.join(root, "manifest-transient.css");
+    fs.writeFileSync(entryPath, 'import "./manifest-transient.css";\n');
+    fs.writeFileSync(cssPath, ".manifest-transient { color: green; }\n");
+    const graph = server.environments.client.moduleGraph;
+    const resolveUrl = vi
+      .spyOn(graph, "resolveUrl")
+      .mockRejectedValueOnce(new Error("Simulated manifest-only resolution failure"));
+
+    let html: string;
+    try {
+      html = await collectPagesDevInitialStylesheetHeadHTML(
+        server,
+        {
+          async import() {
+            return {
+              default: {
+                ssrManifest: {
+                  [entryPath]: ["manifest-transient.css"],
+                },
+              },
+            };
+          },
+        },
+        [entryPath],
+        "",
+      );
+      expect(resolveUrl).toHaveBeenNthCalledWith(1, "/manifest-transient.css");
+    } finally {
+      resolveUrl.mockRestore();
+    }
+
+    expect(html.match(/href="\/manifest-transient\.css"/g)).toHaveLength(1);
+    expect(html).toContain(`data-vite-dev-id="${toSlash(cssPath)}"`);
   });
 
   it("preserves safe virtual ids and omits null-byte ids that HTML cannot represent", async () => {

@@ -8,7 +8,9 @@ const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass)$/i;
 const DEV_STYLESHEET_MODULE_RE = /\.(?:css|scss|sass)(?:$|[?#])/i;
 // These Vite query modes replace the imported module instead of executing it
 // in the current document. `inline` and `direct` only have that meaning for
-// stylesheets; plain JavaScript carrying those queries still executes.
+// stylesheets; plain JavaScript carrying those queries still executes. Vite's
+// asset and worker loaders require these to be bare flags, so values such as
+// `?raw=false` do not activate the loader and the JavaScript still executes.
 const NON_EXECUTING_MODULE_QUERY_RE = /[?&](?:raw|url|worker|sharedworker)(?:&|$)/;
 const NON_INJECTING_STYLESHEET_QUERY_RE = /[?&](?:raw|url|worker|sharedworker|inline|direct)\b/;
 
@@ -133,7 +135,8 @@ async function collectTransformedStylesheetAssets(
   const cachedAssets = cache.get(cacheKey);
   if (cachedAssets) return cachedAssets;
 
-  const assets = new Map<string, PagesDevStylesheetAsset>();
+  const assets: PagesDevStylesheetAsset[] = [];
+  const assetKeyIndexes = new Map<string, number>();
   const seenModules = new Set<string>();
   async function addStylesheet(moduleNode: EnvironmentModuleNode): Promise<void> {
     const href = moduleNode.url.startsWith("\0")
@@ -144,7 +147,7 @@ async function collectTransformedStylesheetAssets(
       moduleNode.url,
       moduleNode.id,
     );
-    assets.set(viteDevId ? `id:${viteDevId}` : `url:${canonicalStylesheetUrl(href)}`, {
+    appendStylesheetAsset(assets, assetKeyIndexes, {
       href,
       viteDevId,
     });
@@ -178,7 +181,7 @@ async function collectTransformedStylesheetAssets(
     if (!moduleId) continue;
     await visitModule(createPagesDevModuleUrl(server.config.root, moduleId, "/"));
   }
-  const result = [...assets.values()];
+  const result = assets;
   cache.set(cacheKey, result);
   return result;
 }
@@ -192,8 +195,35 @@ function canonicalStylesheetUrl(url: string): string {
   }
 }
 
-function stylesheetAssetKey(asset: PagesDevStylesheetAsset): string {
-  return asset.viteDevId ? `id:${asset.viteDevId}` : `url:${canonicalStylesheetUrl(asset.href)}`;
+function stylesheetAssetKeys(asset: PagesDevStylesheetAsset): string[] {
+  const keys = [`url:${canonicalStylesheetUrl(asset.href)}`];
+  if (asset.viteDevId) keys.unshift(`id:${asset.viteDevId}`);
+  return keys;
+}
+
+function appendStylesheetAsset(
+  assets: PagesDevStylesheetAsset[],
+  keyIndexes: Map<string, number>,
+  asset: PagesDevStylesheetAsset,
+): void {
+  const keys = stylesheetAssetKeys(asset);
+  const existingIndex = keys
+    .map((key) => keyIndexes.get(key))
+    .find((index): index is number => index !== undefined);
+
+  if (existingIndex !== undefined) {
+    // A manifest-only resolution can fail before transforming the client
+    // graph. Prefer the later graph asset so Vite can adopt the emitted link.
+    if (!assets[existingIndex].viteDevId && asset.viteDevId) {
+      assets[existingIndex] = asset;
+    }
+    for (const key of keys) keyIndexes.set(key, existingIndex);
+    return;
+  }
+
+  const index = assets.length;
+  assets.push(asset);
+  for (const key of keys) keyIndexes.set(key, index);
 }
 
 export async function collectPagesDevInitialStylesheetHeadHTML(
@@ -204,14 +234,14 @@ export async function collectPagesDevInitialStylesheetHeadHTML(
 ): Promise<string> {
   const manifestAssets = await collectManifestStylesheetAssets(server, runner, moduleIds);
   const transformedAssets = await collectTransformedStylesheetAssets(server, moduleIds);
-  const assets = new Map<string, PagesDevStylesheetAsset>();
+  const assets: PagesDevStylesheetAsset[] = [];
+  const assetKeyIndexes = new Map<string, number>();
   for (const asset of [...manifestAssets, ...transformedAssets]) {
-    const key = stylesheetAssetKey(asset);
-    if (!assets.has(key)) assets.set(key, asset);
+    appendStylesheetAsset(assets, assetKeyIndexes, asset);
   }
 
   let html = "";
-  for (const { href: rawHref, viteDevId } of assets.values()) {
+  for (const { href: rawHref, viteDevId } of assets) {
     const href = rawHref.startsWith("/") ? rawHref : createPagesDevAssetUrl(rawHref);
     const viteDevIdAttr = viteDevId ? ` data-vite-dev-id="${escapeHtmlAttr(viteDevId)}"` : "";
     html += `<link rel="stylesheet"${nonceAttr}${viteDevIdAttr} href="${escapeHtmlAttr(href)}" />\n  `;
