@@ -63,8 +63,12 @@ export function getHtmlProxyRaceStatus(id: string) {
 }
 
 export function releaseHtmlProxyRace(id: string): void {
-  const race = getRace(id);
+  const race = races.get(id);
+  if (!race) return;
   if (race.released) return;
   race.released = true;
   race.releaseFirstRequest();
+  queueMicrotask(() => {
+    if (races.get(id) === race) races.delete(id);
+  });
 }

@@ -157,6 +157,59 @@ describe("Pages HTML proxy capture", () => {
     expect((await server.transformRequest(secondUrl!))?.code).toContain("stateful(2)");
   });
 
+  it("bounds retained request-dependent proxy modules", async () => {
+    const { server } = await createTestServer();
+    const renderedUrls: string[] = [];
+
+    for (let index = 0; index < 300; index += 1) {
+      const transformed = await transformPagesHtml(
+        server,
+        "/page",
+        `<script type="module">renderVersion(${index})</script>`,
+      );
+      const url = contentModuleUrls(transformed)[0]!;
+      renderedUrls.push(url);
+      await server.transformRequest(url);
+    }
+
+    const graph = server.environments.client.moduleGraph;
+    const retainedGraphUrls = Array.from(graph.urlToModuleMap.keys()).filter((url) =>
+      url.includes("__vinext_html_proxy_content_"),
+    );
+    const unresolvedUrls = Array.from(
+      (
+        graph as unknown as {
+          _unresolvedUrlToModuleMap: Map<string, unknown>;
+        }
+      )._unresolvedUrlToModuleMap.keys(),
+    ).filter((url) => url.includes("__vinext_html_proxy_content_"));
+    expect(retainedGraphUrls.length).toBeLessThanOrEqual(8);
+    expect(unresolvedUrls.length).toBeLessThanOrEqual(8);
+    await expect(server.transformRequest(renderedUrls[0]!)).rejects.toThrow();
+    await expect(server.transformRequest(renderedUrls.at(-1)!)).resolves.toMatchObject({
+      code: expect.stringContaining("renderVersion(299)"),
+    });
+  });
+
+  it("retains every current proxy index in a document", async () => {
+    const { server } = await createTestServer();
+    const transformed = await transformPagesHtml(
+      server,
+      "/page",
+      Array.from(
+        { length: 12 },
+        (_, index) => `<script type="module">currentModule(${index})</script>`,
+      ).join(""),
+    );
+    const urls = contentModuleUrls(transformed);
+
+    expect(urls).toHaveLength(12);
+    const results = await Promise.all(urls.map((url) => server.transformRequest(url)));
+    for (let index = 0; index < results.length; index += 1) {
+      expect(results[index]?.code).toContain(`currentModule(${index})`);
+    }
+  });
+
   it("keeps duplicate modules and Vite proxy indices distinct", async () => {
     const { server } = await createTestServer();
     const transformed = await transformPagesHtml(

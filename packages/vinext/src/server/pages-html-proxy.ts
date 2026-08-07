@@ -1,4 +1,4 @@
-import type { Plugin, ViteDevServer } from "vite";
+import type { EnvironmentModuleGraph, EnvironmentModuleNode, Plugin, ViteDevServer } from "vite";
 import type { SourceDescription } from "vite/rolldown";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
@@ -16,10 +16,18 @@ type CapturedProxyModule = {
   map?: SourceDescription["map"];
   moduleSideEffects?: SourceDescription["moduleSideEffects"];
 };
+type RetainedProxyModule = {
+  aliases: string[];
+  module: CapturedProxyModule;
+};
+type EvictableModuleGraph = EnvironmentModuleGraph & {
+  _unresolvedUrlToModuleMap?: Map<string, EnvironmentModuleNode | Promise<EnvironmentModuleNode>>;
+};
 
 const HTML_PROXY_SCRIPT_RE =
   /<script\b[^>]*\bsrc="([^"]*[?&]html-proxy&index=(\d+)\.js)"[^>]*><\/script>/g;
 const CONTENT_MODULE_PREFIX = "__vinext_html_proxy_content_";
+const MAX_RETAINED_PROXY_VERSIONS = 8;
 const pagesHtmlTransformContext = new AsyncLocalStorage<PagesHtmlTransformContext>();
 const serverLocks = new WeakMap<ViteDevServer, Map<string, Promise<void>>>();
 
@@ -137,13 +145,97 @@ function applyProxyScriptNonce(tag: string, nonce?: string): string {
   );
 }
 
+function evictViteModule(server: ViteDevServer, resolvedId: string): void {
+  const graph: EvictableModuleGraph = server.environments.client.moduleGraph;
+  const module = graph.getModuleById(resolvedId);
+  if (!module) return;
+
+  graph.invalidateModule(module);
+  for (const imported of module.importedModules) imported.importers.delete(module);
+  for (const importer of module.importers) {
+    importer.importedModules.delete(module);
+    importer.acceptedHmrDeps.delete(module);
+  }
+  module.importedModules.clear();
+  module.importers.clear();
+  module.acceptedHmrDeps.clear();
+  graph.idToModuleMap.delete(resolvedId);
+  for (const [url, candidate] of graph.urlToModuleMap) {
+    if (candidate === module) graph.urlToModuleMap.delete(url);
+  }
+  for (const [etag, candidate] of graph.etagToModuleMap) {
+    if (candidate === module) graph.etagToModuleMap.delete(etag);
+  }
+  if (module.file) {
+    const fileModules = graph.fileToModulesMap.get(module.file);
+    fileModules?.delete(module);
+    if (fileModules?.size === 0) graph.fileToModulesMap.delete(module.file);
+  }
+
+  // Vite has no public module-removal API. Its unresolved lookup is the last
+  // strong reference after the public graph maps above are cleared.
+  for (const [url, candidate] of graph._unresolvedUrlToModuleMap ?? []) {
+    if (candidate === module) graph._unresolvedUrlToModuleMap!.delete(url);
+  }
+}
+
+function retainProxyModule(
+  server: ViteDevServer,
+  modules: Map<string, RetainedProxyModule>,
+  publicToResolvedId: Map<string, string>,
+  retainedByDocumentIndex: Map<string, Set<string>>,
+  documentIndex: string,
+  resolvedId: string,
+  publicUrl: string,
+  publicBase: string,
+  module: CapturedProxyModule,
+): void {
+  const aliases = Array.from(
+    new Set([cleanUrl(publicUrl), cleanUrl(stripBase(publicUrl, publicBase))]),
+  );
+  const previous = modules.get(resolvedId);
+  if (previous) {
+    modules.delete(resolvedId);
+    for (const alias of previous.aliases) {
+      if (publicToResolvedId.get(alias) === resolvedId) publicToResolvedId.delete(alias);
+    }
+  }
+
+  modules.set(resolvedId, { aliases, module });
+  for (const alias of aliases) publicToResolvedId.set(alias, resolvedId);
+
+  let retained = retainedByDocumentIndex.get(documentIndex);
+  if (!retained) {
+    retained = new Set();
+    retainedByDocumentIndex.set(documentIndex, retained);
+  }
+  retained.delete(resolvedId);
+  retained.add(resolvedId);
+
+  while (retained.size > MAX_RETAINED_PROXY_VERSIONS) {
+    const oldestId = retained.keys().next().value;
+    if (oldestId === undefined) break;
+    retained.delete(oldestId);
+    const oldest = modules.get(oldestId);
+    if (!oldest) continue;
+    modules.delete(oldestId);
+    for (const alias of oldest.aliases) {
+      if (publicToResolvedId.get(alias) === oldestId) publicToResolvedId.delete(alias);
+    }
+    evictViteModule(server, oldestId);
+  }
+}
+
 /** Capture Vite's exact proxy sources and rewrite them to immutable modules. */
 export function createPagesHtmlProxyCapturePlugin(): Plugin {
-  const modules = new Map<string, CapturedProxyModule>();
+  const modules = new Map<string, RetainedProxyModule>();
   const publicToResolvedId = new Map<string, string>();
+  const retainedByDocumentIndex = new Map<string, Set<string>>();
   return {
     name: "vinext:pages-html-proxy-capture",
     enforce: "pre",
+    // Keep this as a normal-order hook: Vite creates its html-proxy scripts in
+    // devHtmlHook before normal hooks run. An `order: "pre"` hook cannot see them.
     async transformIndexHtml(html) {
       const active = pagesHtmlTransformContext.getStore();
       if (!active) return;
@@ -169,13 +261,22 @@ export function createPagesHtmlProxyCapturePlugin(): Plugin {
           document: active.documentUrl,
           index,
           map: loaded.map ?? null,
+          moduleSideEffects: loaded.moduleSideEffects ?? null,
         });
         const hash = createHash("sha256").update(identity).digest("hex");
         const publicUrl = contentModuleUrl(active.documentUrl, hash, index, publicBase);
         const resolvedId = contentModuleId(server.config.root, publicUrl, publicBase);
-        modules.set(resolvedId, loaded);
-        publicToResolvedId.set(cleanUrl(publicUrl), resolvedId);
-        publicToResolvedId.set(cleanUrl(stripBase(publicUrl, publicBase)), resolvedId);
+        retainProxyModule(
+          server,
+          modules,
+          publicToResolvedId,
+          retainedByDocumentIndex,
+          `${active.documentUrl}\0${index}`,
+          resolvedId,
+          publicUrl,
+          publicBase,
+          loaded,
+        );
         replacements.push({
           end: match.index + match[0].length,
           start: match.index,
@@ -201,7 +302,7 @@ export function createPagesHtmlProxyCapturePlugin(): Plugin {
     load: {
       filter: { id: new RegExp(CONTENT_MODULE_PREFIX) },
       handler(id) {
-        const captured = modules.get(cleanUrl(id));
+        const captured = modules.get(cleanUrl(id))?.module;
         if (!captured) return;
         return {
           code: captured.code,
