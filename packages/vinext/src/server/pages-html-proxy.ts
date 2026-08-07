@@ -27,6 +27,7 @@ type EvictableModuleGraph = EnvironmentModuleGraph & {
 const HTML_PROXY_SCRIPT_RE =
   /<script\b[^>]*\bsrc="([^"]*[?&]html-proxy&index=(\d+)\.js)"[^>]*><\/script>/g;
 const CONTENT_MODULE_PREFIX = "__vinext_html_proxy_content_";
+const MAX_RETAINED_PROXY_DOCUMENTS = 128;
 const MAX_RETAINED_PROXY_VERSIONS = 8;
 const pagesHtmlTransformContext = new AsyncLocalStorage<PagesHtmlTransformContext>();
 const serverLocks = new WeakMap<ViteDevServer, Map<string, Promise<void>>>();
@@ -200,12 +201,28 @@ function evictViteModule(server: ViteDevServer, resolvedId: string, aliases: str
   }
 }
 
+function evictRetainedProxyModule(
+  server: ViteDevServer,
+  modules: Map<string, RetainedProxyModule>,
+  publicToResolvedId: Map<string, string>,
+  resolvedId: string,
+): void {
+  const retained = modules.get(resolvedId);
+  if (!retained) return;
+  modules.delete(resolvedId);
+  for (const alias of retained.aliases) {
+    if (publicToResolvedId.get(alias) === resolvedId) publicToResolvedId.delete(alias);
+  }
+  evictViteModule(server, resolvedId, retained.aliases);
+}
+
 function retainProxyModule(
   server: ViteDevServer,
   modules: Map<string, RetainedProxyModule>,
   publicToResolvedId: Map<string, string>,
-  retainedByDocumentIndex: Map<string, Set<string>>,
-  documentIndex: string,
+  retainedByDocument: Map<string, Map<number, Set<string>>>,
+  documentUrl: string,
+  index: number,
   resolvedId: string,
   publicUrl: string,
   publicBase: string,
@@ -225,10 +242,18 @@ function retainProxyModule(
   modules.set(resolvedId, { aliases, module });
   for (const alias of aliases) publicToResolvedId.set(alias, resolvedId);
 
-  let retained = retainedByDocumentIndex.get(documentIndex);
+  let document = retainedByDocument.get(documentUrl);
+  if (document) {
+    retainedByDocument.delete(documentUrl);
+    retainedByDocument.set(documentUrl, document);
+  } else {
+    document = new Map();
+    retainedByDocument.set(documentUrl, document);
+  }
+  let retained = document.get(index);
   if (!retained) {
     retained = new Set();
-    retainedByDocumentIndex.set(documentIndex, retained);
+    document.set(index, retained);
   }
   retained.delete(resolvedId);
   retained.add(resolvedId);
@@ -237,15 +262,21 @@ function retainProxyModule(
     const oldestId = retained.keys().next().value;
     if (oldestId === undefined) break;
     retained.delete(oldestId);
-    const oldest = modules.get(oldestId);
-    if (!oldest) continue;
-    modules.delete(oldestId);
-    for (const alias of oldest.aliases) {
-      if (publicToResolvedId.get(alias) === oldestId) publicToResolvedId.delete(alias);
-    }
     // A browser still fetching HTML older than this bounded dev history may
     // receive a 404, just as a stale tab can after an HMR invalidation.
-    evictViteModule(server, oldestId, oldest.aliases);
+    evictRetainedProxyModule(server, modules, publicToResolvedId, oldestId);
+  }
+
+  while (retainedByDocument.size > MAX_RETAINED_PROXY_DOCUMENTS) {
+    const oldestDocumentUrl = retainedByDocument.keys().next().value;
+    if (oldestDocumentUrl === undefined) break;
+    const oldestDocument = retainedByDocument.get(oldestDocumentUrl)!;
+    retainedByDocument.delete(oldestDocumentUrl);
+    for (const versions of oldestDocument.values()) {
+      for (const oldId of versions) {
+        evictRetainedProxyModule(server, modules, publicToResolvedId, oldId);
+      }
+    }
   }
 }
 
@@ -253,7 +284,7 @@ function retainProxyModule(
 export function createPagesHtmlProxyCapturePlugin(): Plugin {
   const modules = new Map<string, RetainedProxyModule>();
   const publicToResolvedId = new Map<string, string>();
-  const retainedByDocumentIndex = new Map<string, Set<string>>();
+  const retainedByDocument = new Map<string, Map<number, Set<string>>>();
   return {
     name: "vinext:pages-html-proxy-capture",
     enforce: "pre",
@@ -293,8 +324,9 @@ export function createPagesHtmlProxyCapturePlugin(): Plugin {
           server,
           modules,
           publicToResolvedId,
-          retainedByDocumentIndex,
-          `${active.documentUrl}\0${index}`,
+          retainedByDocument,
+          active.documentUrl,
+          index,
           resolvedId,
           publicUrl,
           publicBase,
@@ -315,6 +347,12 @@ export function createPagesHtmlProxyCapturePlugin(): Plugin {
           transformedHtml.slice(replacement.end);
       }
       return transformedHtml;
+    },
+    hotUpdate({ server }) {
+      for (const resolvedId of Array.from(modules.keys())) {
+        evictRetainedProxyModule(server, modules, publicToResolvedId, resolvedId);
+      }
+      retainedByDocument.clear();
     },
     resolveId: {
       filter: { id: new RegExp(CONTENT_MODULE_PREFIX) },

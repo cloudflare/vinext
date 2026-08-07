@@ -24,16 +24,17 @@ describe("Pages HTML proxy capture", () => {
   ) {
     const root = await mkdtemp(path.join(os.tmpdir(), "vinext-pages-html-proxy-"));
     roots.push(root);
+    const capturePlugin = createPagesHtmlProxyCapturePlugin();
     const server = await createServer({
       appType: "custom",
       base: options.base,
       html: options.cspNonce ? { cspNonce: options.cspNonce } : undefined,
       logLevel: "silent",
-      plugins: [createPagesHtmlProxyCapturePlugin(), ...(options.plugins ?? [])],
+      plugins: [capturePlugin, ...(options.plugins ?? [])],
       root,
     });
     servers.push(server);
-    return { root, server };
+    return { capturePlugin, root, server };
   }
 
   afterEach(async () => {
@@ -189,6 +190,51 @@ describe("Pages HTML proxy capture", () => {
     await expect(server.transformRequest(renderedUrls.at(-1)!)).resolves.toMatchObject({
       code: expect.stringContaining("renderVersion(299)"),
     });
+  });
+
+  it("bounds retained modules across distinct document URLs", async () => {
+    const { server } = await createTestServer();
+    const renderedUrls: string[] = [];
+
+    for (let index = 0; index < 160; index += 1) {
+      const transformed = await transformPagesHtml(
+        server,
+        `/docs/${index}`,
+        `<script type="module">documentVersion(${index})</script>`,
+      );
+      const url = contentModuleUrls(transformed)[0]!;
+      renderedUrls.push(url);
+      await server.transformRequest(url);
+    }
+
+    const graph = server.environments.client.moduleGraph;
+    const retainedGraphUrls = Array.from(graph.urlToModuleMap.keys()).filter((url) =>
+      url.includes("__vinext_html_proxy_content_"),
+    );
+    expect(retainedGraphUrls.length).toBeLessThanOrEqual(128);
+    await expect(server.transformRequest(renderedUrls[0]!)).rejects.toThrow();
+    await expect(server.transformRequest(renderedUrls.at(-1)!)).resolves.toMatchObject({
+      code: expect.stringContaining("documentVersion(159)"),
+    });
+  });
+
+  it("evicts retained proxies when the source graph updates", async () => {
+    const { capturePlugin, server } = await createTestServer();
+    const transformed = await transformPagesHtml(
+      server,
+      "/page",
+      `<script type="module">beforeUpdate()</script>`,
+    );
+    const url = contentModuleUrls(transformed)[0]!;
+    await expect(server.transformRequest(url)).resolves.toMatchObject({
+      code: expect.stringContaining("beforeUpdate()"),
+    });
+
+    const hotUpdate = capturePlugin.hotUpdate;
+    if (typeof hotUpdate !== "function") throw new Error("Expected a hotUpdate handler");
+    await hotUpdate.call(undefined as never, { server } as never);
+
+    await expect(server.transformRequest(url)).rejects.toThrow();
   });
 
   it("retains every current proxy index in a document", async () => {
