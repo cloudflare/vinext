@@ -9,16 +9,22 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR } from "./helpers.js";
+import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
 
 // oxlint-disable-next-line typescript/no-explicit-any
 function unwrapHook(hook: any): ((...args: any[]) => any) | undefined {
   return typeof hook === "function" ? hook : hook?.handler;
 }
 
-async function getPlugins(): Promise<Plugin[]> {
+async function getPlugins(options: { manualRsc?: boolean } = {}): Promise<Plugin[]> {
   // oxlint-disable-next-line typescript/no-explicit-any
-  const rawPlugins = (vinext({ appDir: APP_FIXTURE_DIR }) as any[]).flat(Infinity);
+  const rawPlugins = (
+    vinext({ appDir: APP_FIXTURE_DIR, rsc: options.manualRsc ? false : undefined }) as any[]
+  ).flat(Infinity);
+  if (options.manualRsc) {
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+    rawPlugins.push(rsc({ entries: RSC_ENTRIES }));
+  }
   const resolved = await Promise.all(rawPlugins.map((plugin) => Promise.resolve(plugin)));
   return resolved.flat(Infinity).filter(Boolean) as Plugin[];
 }
@@ -79,6 +85,25 @@ async function transformRsc(source: string): Promise<string> {
 }
 
 describe("plugin-rsc inline use-cache references", () => {
+  it("supports an explicitly registered RSC plugin", async () => {
+    const plugins = await getPlugins({ manualRsc: true });
+    const manager = await configurePluginRsc(plugins);
+    const useCacheIndex = plugins.findIndex(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    );
+    const useServerIndex = plugins.findIndex((candidate) => candidate.name === "rsc:use-server");
+    expect(useCacheIndex).toBeGreaterThanOrEqual(0);
+    expect(useCacheIndex).toBeLessThan(useServerIndex);
+
+    const transformed = await unwrapHook(plugins[useCacheIndex]!.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      inlineCacheCode,
+      moduleId,
+    );
+    expect(transformed!.code).toContain("registerCachedFunction");
+    expect(manager.serverReferences.metaMap.get(moduleId)).toBeDefined();
+  });
+
   it("keeps the vinext claim through the built-in use-server transform", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);

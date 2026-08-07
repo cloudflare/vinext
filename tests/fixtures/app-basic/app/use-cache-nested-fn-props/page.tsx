@@ -31,31 +31,38 @@ async function CachedForm({
 }) {
   "use cache";
 
+  const suffix = idSuffix ? `-${idSuffix}` : "";
+
   // Closure-captured by getMessage below. The hoist transform lifts the
   // capture into a `.bind(null, capturedScopeValue)` bound argument on the
   // server reference. The binding is encrypted before RSC serialization and
   // decrypted before the cached wrapper builds its argument-based cache key.
   return (
-    <Form
-      idSuffix={idSuffix}
-      getDate={async () => {
-        "use cache";
-        return new Date().toISOString();
-      }}
-      getRandom={async function getRandom() {
-        "use cache";
-        return Math.random();
-      }}
-      getMessage={async () => {
-        "use cache";
-        // The Math.random() suffix makes cache hits on the closure-BOUND path
-        // observable: only a cache hit can repeat the suffix, so the
-        // production-server test can assert that two invocations with the
-        // same bound arg return the identical cached value (and that a
-        // different bound arg misses instead of reusing the entry).
-        return `message:${capturedScopeValue}:${Math.random()}`;
-      }}
-    />
+    <>
+      <span hidden data-testid={`nested-cache-render${suffix}`}>
+        {Math.random()}
+      </span>
+      <Form
+        idSuffix={idSuffix}
+        getDate={async () => {
+          "use cache";
+          return new Date().toISOString();
+        }}
+        getRandom={async function getRandom() {
+          "use cache";
+          return Math.random();
+        }}
+        getMessage={async () => {
+          "use cache";
+          // The Math.random() suffix makes cache hits on the closure-BOUND path
+          // observable: only a cache hit can repeat the suffix, so the
+          // production-server test can assert that two invocations with the
+          // same bound arg return the identical cached value (and that a
+          // different bound arg misses instead of reusing the entry).
+          return `message:${capturedScopeValue}:${Math.random()}`;
+        }}
+      />
+    </>
   );
 }
 

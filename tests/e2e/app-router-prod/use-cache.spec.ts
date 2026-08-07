@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 test.describe('production "use cache" server function references', () => {
   test("separates arguments for file-level cached exports imported by a Client Component", async ({
     page,
   }) => {
     await page.goto("/use-cache-client-import");
+    await waitForAppRouterHydration(page);
 
     await page.locator("#call-client-imported-cache").click();
     await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("1");
@@ -44,6 +46,7 @@ test.describe('production "use cache" server function references', () => {
   }) => {
     await page.goto("/use-cache-mixed-ownership");
     await expect(page.getByTestId("use-cache-mixed-ownership-page")).toBeVisible();
+    await waitForAppRouterHydration(page);
 
     await page.locator("#call-mixed-builtin").click();
     await expect(page.getByTestId("mixed-builtin-call-count")).toHaveText("1");
@@ -79,11 +82,14 @@ test.describe('production "use cache" server function references', () => {
   }) => {
     await page.goto("/use-cache-nested-fn-props");
     await expect(page.getByTestId("use-cache-nested-fn-props-page")).toBeVisible();
+    const cachedRender = await page.getByTestId("nested-cache-render").textContent();
 
     // Force a second server request so this test exercises the cache-hit Flight
     // replay path before invoking the nested references in the browser.
     await page.reload();
     await expect(page.getByTestId("use-cache-nested-fn-props-page")).toBeVisible();
+    await expect(page.getByTestId("nested-cache-render")).toHaveText(cachedRender!);
+    await waitForAppRouterHydration(page);
 
     await page.locator("#submit-button-date").click();
     await expect(page.locator("#date")).toHaveText(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);

@@ -17,6 +17,7 @@ type Options = {
   cacheRuntime: string;
   getAppDir: () => string | undefined;
   matchesPageExtension: (fileName: string) => boolean;
+  allowMissingRsc?: boolean;
 };
 
 type CacheWrapperOptions = {
@@ -200,6 +201,8 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
     name: PLUGIN_NAME,
     configResolved(config) {
       const pluginApi = rscModule.getPluginApi(config);
+      const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
+      if (!pluginApi && options.allowMissingRsc && !hasRscPlugin) return;
       if (!pluginApi?.manager.serverReferences) {
         throw new Error("vinext: callable use cache requires @vitejs/plugin-rsc 0.5.34 or newer.");
       }
@@ -213,9 +216,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
         },
       },
       async handler(code, id) {
-        if (!manager) {
-          throw new Error("vinext: failed to access @vitejs/plugin-rsc through getPluginApi().");
-        }
+        if (!manager) return;
         if (!code.includes("use cache")) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;

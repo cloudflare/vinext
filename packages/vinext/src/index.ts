@@ -1568,6 +1568,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
+  let manualUseCachePluginPromise: Promise<Plugin> | null = null;
   if (earlyAppDirExists && autoRsc) {
     if (!resolvedRscPath) {
       throw new Error(
@@ -1608,6 +1609,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           cause,
         });
       });
+  } else if (earlyAppDirExists && resolvedRscPath) {
+    rscPluginModulePromise = import(pathToFileURL(resolvedRscPath).href);
+    manualUseCachePluginPromise = createUseCacheCallablePlugin({
+      projectRoot: earlyBaseDir,
+      cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime")).href,
+      getAppDir: () => appDir,
+      matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
+      allowMissingRsc: true,
+    });
   }
 
   async function resolveHasServerActions(
@@ -6805,6 +6815,8 @@ export const loadServerActionClient = ${
     plugins.push(rscPluginPromise);
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
+  } else if (manualUseCachePluginPromise) {
+    plugins.push(manualUseCachePluginPromise);
   }
 
   return plugins;

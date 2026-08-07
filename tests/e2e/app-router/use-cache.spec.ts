@@ -257,6 +257,7 @@ test.describe('"use cache" transform coverage', () => {
           timeout: 2000,
         });
       }).toPass({ timeout: 15_000 });
+      await page.evaluate(() => Reflect.set(window, "__vinextUseCacheDependencyHmr", true));
 
       await writeFile(USE_CACHE_HMR_DEPENDENCY_FILE, USE_CACHE_HMR_DEPENDENCY_UPDATED);
       await expect(async () => {
@@ -265,6 +266,9 @@ test.describe('"use cache" transform coverage', () => {
           timeout: 2000,
         });
       }).toPass({ timeout: 15_000 });
+      expect(await page.evaluate(() => Reflect.get(window, "__vinextUseCacheDependencyHmr"))).toBe(
+        true,
+      );
     } finally {
       await writeFile(USE_CACHE_HMR_DEPENDENCY_FILE, USE_CACHE_HMR_DEPENDENCY_INITIAL);
       await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED);
