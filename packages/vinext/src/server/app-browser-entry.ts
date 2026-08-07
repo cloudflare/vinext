@@ -2387,18 +2387,19 @@ function bootstrapHydration(
   // Exposed through one typed runtime seam so next/navigation, Link, Form, and
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
-    allocateExternalHistoryTraversalIndex: () => {
-      // An app-called history.pushState/replaceState creates (or rewrites the
-      // URL of) an entry the router did not commit. Give it its own traversal
-      // index: inheriting the current entry's index would alias two distinct
-      // entries onto one restorable-snapshot slot, and a later traversal
-      // would restore the other entry's router state (#1541). Replace gets a
-      // fresh index too — its URL no longer matches the snapshot remembered
-      // under the old index.
-      const index = historyController.allocateNavigationHistoryTraversalIndex("push");
-      historyController.commitHistoryTraversalIndex(index);
-      return index;
-    },
+    // An app-called history.pushState/replaceState creates (or rewrites the
+    // URL of) an entry the router did not commit. Give it its own traversal
+    // index: inheriting the current entry's index would alias two distinct
+    // entries onto one restorable-snapshot slot, and a later traversal would
+    // restore the other entry's router state (#1541). A URL-changing replace
+    // gets a fresh index too — its URL no longer matches the snapshot
+    // remembered under the old index. Allocation is a pure peek; the shim
+    // commits only after the native write succeeds, so a throwing
+    // pushState/replaceState leaves the traversal bookkeeping untouched.
+    allocateExternalHistoryTraversalIndex: () =>
+      historyController.allocateNavigationHistoryTraversalIndex("push"),
+    commitExternalHistoryTraversalIndex: (index) =>
+      historyController.commitHistoryTraversalIndex(index),
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
