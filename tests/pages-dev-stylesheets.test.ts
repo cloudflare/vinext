@@ -82,7 +82,13 @@ describe("Pages dev stylesheet Vite ids", () => {
           name: "test:stylesheet-id",
           resolveId(id) {
             if (id === "virtual:safe-style.css") return "virtual:safe-style.css?resolved";
+            if (id.startsWith("virtual:safe-style.css?resolved")) return id;
             if (id === "virtual:null-style.css") return "\0virtual:null-style.css";
+          },
+          load(id) {
+            if (id.startsWith("virtual:safe-style.css?resolved")) {
+              return ".safe-virtual { color: green; }\n";
+            }
           },
         },
       ],
@@ -119,6 +125,26 @@ describe("Pages dev stylesheet Vite ids", () => {
       [entryPath],
       "",
     );
+
+    const rawFalseTransform = await server.environments.client.transformRequest(
+      "/raw-value-wrapper.js?raw=false",
+    );
+    const rawTransform = await server.environments.client.transformRequest(
+      "/raw-value-wrapper.js?raw",
+    );
+    expect(rawFalseTransform?.code).toContain('import "/raw-value-wrapper.css"');
+    expect(rawTransform?.code).toContain('export default "import \\"./raw-value-wrapper.css\\"');
+
+    const rawFalseModule = await server.environments.client.moduleGraph.getModuleByUrl(
+      "/raw-value-wrapper.js?raw=false",
+    );
+    const rawModule = await server.environments.client.moduleGraph.getModuleByUrl(
+      "/raw-value-wrapper.js?raw",
+    );
+    expect([...rawFalseModule!.importedModules].map((moduleNode) => moduleNode.url)).toContain(
+      "/raw-value-wrapper.css",
+    );
+    expect([...rawModule!.importedModules]).toEqual([]);
 
     for (const file of ["inline-wrapper.css", "raw-value-wrapper.css"]) {
       expect(html).toContain(`href="/${file}"`);
@@ -197,5 +223,32 @@ describe("Pages dev stylesheet Vite ids", () => {
         "/resolved.css?query=kept",
       ),
     ).toBe("/resolved.css?query=kept");
+  });
+
+  it("serves non-null custom virtual stylesheets through Vite's wrapped id URL", async () => {
+    const entryPath = path.join(root, "safe-virtual-entry.js");
+    fs.writeFileSync(entryPath, 'import "virtual:safe-style.css";\n');
+
+    const html = await collectPagesDevInitialStylesheetHeadHTML(
+      server,
+      {
+        async import() {
+          throw new Error("No Pages manifest in this focused Vite fixture");
+        },
+      },
+      [entryPath],
+      "",
+    );
+
+    expect(html).toContain('data-vite-dev-id="virtual:safe-style.css?resolved"');
+    const href = html.match(/href="([^"]+)"/)?.[1];
+    expect(href).toBe("/@id/virtual:safe-style.css?resolved&amp;direct");
+
+    const baseUrl = server.resolvedUrls?.local[0];
+    expect(baseUrl).toBeDefined();
+    const response = await fetch(new URL(href!.replaceAll("&amp;", "&"), baseUrl));
+    expect(response.ok).toBe(true);
+    expect(response.headers.get("content-type")).toContain("text/css");
+    expect(await response.text()).toContain(".safe-virtual");
   });
 });

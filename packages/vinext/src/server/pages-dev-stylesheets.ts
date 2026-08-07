@@ -9,8 +9,9 @@ const DEV_STYLESHEET_MODULE_RE = /\.(?:css|scss|sass)(?:$|[?#])/i;
 // These Vite query modes replace the imported module instead of executing it
 // in the current document. `inline` and `direct` only have that meaning for
 // stylesheets; plain JavaScript carrying those queries still executes. Vite's
-// asset and worker loaders require these to be bare flags, so values such as
-// `?raw=false` do not activate the loader and the JavaScript still executes.
+// asset and worker loader matchers require bare flags. Its broader
+// SPECIAL_QUERY_RE uses `\b` only to filter unrelated plugin hooks; it does
+// not define loader behavior. Thus `?raw=false` still executes as JavaScript.
 const NON_EXECUTING_MODULE_QUERY_RE = /[?&](?:raw|url|worker|sharedworker)(?:&|$)/;
 const NON_INJECTING_STYLESHEET_QUERY_RE = /[?&](?:raw|url|worker|sharedworker|inline|direct)\b/;
 
@@ -139,9 +140,7 @@ async function collectTransformedStylesheetAssets(
   const assetKeyIndexes = new Map<string, number>();
   const seenModules = new Set<string>();
   async function addStylesheet(moduleNode: EnvironmentModuleNode): Promise<void> {
-    const href = moduleNode.url.startsWith("\0")
-      ? `/@id/__x00__${moduleNode.url.slice(1)}${moduleNode.url.includes("?") ? "&" : "?"}direct`
-      : moduleNode.url;
+    const href = createViteStylesheetHref(moduleNode.url);
     const viteDevId = await resolvePagesDevStylesheetId(
       clientEnvironment.moduleGraph,
       moduleNode.url,
@@ -184,6 +183,17 @@ async function collectTransformedStylesheetAssets(
   const result = assets;
   cache.set(cacheKey, result);
   return result;
+}
+
+function createViteStylesheetHref(moduleUrl: string): string {
+  if (moduleUrl.startsWith("/")) return moduleUrl;
+
+  // This mirrors Vite's wrapId(). Custom and null-byte virtual ids are not
+  // browser URLs, so request their CSS through /@id/ in direct mode. Null-byte
+  // ids still cannot be adopted because HTML parsing cannot preserve the id;
+  // the link nevertheless provides the initial server-rendered stylesheet.
+  const wrappedId = `/@id/${moduleUrl.replace("\0", "__x00__")}`;
+  return `${wrappedId}${moduleUrl.includes("?") ? "&" : "?"}direct`;
 }
 
 function canonicalStylesheetUrl(url: string): string {
@@ -241,8 +251,7 @@ export async function collectPagesDevInitialStylesheetHeadHTML(
   }
 
   let html = "";
-  for (const { href: rawHref, viteDevId } of assets) {
-    const href = rawHref.startsWith("/") ? rawHref : createPagesDevAssetUrl(rawHref);
+  for (const { href, viteDevId } of assets) {
     const viteDevIdAttr = viteDevId ? ` data-vite-dev-id="${escapeHtmlAttr(viteDevId)}"` : "";
     html += `<link rel="stylesheet"${nonceAttr}${viteDevIdAttr} href="${escapeHtmlAttr(href)}" />\n  `;
   }
