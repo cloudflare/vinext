@@ -256,6 +256,8 @@ export type PagesPipelineResult =
   | {
       type: "api";
       apiUrl: string;
+      /** True only when next.config rewrites changed API resolution. */
+      configRewriteFired: boolean;
       stagedHeaders: HeaderRecord;
       /** Post-middleware request headers — dev adapters apply these to req.headers before API handler. */
       requestHeaders: Headers;
@@ -662,6 +664,7 @@ export async function runPagesRequest(
     return {
       type: "api",
       apiUrl: apiLookupUrl,
+      configRewriteFired,
       stagedHeaders: middlewareHeaders,
       requestHeaders: request.headers,
       middlewareStatus,

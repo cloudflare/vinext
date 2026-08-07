@@ -5454,8 +5454,10 @@ export const loadServerActionClient = ${
                 configMatchPathname,
                 runMiddleware: devRunMiddlewareAdapter,
                 // Treat App route handlers as an API filesystem match too. The
-                // pipeline then emits an API intent and the adapter's existing
-                // hybrid precedence logic delegates it to the RSC plugin.
+                // pipeline may then emit an API intent instead of continuing
+                // through fallback rewrites. This only answers whether an API
+                // route exists; the adapter's precedence check below still
+                // decides whether Pages or App owns overlapping matches.
                 matchApiRoute: async (apiUrl) => {
                   const devApiRoutes = await getDevApiRoutes();
                   const pagesMatch = matchRoute(apiUrl, devApiRoutes);
@@ -5571,14 +5573,18 @@ export const loadServerActionClient = ${
 
               // For render/api intents: flush staged middleware headers and
               // apply request header mutations before calling SSR/API handlers.
-              const flushStagedHeaders = () => {
+              const forEachStagedHeader = (visit: (key: string, value: string) => void) => {
                 for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
                   if (Array.isArray(value)) {
-                    for (const v of value) res.appendHeader(key, v);
+                    for (const item of value) visit(key, item);
                   } else {
-                    res.appendHeader(key, value);
+                    visit(key, value);
                   }
                 }
+              };
+
+              const flushStagedHeaders = () => {
+                forEachStagedHeader((key, value) => res.appendHeader(key, value));
               };
 
               // Apply post-middleware request headers to req.headers so the
@@ -5589,13 +5595,7 @@ export const loadServerActionClient = ${
 
               const forwardInternalApiRewriteToApp = (apiUrl: string) => {
                 const responseHeaders: [string, string][] = [];
-                for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
-                  if (Array.isArray(value)) {
-                    for (const item of value) responseHeaders.push([key, item]);
-                  } else {
-                    responseHeaders.push([key, value]);
-                  }
-                }
+                forEachStagedHeader((key, value) => responseHeaders.push([key, value]));
                 const requestHeaders = new Headers();
                 encodeMiddlewareRequestHeaders(requestHeaders, pipelineResult.requestHeaders);
 
@@ -5660,7 +5660,10 @@ export const loadServerActionClient = ${
                 // No API route matched — if app dir exists, let the RSC plugin handle it
                 // (app/api/* route handlers live there). Otherwise hard-404.
                 if (hasAppDir) {
-                  if (pipelineResult.apiUrl !== routeUrl) {
+                  // Only a next.config rewrite should override App's route
+                  // resolution. Locale stripping is API lookup normalization,
+                  // not an internal rewrite to forward to the RSC plugin.
+                  if (pipelineResult.configRewriteFired) {
                     forwardInternalApiRewriteToApp(pipelineResult.apiUrl);
                   }
                   return next();

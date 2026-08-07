@@ -1183,6 +1183,42 @@ describe("API routes", () => {
     expect(result.type).toBe("api");
     if (result.type !== "api") return;
     expect(result.apiUrl).toBe("/api/users");
+    expect(result.configRewriteFired).toBe(false);
+  });
+
+  it("distinguishes locale-normalized API lookup from a config rewrite", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/fr/api/users"),
+      baseDeps({
+        i18nConfig: {
+          defaultLocale: "en",
+          locales: ["en", "fr"],
+        },
+      }),
+    );
+
+    expect(result.type).toBe("api");
+    if (result.type !== "api") return;
+    expect(result.apiUrl).toBe("/api/users");
+    expect(result.configRewriteFired).toBe(false);
+  });
+
+  it("marks API intents reached through config rewrites", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/legacy/users"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [{ source: "/legacy/:path*", destination: "/api/:path*" }],
+          afterFiles: [],
+          fallback: [],
+        },
+      }),
+    );
+
+    expect(result.type).toBe("api");
+    if (result.type !== "api") return;
+    expect(result.apiUrl).toBe("/api/users");
+    expect(result.configRewriteFired).toBe(true);
   });
 
   // 12. API route with handleApi present → {type:"response"}
