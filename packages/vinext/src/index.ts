@@ -1532,7 +1532,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           projectRoot: earlyBaseDir,
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
-          appDir,
+          getAppDir: () => appDir,
           matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
         });
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");

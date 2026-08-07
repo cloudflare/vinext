@@ -11,6 +11,10 @@ const USE_CACHE_MIXED_HMR_ACTIONS_FILE = path.join(
   process.cwd(),
   "tests/fixtures/app-basic/app/use-cache-mixed-ownership/actions.ts",
 );
+const USE_CACHE_HMR_DEPENDENCY_FILE = path.join(
+  process.cwd(),
+  "tests/fixtures/app-basic/app/use-cache-hmr/dependency.ts",
+);
 const USE_CACHE_HMR_CACHED = `"use cache";
 
 export async function getMode() {
@@ -23,6 +27,16 @@ export async function getMode() {
   return "plain";
 }
 `;
+const USE_CACHE_HMR_IMPORTED = `"use cache";
+
+import { dependencyMode } from "./dependency";
+
+export async function getMode() {
+  return dependencyMode;
+}
+`;
+const USE_CACHE_HMR_DEPENDENCY_INITIAL = `export const dependencyMode = "dependency-initial";\n`;
+const USE_CACHE_HMR_DEPENDENCY_UPDATED = `export const dependencyMode = "dependency-updated";\n`;
 const USE_CACHE_MIXED_HMR_CACHED = [
   `export const ownershipLabel = "cache";`,
   ``,
@@ -224,6 +238,35 @@ test.describe('"use cache" transform coverage', () => {
         });
       }).toPass({ timeout: 15_000 });
     } finally {
+      await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED);
+    }
+  });
+
+  test("refreshes cached functions when only an imported dependency changes", async ({
+    page,
+    request,
+  }) => {
+    await writeFile(USE_CACHE_HMR_DEPENDENCY_FILE, USE_CACHE_HMR_DEPENDENCY_INITIAL);
+    await writeUseCacheHmrActions(USE_CACHE_HMR_IMPORTED, true);
+    try {
+      await waitForUseCacheHmrTransform(request);
+      await page.goto(`${BASE}/use-cache-hmr`);
+      await expect(async () => {
+        await page.locator("#call-use-cache-hmr").click();
+        await expect(page.getByTestId("use-cache-hmr-result")).toHaveText("dependency-initial", {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+
+      await writeFile(USE_CACHE_HMR_DEPENDENCY_FILE, USE_CACHE_HMR_DEPENDENCY_UPDATED);
+      await expect(async () => {
+        await page.locator("#call-use-cache-hmr").click();
+        await expect(page.getByTestId("use-cache-hmr-result")).toHaveText("dependency-updated", {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+    } finally {
+      await writeFile(USE_CACHE_HMR_DEPENDENCY_FILE, USE_CACHE_HMR_DEPENDENCY_INITIAL);
       await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED);
     }
   });

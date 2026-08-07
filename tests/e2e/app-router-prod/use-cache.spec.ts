@@ -80,6 +80,11 @@ test.describe('production "use cache" server function references', () => {
     await page.goto("/use-cache-nested-fn-props");
     await expect(page.getByTestId("use-cache-nested-fn-props-page")).toBeVisible();
 
+    // Force a second server request so this test exercises the cache-hit Flight
+    // replay path before invoking the nested references in the browser.
+    await page.reload();
+    await expect(page.getByTestId("use-cache-nested-fn-props-page")).toBeVisible();
+
     await page.locator("#submit-button-date").click();
     await expect(page.locator("#date")).toHaveText(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     const firstDate = await page.locator("#date").textContent();

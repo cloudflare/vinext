@@ -15,7 +15,7 @@ type Program = Awaited<ReturnType<typeof parseAstAsync>>;
 type Options = {
   projectRoot: string;
   cacheRuntime: string;
-  appDir: string | undefined;
+  getAppDir: () => string | undefined;
   matchesPageExtension: (fileName: string) => boolean;
 };
 
@@ -26,6 +26,9 @@ type CacheWrapperOptions = {
 };
 
 const PLUGIN_NAME = "vinext:server-function-directives";
+const SOURCE_MODULE_ID_RE = /\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
+const DEPENDENCY_MODULE_ID_RE = /[\\/]node_modules[\\/]/;
+const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
 
@@ -110,20 +113,37 @@ function isAppPageDefaultExport(
   name: string,
   isModuleDirective: boolean,
 ): boolean {
-  if (!isModuleDirective || name !== "default" || !options.appDir) return false;
+  const appDir = options.getAppDir();
+  if (!isModuleDirective || name !== "default" || !appDir) return false;
   const modulePath = stripViteModuleQuery(id);
   const moduleFileName = path.basename(modulePath);
   return (
-    isInsideDirectory(options.appDir, modulePath) &&
+    isInsideDirectory(appDir, modulePath) &&
     path.parse(moduleFileName).name === "page" &&
     options.matchesPageExtension(moduleFileName)
   );
 }
 
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
-  if (meta.isFunction === false) return false;
+  if (
+    meta.isFunction === false &&
+    (meta.valueNode?.type === "ObjectExpression" || meta.valueNode?.type === "ArrayExpression")
+  ) {
+    return false;
+  }
   if (/\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id) && name === "default") return false;
   return true;
+}
+
+function validateModuleExport(transforms: RscTransforms, meta: ModuleExportMeta): void {
+  if (!meta.valueNode) return;
+  if (
+    meta.isFunction !== false &&
+    (meta.valueNode.type === "ObjectExpression" || meta.valueNode.type === "ArrayExpression")
+  ) {
+    return;
+  }
+  transforms.validateNonAsyncFunction({ rejectNonAsyncFunction: true }, meta.valueNode);
 }
 
 function hasFunctionDirective(
@@ -179,144 +199,164 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
   return {
     name: PLUGIN_NAME,
     configResolved(config) {
-      manager = rscModule.getPluginApi(config)?.manager;
+      const pluginApi = rscModule.getPluginApi(config);
+      if (!pluginApi?.manager.serverReferences) {
+        throw new Error("vinext: callable use cache requires @vitejs/plugin-rsc 0.5.34 or newer.");
+      }
+      manager = pluginApi.manager;
     },
-    async transform(code, id) {
-      if (!manager) {
-        throw new Error("vinext: failed to access @vitejs/plugin-rsc through getPluginApi().");
-      }
-      if (
-        !/\.(tsx?|jsx?|mjs)$/.test(id) ||
-        id.includes("/node_modules/") ||
-        !code.includes("use cache")
-      ) {
-        manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
-        return;
-      }
-
-      const ast = await parseAstAsync(code);
-      const moduleDirective = findModuleUseCacheDirective(ast);
-      const useServerBoundary = transforms.hasDirective(ast.body, "use server");
-      if (moduleDirective && useServerBoundary) {
-        throw new Error(
-          `A module cannot contain both ${JSON.stringify(moduleDirective)} and "use server" directives.`,
-        );
-      }
-
-      const reference = manager.serverReferences.resolve(id, "rsc");
-      const isRsc = this.environment.name === "rsc";
-
-      if (!isRsc) {
-        if (useServerBoundary) {
+    transform: {
+      filter: {
+        id: {
+          include: SOURCE_MODULE_ID_RE,
+          exclude: [DEPENDENCY_MODULE_ID_RE, RESOLVED_VIRTUAL_MODULE_ID_RE],
+        },
+      },
+      async handler(code, id) {
+        if (!manager) {
+          throw new Error("vinext: failed to access @vitejs/plugin-rsc through getPluginApi().");
+        }
+        if (!code.includes("use cache")) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;
         }
-        if (!moduleDirective) {
-          transforms.transformHoistInlineDirective(code, ast, {
-            directive: USE_CACHE_DIRECTIVE_CANDIDATE,
-            rejectNonAsyncFunction: true,
-            runtime: (_value, _name, meta) => {
-              matchUseCacheDirective(meta.directiveMatch[0]);
-              throw new Error(
-                `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${this.environment.name}: ${id})`,
-              );
+
+        const ast = await parseAstAsync(code);
+        const moduleDirective = findModuleUseCacheDirective(ast);
+        const useServerBoundary = transforms.hasDirective(ast.body, "use server");
+        if (moduleDirective && useServerBoundary) {
+          throw new Error(
+            `A module cannot contain both ${JSON.stringify(moduleDirective)} and "use server" directives.`,
+          );
+        }
+
+        const reference = manager.serverReferences.resolve(id, "rsc");
+        const isRsc = this.environment.name === "rsc";
+
+        if (!isRsc) {
+          if (useServerBoundary) {
+            manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
+            return;
+          }
+          if (!moduleDirective) {
+            transforms.transformHoistInlineDirective(code, ast, {
+              directive: USE_CACHE_DIRECTIVE_CANDIDATE,
+              rejectNonAsyncFunction: true,
+              runtime: (_value, _name, meta) => {
+                matchUseCacheDirective(meta.directiveMatch[0]);
+                throw new Error(
+                  `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${this.environment.name}: ${id})`,
+                );
+              },
+            });
+            manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
+            return;
+          }
+
+          const result = transforms.transformDirectiveProxyExport(ast, {
+            code,
+            directive: moduleDirective,
+            filter: (name, meta) => {
+              if (!shouldTransformModuleExport(name, id, meta)) return false;
+              validateModuleExport(transforms, meta);
+              return true;
             },
+            runtime: (name) =>
+              `$$ReactClient.createServerReference(${JSON.stringify(`${reference.referenceKey}#${name}`)},$$ReactClient.callServer,undefined,${this.environment.mode === "dev" ? "$$ReactClient.findSourceMapURL" : "undefined"},${JSON.stringify(name)})`,
           });
-          manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
-          return;
+          if (!result?.output.hasChanged()) {
+            manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
+            return;
+          }
+
+          manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
+            ...reference,
+            exportNames: result.exportNames,
+          });
+          const runtimeEnvironment = this.environment.name === "client" ? "browser" : "ssr";
+          result.output.prepend(
+            `import * as $$ReactClient from "@vitejs/plugin-rsc/react/${runtimeEnvironment}";\n`,
+          );
+          return {
+            code: result.output.toString(),
+            map: result.output.generateMap({ hires: "boundary", source: id }),
+          };
         }
 
-        const result = transforms.transformDirectiveProxyExport(ast, {
-          code,
-          directive: moduleDirective,
-          filter: (name, meta) => shouldTransformModuleExport(name, id, meta),
-          runtime: (name) =>
-            `$$ReactClient.createServerReference(${JSON.stringify(`${reference.referenceKey}#${name}`)},$$ReactClient.callServer,undefined,${this.environment.mode === "dev" ? "$$ReactClient.findSourceMapURL" : "undefined"},${JSON.stringify(name)})`,
-        });
-        if (!result?.output.hasChanged()) {
+        const wrap = (
+          value: string,
+          name: string,
+          directiveMatch: RegExpMatchArray,
+          meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
+          isModuleDirective: boolean,
+        ) => {
+          const variant = directiveMatch[1] ?? "";
+          const wrapperOptions = getCacheWrapperOptions(options, id, name, isModuleDirective, meta);
+          return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
+        };
+        let needsReactServer = false;
+        const runtime = (
+          value: string,
+          name: string,
+          directiveMatch: RegExpMatchArray,
+          meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
+          isModuleDirective: boolean,
+        ) => {
+          const cached = wrap(value, name, directiveMatch, meta, isModuleDirective);
+          needsReactServer = true;
+          return `$$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
+        };
+
+        const result = moduleDirective
+          ? transforms.transformWrapExport(code, ast, {
+              filter: (name, meta) => {
+                if (
+                  hasFunctionDirective(meta, "use server") ||
+                  !shouldTransformModuleExport(name, id, meta)
+                ) {
+                  return false;
+                }
+                validateModuleExport(transforms, meta);
+                return true;
+              },
+              runtime: (value, name, meta) =>
+                runtime(value, name, matchUseCacheDirective(moduleDirective), meta, true),
+            })
+          : transforms.transformHoistInlineDirective(code, ast, {
+              directive: USE_CACHE_DIRECTIVE_CANDIDATE,
+              rejectNonAsyncFunction: true,
+              hoistRuntime: true,
+              runtime: (value, name, meta) =>
+                runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta, false),
+              encode: (value) => `$$cacheRuntime.encryptCacheCaptures(${value})`,
+              decode: (value) => value,
+            });
+        if (!result.output.hasChanged()) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;
         }
 
         manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
           ...reference,
-          exportNames: result.exportNames,
+          exportNames: "names" in result ? result.names : result.exportNames,
         });
-        const runtimeEnvironment = this.environment.name === "client" ? "browser" : "ssr";
-        result.output.prepend(
-          `import * as $$ReactClient from "@vitejs/plugin-rsc/react/${runtimeEnvironment}";\n`,
+        const importPosition =
+          ast.body.find((node) => !("directive" in node))?.start ?? code.length;
+        result.output.prependLeft(
+          importPosition,
+          [
+            `import * as $$cacheRuntime from ${JSON.stringify(options.cacheRuntime)};`,
+            needsReactServer &&
+              `import * as $$VinextReactServer from "@vitejs/plugin-rsc/react/rsc/server";`,
+          ]
+            .filter(Boolean)
+            .join("\n") + "\n",
         );
         return {
           code: result.output.toString(),
           map: result.output.generateMap({ hires: "boundary", source: id }),
         };
-      }
-
-      const wrap = (
-        value: string,
-        name: string,
-        directiveMatch: RegExpMatchArray,
-        meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-        isModuleDirective: boolean,
-      ) => {
-        const variant = directiveMatch[1] ?? "";
-        const wrapperOptions = getCacheWrapperOptions(options, id, name, isModuleDirective, meta);
-        return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
-      };
-      let needsReactServer = false;
-      const runtime = (
-        value: string,
-        name: string,
-        directiveMatch: RegExpMatchArray,
-        meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-        isModuleDirective: boolean,
-      ) => {
-        const cached = wrap(value, name, directiveMatch, meta, isModuleDirective);
-        needsReactServer = true;
-        return `$$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(name)})`;
-      };
-
-      const result = moduleDirective
-        ? transforms.transformWrapExport(code, ast, {
-            filter: (name, meta) =>
-              !hasFunctionDirective(meta, "use server") &&
-              shouldTransformModuleExport(name, id, meta),
-            runtime: (value, name, meta) =>
-              runtime(value, name, matchUseCacheDirective(moduleDirective), meta, true),
-          })
-        : transforms.transformHoistInlineDirective(code, ast, {
-            directive: USE_CACHE_DIRECTIVE_CANDIDATE,
-            rejectNonAsyncFunction: true,
-            hoistRuntime: true,
-            runtime: (value, name, meta) =>
-              runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta, false),
-            encode: (value) => `$$cacheRuntime.encryptCacheCaptures(${value})`,
-            decode: (value) => value,
-          });
-      if (!result.output.hasChanged()) {
-        manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
-        return;
-      }
-
-      manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
-        ...reference,
-        exportNames: "names" in result ? result.names : result.exportNames,
-      });
-      const importPosition = ast.body.find((node) => !("directive" in node))?.start ?? code.length;
-      result.output.prependLeft(
-        importPosition,
-        [
-          `import * as $$cacheRuntime from ${JSON.stringify(options.cacheRuntime)};`,
-          needsReactServer &&
-            `import * as $$VinextReactServer from "@vitejs/plugin-rsc/react/rsc/server";`,
-        ]
-          .filter(Boolean)
-          .join("\n") + "\n",
-      );
-      return {
-        code: result.output.toString(),
-        map: result.output.generateMap({ hires: "boundary", source: id }),
-      };
+      },
     },
   };
 }

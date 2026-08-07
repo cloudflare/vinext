@@ -55,6 +55,15 @@ async function configurePluginRsc(plugins: Plugin[]) {
   return (minimal as any).api.manager;
 }
 
+async function configureVinext(plugins: Plugin[]) {
+  const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config")!;
+  await unwrapHook(configPlugin.config)!.call(
+    configPlugin,
+    { root: APP_FIXTURE_DIR },
+    { command: "build", mode: "test" },
+  );
+}
+
 async function transformRsc(source: string): Promise<string> {
   const plugins = await getPlugins();
   await configurePluginRsc(plugins);
@@ -414,7 +423,7 @@ describe("plugin-rsc inline use-cache references", () => {
     );
   });
 
-  it("rejects statically known synchronous cached functions", async () => {
+  it("rejects statically known synchronous inline cached functions", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
     const plugin = plugins.find(
@@ -425,6 +434,45 @@ describe("plugin-rsc inline use-cache references", () => {
       transform.call(
         { environment: { name: "rsc", mode: "build" } },
         [`export function getData() {`, `  "use cache";`, `}`].join("\n"),
+        moduleId,
+      ),
+    ).rejects.toThrow(/non async function/);
+  });
+
+  it.each(["rsc", "ssr", "client"])(
+    "rejects synchronous exports from file-level cache modules in the %s graph",
+    async (environmentName) => {
+      // Ported from Next.js: crates/next-custom-transforms/tests/errors/server-actions/server-graph/14/input.js
+      // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/tests/errors/server-actions/server-graph/14/input.js
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      await expect(
+        transform.call(
+          { environment: { name: environmentName, mode: "build" } },
+          [`"use cache";`, `export function getData() { return 1; }`].join("\n"),
+          moduleId,
+        ),
+      ).rejects.toThrow(/non async function/);
+    },
+  );
+
+  it("rejects primitive exports from file-level cache modules", async () => {
+    // Ported from Next.js: crates/next-custom-transforms/tests/errors/server-actions/server-graph/14/input.js
+    // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/tests/errors/server-actions/server-graph/14/input.js
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const transform = unwrapHook(plugin.transform)!;
+    await expect(
+      transform.call(
+        { environment: { name: "rsc", mode: "build" } },
+        [`"use cache";`, `export const value = 1;`].join("\n"),
         moduleId,
       ),
     ).rejects.toThrow(/non async function/);
@@ -568,6 +616,23 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("registerCachedFunction");
     expect(result!.code).toContain('"use cache";');
     expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual(["getData"]);
+  });
+
+  it("marks file-level App Page default exports after Vinext resolves the app directory", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [`"use cache";`, `export default async function Page() { return null; }`].join("\n"),
+      pageId,
+    );
+
+    expect(result?.code).toContain('"appPageDefaultExport":true');
   });
 
   it.each(["ssr", "client"])(

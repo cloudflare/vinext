@@ -174,7 +174,11 @@ export function getCacheContext(): CacheContext | null {
  */
 type RscModule = {
   renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
-  createFromReadableStream: <T>(stream: ReadableStream<Uint8Array>, options?: object) => Promise<T>;
+  createFromReadableStream: <T>(
+    stream: ReadableStream<Uint8Array>,
+    options?: object,
+    context?: { preserveServerReferences?: boolean },
+  ) => Promise<T>;
   encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
   createTemporaryReferenceSet: () => unknown;
   createClientTemporaryReferenceSet: () => unknown;
@@ -597,7 +601,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             // RSC-serialized entry: base64 → bytes → stream → deserialize
             const bytes = base64ToUint8(existing.value.data.body);
             const stream = uint8ToStream(bytes);
-            const result = await rsc.createFromReadableStream<TResult>(stream);
+            const result = await rsc.createFromReadableStream<TResult>(
+              stream,
+              {},
+              { preserveServerReferences: true },
+            );
             recordRequestScopedCacheControl(existing.cacheControl);
             return result;
           }
