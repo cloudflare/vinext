@@ -210,6 +210,46 @@ describe("Pages HTML proxy capture", () => {
     }
   });
 
+  it("finishes eviction when Vite module resolution is still pending", async () => {
+    const { server } = await createTestServer();
+    const first = await transformPagesHtml(
+      server,
+      "/page",
+      `<script type="module">pendingVersion(0)</script>`,
+    );
+    const firstUrl = contentModuleUrls(first)[0]!;
+    const graph = server.environments.client.moduleGraph;
+    const internals = graph as unknown as {
+      _resolveId: (url: string) => Promise<{ id: string } | null>;
+      _unresolvedUrlToModuleMap: Map<string, unknown>;
+    };
+    const originalResolveId = internals._resolveId.bind(graph);
+    let releaseResolution!: () => void;
+    const resolutionGate = new Promise<void>((resolve) => {
+      releaseResolution = resolve;
+    });
+    internals._resolveId = async (url) => {
+      if (url === firstUrl) await resolutionGate;
+      return originalResolveId(url);
+    };
+
+    const pendingModule = graph.ensureEntryFromUrl(firstUrl);
+    expect(internals._unresolvedUrlToModuleMap.get(firstUrl)).toBeInstanceOf(Promise);
+    for (let index = 1; index <= 8; index += 1) {
+      await transformPagesHtml(
+        server,
+        "/page",
+        `<script type="module">pendingVersion(${index})</script>`,
+      );
+    }
+
+    releaseResolution();
+    await pendingModule;
+    await Promise.resolve();
+    expect(graph.urlToModuleMap.has(firstUrl)).toBe(false);
+    expect(internals._unresolvedUrlToModuleMap.has(firstUrl)).toBe(false);
+  });
+
   it("keeps duplicate modules and Vite proxy indices distinct", async () => {
     const { server } = await createTestServer();
     const transformed = await transformPagesHtml(

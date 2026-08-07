@@ -145,11 +145,11 @@ function applyProxyScriptNonce(tag: string, nonce?: string): string {
   );
 }
 
-function evictViteModule(server: ViteDevServer, resolvedId: string): void {
-  const graph: EvictableModuleGraph = server.environments.client.moduleGraph;
-  const module = graph.getModuleById(resolvedId);
-  if (!module) return;
-
+function removeViteModule(
+  graph: EvictableModuleGraph,
+  module: EnvironmentModuleNode,
+  resolvedId: string,
+): void {
   graph.invalidateModule(module);
   for (const imported of module.importedModules) imported.importers.delete(module);
   for (const importer of module.importers) {
@@ -176,6 +176,27 @@ function evictViteModule(server: ViteDevServer, resolvedId: string): void {
   // strong reference after the public graph maps above are cleared.
   for (const [url, candidate] of graph._unresolvedUrlToModuleMap ?? []) {
     if (candidate === module) graph._unresolvedUrlToModuleMap!.delete(url);
+  }
+}
+
+function evictViteModule(server: ViteDevServer, resolvedId: string, aliases: string[]): void {
+  const graph: EvictableModuleGraph = server.environments.client.moduleGraph;
+  const module = graph.getModuleById(resolvedId);
+  if (module) removeViteModule(graph, module, resolvedId);
+
+  const unresolved = graph._unresolvedUrlToModuleMap;
+  if (!unresolved) return;
+  const aliasSet = new Set(aliases);
+  for (const [url, candidate] of unresolved) {
+    if (!aliasSet.has(cleanUrl(url)) || !(candidate instanceof Promise)) continue;
+    void candidate.then(
+      (resolved) => {
+        if (resolved.id) removeViteModule(graph, resolved, resolved.id);
+      },
+      () => {
+        if (unresolved.get(url) === candidate) unresolved.delete(url);
+      },
+    );
   }
 }
 
@@ -222,7 +243,9 @@ function retainProxyModule(
     for (const alias of oldest.aliases) {
       if (publicToResolvedId.get(alias) === oldestId) publicToResolvedId.delete(alias);
     }
-    evictViteModule(server, oldestId);
+    // A browser still fetching HTML older than this bounded dev history may
+    // receive a 404, just as a stale tab can after an HMR invalidation.
+    evictViteModule(server, oldestId, oldest.aliases);
   }
 }
 
