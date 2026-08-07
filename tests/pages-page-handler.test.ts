@@ -607,6 +607,79 @@ describe("createPagesPageHandler — preview responses", () => {
     ]);
   });
 
+  it("preserves headers set by getServerSideProps before a notFound result", async () => {
+    // Next.js keeps one ServerResponse while rendering the source and 404
+    // pages, so headers set before `notFound: true` remain on the response.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({
+        getServerSideProps: async ({
+          res,
+        }: {
+          res: { setHeader(name: string, value: string | string[]): void };
+        }) => {
+          res.setHeader("Content-Length", "1");
+          res.setHeader("Content-Type", "application/vnd.atlas.not-found+html");
+          res.setHeader("Surrogate-Control", "max-age=600s, delta=noop");
+          res.setHeader("Transfer-Encoding", "chunked");
+          return { notFound: true };
+        },
+      }),
+    );
+    const notFoundRoute = makeRoute("/404");
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+
+    const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
+    expect(response.headers.get("content-type")).toBe("application/vnd.atlas.not-found+html");
+    expect(response.headers.get("transfer-encoding")).toBeNull();
+  });
+
+  it("lets recursively rendered notFound headers replace source gSSP headers", async () => {
+    let appInitialPropsCalls = 0;
+    const AppComponent = Object.assign(() => null, {
+      getInitialProps({
+        ctx,
+      }: {
+        ctx: { res: { setHeader(name: string, value: string | string[]): void } };
+      }) {
+        appInitialPropsCalls += 1;
+        ctx.res.setHeader("X-Response-Phase", `app-${appInitialPropsCalls}`);
+        ctx.res.setHeader("Set-Cookie", [`app-${appInitialPropsCalls}=1; Path=/`]);
+        return { pageProps: {} };
+      },
+    });
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({
+        getServerSideProps: async ({
+          res,
+        }: {
+          res: { setHeader(name: string, value: string | string[]): void };
+        }) => {
+          res.setHeader("X-Response-Phase", "source-gssp");
+          res.setHeader("Set-Cookie", ["source-gssp=1; Path=/"]);
+          return { notFound: true };
+        },
+      }),
+    );
+    const notFoundRoute = makeRoute("/404");
+    const handler = createPagesPageHandler(
+      makeOpts({ AppComponent, pageRoutes: [pageRoute, notFoundRoute] }),
+    );
+
+    const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
+
+    expect(response.status).toBe(404);
+    expect(appInitialPropsCalls).toBe(2);
+    expect(response.headers.get("x-response-phase")).toBe("app-2");
+    expect(response.headers.getSetCookie()).toEqual(["app-2=1; Path=/"]);
+  });
+
   it("does not expose preview notFound responses to shared CDN caching", async () => {
     const pageRoute = makeRoute(
       "/missing",

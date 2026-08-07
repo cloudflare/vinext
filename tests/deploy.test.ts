@@ -1479,6 +1479,7 @@ describe("readPagesRouterEntrySource", () => {
 
   it("exports the built-in fetch handler and router-specific worker entries", () => {
     const exportsMap = readVinextPackageExports();
+    expect(hasPackageExport(exportsMap, "./client")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/fetch-handler")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/app-router-entry")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
@@ -1813,13 +1814,18 @@ describe("readPagesRouterEntrySource", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
-  it("checks image optimization after basePath stripping", () => {
+  it("dispatches image optimization through the post-middleware filesystem phase", () => {
     const content = readPagesRouterEntrySource();
     const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
-    const imagePos = content.indexOf("isImageOptimizationPath(pathname)");
+    const filesystemPos = content.indexOf("serveFilesystemRoute: async");
+    const imagePos = content.indexOf("isImageOptimizationPath(requestPathname)");
     expect(basePathPos).toBeGreaterThan(-1);
+    expect(filesystemPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
-    expect(basePathPos).toBeLessThan(imagePos);
+    expect(basePathPos).toBeLessThan(filesystemPos);
+    expect(filesystemPos).toBeLessThan(imagePos);
+    expect(content).not.toContain("isImageOptimizationPath(pathname)");
+    expect(content).toContain("new URL(resolvedUrl, request.url)");
   });
 
   it("threads configured image widths and qualities into optimization validation", () => {

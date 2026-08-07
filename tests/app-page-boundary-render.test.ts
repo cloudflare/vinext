@@ -619,7 +619,7 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual(["layout:/", "layout:/posts"]);
     expect(payload.__rootLayout).toBe("/");
-    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
+    expect(payload.__srcPage).toEqual(["posts", "[slug]", "page"]);
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
@@ -722,7 +722,7 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual([]);
     expect(payload.__rootLayout).toBeNull();
-    expect(payload.__sourcePage).toBeUndefined();
+    expect(payload.__srcPage).toBeUndefined();
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
@@ -741,7 +741,7 @@ describe("app page boundary render helpers", () => {
     });
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
-    expect(payload.__sourcePage).toBeUndefined();
+    expect(payload.__srcPage).toBeUndefined();
   });
 
   it("renders route error boundaries with sanitized errors inside layouts", async () => {
@@ -932,7 +932,7 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual(["layout:/"]);
     expect(payload.__rootLayout).toBe("/");
-    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
+    expect(payload.__srcPage).toEqual(["posts", "[slug]", "page"]);
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 

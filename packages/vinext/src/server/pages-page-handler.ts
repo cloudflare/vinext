@@ -24,7 +24,7 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { hasUserDocumentGetInitialProps } from "./document-initial-head.js";
-import { resolvePagesPageData } from "./pages-page-data.js";
+import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
@@ -105,6 +105,20 @@ function withPagesCacheState(
   } else {
     setCacheStateHeaders(headers, state);
   }
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function stripPagesNotFoundFramingHeaders(response: Response): Response {
+  if (!response.headers.has("Content-Length") && !response.headers.has("Transfer-Encoding")) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("Content-Length");
+  headers.delete("Transfer-Encoding");
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -318,6 +332,8 @@ type RenderPageOptions = {
   __notFoundExpireSeconds?: number;
   /** Source-page identity used for the outgoing notFound cache tag. */
   __notFoundCachePathname?: string;
+  /** Source gSSP headers that seed the recursively rendered notFound page. */
+  __notFoundSourceHeaders?: Record<string, string | number | boolean | string[]>;
   /** Internal recursion guard while a top-level on-demand request owns the batch. */
   __skipOnDemandCoalesce?: boolean;
   err?: unknown;
@@ -782,6 +798,11 @@ export function createPagesPageHandler(
           if (typeof renderStatusCode === "number") {
             reqRes.res.statusCode = renderStatusCode;
           }
+          if (options?.__notFoundSourceHeaders) {
+            for (const [name, value] of Object.entries(options.__notFoundSourceHeaders)) {
+              reqRes.res.setHeader(name, value);
+            }
+          }
           return reqRes;
         };
 
@@ -888,10 +909,15 @@ export function createPagesPageHandler(
               __notFoundRevalidateSeconds: pageDataResult.revalidateSeconds,
               __notFoundExpireSeconds: pageDataResult.expireSeconds,
               __notFoundCachePathname: isrCachePathname,
+              __notFoundSourceHeaders: pageDataResult.responseHeaders,
             });
           } else {
-            notFoundResponse = buildDefaultPagesNotFoundResponse();
+            notFoundResponse = mergePagesNotFoundSourceHeaders(
+              buildDefaultPagesNotFoundResponse(),
+              pageDataResult.responseHeaders,
+            );
           }
+          notFoundResponse = stripPagesNotFoundFramingHeaders(notFoundResponse);
 
           if (isOnDemandRevalidate) {
             notFoundResponse = withPagesCacheState(notFoundResponse, "REVALIDATED");
@@ -929,7 +955,7 @@ export function createPagesPageHandler(
         }
         const gsspRes = pageDataResult.gsspRes;
         const documentReqRes =
-          serializedPagesNextData.autoExport === true
+          serializedPagesNextData.autoExport === true && !options?.__notFoundSourceHeaders
             ? null
             : (pageDataResult.documentReqRes ?? createPageReqRes());
         // The error page keeps its own ISR policy and cache identity. A source

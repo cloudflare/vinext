@@ -92,6 +92,7 @@ import {
   isNextDataPathname,
   normalizeNextDataPagePathname,
   parseNextDataPathname,
+  shouldAddTrailingSlashToPagesDataPath,
   urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
@@ -2489,6 +2490,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/head-state": path.join(shimsDir, "head-state"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "vinext/client": path.resolve(__dirname, "client", "index"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/instrumentation-client": path.resolve(
@@ -5023,29 +5025,6 @@ export const loadServerActionClient = ${
               const requestOrigin = `http://${requestHost}`;
               const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
 
-              // ── Image optimization passthrough (dev mode) ─────────────
-              // In dev, redirect to the original asset URL so Vite serves it.
-              if (isImageOptimizationPath(url.split("?")[0]!)) {
-                const imageRequestUrl = new URL(url, requestOrigin);
-                const allowedWidths = [
-                  ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
-                  ...(nextConfig.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
-                ];
-                const encodedLocation = resolveDevImageRedirect(
-                  imageRequestUrl,
-                  allowedWidths,
-                  nextConfig.images?.qualities,
-                );
-                if (!encodedLocation) {
-                  res.writeHead(400);
-                  res.end("Invalid image optimization parameters");
-                  return;
-                }
-                res.writeHead(302, { Location: encodedLocation });
-                res.end();
-                return;
-              }
-
               // Preserve the pre-Vite URL for middleware/config identity, but
               // first apply the same WHATWG dot-segment canonicalization as the
               // Request constructor. Other percent escapes remain untouched.
@@ -5191,13 +5170,12 @@ export const loadServerActionClient = ${
 
               // ── `_next/data` normalization (Pages Router) ──────────────
               // Client-side navigations in the Pages Router fetch
-              // `/_next/data/<buildId>/<page>.json`. Normalize the URL to the
-              // page path BEFORE middleware runs so middleware sees `/page`
-              // (matching Next.js — see `handleNextDataRequest` in
-              // base-server.ts). If the buildId is missing (dev) or matches,
-              // accept the request; if it is present and wrong, fall through
-              // to the dot-extension skip below which returns 404.
+              // `/_next/data/<buildId>/<page>.json`. Route matching uses the
+              // normalized page path, while skipProxyUrlNormalize preserves the
+              // original URL for middleware. A stale build ID is likewise
+              // deferred until after middleware so it may answer the raw URL.
               let isDataReq = false;
+              let dataNotFoundResponse: Response | null = null;
               if (isNextDataPathname(pathname)) {
                 // Use the plugin's resolved buildId so a user-supplied
                 // `generateBuildId` in next.config.mjs is honored in dev —
@@ -5212,10 +5190,14 @@ export const loadServerActionClient = ${
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   const pagePathname = normalizeNextDataPagePathname(
                     dataMatch.pagePathname,
-                    capturedMiddlewarePath !== null && nextConfig?.trailingSlash === true,
+                    shouldAddTrailingSlashToPagesDataPath(
+                      capturedMiddlewarePath !== null,
+                      nextConfig?.trailingSlash === true,
+                      nextConfig?.skipProxyUrlNormalize === true,
+                    ),
                   );
                   url = pagePathname + qs;
-                  middlewareUrl = url;
+                  if (!nextConfig?.skipProxyUrlNormalize) middlewareUrl = url;
                   routeUrl = url;
                   pathname = pagePathname;
                   configMatchPathname = pagePathname;
@@ -5234,9 +5216,16 @@ export const loadServerActionClient = ${
                     "Content-Type": "application/json",
                   };
                   if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
-                  res.writeHead(404, notFoundHeaders);
-                  res.end("{}");
-                  return;
+                  if (!nextConfig?.skipProxyUrlNormalize) {
+                    res.writeHead(404, notFoundHeaders);
+                    res.end("{}");
+                    return;
+                  }
+                  isDataReq = true;
+                  dataNotFoundResponse = new Response("{}", {
+                    status: 404,
+                    headers: notFoundHeaders,
+                  });
                 }
               }
 
@@ -5259,7 +5248,7 @@ export const loadServerActionClient = ${
                 req.method !== "GET" && req.method !== "HEAD" && isExistingDevPublicFile(pathname);
               let filePathMatchesPagesRoute = false;
               const requestHostname = getUrlHostname(requestOrigin);
-              if (isFilePathRequest && !filePathMatchesRewrite) {
+              if (isFilePathRequest && !filePathMatchesRewrite && !isDataReq) {
                 const [pageRoutes, apiRoutes] = await Promise.all([
                   pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
                   apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
@@ -5283,6 +5272,7 @@ export const loadServerActionClient = ${
               }
               if (
                 isFilePathRequest &&
+                !isDataReq &&
                 !filePathMatchesRewrite &&
                 !filePathMatchesPagesRoute &&
                 !isExistingPublicMutation
@@ -5305,9 +5295,9 @@ export const loadServerActionClient = ${
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );
-              // Only a successfully parsed `/_next/data/...json` URL is a data
-              // request. The inbound x-nextjs-data header is internal and must
-              // not let callers opt normal URLs into the data redirect protocol.
+              // Only a recognized `/_next/data/...json` URL is a data request.
+              // The inbound x-nextjs-data header is internal and must not let
+              // callers opt normal URLs into the data redirect protocol.
               const isDataRequest = isDataReq;
               // Strip internal headers from inbound requests so they cannot be
               // forged to influence routing or impersonate internal state.
@@ -5445,6 +5435,7 @@ export const loadServerActionClient = ${
                 isDataReq,
                 isDataRequest,
                 hasMiddleware: capturedMiddlewarePath !== null,
+                dataNotFoundResponse,
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 configMatchPathname,
@@ -5491,7 +5482,29 @@ export const loadServerActionClient = ${
                   const reqWithBody = new Request(new URL(url, requestOrigin), externalInit);
                   return proxyExternalRequest(reqWithBody, externalUrl);
                 },
-                serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
+                serveFilesystemRoute: async (
+                  requestPathname,
+                  stagedHeaders,
+                  phase,
+                  resolvedUrl,
+                ) => {
+                  // Next.js resolves middleware and beforeFiles rewrites before
+                  // dispatching the built-in image endpoint.
+                  if (isImageOptimizationPath(requestPathname)) {
+                    const imageRequestUrl = new URL(resolvedUrl, requestOrigin);
+                    const allowedWidths = [
+                      ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+                      ...(nextConfig.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+                    ];
+                    const encodedLocation = resolveDevImageRedirect(
+                      imageRequestUrl,
+                      allowedWidths,
+                      nextConfig.images?.qualities,
+                    );
+                    return encodedLocation
+                      ? new Response(null, { status: 302, headers: { Location: encodedLocation } })
+                      : new Response("Invalid image optimization parameters", { status: 400 });
+                  }
                   const isRetrievalMethod = req.method === "GET" || req.method === "HEAD";
                   if (
                     (phase === "direct" && isRetrievalMethod) ||

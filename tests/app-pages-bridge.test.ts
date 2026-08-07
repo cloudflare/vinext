@@ -296,6 +296,93 @@ describe("renderPagesFallback", () => {
     expect(renderedCf).toBe(cf);
   });
 
+  it("applies middleware response headers to Pages data renders", async () => {
+    const renderPage = vi.fn(
+      () =>
+        new Response('{"pageProps":{"ok":true}}', {
+          headers: [
+            ["cache-control", "private, no-cache, no-store, max-age=0, must-revalidate"],
+            ["content-length", "25"],
+            ["content-type", "application/json"],
+            ["set-cookie", "session=fresh; Path=/"],
+          ],
+        }),
+    );
+    const request = new Request("http://localhost/pages-dir/search");
+
+    const response = await renderPagesFallback(
+      {
+        isDataRequest: true,
+        isRscRequest: false,
+        middlewareContext: {
+          headers: new Headers([
+            ["cache-control", "public, max-age=3600"],
+            ["content-length", "999"],
+            ["set-cookie", "session=stale; Path=/"],
+            ["x-middleware-response", "present"],
+          ]),
+          requestHeaders: null,
+          status: null,
+        },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({ renderPage }),
+      },
+    );
+
+    expect(response?.headers.get("x-middleware-response")).toBe("present");
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response?.headers.get("content-length")).toBe("25");
+    expect(response?.headers.getSetCookie()).toEqual([
+      "session=stale; Path=/",
+      "session=fresh; Path=/",
+    ]);
+  });
+
+  it.each([204, 205, 304])(
+    "drops the Pages response body when middleware overrides its status to %s",
+    async (status) => {
+      const renderPage = vi.fn(
+        () =>
+          new Response("page body", {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": "9",
+              "content-type": "text/plain",
+              "transfer-encoding": "chunked",
+            },
+          }),
+      );
+      const request = new Request("http://localhost/pages-dir/search");
+
+      const response = await renderPagesFallback(
+        {
+          isDataRequest: true,
+          isRscRequest: false,
+          middlewareContext: { headers: null, requestHeaders: null, status },
+          request,
+          url: new URL(request.url),
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({ renderPage }),
+        },
+      );
+
+      expect(response?.status).toBe(status);
+      expect(await response?.text()).toBe("");
+      expect(response?.headers.get("content-encoding")).toBeNull();
+      expect(response?.headers.get("content-length")).toBeNull();
+      expect(response?.headers.get("content-type")).toBeNull();
+      expect(response?.headers.get("transfer-encoding")).toBeNull();
+    },
+  );
+
   it("matches rewritten Pages data requests against the rewritten destination", async () => {
     const matchPageRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/rewritten-search" },

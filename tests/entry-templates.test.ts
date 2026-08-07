@@ -23,6 +23,7 @@ import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-gra
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import { createPagesDevHydrationScript } from "../packages/vinext/src/server/pages-dev-hydration.js";
 
 // ── Minimal App Router route fixtures ─────────────────────────────────
 // Use stable absolute paths so tests don't depend on the machine.
@@ -128,6 +129,19 @@ const minimalAppRoutes: AppRoute[] = [
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
+  it("registers the host React instance before the App Router browser runtime", () => {
+    const code = generateBrowserEntry();
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const navigationRuntimeIndex = code.indexOf("navigation-runtime");
+    const browserRuntimeIndex = code.indexOf("app-browser-entry");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(navigationRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(browserRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(navigationRuntimeIndex);
+    expect(reactBootstrapIndex).toBeLessThan(browserRuntimeIndex);
+  });
+
   it("embeds only client-safe rewrite data in the App browser entry", () => {
     const code = generateBrowserEntry([], null, [], {
       afterFiles: [
@@ -1180,10 +1194,14 @@ describe("App Router entry templates", () => {
     expect(withoutMiddleware).not.toContain("app-middleware.js");
     expect(withoutMiddleware).not.toContain("runMiddleware(");
     expect(withMiddleware).toContain("app-middleware.js");
-    expect(withMiddleware).toContain("runMiddleware({ cleanPathname, context, hadBasePath");
+    expect(withMiddleware).toContain(
+      "runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath",
+    );
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
     expect(withMiddleware).toContain("hadBasePath,");
+    expect(withMiddleware).toContain("externalRewriteRequest,");
     expect(withMiddleware).toContain("middlewareRequest,");
+    expect(withMiddleware).toContain("validateExternalRewriteRequest,");
   });
 
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
@@ -1493,6 +1511,7 @@ describe("Pages Router entry template", () => {
         await resolveNextConfig({
           basePath: "/root",
           generateBuildId: () => "test-build-id",
+          skipProxyUrlNormalize: true,
         }),
         createValidFileMatcher(),
         middlewarePath,
@@ -1501,9 +1520,10 @@ describe("Pages Router entry template", () => {
 
       expect(code).toContain("export function normalizeDataRequest(request)");
       expect(code).toContain(
-        "vinextConfig.basePath,\n    hasMiddleware && vinextConfig.trailingSlash",
+        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
       );
       expect(code).toContain("export const hasMiddleware = true");
+      expect(code).toContain('"skipProxyUrlNormalize":true');
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1675,14 +1695,37 @@ describe("Pages Router entry template", () => {
       // side-effect import (no `from`, no `as`) so its top-level statements
       // execute when the client entry module is evaluated.
       const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
       const hydrateRootIndex = code.indexOf("hydrateRoot(");
 
+      expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
       expect(userImportIndex).toBeGreaterThanOrEqual(0);
       expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(reactBootstrapIndex).toBeLessThan(userImportIndex);
       expect(userImportIndex).toBeLessThan(hydrateRootIndex);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("registers the host React instance before Pages Router dev hydration", () => {
+    const code = createPagesDevHydrationScript({
+      appModuleSource: "/tmp/test/pages/_app.tsx",
+      pageModuleSource: "/tmp/test/pages/index.tsx",
+      reactStrictMode: false,
+    });
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const instrumentationIndex = code.indexOf('import "vinext/instrumentation-client"');
+    const pageImportIndex = code.indexOf('await import("/tmp/test/pages/index.tsx")');
+    const hydrateRootIndex = code.indexOf("hydrateRoot(");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(instrumentationIndex).toBeGreaterThanOrEqual(0);
+    expect(pageImportIndex).toBeGreaterThanOrEqual(0);
+    expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(instrumentationIndex);
+    expect(reactBootstrapIndex).toBeLessThan(pageImportIndex);
+    expect(reactBootstrapIndex).toBeLessThan(hydrateRootIndex);
   });
 
   it("omits the user instrumentation-client import when no file is present", async () => {

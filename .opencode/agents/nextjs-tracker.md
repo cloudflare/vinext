@@ -1,7 +1,7 @@
 ---
 description: Monitors Next.js canary commits and opens tracking issues for changes relevant to vinext
 mode: primary
-model: anthropic/claude-opus-4-7
+model: anthropic/claude-opus-4-8
 temperature: 0.2
 permission:
   bash:
