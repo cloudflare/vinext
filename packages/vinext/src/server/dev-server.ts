@@ -23,12 +23,7 @@ import {
 // These modules must be imported before any rendering occurs.
 import "vinext/shims/router-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import {
-  createInlineScriptTag,
-  createNonceAttribute,
-  escapeHtmlAttr,
-  safeJsonStringify,
-} from "./html.js";
+import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
@@ -69,9 +64,9 @@ import {
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
 import { sanitizeDestination } from "../config/config-matchers.js";
-import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { collectPagesDevInitialStylesheetHeadHTML } from "./pages-dev-stylesheets.js";
+import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
 import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
-import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import {
@@ -163,133 +158,6 @@ function buildDevPagesTerminalCacheControl(
   // stale-while-revalidate without an expire value in this case.
   if (revalidateSeconds === false) return `s-maxage=${PAGES_CACHE_ONE_YEAR_SECONDS}`;
   return buildMissIsrCacheControl(revalidateSeconds, expireSeconds);
-}
-
-const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass)$/i;
-
-type PagesClientAssetsModule = {
-  default?: {
-    ssrManifest?: Record<string, string[]>;
-  };
-};
-
-const transformedStylesheetAssetsCache = new WeakMap<ViteDevServer, Map<string, string[]>>();
-const transformedStylesheetAssetsWatchers = new WeakSet<ViteDevServer>();
-
-function createDevInitialStylesheetHeadHTML(options: {
-  ssrManifest: Record<string, string[]> | null | undefined;
-  moduleIds: (string | null | undefined)[];
-  nonceAttr: string;
-}): string {
-  const { ssrManifest, moduleIds, nonceAttr } = options;
-  if (!ssrManifest || moduleIds.length === 0) return "";
-
-  const seen = new Set<string>();
-  let html = "";
-  for (const moduleId of moduleIds) {
-    const files = getManifestFilesForModule(ssrManifest, moduleId);
-    if (!files) continue;
-    for (const file of files) {
-      if (!DEV_STYLESHEET_ASSET_RE.test(file) || seen.has(file)) continue;
-      seen.add(file);
-      const href = createPagesDevAssetUrl(file);
-      html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
-    }
-  }
-  return html;
-}
-
-async function collectTransformedStylesheetAssets(
-  server: ViteDevServer,
-  moduleIds: (string | null | undefined)[],
-): Promise<string[]> {
-  const clientEnvironment = server.environments.client;
-  if (!clientEnvironment) return [];
-
-  const cachedServerAssets = transformedStylesheetAssetsCache.get(server);
-  const cache = cachedServerAssets ?? new Map<string, string[]>();
-  if (!cachedServerAssets) transformedStylesheetAssetsCache.set(server, cache);
-  if (!transformedStylesheetAssetsWatchers.has(server)) {
-    transformedStylesheetAssetsWatchers.add(server);
-    const clearCache = () => cache.clear();
-    server.watcher.on("add", clearCache);
-    server.watcher.on("change", clearCache);
-    server.watcher.on("unlink", clearCache);
-  }
-
-  const cacheKey = moduleIds.filter((moduleId): moduleId is string => Boolean(moduleId)).join("\0");
-  const cachedAssets = cache.get(cacheKey);
-  if (cachedAssets) return cachedAssets;
-
-  const assets = new Set<string>();
-  const seenModules = new Set<string>();
-  async function visitModule(moduleUrl: string): Promise<void> {
-    if (seenModules.has(moduleUrl)) return;
-    seenModules.add(moduleUrl);
-    try {
-      await clientEnvironment.transformRequest(moduleUrl);
-      const moduleNode = await clientEnvironment.moduleGraph.getModuleByUrl(moduleUrl);
-      if (!moduleNode) return;
-      for (const importedModule of moduleNode.importedModules) {
-        if (
-          importedModule.type === "css" ||
-          /\.(?:css|scss|sass)(?:$|[?#])/i.test(importedModule.url)
-        ) {
-          if (importedModule.url.startsWith("//")) continue;
-          const assetUrl = importedModule.url.startsWith("\0")
-            ? `/@id/__x00__${importedModule.url.slice(1)}${importedModule.url.includes("?") ? "&" : "?"}direct`
-            : importedModule.url;
-          assets.add(assetUrl);
-        } else if (importedModule.type === "js") {
-          await visitModule(importedModule.url);
-        }
-      }
-    } catch {
-      // Preserve the source-manifest fallback when a third-party client
-      // transform fails while the server render itself remains valid.
-    }
-  }
-
-  for (const moduleId of moduleIds) {
-    if (!moduleId) continue;
-    await visitModule(createPagesDevModuleUrl(server.config.root, moduleId, "/"));
-  }
-  const result = [...assets];
-  cache.set(cacheKey, result);
-  return result;
-}
-
-async function collectDevInitialStylesheetHeadHTML(
-  server: ViteDevServer,
-  runner: ModuleImporter,
-  moduleIds: (string | null | undefined)[],
-  nonceAttr: string,
-): Promise<string> {
-  let manifestHTML = "";
-  try {
-    const pagesClientAssets = (await runner.import(
-      "virtual:vinext-pages-client-assets",
-    )) as PagesClientAssetsModule;
-    manifestHTML = createDevInitialStylesheetHeadHTML({
-      ssrManifest: pagesClientAssets.default?.ssrManifest,
-      moduleIds,
-      nonceAttr,
-    });
-  } catch {
-    // If dev asset metadata is unavailable, keep the existing client-graph
-    // CSS behavior instead of failing the page render.
-  }
-
-  const transformedAssets = await collectTransformedStylesheetAssets(server, moduleIds);
-  if (transformedAssets.length === 0) return manifestHTML;
-
-  let html = manifestHTML;
-  for (const asset of transformedAssets) {
-    const href = asset.startsWith("/") ? asset : createPagesDevAssetUrl(asset);
-    if (html.includes(`href="${escapeHtmlAttr(href)}"`)) continue;
-    html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
-  }
-  return html;
 }
 
 /**
@@ -1573,7 +1441,7 @@ export function createSSRHandler(
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
         const appAssetPath = AppComponent ? appFilePath : null;
-        const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+        const assetHeadHTML = await collectPagesDevInitialStylesheetHeadHTML(
           server,
           runner,
           [appAssetPath, route.filePath],
@@ -2053,7 +1921,7 @@ async function renderErrorPage(
       const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
       const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
       const nonceAttr = createNonceAttribute(scriptNonce);
-      const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+      const assetHeadHTML = await collectPagesDevInitialStylesheetHeadHTML(
         server,
         runner,
         [appAssetPath, errorAssetPath],
