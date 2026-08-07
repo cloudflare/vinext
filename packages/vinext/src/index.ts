@@ -1,6 +1,7 @@
 import type {
   Alias,
   CSSModulesOptions,
+  DevEnvironment,
   HotUpdateOptions,
   Logger,
   Plugin,
@@ -140,6 +141,7 @@ import {
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
 import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
+import { encodeMiddlewareRequestHeaders } from "./utils/middleware-request-headers.js";
 import {
   detectPackageManager,
   formatMissingCloudflarePluginError,
@@ -207,8 +209,10 @@ import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
   createSassCssUrlAssetImporter,
+  createSassTsconfigPathImporters,
   createSassTildeImporter,
   createSassAwareFileSystemLoader,
+  type SassTsconfigPathAlias,
 } from "./plugins/sass.js";
 import {
   createClientFileNameConfig,
@@ -787,20 +791,63 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
   return null;
 }
 
+type MaterializedTsconfigPathAliases = {
+  vite: Record<string, string>;
+  sass: SassTsconfigPathAlias[];
+};
+
+function mergeSassTsconfigPathAliases(
+  ...groups: readonly (readonly SassTsconfigPathAlias[])[]
+): SassTsconfigPathAlias[] {
+  const merged = new Map<string, SassTsconfigPathAlias>();
+  for (const group of groups) {
+    for (const alias of group) {
+      merged.set(alias.find, alias);
+    }
+  }
+  return [...merged.values()];
+}
+
+function hasZeroOrOneAsterisk(value: string): boolean {
+  const first = value.indexOf("*");
+  return first < 0 || first === value.lastIndexOf("*");
+}
+
 function materializeTsconfigPathAliases(
   pathsConfig: Record<string, unknown>,
   baseUrl: string,
   projectRoot: string,
-): Record<string, string> {
-  const aliases: Record<string, string> = {};
+): MaterializedTsconfigPathAliases {
+  const vite: Record<string, string> = {};
+  const sass: SassTsconfigPathAlias[] = [];
 
   for (const [find, rawTargets] of Object.entries(pathsConfig)) {
-    const target = Array.isArray(rawTargets)
-      ? rawTargets.find((value): value is string => typeof value === "string")
+    const targets = Array.isArray(rawTargets)
+      ? rawTargets.filter((value): value is string => typeof value === "string")
       : typeof rawTargets === "string"
-        ? rawTargets
-        : null;
-    if (!target) continue;
+        ? [rawTargets]
+        : [];
+    if (targets.length === 0) continue;
+
+    // Sass can preserve the full TypeScript path-mapping contract: exact keys,
+    // one `*` anywhere in a pattern, and ordered replacement fallbacks.
+    if (find.length > 0 && hasZeroOrOneAsterisk(find)) {
+      const findHasStar = find.includes("*");
+      const replacements = targets
+        .filter(
+          (target) =>
+            target.length > 0 &&
+            hasZeroOrOneAsterisk(target) &&
+            (findHasStar || !target.includes("*")),
+        )
+        .map((target) => path.resolve(baseUrl, target));
+      if (replacements.length > 0) sass.push({ find, replacements });
+    }
+
+    // Vite aliases can only represent exact mappings and the common trailing
+    // `/*` prefix form. Keep the existing first-target materialization for JS
+    // transforms; Sass uses the richer representation above.
+    const target = targets[0]!;
 
     if (find.includes("*") || target.includes("*")) {
       if (!find.endsWith("/*") || !target.endsWith("/*")) continue;
@@ -812,14 +859,16 @@ function materializeTsconfigPathAliases(
       const targetDir = target.slice(0, -2);
       if (!aliasKey || !targetDir) continue;
 
-      aliases[aliasKey] = toViteAliasReplacement(path.resolve(baseUrl, targetDir), projectRoot);
+      const replacement = path.resolve(baseUrl, targetDir);
+      vite[aliasKey] = toViteAliasReplacement(replacement, projectRoot);
       continue;
     }
 
-    aliases[find] = toViteAliasReplacement(path.resolve(baseUrl, target), projectRoot);
+    const replacement = path.resolve(baseUrl, target);
+    vite[find] = toViteAliasReplacement(replacement, projectRoot);
   }
 
-  return aliases;
+  return { vite, sass };
 }
 
 function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
@@ -875,26 +924,30 @@ function loadTsconfigPathAliases(
   configPath: string,
   projectRoot: string,
   seen = new Set<string>(),
-): Record<string, string> {
+): MaterializedTsconfigPathAliases {
   const normalizedPath = tryRealpathSync(configPath) ?? configPath;
-  if (seen.has(normalizedPath)) return {};
+  if (seen.has(normalizedPath)) return { vite: {}, sass: [] };
   seen.add(normalizedPath);
 
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(normalizedPath, "utf-8"));
   } catch {
-    return {};
+    return { vite: {}, sass: [] };
   }
-  if (!parsed) return {};
+  if (!parsed) return { vite: {}, sass: [] };
 
-  let aliases: Record<string, string> = {};
+  let aliases: MaterializedTsconfigPathAliases = { vite: {}, sass: [] };
   // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
   // order so later entries override earlier ones (matching Next.js).
   for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
     const extendedPath = resolveTsconfigExtends(normalizedPath, extendsSpecifier);
     if (extendedPath) {
-      aliases = { ...aliases, ...loadTsconfigPathAliases(extendedPath, projectRoot, seen) };
+      const parent = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
+      aliases = {
+        vite: { ...aliases.vite, ...parent.vite },
+        sass: mergeSassTsconfigPathAliases(aliases.sass, parent.sass),
+      };
     }
   }
 
@@ -907,9 +960,10 @@ function loadTsconfigPathAliases(
     compilerOptions && typeof compilerOptions.baseUrl === "string" ? compilerOptions.baseUrl : ".";
   const resolvedBaseUrl = path.resolve(path.dirname(normalizedPath), baseUrl);
 
+  const own = materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot);
   return {
-    ...aliases,
-    ...materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot),
+    vite: { ...aliases.vite, ...own.vite },
+    sass: mergeSassTsconfigPathAliases(aliases.sass, own.sass),
   };
 }
 
@@ -965,7 +1019,12 @@ function suppressOptionalOptimizeDepsWarnings(logger: Logger): void {
 
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
 // transforms can see them via resolve.alias without re-reading config files per env.
-const _tsconfigAliasCache = new Map<string, Record<string, string>>();
+type ResolvedTsconfigPathAliases = {
+  vite: Record<string, string>;
+  sass: SassTsconfigPathAlias[];
+};
+
+const _tsconfigAliasCache = new Map<string, ResolvedTsconfigPathAliases>();
 
 /**
  * Order materialized tsconfig path aliases by descending prefix length.
@@ -983,19 +1042,23 @@ function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Reco
 function resolveTsconfigAliases(
   projectRoot: string,
   configuredPath?: string,
-): Record<string, string> {
+): ResolvedTsconfigPathAliases {
   const configPath = configuredPath ? path.resolve(projectRoot, configuredPath) : undefined;
   const cacheKey = configPath ?? projectRoot;
   if (_tsconfigAliasCache.has(cacheKey)) {
     return _tsconfigAliasCache.get(cacheKey)!;
   }
 
-  let aliases: Record<string, string> = {};
+  let aliases: ResolvedTsconfigPathAliases = { vite: {}, sass: [] };
   for (const candidate of configPath
     ? [configPath]
     : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
     if (!fs.existsSync(candidate)) continue;
-    aliases = sortTsconfigAliasesBySpecificity(loadTsconfigPathAliases(candidate, projectRoot));
+    const materialized = loadTsconfigPathAliases(candidate, projectRoot);
+    aliases = {
+      vite: sortTsconfigAliasesBySpecificity(materialized.vite),
+      sass: materialized.sass,
+    };
     break;
   }
 
@@ -1844,6 +1907,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const commonJsTransform = commonJsPlugin.transform;
   if (typeof commonJsTransform === "function") {
     commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      // The independent optimizeDeps Rolldown build already converted these
+      // files to ESM. Running vite-plugin-commonjs over its output would append
+      // a second export facade (including a duplicate default export).
+      if (
+        this.environment.mode === "dev" &&
+        (this.environment as DevEnvironment).depsOptimizer?.isOptimizedDepFile(id)
+      ) {
+        return null;
+      }
       if (!id.includes("/node_modules/") && !id.includes("\\node_modules\\")) {
         return commonJsTransform.call(this, code, id, ...args);
       }
@@ -2037,6 +2109,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
+        let sassTsconfigPathAliases: SassTsconfigPathAlias[] = [];
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
 
         // Load .env files into process.env before anything else.
@@ -2170,7 +2243,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? nextConfig.typescript.tsconfigPath
             : undefined
           : undefined;
-        tsconfigPathAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
+        const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
+        tsconfigPathAliases = resolvedTsconfigAliases.vite;
+        sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
         // an explicit user resolve.tsconfigPaths value remains untouched.
@@ -2536,6 +2611,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/head-state": path.join(shimsDir, "head-state"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "vinext/client": path.resolve(__dirname, "client", "index"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/instrumentation-client": path.resolve(
@@ -3030,9 +3106,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // which is appended at the end of `importers[]` by the vite:css
               // plugin (vite/src/node/plugins/css.ts makeScssWorker).
               const tildeImporter = createSassTildeImporter(root);
+              const tsconfigPathImporters =
+                createSassTsconfigPathImporters(sassTsconfigPathAliases);
               const cssUrlAssetImporter =
                 env.command === "build" ? createSassCssUrlAssetImporter() : null;
               const userAdditionalData = sassPreprocessorOptions?.additionalData;
+              const rawUserImporters = sassPreprocessorOptions?.importers as unknown;
+              const userImporters = Array.isArray(rawUserImporters)
+                ? rawUserImporters
+                : rawUserImporters == null
+                  ? []
+                  : [rawUserImporters];
 
               // Base options shared by both .scss and .sass preprocessors.
               const baseOpts: SassPreprocessorOptions = {
@@ -3050,10 +3134,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       },
                     }
                   : {}),
-                // Merge user-supplied importers (from sassOptions) with the
-                // tilde importer. Tilde goes first so it gets first crack at
-                // ~ prefixed URLs; other importers follow; Vite's own internal
-                // importer is appended last by the vite:css plugin.
+                // Preserve user importer precedence over vinext's optional
+                // tsconfig-path extension. Vite's internal importer is appended
+                // last by the vite:css plugin.
                 //
                 // Cast: the tilde importer implements the modern Sass
                 // `FileImporter` shape structurally and user importers are
@@ -3064,7 +3147,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 importers: [
                   tildeImporter,
                   ...(cssUrlAssetImporter ? [cssUrlAssetImporter] : []),
-                  ...((sassPreprocessorOptions?.importers as unknown[]) ?? []),
+                  ...userImporters,
+                  ...tsconfigPathImporters,
                 ] as SassPreprocessorOptions["importers"],
               };
 
@@ -3430,7 +3514,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
-                  ["react", "react-dom", "react-dom/server", "ipaddr.js"],
+                  ["ipaddr.js"],
                   Object.keys(nextShimMap),
                 ),
                 ...depOptimizeNodeEnvOptions,
@@ -5466,6 +5550,19 @@ export const loadServerActionClient = ${
                 nextConfig?.pageExtensions,
                 fileMatcher,
               );
+              let devApiRoutesPromise: ReturnType<typeof apiRouter> | null = null;
+              const getDevApiRoutes = () =>
+                (devApiRoutesPromise ??= apiRouter(
+                  pagesDir,
+                  nextConfig?.pageExtensions,
+                  fileMatcher,
+                ));
+              let devAppRoutesPromise: ReturnType<typeof appRouter> | null = null;
+              const getDevAppRoutes = () =>
+                (devAppRoutesPromise ??=
+                  hasAppDir && appDir
+                    ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
+                    : Promise.resolve([]));
               const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
               const classifyDevPageRoute = (
                 route: (typeof devPageRoutes)[number],
@@ -5508,6 +5605,18 @@ export const loadServerActionClient = ${
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 configMatchPathname,
                 runMiddleware: devRunMiddlewareAdapter,
+                // Treat App route handlers as an API filesystem match too. The
+                // pipeline may then emit an API intent instead of continuing
+                // through fallback rewrites. This only answers whether an API
+                // route exists; the adapter's precedence check below still
+                // decides whether Pages or App owns overlapping matches.
+                matchApiRoute: async (apiUrl) => {
+                  const devApiRoutes = await getDevApiRoutes();
+                  const pagesMatch = matchRoute(apiUrl, devApiRoutes);
+                  if (pagesMatch) return pagesMatch;
+                  const devAppRoutes = await getDevAppRoutes();
+                  return matchAppRoute(apiUrl, devAppRoutes);
+                },
                 matchPageRoute: (resolvedPathname, request) => {
                   const routeUrl = nextConfig?.i18n
                     ? resolvePagesI18nRequest(
@@ -5616,14 +5725,18 @@ export const loadServerActionClient = ${
 
               // For render/api intents: flush staged middleware headers and
               // apply request header mutations before calling SSR/API handlers.
-              const flushStagedHeaders = () => {
+              const forEachStagedHeader = (visit: (key: string, value: string) => void) => {
                 for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
                   if (Array.isArray(value)) {
-                    for (const v of value) res.appendHeader(key, v);
+                    for (const item of value) visit(key, item);
                   } else {
-                    res.appendHeader(key, value);
+                    visit(key, value);
                   }
                 }
+              };
+
+              const flushStagedHeaders = () => {
+                forEachStagedHeader((key, value) => res.appendHeader(key, value));
               };
 
               // Apply post-middleware request headers to req.headers so the
@@ -5632,12 +5745,29 @@ export const loadServerActionClient = ${
                 applyRequestHeadersToNodeRequest(pipelineResult.requestHeaders);
               };
 
+              const forwardInternalApiRewriteToApp = (apiUrl: string) => {
+                const responseHeaders: [string, string][] = [];
+                forEachStagedHeader((key, value) => responseHeaders.push([key, value]));
+                const requestHeaders = new Headers();
+                encodeMiddlewareRequestHeaders(requestHeaders, pipelineResult.requestHeaders);
+
+                // The Pages pipeline already ran middleware and evaluated the
+                // fallback rule against its request-header overrides. Carry
+                // both pieces of state into the App RSC plugin: reapplying the
+                // rule from the original request can lose its has/missing
+                // match, while mutating req.url would lose the public URL that
+                // App route handlers expose through request.url.
+                flushRequestHeaders();
+                req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
+                  h: responseHeaders,
+                  q: [...requestHeaders],
+                  s: pipelineResult.middlewareStatus ?? null,
+                  r: apiUrl,
+                });
+              };
+
               if (pipelineResult.type === "api") {
-                const apiRoutes = await apiRouter(
-                  pagesDir,
-                  nextConfig?.pageExtensions,
-                  fileMatcher,
-                );
+                const devApiRoutes = await getDevApiRoutes();
                 // Only flush staged middleware headers / mutate req.headers when a
                 // pages API route actually matches — mirroring the original
                 // `if (apiMatch)` gate. On a miss we must NOT touch res or req.headers
@@ -5645,14 +5775,10 @@ export const loadServerActionClient = ${
                 // deletes all req.headers and repopulates them from the body-less pipeline
                 // request, wiping the hybrid app+pages middleware context
                 // (VINEXT_MW_CTX_HEADER, set on req.headers) that the app RSC plugin reads.
-                const apiMatch = matchRoute(pipelineResult.apiUrl, apiRoutes);
+                const apiMatch = matchRoute(pipelineResult.apiUrl, devApiRoutes);
                 if (apiMatch && hasAppDir && appDir) {
-                  const appRoutes = await appRouter(
-                    appDir,
-                    nextConfig?.pageExtensions,
-                    fileMatcher,
-                  );
-                  const appMatch = matchAppRoute(pipelineResult.apiUrl, appRoutes);
+                  const devAppRoutes = await getDevAppRoutes();
+                  const appMatch = matchAppRoute(pipelineResult.apiUrl, devAppRoutes);
                   if (
                     appMatch &&
                     !pagesRouteHasPriorityOverAppRoute(apiMatch.route, appMatch.route)
@@ -5672,7 +5798,7 @@ export const loadServerActionClient = ${
                   req,
                   res,
                   pipelineResult.apiUrl,
-                  apiRoutes,
+                  devApiRoutes,
                   {
                     basePath: nextConfig?.basePath,
                     i18n: nextConfig?.i18n,
@@ -5685,7 +5811,15 @@ export const loadServerActionClient = ${
 
                 // No API route matched — if app dir exists, let the RSC plugin handle it
                 // (app/api/* route handlers live there). Otherwise hard-404.
-                if (hasAppDir) return next();
+                if (hasAppDir) {
+                  // Only a next.config rewrite should override App's route
+                  // resolution. Locale stripping is API lookup normalization,
+                  // not an internal rewrite to forward to the RSC plugin.
+                  if (pipelineResult.configRewriteFired) {
+                    forwardInternalApiRewriteToApp(pipelineResult.apiUrl);
+                  }
+                  return next();
+                }
 
                 res.statusCode = 404;
                 res.end("404 - API route not found");

@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
+import type { Server } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createBuilder, type Plugin } from "vite";
+import { toSlash } from "pathslash";
+import { createBuilder, createServer, type Plugin, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
@@ -16,10 +18,13 @@ const NITRO_NODE_MODULES = path.resolve(
   import.meta.dirname,
   "../examples/app-router-nitro/node_modules",
 );
+const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+const NEXT_CJS_PATH_SPECIFIER = "next/dist/compiled/regenerator-runtime/path";
 
 async function createHybridFixture(
   prefix: string,
   nodeModules: string,
+  options: { dependencySpecifier?: string } = {},
 ): Promise<{
   root: string;
   canonicalRoot: string;
@@ -27,6 +32,8 @@ async function createHybridFixture(
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const cjsPackageDir = path.join(root, "vendor/node_modules/cjs-path-identity");
+  const dependencySpecifier =
+    options.dependencySpecifier ?? "../vendor/node_modules/cjs-path-identity/index.js";
   await Promise.all([
     fs.mkdir(path.join(root, "app"), { recursive: true }),
     fs.mkdir(path.join(root, "pages"), { recursive: true }),
@@ -49,7 +56,7 @@ async function createHybridFixture(
     fs.writeFile(
       path.join(root, "pages/cjs-dependency-globals.tsx"),
       `import path from "node:path";
-import identity from "../vendor/node_modules/cjs-path-identity/index.js";
+import identity from ${JSON.stringify(dependencySpecifier)};
 const projectRuntimePath = path.join(__dirname, "project-runtime.js");
 export function getServerSideProps() {
   return { props: { runtimePath: identity.path, projectRuntimePath } };
@@ -135,6 +142,139 @@ async function stopChildProcess(child: ChildProcess | undefined): Promise<void> 
   }
 }
 
+async function closeServer(server: Server | undefined): Promise<void> {
+  if (!server) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function expectPathAbsent(text: string, filePath: string): void {
+  expect(text).not.toContain(filePath);
+  expect(toSlash(text)).not.toContain(toSlash(filePath));
+}
+
+describe("bundled CJS globals on the hybrid Node development runtime", () => {
+  let root = "";
+  let canonicalRoot = "";
+  let dependencyRuntimePath = "";
+  let server: ViteDevServer | undefined;
+  let baseUrl = "";
+  let cacheDir = "";
+
+  beforeAll(async () => {
+    ({ root, canonicalRoot } = await createHybridFixture(
+      "vinext-cjs-globals-node-dev-",
+      ROOT_NODE_MODULES,
+      { dependencySpecifier: NEXT_CJS_PATH_SPECIFIER },
+    ));
+    dependencyRuntimePath = path.join(
+      await fs.realpath(path.join(ROOT_NODE_MODULES, "next/dist/compiled/regenerator-runtime")),
+      "runtime.js",
+    );
+    cacheDir = path.join(root, ".vite-cache");
+    server = await createServer({
+      root,
+      cacheDir,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      environments: {
+        rsc: { optimizeDeps: { include: [NEXT_CJS_PATH_SPECIFIER] } },
+        ssr: { optimizeDeps: { include: [NEXT_CJS_PATH_SPECIFIER] } },
+      },
+      optimizeDeps: { holdUntilCrawlEnd: true },
+      server: { host: "127.0.0.1", port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer?.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Hybrid Node development server did not bind to a TCP port");
+    }
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  }, 60_000);
+
+  afterAll(async () => {
+    await server?.close();
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("uses dependency source identity without losing project source identity", async () => {
+    for (const environment of ["rsc", "ssr"] as const) {
+      expect(
+        server?.config.environments[environment]?.optimizeDeps?.rolldownOptions?.plugins,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "vinext:import-meta-url:optimize-deps" }),
+        ]),
+      );
+    }
+    const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(`<p id="runtime-path">${dependencyRuntimePath}</p>`);
+    expect(html).toContain(
+      `<p id="project-runtime-path">${path.join(canonicalRoot, "pages/project-runtime.js")}</p>`,
+    );
+    const optimizedBundle = await readJavaScriptTree(cacheDir);
+    expect(optimizedBundle).toContain(toSlash(path.dirname(dependencyRuntimePath)));
+    expect(optimizedBundle).not.toContain("var __dirname = void 0");
+  });
+});
+
+describe("bundled CJS globals on the hybrid Node production runtime", () => {
+  let root = "";
+  let canonicalRoot = "";
+  let cjsPackageDir = "";
+  let server: Server | undefined;
+  let baseUrl = "";
+  let serverBundle = "";
+
+  beforeAll(async () => {
+    ({ root, canonicalRoot, cjsPackageDir } = await createHybridFixture(
+      "vinext-cjs-globals-node-prod-",
+      ROOT_NODE_MODULES,
+    ));
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const outDir = path.join(root, "dist");
+    serverBundle = await readJavaScriptTree(path.join(outDir, "server"));
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    ({ server } = await startProdServer({ port: 0, outDir, noCompression: true }));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Hybrid Node production server did not bind to a TCP port");
+    }
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  }, 180_000);
+
+  afterAll(async () => {
+    await closeServer(server);
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("uses relocatable chunk identity without losing project source identity", async () => {
+    const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const runtimePath = html.match(/<p id="runtime-path">([^<]+)<\/p>/)?.[1];
+    expect(runtimePath).toBeDefined();
+    expect(path.basename(runtimePath!)).toBe("runtime.js");
+    expect(runtimePath).toContain(path.join(canonicalRoot, "dist/server"));
+    expect(runtimePath).not.toContain(cjsPackageDir);
+    expect(html).toContain(
+      `<p id="project-runtime-path">${path.join(canonicalRoot, "pages/project-runtime.js")}</p>`,
+    );
+    expectPathAbsent(serverBundle, cjsPackageDir);
+  });
+});
+
 describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
   let root = "";
   let canonicalRoot = "";
@@ -217,8 +357,8 @@ describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
     const html = await res.text();
     expect(html).toContain('<p id="runtime-path">/runtime.js</p>');
     expect(html).toContain('<p id="project-runtime-path">/project-runtime.js</p>');
-    expect(workerBundle).not.toContain(cjsPackageDir);
-    expect(html).not.toContain(canonicalRoot);
+    expectPathAbsent(workerBundle, cjsPackageDir);
+    expectPathAbsent(html, canonicalRoot);
   });
 });
 
@@ -268,10 +408,13 @@ describe("bundled CJS globals on the Nitro Node runtime", () => {
     const res = await fetch(`${baseUrl}/cjs-dependency-globals`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toMatch(/<p id="runtime-path">.*\.output\/server\/(?:_ssr\/)?runtime\.js<\/p>/);
+    const runtimePath = html.match(/<p id="runtime-path">([^<]+)<\/p>/)?.[1];
+    expect(runtimePath).toBeDefined();
+    expect(path.basename(runtimePath!)).toBe("runtime.js");
+    expect(runtimePath).toContain(path.join(canonicalRoot, ".output/server"));
     expect(html).toContain(
       `<p id="project-runtime-path">${path.join(canonicalRoot, "pages/project-runtime.js")}</p>`,
     );
-    expect(nitroBundle).not.toContain(cjsPackageDir);
+    expectPathAbsent(nitroBundle, cjsPackageDir);
   });
 });

@@ -425,11 +425,6 @@ function canonicalDependencyModuleId(id: string): string | null {
   return canonicalizePath(filePath);
 }
 
-export function isBundledCommonJsDependencyId(id: string): boolean {
-  const canonicalId = canonicalDependencyModuleId(id);
-  return canonicalId !== null && isCommonJsDependency(canonicalId);
-}
-
 function isCommonJsDependency(canonicalId: string): boolean {
   const extension = path.extname(canonicalId);
   if (extension === ".cjs" || extension === ".cts") return true;

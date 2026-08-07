@@ -38,6 +38,123 @@ type VitePreprocessorOptions = {
   [key: string]: any;
 };
 
+export type SassTsconfigPathAlias = {
+  find: string;
+  replacements: readonly string[];
+};
+
+const URL_SCHEME_RE = /^[A-Za-z][A-Za-z\d+.-]*:/;
+const NODE_MODULES_PATH_RE = /(?:^|\/)node_modules(?:\/|$)/;
+
+type SassFileImporterContext = {
+  containingUrl?: URL | null;
+};
+
+type SassFileImporter = {
+  findFileUrl(url: string, context?: SassFileImporterContext): URL | null;
+};
+
+type MatchedSassTsconfigPathAlias = {
+  alias: SassTsconfigPathAlias;
+  matchedStar: string | null;
+};
+
+function matchSassTsconfigPathAlias(
+  aliases: readonly SassTsconfigPathAlias[],
+  url: string,
+): MatchedSassTsconfigPathAlias | null {
+  for (const alias of aliases) {
+    if (!alias.find.includes("*") && alias.find === url) {
+      return { alias, matchedStar: null };
+    }
+  }
+
+  let bestMatch: MatchedSassTsconfigPathAlias | null = null;
+  let bestPrefixLength = -1;
+  for (const alias of aliases) {
+    const starIndex = alias.find.indexOf("*");
+    if (starIndex < 0) continue;
+    const prefix = alias.find.slice(0, starIndex);
+    const suffix = alias.find.slice(starIndex + 1);
+    if (
+      url.length < prefix.length + suffix.length ||
+      !url.startsWith(prefix) ||
+      !url.endsWith(suffix) ||
+      prefix.length <= bestPrefixLength
+    ) {
+      continue;
+    }
+    bestPrefixLength = prefix.length;
+    bestMatch = {
+      alias,
+      matchedStar: url.slice(prefix.length, url.length - suffix.length),
+    };
+  }
+  return bestMatch;
+}
+
+function isSassAliasEligibleUrl(url: string, context?: SassFileImporterContext): boolean {
+  if (
+    URL_SCHEME_RE.test(url) ||
+    url.startsWith("//") ||
+    url.startsWith("/") ||
+    url.startsWith("./") ||
+    url.startsWith("../") ||
+    url.startsWith("~")
+  ) {
+    return false;
+  }
+
+  const containingUrl = context?.containingUrl;
+  if (containingUrl?.protocol === "file:") {
+    const containingPath = toSlash(fileURLToPath(containingUrl));
+    if (NODE_MODULES_PATH_RE.test(containingPath)) return false;
+  }
+  return true;
+}
+
+/**
+ * Create Sass `FileImporter`s for paths materialized from tsconfig.
+ *
+ * Vite does not apply tsconfig path aliases while resolving Sass loads. Vinext
+ * deliberately extends that behavior for migration compatibility: application
+ * stylesheets may use the same exact and single-wildcard mappings as source
+ * modules. This is a vinext capability, not Next.js parity; current Next.js
+ * webpack builds do not resolve tsconfig `paths` from Sass.
+ *
+ * One importer is emitted per ordered replacement slot. When Sass cannot find
+ * a file for the first target it advances to the next importer, preserving the
+ * fallback order from `paths`. All importers select the same best pattern, so a
+ * failed specific mapping never falls through to a less-specific mapping.
+ *
+ * Aliases stay scoped to application stylesheets. Loads originating in
+ * `node_modules`, plus absolute, relative, protocol-relative, and scheme URLs,
+ * are left to user and Vite importers.
+ */
+export function createSassTsconfigPathImporters(
+  aliases: readonly SassTsconfigPathAlias[],
+): SassFileImporter[] {
+  const entries = aliases.filter(
+    ({ find, replacements }) => find.length > 0 && replacements.length > 0,
+  );
+  const replacementSlots = Math.max(0, ...entries.map((alias) => alias.replacements.length));
+
+  return Array.from({ length: replacementSlots }, (_, replacementIndex) => ({
+    findFileUrl(url: string, context?: SassFileImporterContext): URL | null {
+      if (!isSassAliasEligibleUrl(url, context)) return null;
+
+      const match = matchSassTsconfigPathAlias(entries, url);
+      if (!match) return null;
+      const replacement = match.alias.replacements[replacementIndex];
+      if (!replacement) return null;
+      const matchedStar = match.matchedStar;
+      return pathToFileURL(
+        matchedStar === null ? replacement : replacement.replaceAll("*", () => matchedStar),
+      );
+    },
+  }));
+}
+
 /**
  * Create a Sass `FileImporter` that resolves webpack-style tilde (`~`) imports.
  *
