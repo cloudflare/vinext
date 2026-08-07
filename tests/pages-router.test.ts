@@ -3527,6 +3527,149 @@ describe("Pages Router allowedDevOrigins config", () => {
   });
 });
 
+// Ported from Next.js: test/e2e/i18n-api-support/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-api-support/index.test.ts
+// Next.js resolves fallback rewrites after an API filesystem miss instead of
+// immediately returning "404 - API route not found".
+describe("Pages Router unmatched API fallback rewrites", () => {
+  it("proxies unmatched API requests with their method, query, headers, and body", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            body: Buffer.concat(chunks).toString("utf8"),
+            header: req.headers["x-proxy-regression"],
+            method: req.method,
+            url: req.url,
+          }),
+        );
+      });
+    });
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-api-fallback-"));
+    const outDir = path.join(tmpDir, "dist");
+    let devServer: ViteDevServer | undefined;
+    let prodServer: import("node:http").Server | undefined;
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const upstreamAddress = upstream.address();
+      if (typeof upstreamAddress === "string" || upstreamAddress === null) {
+        throw new Error("Expected upstream port");
+      }
+
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpDir, "pages", "api"), { recursive: true });
+      await fsp.writeFile(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(path.join(tmpDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "index.tsx"),
+        `export default function Home() { return <main>API fallback fixture</main>; }\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "api", "local.ts"),
+        `export default function handler(_req, res) { res.status(200).json({ local: true }); }\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "next.config.mjs"),
+        `export default {
+  basePath: "/docs",
+  async rewrites() {
+    return {
+      beforeFiles: [],
+      afterFiles: [],
+      fallback: [{
+        source: "/api/:path*",
+        has: [{ type: "header", key: "x-use-api-fallback", value: "yes" }],
+        missing: [{ type: "header", key: "x-block-api-fallback" }],
+        destination: "http://127.0.0.1:${upstreamAddress.port}/auth/:path*?from=config",
+      }],
+    };
+  },
+};
+`,
+      );
+
+      const assertRequests = async (baseUrl: string) => {
+        const missingHasResponse = await fetch(`${baseUrl}/docs/api/session/gated`);
+        expect(missingHasResponse.status).toBe(404);
+
+        const blockedByMissingResponse = await fetch(`${baseUrl}/docs/api/session/gated`, {
+          headers: {
+            "x-block-api-fallback": "1",
+            "x-use-api-fallback": "yes",
+          },
+        });
+        expect(blockedByMissingResponse.status).toBe(404);
+
+        const localResponse = await fetch(`${baseUrl}/docs/api/local`, {
+          headers: { "x-use-api-fallback": "yes" },
+        });
+        expect(localResponse.status).toBe(200);
+        await expect(localResponse.json()).resolves.toEqual({ local: true });
+
+        const body = JSON.stringify({ grant: "fixture" });
+        const response = await fetch(`${baseUrl}/docs/api/session/login?client=vinext`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-proxy-regression": "preserved",
+            "x-use-api-fallback": "yes",
+          },
+          body,
+        });
+        expect(response.status).toBe(200);
+        const upstreamRequest = (await response.json()) as {
+          body: string;
+          header?: string;
+          method?: string;
+          url?: string;
+        };
+        expect(upstreamRequest.body).toBe(body);
+        expect(upstreamRequest.header).toBe("preserved");
+        expect(upstreamRequest.method).toBe("POST");
+        const upstreamUrl = new URL(upstreamRequest.url ?? "", "http://upstream.test");
+        expect(upstreamUrl.pathname).toBe("/auth/session/login");
+        expect(Object.fromEntries(upstreamUrl.searchParams)).toEqual({
+          client: "vinext",
+          from: "config",
+        });
+      };
+
+      const dev = await startFixtureServer(tmpDir);
+      devServer = dev.server;
+      await assertRequests(dev.baseUrl);
+      await devServer.close();
+      devServer = undefined;
+
+      await buildPagesFixtureToOutDir(tmpDir, outDir);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({ port: 0, host: "127.0.0.1", outDir }),
+      );
+      const prodAddress = prodServer.address();
+      if (typeof prodAddress === "string" || prodAddress === null) {
+        throw new Error("Expected production server port");
+      }
+      await assertRequests(`http://127.0.0.1:${prodAddress.port}`);
+    } finally {
+      await devServer?.close();
+      await new Promise<void>((resolve) =>
+        prodServer ? prodServer.close(() => resolve()) : resolve(),
+      );
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+});
+
 describe("Virtual server entry generation", () => {
   it("generates valid JavaScript for the server entry", async () => {
     // Create a minimal server just to access the plugin's virtual module

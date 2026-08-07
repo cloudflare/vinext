@@ -140,6 +140,7 @@ import {
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
 import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
+import { encodeMiddlewareRequestHeaders } from "./utils/middleware-request-headers.js";
 import {
   detectPackageManager,
   formatMissingCloudflarePluginError,
@@ -5387,6 +5388,19 @@ export const loadServerActionClient = ${
                 nextConfig?.pageExtensions,
                 fileMatcher,
               );
+              let devApiRoutesPromise: ReturnType<typeof apiRouter> | null = null;
+              const getDevApiRoutes = () =>
+                (devApiRoutesPromise ??= apiRouter(
+                  pagesDir,
+                  nextConfig?.pageExtensions,
+                  fileMatcher,
+                ));
+              let devAppRoutesPromise: ReturnType<typeof appRouter> | null = null;
+              const getDevAppRoutes = () =>
+                (devAppRoutesPromise ??=
+                  hasAppDir && appDir
+                    ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
+                    : Promise.resolve([]));
               const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
               const classifyDevPageRoute = (
                 route: (typeof devPageRoutes)[number],
@@ -5429,6 +5443,18 @@ export const loadServerActionClient = ${
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 configMatchPathname,
                 runMiddleware: devRunMiddlewareAdapter,
+                // Treat App route handlers as an API filesystem match too. The
+                // pipeline may then emit an API intent instead of continuing
+                // through fallback rewrites. This only answers whether an API
+                // route exists; the adapter's precedence check below still
+                // decides whether Pages or App owns overlapping matches.
+                matchApiRoute: async (apiUrl) => {
+                  const devApiRoutes = await getDevApiRoutes();
+                  const pagesMatch = matchRoute(apiUrl, devApiRoutes);
+                  if (pagesMatch) return pagesMatch;
+                  const devAppRoutes = await getDevAppRoutes();
+                  return matchAppRoute(apiUrl, devAppRoutes);
+                },
                 matchPageRoute: (resolvedPathname, request) => {
                   const routeUrl = nextConfig?.i18n
                     ? resolvePagesI18nRequest(
@@ -5537,14 +5563,18 @@ export const loadServerActionClient = ${
 
               // For render/api intents: flush staged middleware headers and
               // apply request header mutations before calling SSR/API handlers.
-              const flushStagedHeaders = () => {
+              const forEachStagedHeader = (visit: (key: string, value: string) => void) => {
                 for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
                   if (Array.isArray(value)) {
-                    for (const v of value) res.appendHeader(key, v);
+                    for (const item of value) visit(key, item);
                   } else {
-                    res.appendHeader(key, value);
+                    visit(key, value);
                   }
                 }
+              };
+
+              const flushStagedHeaders = () => {
+                forEachStagedHeader((key, value) => res.appendHeader(key, value));
               };
 
               // Apply post-middleware request headers to req.headers so the
@@ -5553,12 +5583,29 @@ export const loadServerActionClient = ${
                 applyRequestHeadersToNodeRequest(pipelineResult.requestHeaders);
               };
 
+              const forwardInternalApiRewriteToApp = (apiUrl: string) => {
+                const responseHeaders: [string, string][] = [];
+                forEachStagedHeader((key, value) => responseHeaders.push([key, value]));
+                const requestHeaders = new Headers();
+                encodeMiddlewareRequestHeaders(requestHeaders, pipelineResult.requestHeaders);
+
+                // The Pages pipeline already ran middleware and evaluated the
+                // fallback rule against its request-header overrides. Carry
+                // both pieces of state into the App RSC plugin: reapplying the
+                // rule from the original request can lose its has/missing
+                // match, while mutating req.url would lose the public URL that
+                // App route handlers expose through request.url.
+                flushRequestHeaders();
+                req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
+                  h: responseHeaders,
+                  q: [...requestHeaders],
+                  s: pipelineResult.middlewareStatus ?? null,
+                  r: apiUrl,
+                });
+              };
+
               if (pipelineResult.type === "api") {
-                const apiRoutes = await apiRouter(
-                  pagesDir,
-                  nextConfig?.pageExtensions,
-                  fileMatcher,
-                );
+                const devApiRoutes = await getDevApiRoutes();
                 // Only flush staged middleware headers / mutate req.headers when a
                 // pages API route actually matches — mirroring the original
                 // `if (apiMatch)` gate. On a miss we must NOT touch res or req.headers
@@ -5566,14 +5613,10 @@ export const loadServerActionClient = ${
                 // deletes all req.headers and repopulates them from the body-less pipeline
                 // request, wiping the hybrid app+pages middleware context
                 // (VINEXT_MW_CTX_HEADER, set on req.headers) that the app RSC plugin reads.
-                const apiMatch = matchRoute(pipelineResult.apiUrl, apiRoutes);
+                const apiMatch = matchRoute(pipelineResult.apiUrl, devApiRoutes);
                 if (apiMatch && hasAppDir && appDir) {
-                  const appRoutes = await appRouter(
-                    appDir,
-                    nextConfig?.pageExtensions,
-                    fileMatcher,
-                  );
-                  const appMatch = matchAppRoute(pipelineResult.apiUrl, appRoutes);
+                  const devAppRoutes = await getDevAppRoutes();
+                  const appMatch = matchAppRoute(pipelineResult.apiUrl, devAppRoutes);
                   if (
                     appMatch &&
                     !pagesRouteHasPriorityOverAppRoute(apiMatch.route, appMatch.route)
@@ -5593,7 +5636,7 @@ export const loadServerActionClient = ${
                   req,
                   res,
                   pipelineResult.apiUrl,
-                  apiRoutes,
+                  devApiRoutes,
                   {
                     basePath: nextConfig?.basePath,
                     i18n: nextConfig?.i18n,
@@ -5606,7 +5649,15 @@ export const loadServerActionClient = ${
 
                 // No API route matched — if app dir exists, let the RSC plugin handle it
                 // (app/api/* route handlers live there). Otherwise hard-404.
-                if (hasAppDir) return next();
+                if (hasAppDir) {
+                  // Only a next.config rewrite should override App's route
+                  // resolution. Locale stripping is API lookup normalization,
+                  // not an internal rewrite to forward to the RSC plugin.
+                  if (pipelineResult.configRewriteFired) {
+                    forwardInternalApiRewriteToApp(pipelineResult.apiUrl);
+                  }
+                  return next();
+                }
 
                 res.statusCode = 404;
                 res.end("404 - API route not found");

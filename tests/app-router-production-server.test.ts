@@ -1227,6 +1227,25 @@ describe("App Router Production server (startProdServer)", () => {
     expect(json).toHaveProperty("message");
   });
 
+  it("routes unmatched API paths through fallback rewrites to App route handlers", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/pages-fallback-to-app/session/login?client=vinext&mw-auth`,
+      {
+        headers: { "x-api-fallback-handoff": "preserved" },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      body: null,
+      cookie: "mw-api-fallback-user=1",
+      header: "preserved",
+      pathname: "/api/pages-fallback-to-app/session/login",
+      query: { client: "vinext", from: "fallback", "mw-auth": "" },
+      slugs: ["session", "login"],
+    });
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
   it("lets route handlers synchronously catch updateTag errors without crashing", async () => {
