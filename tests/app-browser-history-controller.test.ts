@@ -315,6 +315,50 @@ describe("AppBrowserHistoryController snapshot restore", () => {
     controller.rememberHistoryStateSnapshot(snapshotState);
   }
 
+  it("assigns a pushed shallow entry its own restorable snapshot", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/initial",
+    });
+    const snapshotState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/initial/shallow",
+        {},
+      ),
+    });
+
+    controller.commitExternalShallowNavigation({
+      callerState: { caller: true },
+      href: "https://example.com/initial/shallow",
+      historyUpdateMode: "push",
+      snapshotState,
+    });
+
+    expect(controller.currentHistoryTraversalIndex).toBe(1);
+    expect(readWrittenState(store.pushed[0])).toMatchObject({
+      __vinext_historyIndex: 1,
+      __vinext_shallowUrl: "https://example.com/initial/shallow",
+      caller: true,
+    });
+
+    controller.commitHistoryTraversalIndex(2);
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: store.pushed[0]?.state,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(snapshotState);
+  });
+
   it("resolves the restorable candidate and delegates visible restoration to the injected callback", () => {
     const { controller } = createController();
     const snapshotState = createRouterState({

@@ -126,7 +126,6 @@ import {
   type OperationLane,
 } from "./app-browser-state.js";
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
-import { readHistoryStateShallowUrl } from "./app-history-state.js";
 import {
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
@@ -2389,6 +2388,26 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
+    commitShallowHistory: (callerState, url, historyUpdateMode) => {
+      if (!browserNavigationController.hasBrowserRouterState()) {
+        return false;
+      }
+      const href = new URL(url ?? window.location.href, window.location.href).href;
+      const currentState = browserNavigationController.getBrowserRouterState();
+      historyController.commitExternalShallowNavigation({
+        callerState,
+        historyUpdateMode,
+        href,
+        snapshotState: {
+          ...currentState,
+          navigationSnapshot: createClientNavigationRenderSnapshot(
+            href,
+            currentState.navigationSnapshot.params,
+          ),
+        },
+      });
+      return true;
+    },
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
     getPrefetchRouterState: () => {
@@ -2455,14 +2474,6 @@ function bootstrapHydration(
     // Notify the transition start so observers still see the URL change, then
     // restore scroll directly and skip the RSC dispatch.
     const href = window.location.href;
-    const shallowUrl = readHistoryStateShallowUrl(event.state);
-    if (shallowUrl !== null && new URL(shallowUrl, href).href === href) {
-      notifyAppRouterTransitionStart(href, "traverse");
-      historyController.commitTraversalIndexFromHistoryState(event.state);
-      commitClientNavigationState();
-      restorePopstateScrollPosition(event.state);
-      return;
-    }
     if (isSameAppRoutePopstateTarget(href)) {
       notifyAppRouterTransitionStart(href, "traverse");
       historyController.commitTraversalIndexFromHistoryState(event.state);

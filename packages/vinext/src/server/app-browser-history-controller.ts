@@ -1,5 +1,6 @@
 import {
   RestorableClientStateController,
+  createExternalHistoryStatePreservingMetadata,
   createHistoryStateWithNavigationMetadata,
   readHistoryStateBfcacheIds,
   readHistoryStatePreviousNextUrl,
@@ -60,6 +61,13 @@ type CommitNavigationHistoryOptions = {
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
   stageClientParams: () => void;
+};
+
+type CommitExternalShallowNavigationOptions = {
+  callerState: unknown;
+  href: string;
+  historyUpdateMode: HistoryUpdateMode;
+  snapshotState: AppRouterState;
 };
 
 export function createCanonicalBrowserHistoryHref(href: string): string {
@@ -195,6 +203,26 @@ export class AppBrowserHistoryController {
   }
 
   // --- History metadata writes ---
+
+  commitExternalShallowNavigation(options: CommitExternalShallowNavigationOptions): void {
+    const navigationHistoryIndex = this.allocateNavigationHistoryTraversalIndex(
+      options.historyUpdateMode,
+    );
+    const historyState = createExternalHistoryStatePreservingMetadata(
+      options.callerState,
+      this.#readHistoryState(),
+      options.href,
+      navigationHistoryIndex,
+    );
+
+    if (options.historyUpdateMode === "replace") {
+      this.#replaceHistoryState(historyState, options.href);
+    } else {
+      this.#pushHistoryState(historyState, options.href);
+    }
+    this.commitHistoryTraversalIndex(navigationHistoryIndex);
+    this.rememberHistoryStateSnapshot(options.snapshotState);
+  }
 
   commitHashOnlyNavigation(
     href: string,

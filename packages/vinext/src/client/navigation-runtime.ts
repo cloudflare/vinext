@@ -55,6 +55,11 @@ export type NavigationRuntimeNavigate = (
 
 export type NavigationRuntimeFunctions = {
   clearNavigationCaches?: () => void;
+  commitShallowHistory?: (
+    callerState: unknown,
+    url: string | URL | null | undefined,
+    historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+  ) => boolean;
   commitHashNavigation?: (
     href: string,
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
@@ -125,6 +130,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
   if (!isUnknownRecord(value)) return false;
   return (
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "commitShallowHistory")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&

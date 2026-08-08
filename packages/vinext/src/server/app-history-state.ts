@@ -248,9 +248,13 @@ export function createExternalHistoryStatePreservingMetadata(
   callerState: unknown,
   currentHistoryState: unknown,
   shallowUrl?: string,
+  traversalIndexOverride?: number | null,
 ): unknown {
   const previousNextUrl = readHistoryStatePreviousNextUrl(currentHistoryState);
-  const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
+  const traversalIndex =
+    traversalIndexOverride === undefined
+      ? readHistoryStateTraversalIndex(currentHistoryState)
+      : traversalIndexOverride;
   const bfcacheIds = readHistoryStateBfcacheIds(currentHistoryState);
   const bfcacheVersion = readHistoryStateBfcacheVersion(currentHistoryState);
 

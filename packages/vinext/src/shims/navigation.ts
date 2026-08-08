@@ -3025,16 +3025,19 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      state.originalPushState.call(
-        window.history,
-        createExternalHistoryStatePreservingMetadata(
-          data,
-          window.history.state,
-          new URL(url ?? window.location.href, window.location.href).href,
-        ),
-        unused,
-        url,
-      );
+      const commitShallowHistory = getNavigationRuntime()?.functions.commitShallowHistory;
+      if (!commitShallowHistory?.(data, url, "push")) {
+        state.originalPushState.call(
+          window.history,
+          createExternalHistoryStatePreservingMetadata(
+            data,
+            window.history.state,
+            new URL(url ?? window.location.href, window.location.href).href,
+          ),
+          unused,
+          url,
+        );
+      }
       if (state.suppressUrlNotifyCount === 0) {
         // A raw history.pushState (shallow routing) supersedes a pending link,
         // but changes browser state only — it issues no RSC request, so it must
@@ -3049,16 +3052,19 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      state.originalReplaceState.call(
-        window.history,
-        createExternalHistoryStatePreservingMetadata(
-          data,
-          window.history.state,
-          new URL(url ?? window.location.href, window.location.href).href,
-        ),
-        unused,
-        url,
-      );
+      const commitShallowHistory = getNavigationRuntime()?.functions.commitShallowHistory;
+      if (!commitShallowHistory?.(data, url, "replace")) {
+        state.originalReplaceState.call(
+          window.history,
+          createExternalHistoryStatePreservingMetadata(
+            data,
+            window.history.state,
+            new URL(url ?? window.location.href, window.location.href).href,
+          ),
+          unused,
+          url,
+        );
+      }
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();
         commitClientNavigationState();
