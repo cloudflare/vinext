@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.5
+
+### Bug Fixes
+
+- **App Router:** honor cacheLife stale on the client router (#2708)
+
+### Contributors
+
+- @NathanDrake2406
+
 ## 1.0.0-beta.4
 
 ### Bug Fixes

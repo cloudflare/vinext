@@ -1,5 +1,89 @@
 # vinext
 
+## 1.0.0-beta.5
+
+### Features
+
+- **Client:** expose host React to Module Federation remotes (#2828)
+
+### Bug Fixes
+
+#### App Router
+
+- hand off zero-stale prefetches (#2801)
+- pass rewrite validation to source middleware (#2798)
+- keep server metadata out of RSC payloads (#2769)
+- stop flooring dynamic prefetch stale times (#2757)
+- validate external RSC rewrites before proxying (#2754)
+- let concrete Pages routes win middleware rewrites (#2730)
+- keep mounted-slot RSC responses no-store (#2728)
+- authorize the interception source route before rendering it (#2733)
+- reject Route Handlers as interception source routes (#2732)
+- preserve page result render ordering (#2760)
+- render pages before consuming layouts (#2751)
+- honor cacheLife stale on the client router (#2708)
+
+#### Build
+
+- throw error if there is `_next` folder inside the public folder (#2814)
+- exclude filtered require.context modules (#2736)
+- recognize Vite dist client aliases (#2750)
+- support dynamic package subpath imports (#2746)
+- skip unhelpful precompressed variants (#2712)
+
+#### Middleware
+
+- align encoded path matching (#2802)
+- preserve safe origins for double-slash redirects (#2766)
+- preserve headers for empty override value (#2767)
+- stop restoring credentials middleware deleted before external rewrites (#2739)
+
+#### Pages
+
+- apply fallback rewrites after API misses (#2827)
+- run middleware before image endpoint (#2776)
+- preserve raw data URLs for middleware (#2775)
+- preserve gSSP headers on redirects (#2771)
+- preserve not-found response headers (#2773)
+- support bodyless API responses (#2772)
+- refresh next/head tags when regenerating ISR HTML (#2729)
+
+#### Server
+
+- prevent bot user-agent regex backtracking (#2765)
+- evaluate lazy route modules outside the request context (#2740)
+- transfer request bodies into NextRequest instead of teeing (#2741)
+- support Node production entry contracts (#2749)
+- reject unsupported static asset methods (#2714)
+- honor static freshness validators (#2715)
+- use weak comparison for If-None-Match (#2710)
+- serve static assets with standard MIME types (#2713)
+
+#### Misc
+
+- **Dev:** adopt initial Pages stylesheets in Vite (#2825)
+- **CSS:** resolve Sass tsconfig path aliases (#2824)
+- **Fetch Cache:** honor RequestInit in request dedupe (#2762)
+- **Script:** reject event attributes in hoisted HTML (#2763)
+- **Actions:** run redirect targets through full request pipeline (#2785)
+- **Pages Router:** stream piped API responses with backpressure (#2735)
+- **Router:** minimize client rewrite manifests (#2734)
+- **Create Vinext App:** generate next env on first run (#2768)
+- **Cache:** bypass shared "use cache" entries in draft mode (#2744)
+- **Document:** HTML-escape NextScript.getInlineScriptSource output (#2727)
+- **Navigation:** reuse router.prefetch payloads during navigation (#2709)
+- **Metadata:** preserve Content-Length for fully buffered responses (#2703)
+- **Image:** match Next.js 16 default image sizes (#2704)
+
+### Contributors
+
+- @Boyeep
+- @james-elicx
+- @kdy1
+- @NathanDrake2406
+- @NriotHrreion
+- @tomvoss
+
 ## 1.0.0-beta.4
 
 ### Bug Fixes

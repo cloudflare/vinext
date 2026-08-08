@@ -1385,6 +1385,9 @@ describe("readPagesRouterEntrySource", () => {
     // Worker passes configRewrites dep with all three phases.
     expect(content).toContain("configRewrites,");
     expect(content).toContain(
+      'matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null',
+    );
+    expect(content).toContain(
       'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
     );
     expect(content).toContain("runPagesRequest(request, deps)");

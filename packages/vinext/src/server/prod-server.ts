@@ -1913,6 +1913,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   } = serverEntry;
   const matchPageRoute =
     typeof serverEntry.matchPageRoute === "function" ? serverEntry.matchPageRoute : undefined;
+  const matchApiRoute =
+    typeof serverEntry.matchApiRoute === "function" ? serverEntry.matchApiRoute : undefined;
   const hasMiddleware = serverEntry.hasMiddleware === true;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
 
@@ -2189,6 +2191,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             : undefined,
         configMatchPathname,
         matchPageRoute: matchPageRoute ?? null,
+        matchApiRoute: matchApiRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the
         // basePath prefix (see wrapMiddlewareWithBasePath).
