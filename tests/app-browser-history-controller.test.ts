@@ -82,13 +82,14 @@ function createHistoryStore(initialState: unknown = null, initialHref = "https:/
 function createController(options?: {
   initialState?: unknown;
   initialHref?: string;
+  maxHistoryStateSnapshots?: number;
   visibleMetadata?: VisibleNavigationMetadata | null;
 }) {
   const store = createHistoryStore(options?.initialState ?? null, options?.initialHref);
   let visibleMetadata = options?.visibleMetadata ?? null;
   const controller = new AppBrowserHistoryController({
     initialHistoryState: store.state,
-    maxHistoryStateSnapshots: 50,
+    maxHistoryStateSnapshots: options?.maxHistoryStateSnapshots ?? 50,
     readHistoryState: store.readHistoryState,
     readCurrentHref: store.readCurrentHref,
     pushHistoryState: store.pushHistoryState,
@@ -357,6 +358,52 @@ describe("AppBrowserHistoryController snapshot restore", () => {
       }),
     ).toBe(true);
     expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(snapshotState);
+  });
+
+  it("keeps a shallow snapshot restorable across cache invalidation and bounded-cache eviction", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+      maxHistoryStateSnapshots: 1,
+    });
+    const shallowState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/shallow-test/sub",
+        {},
+      ),
+      routeId: "route:/shallow-test",
+    });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/shallow-test/sub",
+      historyUpdateMode: "push",
+      snapshotState: shallowState,
+    });
+    const shallowHistoryState = store.pushed[0]?.state;
+
+    controller.commitHistoryTraversalIndex(2);
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/about" }));
+    controller.commitHistoryTraversalIndex(3);
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/contact" }));
+    controller.invalidateRestorableClientState();
+    controller.commitHistoryTraversalIndex(3);
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: shallowHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(shallowState);
   });
 
   it("resolves the restorable candidate and delegates visible restoration to the injected callback", () => {

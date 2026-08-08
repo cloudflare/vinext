@@ -3029,11 +3029,13 @@ if (!isServer) {
       if (!commitShallowHistory?.(data, url, "push")) {
         state.originalPushState.call(
           window.history,
-          createExternalHistoryStatePreservingMetadata(
-            data,
-            window.history.state,
-            new URL(url ?? window.location.href, window.location.href).href,
-          ),
+          hasAppNavigationRuntime()
+            ? createExternalHistoryStatePreservingMetadata(
+                data,
+                window.history.state,
+                new URL(url ?? window.location.href, window.location.href).href,
+              )
+            : data,
           unused,
           url,
         );
@@ -3056,11 +3058,13 @@ if (!isServer) {
       if (!commitShallowHistory?.(data, url, "replace")) {
         state.originalReplaceState.call(
           window.history,
-          createExternalHistoryStatePreservingMetadata(
-            data,
-            window.history.state,
-            new URL(url ?? window.location.href, window.location.href).href,
-          ),
+          hasAppNavigationRuntime()
+            ? createExternalHistoryStatePreservingMetadata(
+                data,
+                window.history.state,
+                new URL(url ?? window.location.href, window.location.href).href,
+              )
+            : data,
           unused,
           url,
         );

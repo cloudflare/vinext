@@ -221,7 +221,11 @@ export class AppBrowserHistoryController {
       this.#pushHistoryState(historyState, options.href);
     }
     this.commitHistoryTraversalIndex(navigationHistoryIndex);
-    this.rememberHistoryStateSnapshot(options.snapshotState);
+    this.#restorableClientState.rememberHistoryStateSnapshot({
+      durable: true,
+      historyIndex: this.#currentHistoryTraversalIndex,
+      state: options.snapshotState,
+    });
   }
 
   commitHashOnlyNavigation(

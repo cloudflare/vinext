@@ -789,15 +789,10 @@ describe("next/navigation shim", () => {
     }
   });
 
-  it("preserves App Router history metadata when external history calls provide caller state", async () => {
-    // Matches Next.js' external History API wrapper behavior:
-    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L114-L127
-    // Covered by Next.js shallow-routing tests for object, null, and undefined state:
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+  it("preserves arbitrary caller state when the App Router runtime is unavailable", async () => {
     const previousWindow = (globalThis as any).window;
     const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
     const historyTraversalIndexKey = "__vinext_historyIndex";
-    const shallowUrlKey = "__vinext_shallowUrl";
     const win = {
       location: {
         pathname: "/photo/1",
@@ -812,7 +807,7 @@ describe("next/navigation shim", () => {
           [historyTraversalIndexKey]: 4,
         } as unknown,
         pushState(data: unknown, _unused: string, url?: string | URL | null) {
-          this.state = data;
+          this.state = structuredClone(data);
           if (!url) return;
           const parsed = new URL(url, win.location.href);
           win.location.pathname = parsed.pathname;
@@ -821,7 +816,7 @@ describe("next/navigation shim", () => {
           win.location.href = parsed.href;
         },
         replaceState(data: unknown, _unused: string, url?: string | URL | null) {
-          this.state = data;
+          this.state = structuredClone(data);
           if (!url) return;
           const parsed = new URL(url, win.location.href);
           win.location.pathname = parsed.pathname;
@@ -839,41 +834,22 @@ describe("next/navigation shim", () => {
       await import("../packages/vinext/src/shims/navigation.js");
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
-      expect(win.history.state).toEqual({
-        [historyPreviousNextUrlKey]: "/feed",
-        [historyTraversalIndexKey]: 4,
-        [shallowUrlKey]: "http://localhost/photo/1?filter=active",
-        myData: { foo: "bar" },
-      });
+      expect(win.history.state).toEqual({ myData: { foo: "bar" } });
 
       win.history.pushState(null, "", "/photo/1?filter=pending");
-      expect(win.history.state).toEqual({
-        [historyPreviousNextUrlKey]: "/feed",
-        [historyTraversalIndexKey]: 4,
-        [shallowUrlKey]: "http://localhost/photo/1?filter=pending",
-      });
+      expect(win.history.state).toBeNull();
 
-      win.history.replaceState(null, "", "/photo/1?filter=archived");
-      expect(win.history.state).toEqual({
-        [historyPreviousNextUrlKey]: "/feed",
-        [historyTraversalIndexKey]: 4,
-        [shallowUrlKey]: "http://localhost/photo/1?filter=archived",
-      });
+      win.history.replaceState(42, "", "/photo/1?filter=archived");
+      expect(win.history.state).toBe(42);
 
-      win.history.replaceState(undefined, "", "/photo/1?filter=all");
-      expect(win.history.state).toEqual({
-        [historyPreviousNextUrlKey]: "/feed",
-        [historyTraversalIndexKey]: 4,
-        [shallowUrlKey]: "http://localhost/photo/1?filter=all",
-      });
+      win.history.replaceState(["filter", "all"], "", "/photo/1?filter=all");
+      expect(win.history.state).toEqual(["filter", "all"]);
 
-      win.history.state = { [historyTraversalIndexKey]: 7 };
-      win.history.pushState({ next: true }, "", "/photo/1?filter=done");
-      expect(win.history.state).toEqual({
-        [historyTraversalIndexKey]: 7,
-        [shallowUrlKey]: "http://localhost/photo/1?filter=done",
-        next: true,
-      });
+      const date = new Date("2026-08-08T00:00:00.000Z");
+      win.history.pushState(date, "", "/photo/1?filter=done");
+      expect(win.history.state).toEqual(date);
+
+      expect(() => win.history.pushState(() => {}, "", "/photo/1?filter=invalid")).toThrow();
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

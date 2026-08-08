@@ -40,6 +40,11 @@ type HistoryStateSnapshotRestoreDecision<TState> =
 export class HistoryStateSnapshotCache<TState> {
   readonly #maxEntries: number;
   readonly #snapshots = new Map<number, HistoryStateSnapshot<TState>>();
+  // External shallow entries can point at a pathname that has no matching app
+  // route. Their rendered tree is therefore the only in-memory restoration
+  // source and must survive both general cache invalidation and eviction from
+  // the bounded navigation snapshot cache.
+  readonly #durableSnapshots = new Map<number, TState>();
 
   constructor(options: { maxEntries: number }) {
     this.#maxEntries = options.maxEntries;
@@ -49,8 +54,23 @@ export class HistoryStateSnapshotCache<TState> {
     this.#snapshots.clear();
   }
 
-  remember(options: { bfcacheVersion: number; historyIndex: number | null; state: TState }): void {
+  remember(options: {
+    bfcacheVersion: number;
+    durable?: boolean;
+    historyIndex: number | null;
+    state: TState;
+  }): void {
     if (options.historyIndex === null) return;
+
+    if (options.durable === true) {
+      this.#snapshots.delete(options.historyIndex);
+      this.#durableSnapshots.set(options.historyIndex, options.state);
+      return;
+    }
+
+    // A normal navigation replacing the same traversal entry supersedes any
+    // shallow restoration state previously associated with that index.
+    this.#durableSnapshots.delete(options.historyIndex);
 
     this.#snapshots.delete(options.historyIndex);
     this.#snapshots.set(options.historyIndex, {
@@ -76,12 +96,21 @@ export class HistoryStateSnapshotCache<TState> {
       return { kind: "skip", reason: "missing-history-index", targetHistoryIndex };
     }
 
+    if (options.guarded) {
+      return { kind: "skip", reason: "guarded", targetHistoryIndex };
+    }
+
+    if (this.#durableSnapshots.has(targetHistoryIndex)) {
+      return {
+        kind: "restore",
+        state: this.#durableSnapshots.get(targetHistoryIndex)!,
+        targetHistoryIndex,
+      };
+    }
+
     const snapshot = this.#snapshots.get(targetHistoryIndex);
     if (!snapshot) {
       return { kind: "skip", reason: "missing-snapshot", targetHistoryIndex };
-    }
-    if (options.guarded) {
-      return { kind: "skip", reason: "guarded", targetHistoryIndex };
     }
     if (snapshot.bfcacheVersion !== options.currentBfcacheVersion) {
       this.#snapshots.delete(targetHistoryIndex);
@@ -149,9 +178,14 @@ export class RestorableClientStateController<TState> {
     this.#invalidateBfcacheIds();
   }
 
-  rememberHistoryStateSnapshot(options: { historyIndex: number | null; state: TState }): void {
+  rememberHistoryStateSnapshot(options: {
+    durable?: boolean;
+    historyIndex: number | null;
+    state: TState;
+  }): void {
     this.#snapshots.remember({
       bfcacheVersion: this.#currentBfcacheVersion,
+      durable: options.durable,
       historyIndex: options.historyIndex,
       state: options.state,
     });

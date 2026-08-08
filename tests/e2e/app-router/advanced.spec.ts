@@ -717,6 +717,32 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
+  test("restores the shallow entry tree after navigation cache invalidation", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+
+    await page.locator('[data-testid="shallow-to-about"]').click();
+    await expect(page.locator("h1#app-page")).toHaveText("About");
+    await page.locator('[data-testid="about-refresh"]').click();
+    await expect(page.locator('[data-testid="about-refresh-count"]')).toHaveText("refreshes: 1");
+
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+  });
+
   test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 
