@@ -2398,6 +2398,7 @@ function bootstrapHydration(
         callerState,
         historyUpdateMode,
         href,
+        nativeHistoryUrl: url,
         snapshotState: {
           ...currentState,
           navigationSnapshot: createClientNavigationRenderSnapshot(

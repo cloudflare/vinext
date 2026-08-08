@@ -54,6 +54,21 @@ export class HistoryStateSnapshotCache<TState> {
     this.#snapshots.clear();
   }
 
+  pruneAfter(historyIndex: number | null): void {
+    if (historyIndex === null) return;
+    for (const snapshotIndex of this.#snapshots.keys()) {
+      if (snapshotIndex > historyIndex) this.#snapshots.delete(snapshotIndex);
+    }
+    for (const snapshotIndex of this.#durableSnapshots.keys()) {
+      if (snapshotIndex > historyIndex) this.#durableSnapshots.delete(snapshotIndex);
+    }
+  }
+
+  supersedeDurable(historyIndex: number | null): void {
+    if (historyIndex === null) return;
+    this.#durableSnapshots.delete(historyIndex);
+  }
+
   remember(options: {
     bfcacheVersion: number;
     durable?: boolean;
@@ -64,6 +79,13 @@ export class HistoryStateSnapshotCache<TState> {
 
     if (options.durable === true) {
       this.#snapshots.delete(options.historyIndex);
+      this.#durableSnapshots.set(options.historyIndex, options.state);
+      return;
+    }
+
+    // Rendering a restored shallow entry observes the same traversal index.
+    // Refresh its stored tree without changing its durable ownership.
+    if (options.durable === undefined && this.#durableSnapshots.has(options.historyIndex)) {
       this.#durableSnapshots.set(options.historyIndex, options.state);
       return;
     }
@@ -176,6 +198,14 @@ export class RestorableClientStateController<TState> {
   invalidateClientState(): void {
     this.#snapshots.clear();
     this.#invalidateBfcacheIds();
+  }
+
+  pruneHistoryStateSnapshotsAfter(historyIndex: number | null): void {
+    this.#snapshots.pruneAfter(historyIndex);
+  }
+
+  supersedeDurableHistoryStateSnapshot(historyIndex: number | null): void {
+    this.#snapshots.supersedeDurable(historyIndex);
   }
 
   rememberHistoryStateSnapshot(options: {

@@ -25,10 +25,7 @@ import {
 import { INITIAL_BFCACHE_ID, PUBLIC_INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire, type AppElements } from "../server/app-elements.js";
 import { resolveManifestNavigationInterceptionContext } from "../server/app-browser-interception-context.js";
-import {
-  createExternalHistoryStatePreservingMetadata,
-  createHashOnlyHistoryStatePreservingNavigationMetadata,
-} from "../server/app-history-state.js";
+import { createHashOnlyHistoryStatePreservingNavigationMetadata } from "../server/app-history-state.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -3027,18 +3024,7 @@ if (!isServer) {
     ): void {
       const commitShallowHistory = getNavigationRuntime()?.functions.commitShallowHistory;
       if (!commitShallowHistory?.(data, url, "push")) {
-        state.originalPushState.call(
-          window.history,
-          hasAppNavigationRuntime()
-            ? createExternalHistoryStatePreservingMetadata(
-                data,
-                window.history.state,
-                new URL(url ?? window.location.href, window.location.href).href,
-              )
-            : data,
-          unused,
-          url,
-        );
+        state.originalPushState.call(window.history, data, unused, url);
       }
       if (state.suppressUrlNotifyCount === 0) {
         // A raw history.pushState (shallow routing) supersedes a pending link,
@@ -3056,18 +3042,7 @@ if (!isServer) {
     ): void {
       const commitShallowHistory = getNavigationRuntime()?.functions.commitShallowHistory;
       if (!commitShallowHistory?.(data, url, "replace")) {
-        state.originalReplaceState.call(
-          window.history,
-          hasAppNavigationRuntime()
-            ? createExternalHistoryStatePreservingMetadata(
-                data,
-                window.history.state,
-                new URL(url ?? window.location.href, window.location.href).href,
-              )
-            : data,
-          unused,
-          url,
-        );
+        state.originalReplaceState.call(window.history, data, unused, url);
       }
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();

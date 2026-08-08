@@ -789,7 +789,7 @@ describe("next/navigation shim", () => {
     }
   });
 
-  it("preserves arbitrary caller state when the App Router runtime is unavailable", async () => {
+  it("preserves arbitrary caller state before App Router state is available", async () => {
     const previousWindow = (globalThis as any).window;
     const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
     const historyTraversalIndexKey = "__vinext_historyIndex";
@@ -831,6 +831,15 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
+      const { NAVIGATION_RUNTIME_KEY } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      (win as any)[NAVIGATION_RUNTIME_KEY] = {
+        bootstrap: { routeManifest: null, rsc: undefined },
+        functions: {
+          commitShallowHistory: () => false,
+          navigate: vi.fn(async () => {}),
+        },
+      };
       await import("../packages/vinext/src/shims/navigation.js");
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
