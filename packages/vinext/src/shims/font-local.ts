@@ -117,7 +117,13 @@ function generateFontFaceCSS(
   const rules: string[] = [];
 
   for (const src of sources) {
-    const weight = sanitizeFontDescriptorValue(src.weight ?? options.weight ?? "400") ?? "400";
+    // Only emit a font-weight descriptor when a weight was actually
+    // specified. Next.js does the same (see loader.ts / stylesheet.rs) -
+    // defaulting to "400" here would clamp variable fonts with a `wght`
+    // axis to the regular instance even when the caller never asked for a
+    // fixed weight.
+    const rawWeight = src.weight ?? options.weight;
+    const weight = rawWeight !== undefined ? sanitizeFontDescriptorValue(rawWeight) : undefined;
     const style = sanitizeFontDescriptorValue(src.style ?? options.style ?? "normal") ?? "normal";
     const format = src.path.endsWith(".woff2")
       ? "woff2"
@@ -132,8 +138,7 @@ function generateFontFaceCSS(
     rules.push(`@font-face {
   font-family: '${escapeCSSString(family)}';
   src: url('${escapeCSSString(src.path)}') format('${format}');
-  font-weight: ${weight};
-  font-style: ${style};
+${weight !== undefined ? `  font-weight: ${weight};\n` : ""}  font-style: ${style};
   font-display: ${display};
 }`);
   }

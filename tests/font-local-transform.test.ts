@@ -568,6 +568,37 @@ describe("vinext:local-fonts plugin", () => {
     expect(addedStyles).toContain("font-style: italic");
   });
 
+  it("omits the font-weight descriptor when no weight is specified (issue #2793)", () => {
+    // Next.js only emits `font-weight` in the generated @font-face rule when
+    // `weight` (or `defaultWeight`) was provided. For variable fonts with a
+    // `wght` axis, inventing a `font-weight: 400` descriptor clamps the font
+    // face to the regular instance even though no fixed weight was requested.
+    // See:
+    // https://github.com/vercel/next.js/blob/canary/packages/font/src/local/loader.ts
+    const beforeCount = getSSRFontStyles().length;
+    const result = localFont({
+      src: "./variable-font.woff2",
+    });
+
+    expect(result.style.fontWeight).toBeUndefined();
+
+    const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
+    expect(addedStyles).not.toContain("font-weight");
+    // font-style still defaults to "normal"
+    expect(addedStyles).toContain("font-style: normal");
+  });
+
+  it("still emits font-weight when a weight is specified on a single non-object source options", () => {
+    const beforeCount = getSSRFontStyles().length;
+    localFont({
+      src: "./font.woff2",
+      weight: "600",
+    });
+
+    const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
+    expect(addedStyles).toContain("font-weight: 600");
+  });
+
   it("sanitizes declaration props to prevent injection", () => {
     const beforeCount = getSSRFontStyles().length;
     const result = localFont({
