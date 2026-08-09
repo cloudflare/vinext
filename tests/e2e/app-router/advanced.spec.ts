@@ -717,6 +717,34 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
+  test("restores a shallow tree when a multi-entry traversal lands on the current URL", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    // Save the shallow-test tree under /about, then render /about normally via
+    // an intermediate route. history.go(-2) lands on the same visible URL but
+    // must restore the older entry's shallow-test tree.
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test");
+    await page.locator('[data-testid="push-about-path"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /about");
+
+    await page.locator('[data-testid="shallow-to-home"]').click();
+    await expect(page.getByRole("heading", { name: "Welcome to App Router" })).toBeVisible();
+    await page.getByRole("link", { name: "Go to About" }).click();
+    await expect(page.locator("h1#app-page")).toHaveText("About");
+
+    await page.evaluate(() => window.history.go(-2));
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /about");
+  });
+
   test("restores the shallow entry tree after navigation cache invalidation", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 

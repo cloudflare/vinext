@@ -55,7 +55,15 @@ export class HistoryStateSnapshotCache<TState> {
   }
 
   pruneAfter(historyIndex: number | null): void {
-    if (historyIndex === null) return;
+    if (historyIndex === null) {
+      // An indexed snapshot belongs to the app-owned branch created after the
+      // document's metadata-less entries. Pushing from one of those older
+      // entries discards that whole branch, so none of its snapshots remain
+      // reachable even though there is no numeric cutoff to compare against.
+      this.#snapshots.clear();
+      this.#durableSnapshots.clear();
+      return;
+    }
     for (const snapshotIndex of this.#snapshots.keys()) {
       if (snapshotIndex > historyIndex) this.#snapshots.delete(snapshotIndex);
     }

@@ -33,6 +33,17 @@ export default function ShallowTestPage() {
         Go to About
       </button>
 
+      <button data-testid="shallow-to-home" onClick={() => router.push("/")}>
+        Go to Home
+      </button>
+
+      <button
+        data-testid="push-about-path"
+        onClick={() => window.history.pushState(null, "", "/about")}
+      >
+        Push /about
+      </button>
+
       <button
         data-testid="replace-sort"
         onClick={() => {

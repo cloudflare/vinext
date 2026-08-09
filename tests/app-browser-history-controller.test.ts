@@ -501,6 +501,49 @@ describe("AppBrowserHistoryController snapshot restore", () => {
     ).toBe(false);
   });
 
+  it("prunes the owned snapshot branch when pushing from a metadata-less entry", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+    });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/first",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/first",
+      snapshotState: createRouterState({ routeId: "route:/first" }),
+    });
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/abandoned",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/abandoned",
+      snapshotState: createRouterState({ routeId: "route:/abandoned" }),
+    });
+    const abandonedHistoryState = store.pushed[1]?.state;
+
+    controller.commitTraversalIndexFromHistoryState(null);
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/replacement",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/replacement",
+      snapshotState: createRouterState({ routeId: "route:/replacement" }),
+    });
+
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: abandonedHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: vi.fn(() => true),
+      }),
+    ).toBe(false);
+  });
+
   it("resolves the restorable candidate and delegates visible restoration to the injected callback", () => {
     const { controller } = createController();
     const snapshotState = createRouterState({
