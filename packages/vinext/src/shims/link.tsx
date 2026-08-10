@@ -460,6 +460,7 @@ function prefetchUrl(
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
+          hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
           peekPrefetchResponseForNavigation,
@@ -576,15 +577,16 @@ function prefetchUrl(
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
-            if (options.segmentCachePhase === "route-tree") {
-              await getPrefetchCache()
-                .get(cacheKey)
-                ?.pending?.catch(() => {});
-            }
-            return;
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+        ) {
+          if (options.segmentCachePhase === "route-tree") {
+            await getPrefetchCache()
+              .get(cacheKey)
+              ?.pending?.catch(() => {});
           }
+          return;
         }
         const fetchFullRscPayload = () =>
           scheduleAppPrefetchFetch(
@@ -996,7 +998,11 @@ const segmentCacheLinkPrefetchScheduler = CACHE_COMPONENTS_ENABLED
   : null;
 
 function usesSegmentCachePrefetchScheduler(instance: LinkPrefetchInstance): boolean {
-  return instance.routerMode === "app" && segmentCacheLinkPrefetchScheduler !== null;
+  if (instance.routerMode !== "app" || segmentCacheLinkPrefetchScheduler === null) return false;
+  return (
+    instance.fetchStrategy !== "auto" ||
+    resolveAutoAppRoutePrefetch(instance.href).skipSegmentCacheScheduler !== true
+  );
 }
 
 function setVisibleLinkPrefetch(
