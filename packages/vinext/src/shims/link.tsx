@@ -34,6 +34,7 @@ import {
 } from "./link-prefetch.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
+  isHashOnlyBrowserUrlChange,
   normalizePathTrailingSlash,
   toBrowserNavigationHref,
   toSameOriginAppPath,
@@ -182,9 +183,13 @@ export function useLinkStatus(): LinkStatusContextValue {
 
 let linkPrefetchNavigationEpoch = 0;
 
-function notifyLinkNavigationStartAndCancelPrefetchSetup(): void {
-  linkPrefetchNavigationEpoch += 1;
+function notifyLinkNavigationStartFromRuntime(): void {
   notifyLinkNavigationStart();
+}
+
+function cancelLinkPrefetchTasks(): void {
+  linkPrefetchNavigationEpoch += 1;
+  segmentCacheLinkPrefetchScheduler?.cancelAll();
 }
 
 // Register the link-status reset hook on the navigation runtime as soon as this
@@ -195,7 +200,8 @@ function notifyLinkNavigationStartAndCancelPrefetchSetup(): void {
 // it can be unit-tested without rendering a <Link>.
 if (typeof window !== "undefined") {
   registerNavigationRuntimeFunctions({
-    notifyLinkNavigationStart: notifyLinkNavigationStartAndCancelPrefetchSetup,
+    cancelLinkPrefetchTasks,
+    notifyLinkNavigationStart: notifyLinkNavigationStartFromRuntime,
   });
 }
 
@@ -502,8 +508,12 @@ function prefetchUrl(
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
+        // The scheduler's route-tree phase is metadata-only. Its segment phase
+        // must retain the same loading/dynamic-shell policy as the legacy
+        // single-phase automatic prefetch; otherwise it fetches dynamic page
+        // content that Next leaves behind the loading boundary.
         const isOptimisticRouteShellPrefetch =
-          options.segmentCachePhase === undefined && !autoPrefetch.cacheForNavigation;
+          options.segmentCachePhase !== "route-tree" && !autoPrefetch.cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
@@ -557,6 +567,10 @@ function prefetchUrl(
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]
             : [];
+        // URL hashing yields after the earlier navigation-epoch check. A click
+        // can win during that gap, so re-check immediately before the prefetch
+        // mutates the cache or starts its request.
+        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (autoPrefetch.cacheForNavigation) {
@@ -1029,7 +1043,10 @@ function pingVisibleLinkPrefetches(): void {
   for (const instance of visibleLinkPrefetches) {
     if (instance.isVisible && instance.routerMode === "app") {
       if (usesSegmentCachePrefetchScheduler(instance) && segmentCacheLinkPrefetchScheduler) {
-        segmentCacheLinkPrefetchScheduler.schedule(instance, "default");
+        // This ping comes from an explicit cache/runtime invalidation, unlike
+        // a duplicate observer or hover notification, so completed work must
+        // be eligible to run again.
+        segmentCacheLinkPrefetchScheduler.schedule(instance, "default", undefined, true);
       } else {
         scheduleVisibleAppPrefetch(instance);
       }
@@ -1577,6 +1594,25 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       } catch {
         // Ignore URL parsing errors for relative/hash hrefs
       }
+    }
+
+    const clickedPrefetchInstance = internalRef.current
+      ? observedLinkPrefetches.get(internalRef.current)
+      : undefined;
+    // Cancel this Link's task synchronously before any navigation-owned lazy
+    // import. The runtime-wide hook also covers programmatic navigation, but
+    // the Link and browser entries can load through separate client chunks;
+    // this local ownership prevents their route-tree-to-segment handoff from
+    // outracing that shared registration. Hash-only changes fetch no RSC and
+    // intentionally leave the task alone.
+    if (
+      hasAppNavigationRuntime &&
+      clickedPrefetchInstance &&
+      segmentCacheLinkPrefetchScheduler &&
+      usesSegmentCachePrefetchScheduler(clickedPrefetchInstance) &&
+      !isHashOnlyBrowserUrlChange(absoluteFullHref, window.location.href, __basePath)
+    ) {
+      segmentCacheLinkPrefetchScheduler.cancel(clickedPrefetchInstance);
     }
 
     // Hybrid ownership check: when the App Router runtime is installed and

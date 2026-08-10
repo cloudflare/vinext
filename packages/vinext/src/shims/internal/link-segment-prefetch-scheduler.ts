@@ -24,12 +24,14 @@ export type LinkSegmentPrefetchPhaseRequest = {
 
 export type LinkSegmentPrefetchScheduler = {
   cancel(instance: LinkSegmentPrefetchInstance): void;
+  cancelAll(): void;
   createBatch(): number;
   registerUserInteractionListeners(): void;
   schedule(
     instance: LinkSegmentPrefetchInstance,
     priority: LinkSegmentPrefetchPriority,
     batchId?: number,
+    restartCompleted?: boolean,
   ): void;
 };
 
@@ -39,6 +41,7 @@ type SchedulerOptions = {
 
 type PrefetchTask = {
   batchId: number;
+  completedFetchStrategy: LinkSegmentPrefetchFetchStrategy | null;
   forceSegmentCacheFetch: boolean;
   instance: LinkSegmentPrefetchInstance;
   isCanceled: boolean;
@@ -46,6 +49,8 @@ type PrefetchTask = {
   isRunning: boolean;
   phase: LinkSegmentPrefetchPhase;
   priority: LinkSegmentPrefetchPriority;
+  restartAfterRunning: boolean;
+  runningFetchStrategy: LinkSegmentPrefetchFetchStrategy | null;
   sortId: number;
 };
 
@@ -66,6 +71,7 @@ export function createLinkSegmentPrefetchScheduler(
 ): LinkSegmentPrefetchScheduler {
   const tasksByInstance = new WeakMap<LinkSegmentPrefetchInstance, PrefetchTask>();
   const queue: PrefetchTask[] = [];
+  const unfinishedTasks = new Set<PrefetchTask>();
 
   let activeRequests = 0;
   let batchIdCounter = 0;
@@ -87,14 +93,23 @@ export function createLinkSegmentPrefetchScheduler(
   function shouldForceSegmentCacheFetch(
     instance: LinkSegmentPrefetchInstance,
     priority: LinkSegmentPrefetchPriority,
+    batchId: number,
   ): boolean {
-    // This workaround is only for automatic viewport work revealed by an
-    // interaction (the scheduling fixture's "Show more links" path). An
-    // explicit full prefetch may intentionally reuse an equivalent rewrite
-    // target; forcing that request would fetch dynamic content that Next.js
-    // leaves behind the cached loading shell.
+    // This workaround is only for a later automatic viewport batch revealed
+    // by an interaction while an older batch is still pending (the scheduling
+    // fixture's "Show more links" path). Applying it to the first batch after
+    // every interaction bypasses normal cache deduplication for accordions and
+    // other reveal controls, issuing the same segment request twice.
+    //
+    // An explicit full prefetch may intentionally reuse an equivalent rewrite
+    // target, so it must never take this path either.
     return (
-      instance.fetchStrategy === "auto" && priority === "default" && hasRecentUserInteraction()
+      instance.fetchStrategy === "auto" &&
+      priority === "default" &&
+      hasRecentUserInteraction() &&
+      Array.from(unfinishedTasks).some(
+        (task) => !task.isCanceled && task.instance !== instance && task.batchId < batchId,
+      )
     );
   }
 
@@ -186,20 +201,39 @@ export function createLinkSegmentPrefetchScheduler(
     queueMicrotask(drain);
   }
 
-  function finishTaskPhase(task: PrefetchTask, phase: LinkSegmentPrefetchPhase): void {
+  function finishTaskPhase(
+    task: PrefetchTask,
+    phase: LinkSegmentPrefetchPhase,
+    fetchedStrategy: LinkSegmentPrefetchFetchStrategy,
+  ): void {
     task.isRunning = false;
+    task.runningFetchStrategy = null;
     activeRequests -= 1;
 
+    let didRestart = false;
     if (!task.isCanceled && task.instance.isVisible) {
-      if (phase === "route-tree") {
+      if (task.restartAfterRunning) {
+        // Match Next's reschedulePrefetchTask lifecycle: a strategy upgrade or
+        // cache invalidation that arrives while a phase is in flight replaces
+        // the task from RouteTree once that immutable request settles.
+        task.restartAfterRunning = false;
+        task.completedFetchStrategy = null;
+        task.phase = "route-tree";
+        enqueue(task);
+        didRestart = true;
+      } else if (phase === "route-tree") {
         task.phase = "segment";
         enqueue(task);
-      } else if (task === mostRecentIntentTask) {
-        mostRecentIntentTask = null;
+      } else {
+        task.completedFetchStrategy = fetchedStrategy;
+        if (task === mostRecentIntentTask) mostRecentIntentTask = null;
       }
-      if (phase === "segment" && task === previousIntentTask) {
+      if (!didRestart && phase === "segment" && task === previousIntentTask) {
         previousIntentTask = null;
       }
+    }
+    if (!didRestart && (phase === "segment" || task.isCanceled || !task.instance.isVisible)) {
+      unfinishedTasks.delete(task);
     }
 
     scheduleDrain();
@@ -218,12 +252,14 @@ export function createLinkSegmentPrefetchScheduler(
 
       const currentTask = task;
       const phase = currentTask.phase;
+      const fetchStrategy = currentTask.instance.fetchStrategy;
       currentTask.isRunning = true;
+      currentTask.runningFetchStrategy = fetchStrategy;
       activeRequests += 1;
 
       void Promise.resolve(
         options.runPhase({
-          fetchStrategy: currentTask.instance.fetchStrategy,
+          fetchStrategy,
           forceSegmentCacheFetch: currentTask.forceSegmentCacheFetch,
           href: currentTask.instance.href,
           locale: currentTask.instance.locale,
@@ -233,7 +269,7 @@ export function createLinkSegmentPrefetchScheduler(
         }),
       )
         .catch(() => {})
-        .finally(() => finishTaskPhase(currentTask, phase));
+        .finally(() => finishTaskPhase(currentTask, phase, fetchStrategy));
 
       task = findNextTask();
     }
@@ -253,34 +289,68 @@ export function createLinkSegmentPrefetchScheduler(
     instance: LinkSegmentPrefetchInstance,
     priority: LinkSegmentPrefetchPriority,
     batchId = tasksByInstance.get(instance)?.batchId ?? createBatch(),
+    restartCompleted = false,
   ): void {
     let task = tasksByInstance.get(instance);
     if (task === undefined) {
       task = {
         batchId,
-        forceSegmentCacheFetch: shouldForceSegmentCacheFetch(instance, priority),
+        completedFetchStrategy: null,
+        forceSegmentCacheFetch: shouldForceSegmentCacheFetch(instance, priority, batchId),
         instance,
         isCanceled: false,
         isQueued: false,
         isRunning: false,
         phase: "route-tree",
         priority,
+        restartAfterRunning: false,
+        runningFetchStrategy: null,
         sortId: sortIdCounter++,
       };
       tasksByInstance.set(instance, task);
     } else {
+      const wasCanceled = task.isCanceled;
       task.batchId = batchId;
       task.isCanceled = false;
       task.priority = task === mostRecentIntentTask ? "intent" : priority;
       task.sortId = sortIdCounter++;
+      trackIntentTask(task);
 
-      if (!task.isRunning) {
-        task.forceSegmentCacheFetch = shouldForceSegmentCacheFetch(instance, priority);
+      // A Link can become hovered immediately after an interaction mounts it.
+      // If its viewport task already completed, the intent event should reuse
+      // that result instead of restarting both phases. A strategy upgrade such
+      // as unstable_dynamicOnHover still needs a fresh task.
+      if (
+        !wasCanceled &&
+        !restartCompleted &&
+        task.completedFetchStrategy === instance.fetchStrategy
+      ) {
+        scheduleDrain();
+        return;
+      }
+
+      if (task.isRunning) {
+        if (
+          wasCanceled ||
+          restartCompleted ||
+          task.runningFetchStrategy !== instance.fetchStrategy
+        ) {
+          task.restartAfterRunning = true;
+          task.completedFetchStrategy = null;
+          task.forceSegmentCacheFetch = shouldForceSegmentCacheFetch(instance, priority, batchId);
+          unfinishedTasks.add(task);
+        }
+        scheduleDrain();
+        return;
+      } else {
+        task.completedFetchStrategy = null;
+        task.forceSegmentCacheFetch = shouldForceSegmentCacheFetch(instance, priority, batchId);
         removeFromQueue(task);
         task.phase = "route-tree";
       }
     }
 
+    unfinishedTasks.add(task);
     trackIntentTask(task);
     enqueue(task);
     scheduleDrain();
@@ -291,14 +361,27 @@ export function createLinkSegmentPrefetchScheduler(
     if (task === undefined) return;
 
     task.isCanceled = true;
+    task.restartAfterRunning = false;
     removeFromQueue(task);
+    unfinishedTasks.delete(task);
     if (task === mostRecentIntentTask) mostRecentIntentTask = null;
     if (task === previousIntentTask) previousIntentTask = null;
+  }
+
+  function cancelAll(): void {
+    for (const task of unfinishedTasks) {
+      task.isCanceled = true;
+      task.restartAfterRunning = false;
+      removeFromQueue(task);
+    }
+    unfinishedTasks.clear();
+    mostRecentIntentTask = null;
+    previousIntentTask = null;
   }
 
   function createBatch(): number {
     return batchIdCounter++;
   }
 
-  return { cancel, createBatch, registerUserInteractionListeners, schedule };
+  return { cancel, cancelAll, createBatch, registerUserInteractionListeners, schedule };
 }

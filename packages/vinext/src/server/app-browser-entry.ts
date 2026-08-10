@@ -28,6 +28,7 @@ import {
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
   deletePrefetchResponseSnapshot,
+  cancelAppPrefetchesForTraversal,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
@@ -2460,6 +2461,7 @@ function bootstrapHydration(
       restorePopstateScrollPosition(event.state);
       return;
     }
+    cancelAppPrefetchesForTraversal();
     const snapshotNavigationId = browserNavigationController.beginNavigation();
     if (
       restoreHistoryStateSnapshot(event.state, snapshotNavigationId, () => {
