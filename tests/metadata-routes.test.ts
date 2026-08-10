@@ -487,6 +487,7 @@ describe("robotsToText", () => {
     expect(txt).toContain("User-Agent: *");
     expect(txt).toContain("Allow: /");
     expect(txt).toContain("Disallow: /private");
+    expect(txt).toBe("User-Agent: *\n" + "Allow: /\n" + "Disallow: /private\n" + "\n");
   });
 
   it("handles multiple rules", () => {
@@ -560,7 +561,7 @@ describe("robotsToText", () => {
     expect(txt).toBe(
       "User-Agent: *\nAllow: /\n\n" +
         "User-Agent: SeznamBot\nAllow: /\nRequest-Rate: 10/1m\n\n" +
-        "User-Agent: Googlebot\nDisallow: /admin\nCrawl-delay: 30\nSome-Directive: value\n",
+        "User-Agent: Googlebot\nDisallow: /admin\nCrawl-delay: 30\nSome-Directive: value\n\n",
     );
   });
 
@@ -574,7 +575,7 @@ describe("robotsToText", () => {
     };
     const txt = robotsToText(config);
     expect(txt).toBe(
-      "User-Agent: Yandex\nAllow: /catalog\nClean-param: utm_source\nClean-param: utm_medium\n",
+      "User-Agent: Yandex\nAllow: /catalog\nClean-param: utm_source\nClean-param: utm_medium\n\n",
     );
   });
 
@@ -591,7 +592,7 @@ describe("robotsToText", () => {
       },
     };
     const txt = robotsToText(config);
-    expect(txt).toBe("User-Agent: *\nAllow: /\nValid: yes\n");
+    expect(txt).toBe("User-Agent: *\nAllow: /\nValid: yes\n\n");
   });
 
   it("handles multiple other directives per rule", () => {
@@ -602,7 +603,7 @@ describe("robotsToText", () => {
       },
     };
     const txt = robotsToText(config);
-    expect(txt).toBe("User-Agent: SpecialBot\nRequest-Rate: 5/1s\nVisit-Time: 0600-0845\n");
+    expect(txt).toBe("User-Agent: SpecialBot\nRequest-Rate: 5/1s\nVisit-Time: 0600-0845\n\n");
   });
 
   it("handles numeric other directive values", () => {
@@ -613,7 +614,7 @@ describe("robotsToText", () => {
       },
     };
     const txt = robotsToText(config);
-    expect(txt).toBe("User-Agent: *\nSome-Number: 42\n");
+    expect(txt).toBe("User-Agent: *\nSome-Number: 42\n\n");
   });
 
   it("includes sitemap directive", () => {

@@ -555,6 +555,24 @@ describe("KVCacheHandler", () => {
       expect(kv.delete).toHaveBeenCalledWith("cache:expire-test");
     });
 
+    it("round-trips the client stale claim through stored cacheControl", async () => {
+      await handler.set(
+        "stale-round-trip",
+        {
+          kind: "APP_PAGE",
+          html: "<div>hi</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: 60, expire: 300, stale: 30 } },
+      );
+
+      const hit = await handler.get("stale-round-trip");
+      expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);

@@ -95,10 +95,40 @@ async function navigateHome(page: Page): Promise<void> {
   await expect(page.locator("#client-cache-home")).toBeVisible();
 }
 
+async function navigateHomeFromNoLoading(page: Page): Promise<void> {
+  await page.click("#client-cache-no-loading-back");
+  await expect(page.locator("#client-cache-home")).toBeVisible();
+}
+
 async function navigateTo(page: Page, selector: string, id: string): Promise<string> {
   await page.click(selector);
   await expect(page.locator("#client-cache-id")).toHaveText(id);
   return readRandom(page);
+}
+
+async function readNoLoadingRandom(page: Page): Promise<string> {
+  return page.locator("#client-cache-no-loading-random").innerText();
+}
+
+async function navigateToNoLoading(page: Page): Promise<string> {
+  await page.click("#client-cache-no-loading-auto");
+  await expect(page.locator("#client-cache-no-loading-id")).toHaveText("1");
+  return readNoLoadingRandom(page);
+}
+
+async function navigateToLateDynamic(page: Page): Promise<string> {
+  await page.click("#client-cache-late-dynamic");
+  return page.locator("#client-cache-late-dynamic-random").innerText();
+}
+
+async function navigateHomeFromLateDynamic(page: Page): Promise<void> {
+  await page.click("#client-cache-late-dynamic-back");
+  await expect(page.locator("#client-cache-home")).toBeVisible();
+}
+
+async function revealAccordionLink(page: Page, href: string) {
+  await page.locator(`[data-link-accordion="${href}"]`).click();
+  return page.locator(`a[data-link-accordion-anchor="${href}"]`);
 }
 
 function requestsFor(requests: RscRequest[], pathname: string): RscRequest[] {
@@ -163,6 +193,54 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, `${ROOT}/1`)).toEqual([]);
   });
 
+  test("dynamic auto full cache without loading expires immediately", async ({ page }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    const requests = trackRscRequests(page);
+    await openHome(page);
+
+    const initial = await navigateToNoLoading(page);
+    await navigateHomeFromNoLoading(page);
+
+    requests.length = 0;
+    const renewed = await navigateToNoLoading(page);
+    expect(renewed).not.toBe(initial);
+    expect(requestsFor(requests, `${ROOT}/no-loading/1`).some((request) => !request.partial)).toBe(
+      true,
+    );
+  });
+
+  test("a pending prefetch that becomes dynamic uses the completed dynamic bound", async ({
+    page,
+  }) => {
+    const target = "/nextjs-compat/client-cache-late-dynamic";
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    await page.hover("#client-cache-late-dynamic");
+    await expect
+      .poll(() => requestsFor(requests, target).some((request) => !request.partial))
+      .toBe(true);
+
+    const initial = await navigateToLateDynamic(page);
+    requests.length = 0;
+    await navigateHomeFromLateDynamic(page);
+
+    // The provisional pending marker would expire this at the 30s floor. The
+    // completed 60s dynamic bound must replace it instead.
+    await advanceTime(page, 30_001);
+    const reused = await navigateToLateDynamic(page);
+    expect(requestsFor(requests, target)).toEqual([]);
+    expect(reused).toBe(initial);
+
+    await navigateHomeFromLateDynamic(page);
+    await advanceTime(page, 30_000);
+    requests.length = 0;
+    const renewed = await navigateToLateDynamic(page);
+    expect(requestsFor(requests, target).some((request) => !request.partial)).toBe(true);
+    expect(renewed).not.toBe(initial);
+  });
+
   test("parallel-slot state changes independently and the full payload remains reusable", async ({
     page,
   }) => {
@@ -187,6 +265,174 @@ test.describe("Next.js compat: client cache", () => {
     const reused = await navigateTo(page, "#client-cache-full", "0");
     await expect(page.locator("#client-cache-breadcrumbs")).toHaveText('Catchall {"id":"0"}');
     expect(reused).toBe(initial);
+    expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
+  });
+
+  test("prefetch=true with search params reuses a zero-dynamic-stale page", async ({ page }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    const home = "/nextjs-compat/client-cache-search";
+    const target = `${home}/0`;
+    const requests = trackRscRequests(page);
+    await page.goto(home);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await expect
+      .poll(() => requestsFor(requests, target).some((request) => !request.partial))
+      .toBe(true);
+
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    const initial = await page.locator("#client-cache-search-random").innerText();
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).toBe(initial);
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await advanceTime(page, 30_000);
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).toBe(initial);
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await advanceTime(page, 270_000);
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).not.toBe(initial);
+  });
+
+  test("parallel-slot page state resets between dynamic siblings", async ({ page }) => {
+    await openHome(page);
+    await navigateTo(page, "#client-cache-full", "0");
+    await page.click("#client-cache-breadcrumb-count");
+    await expect(page.locator("#client-cache-breadcrumb-count")).toHaveAttribute("data-count", "1");
+
+    await page.click("#client-cache-sibling");
+    await expect(page.locator("#client-cache-id")).toHaveText("1");
+    await expect(page.locator("#client-cache-breadcrumb-count")).toHaveAttribute("data-count", "0");
+  });
+
+  test("prefetch=true reuses the full parallel-route page for five minutes", async ({ page }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-client-cache/client-cache.parallel-routes.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-client-cache/client-cache.parallel-routes.test.ts
+    const requests = trackRscRequests(page);
+    await openHome(page);
+
+    const targetLink = await revealAccordionLink(page, `${ROOT}/0`);
+    await expect
+      .poll(() => requestsFor(requests, `${ROOT}/0`).some((request) => !request.partial))
+      .toBe(true);
+
+    // Delay the redundant cache branch that formerly blocked committed-cache
+    // publication after the prefetch was consumed. The consumed snapshot must
+    // remain discoverable during that handoff so a Link remount cannot start a
+    // duplicate request.
+    await page.evaluate(() => {
+      const testWindow = window as ClientCacheTestWindow;
+      const state: DelayedNavigationCachePublicationState = {
+        releaseOldNavigationTail: null,
+      };
+      testWindow.__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__ = state;
+      const originalTee = Reflect.get(
+        ReadableStream.prototype,
+        "tee",
+      ) as typeof ReadableStream.prototype.tee;
+      ReadableStream.prototype.tee = function (this: ReadableStream<unknown>) {
+        ReadableStream.prototype.tee = originalTee;
+        const [reactBranch, cacheBranch] = originalTee.call(this);
+        const cacheReader = cacheBranch.getReader();
+        const delayedCacheBranch = new ReadableStream({
+          async start(controller) {
+            while (true) {
+              const result = await cacheReader.read();
+              if (result.done) break;
+              controller.enqueue(result.value);
+            }
+            await new Promise<void>((resolve) => {
+              state.releaseOldNavigationTail = resolve;
+            });
+            controller.close();
+          },
+          cancel(reason) {
+            return cacheReader.cancel(reason);
+          },
+        });
+        return [reactBranch, delayedCacheBranch];
+      } as typeof ReadableStream.prototype.tee;
+    });
+
+    requests.length = 0;
+    await targetLink.click();
+    await expect(page.locator("#client-cache-id")).toHaveText("0");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            typeof (window as ClientCacheTestWindow).__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__
+              ?.releaseOldNavigationTail === "function",
+        ),
+      )
+      .toBe(true);
+    const initial = await readRandom(page);
+    expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
+
+    const homeLink = await revealAccordionLink(page, ROOT);
+    await expect
+      .poll(() => requestsFor(requests, ROOT).some((request) => !request.partial))
+      .toBe(true);
+    requests.length = 0;
+    await homeLink.click();
+    await expect(page.locator("#client-cache-home")).toBeVisible();
+    expect(requestsFor(requests, ROOT)).toEqual([]);
+
+    requests.length = 0;
+    const cachedTargetLink = await revealAccordionLink(page, `${ROOT}/0`);
+    expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
+    await cachedTargetLink.click();
+    await expect(page.locator("#client-cache-id")).toHaveText("0");
+    expect(await readRandom(page)).toBe(initial);
+    expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
+    await page.evaluate(() => {
+      const state = (window as ClientCacheTestWindow)
+        .__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__;
+      if (
+        state?.releaseOldNavigationTail === null ||
+        state?.releaseOldNavigationTail === undefined
+      ) {
+        throw new Error("Consumed prefetch cache tail was not delayed");
+      }
+      state.releaseOldNavigationTail();
+    });
+
+    const cachedHomeLink = await revealAccordionLink(page, ROOT);
+    await cachedHomeLink.click();
+    await expect(page.locator("#client-cache-home")).toBeVisible();
+
+    await advanceTime(page, 5 * 60 * 1_000);
+
+    requests.length = 0;
+    const renewedTargetLink = await revealAccordionLink(page, `${ROOT}/0`);
+    await expect
+      .poll(() => requestsFor(requests, `${ROOT}/0`).some((request) => !request.partial))
+      .toBe(true);
+    requests.length = 0;
+    await renewedTargetLink.click();
+    await expect(page.locator("#client-cache-id")).toHaveText("0");
+    expect(await readRandom(page)).not.toBe(initial);
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
   });
 
@@ -341,6 +587,20 @@ test.describe("Next.js compat: client cache", () => {
     const refreshed = await navigateTo(page, "#client-cache-none", "2");
     expect(refreshed).not.toBe(initial);
     expect(requestsFor(requests, `${ROOT}/2`).some((request) => !request.partial)).toBe(true);
+  });
+
+  test("fresh dynamic pages reset client state inside a synthetic children slot", async ({
+    page,
+  }) => {
+    await page.goto("/nextjs-compat/client-cache-children-slot/one");
+    await waitForAppRouterHydration(page);
+
+    await page.locator("#children-slot-increment").click();
+    await expect(page.locator("#children-slot-count")).toHaveText("1");
+    await page.locator("#children-slot-next").click();
+
+    await expect(page.locator("#children-slot-id")).toHaveText("two");
+    await expect(page.locator("#children-slot-count")).toHaveText("0");
   });
 
   test("a navigation tail cannot republish after refresh invalidates its cache generation", async ({

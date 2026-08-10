@@ -220,6 +220,22 @@ describe("app route handler runtime helpers", () => {
     expect(tracked.request.url).toBe("https://example.com/base/fr/demo?ping=from-url");
   });
 
+  it("transfers the request body when re-adding basePath instead of teeing it", async () => {
+    const request = new Request("https://example.com/demo", {
+      body: JSON.stringify({ ok: true }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    const tracked = createTrackedAppRouteRequest(request, { basePath: "/base" });
+
+    await expect(tracked.request.json()).resolves.toEqual({ ok: true });
+    // Cloning to re-add the prefix would tee the body, and the branch left on
+    // the incoming request buffers the whole upload in memory because nothing
+    // reads or cancels it.
+    expect(request.bodyUsed).toBe(true);
+  });
+
   it("tracks request.ip and request.geo access", () => {
     const accesses: string[] = [];
     const tracked = createTrackedAppRouteRequest(

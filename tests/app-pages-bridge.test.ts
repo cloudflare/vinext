@@ -1,9 +1,15 @@
+import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesFallback,
   type PagesEntry,
 } from "../packages/vinext/src/server/app-pages-bridge.js";
 import type { AppMiddlewareContext } from "../packages/vinext/src/server/app-middleware.js";
+import { handlePagesApiRoute } from "../packages/vinext/src/server/pages-api-route.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+} from "../packages/vinext/src/shims/request-context.js";
 
 describe("renderPagesFallback", () => {
   const defaultDeps = {
@@ -30,6 +36,76 @@ describe("renderPagesFallback", () => {
     },
     getDraftModeCookieHeader: (): string | null | undefined => null,
   };
+
+  async function renderHybridEdgeApiResponse(hostRuntime: "node" | "worker") {
+    const text = "Example Domain";
+    const encodedBody = gzipSync(text);
+    const handlerResponse =
+      hostRuntime === "node"
+        ? new Response(text, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(encodedBody.byteLength),
+              "content-type": "text/plain",
+              "transfer-encoding": "chunked",
+            },
+          })
+        : new Response(encodedBody, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(encodedBody.byteLength),
+              "content-type": "text/plain",
+              "transfer-encoding": "chunked",
+            },
+          });
+    const observedRuntimes: Array<"node" | "worker"> = [];
+    const handleApiRoute: NonNullable<PagesEntry["handleApiRoute"]> = (
+      request,
+      url,
+      _ctx,
+      trustedRevalidateOrigin,
+      edgeRuntime,
+    ) => {
+      observedRuntimes.push(edgeRuntime);
+      return handlePagesApiRoute({
+        edgeRuntime,
+        match: {
+          params: {},
+          route: {
+            pattern: "/api/proxy",
+            module: {
+              config: { runtime: "edge" },
+              default: () => handlerResponse,
+            },
+          },
+        },
+        request,
+        trustedRevalidateOrigin,
+        url,
+      });
+    };
+    const executionContext: ExecutionContextLike = {
+      hostRuntime,
+      waitUntil(_promise) {},
+    };
+    const request = new Request("http://localhost/api/proxy");
+    const response = await runWithExecutionContext(executionContext, () =>
+      renderPagesFallback(
+        {
+          isRscRequest: false,
+          middlewareContext: { headers: null, requestHeaders: null, status: null },
+          request,
+          url: new URL(request.url),
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({ handleApiRoute }),
+        },
+      ),
+    );
+
+    return { encodedBody, observedRuntimes, response };
+  }
 
   it("returns null for RSC requests and does not call the Pages loader", async () => {
     const loadPagesEntry = vi.fn(() => ({}) as PagesEntry);
@@ -220,6 +296,93 @@ describe("renderPagesFallback", () => {
     expect(renderedCf).toBe(cf);
   });
 
+  it("applies middleware response headers to Pages data renders", async () => {
+    const renderPage = vi.fn(
+      () =>
+        new Response('{"pageProps":{"ok":true}}', {
+          headers: [
+            ["cache-control", "private, no-cache, no-store, max-age=0, must-revalidate"],
+            ["content-length", "25"],
+            ["content-type", "application/json"],
+            ["set-cookie", "session=fresh; Path=/"],
+          ],
+        }),
+    );
+    const request = new Request("http://localhost/pages-dir/search");
+
+    const response = await renderPagesFallback(
+      {
+        isDataRequest: true,
+        isRscRequest: false,
+        middlewareContext: {
+          headers: new Headers([
+            ["cache-control", "public, max-age=3600"],
+            ["content-length", "999"],
+            ["set-cookie", "session=stale; Path=/"],
+            ["x-middleware-response", "present"],
+          ]),
+          requestHeaders: null,
+          status: null,
+        },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({ renderPage }),
+      },
+    );
+
+    expect(response?.headers.get("x-middleware-response")).toBe("present");
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response?.headers.get("content-length")).toBe("25");
+    expect(response?.headers.getSetCookie()).toEqual([
+      "session=stale; Path=/",
+      "session=fresh; Path=/",
+    ]);
+  });
+
+  it.each([204, 205, 304])(
+    "drops the Pages response body when middleware overrides its status to %s",
+    async (status) => {
+      const renderPage = vi.fn(
+        () =>
+          new Response("page body", {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": "9",
+              "content-type": "text/plain",
+              "transfer-encoding": "chunked",
+            },
+          }),
+      );
+      const request = new Request("http://localhost/pages-dir/search");
+
+      const response = await renderPagesFallback(
+        {
+          isDataRequest: true,
+          isRscRequest: false,
+          middlewareContext: { headers: null, requestHeaders: null, status },
+          request,
+          url: new URL(request.url),
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({ renderPage }),
+        },
+      );
+
+      expect(response?.status).toBe(status);
+      expect(await response?.text()).toBe("");
+      expect(response?.headers.get("content-encoding")).toBeNull();
+      expect(response?.headers.get("content-length")).toBeNull();
+      expect(response?.headers.get("content-type")).toBeNull();
+      expect(response?.headers.get("transfer-encoding")).toBeNull();
+    },
+  );
+
   it("matches rewritten Pages data requests against the rewritten destination", async () => {
     const matchPageRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/rewritten-search" },
@@ -376,6 +539,26 @@ describe("renderPagesFallback", () => {
     expect(res!.status).toBe(201);
     expect(res!.headers.get("x-res-mw")).toBe("value");
     expect(await res!.text()).toBe("api-response");
+  });
+
+  it("strips decoded response headers for hybrid Node API fallbacks", async () => {
+    const { observedRuntimes, response } = await renderHybridEdgeApiResponse("node");
+
+    expect(observedRuntimes).toEqual(["node"]);
+    expect(response?.headers.get("content-encoding")).toBeNull();
+    expect(response?.headers.get("content-length")).toBeNull();
+    expect(response?.headers.get("transfer-encoding")).toBeNull();
+    await expect(response?.text()).resolves.toBe("Example Domain");
+  });
+
+  it("preserves encoded response headers for hybrid Worker API fallbacks", async () => {
+    const { encodedBody, observedRuntimes, response } = await renderHybridEdgeApiResponse("worker");
+
+    expect(observedRuntimes).toEqual(["worker"]);
+    expect(response?.headers.get("content-encoding")).toBe("gzip");
+    expect(response?.headers.get("content-length")).toBe(String(encodedBody.byteLength));
+    expect(response?.headers.get("transfer-encoding")).toBe("chunked");
+    expect(Buffer.from(await response!.arrayBuffer())).toEqual(encodedBody);
   });
 
   it("routes normal paths through renderPage and passes decoded pathname + search", async () => {
@@ -543,6 +726,7 @@ describe("renderPagesFallback", () => {
       "/api/café?value=hello%20world",
       undefined,
       "http://localhost",
+      "node",
     );
   });
 

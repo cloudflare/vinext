@@ -18,7 +18,7 @@ async function withTempProject<T>(run: (root: string) => Promise<T>): Promise<T>
   try {
     return await run(root);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 }
 

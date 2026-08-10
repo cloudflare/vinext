@@ -39,7 +39,10 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
+  NEXT_CACHE_TAGS_HEADER,
+  VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -57,12 +60,21 @@ import {
   type PrerenderServerPool,
 } from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
-import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
+import {
+  getAppRouteOutputPath,
+  getOutputPath,
+  getRscOutputPath,
+} from "../utils/prerender-output-paths.js";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
+import type { PrerenderableMetadataRoute } from "../server/metadata-route-response.js";
 import {
   createAppPprFallbackShells,
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
+import { enterPrerenderPhase } from "./prerender-phase.js";
+import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
+import { isMetadataResponseCacheable } from "../server/metadata-route-cache-policy.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
 const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
@@ -143,6 +155,8 @@ export type PrerenderRouteResult =
       outputFiles: string[];
       revalidate: number | false;
       expire?: number;
+      /** Client-router reuse bound resolved from the prerender's `cacheLife`. */
+      stale?: number;
       /**
        * The concrete prerendered URL path, e.g. `/blog/hello-world`.
        * Only present when the route is dynamic and `path` differs from `route`.
@@ -150,9 +164,15 @@ export type PrerenderRouteResult =
        */
       path?: string;
       /** Which router produced this route. Used by cache seeding. */
-      router: "app" | "pages";
+      router: "app" | "pages" | "metadata";
       /** Response headers that must be replayed with the prerendered artifact. */
-      headers?: Record<string, string>;
+      headers?: Record<string, string | string[]>;
+      /** Original HTTP status for prerendered App Route-style responses. */
+      responseStatus?: number;
+      /** Cache tags collected while rendering this route. */
+      tags?: string[];
+      /** Raw app-tree segments used to derive App Route implicit tags. */
+      routeSegments?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
     }
@@ -617,8 +637,7 @@ export async function prerenderPages({
 
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
-  process.env.VINEXT_PRERENDER = "1";
+  const restorePrerenderPhase = enterPrerenderPhase();
   // ownedProdServerHandle: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
@@ -982,12 +1001,14 @@ export async function prerenderPages({
 
     return { routes: results };
   } finally {
-    if (renderPool) await renderPool.close();
-    setCacheHandler(previousHandler);
-    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
-    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
-    if (ownedProdServerHandle) {
-      await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+    try {
+      if (renderPool) await renderPool.close();
+      setCacheHandler(previousHandler);
+      if (ownedProdServerHandle) {
+        await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+      }
+    } finally {
+      restorePrerenderPhase();
     }
   }
 }
@@ -1029,13 +1050,11 @@ export async function prerenderApp({
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
   // VINEXT_PRERENDER=1 tells the prod server to skip instrumentation.register()
-  // and enable prerender-only endpoints (/__vinext/prerender/*). It also makes
-  // the socket-error backstop (server/socket-error-backstop.ts) re-throw
-  // peer-disconnect errors during prerender. Save the prior value so callers
-  // that already set the flag (run-prerender.ts) aren't clobbered when this
-  // function's finally block restores.
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
-  process.env.VINEXT_PRERENDER = "1";
+  // and enable prerender-only endpoints (/__vinext/prerender/*), while
+  // NEXT_PHASE matches Next's static-worker contract for application code.
+  // The scope is nest-safe because run-prerender.ts also enters it around a
+  // shared hybrid server.
+  const restorePrerenderPhase = enterPrerenderPhase();
 
   const serverDir = path.dirname(rscBundlePath);
 
@@ -1178,6 +1197,8 @@ export async function prerenderApp({
 
     // ── Collect URLs to render ────────────────────────────────────────────────
     type UrlToRender = {
+      kind?: "page" | "metadata";
+      metadataRouteSegments?: string[];
       urlPath: string;
       /** The file-system route pattern this URL was expanded from (e.g. `/blog/:slug`). */
       routePattern: string;
@@ -1401,6 +1422,57 @@ export async function prerenderApp({
       }
     }
 
+    if (metadataRoutes.length > 0) {
+      const response = await fetch(`${baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}`, {
+        headers: secretHeaders,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(
+          `[vinext] Failed to enumerate prerenderable metadata routes: ${parsePrerenderEndpointError(text)}`,
+        );
+      }
+      const metadataEntries = JSON.parse(text) as unknown;
+      if (!Array.isArray(metadataEntries)) {
+        throw new Error("[vinext] Invalid prerender metadata route response");
+      }
+      const queuedMetadataPaths = new Set<string>();
+      for (const metadataEntry of metadataEntries) {
+        if (
+          typeof metadataEntry !== "object" ||
+          metadataEntry === null ||
+          typeof Reflect.get(metadataEntry, "path") !== "string" ||
+          typeof Reflect.get(metadataEntry, "routePattern") !== "string" ||
+          !Array.isArray(Reflect.get(metadataEntry, "routeSegments"))
+        ) {
+          continue;
+        }
+        const {
+          path: metadataPath,
+          routePattern,
+          routeSegments,
+        } = metadataEntry as PrerenderableMetadataRoute;
+        if (
+          !metadataPath.startsWith("/") ||
+          !routePattern.startsWith("/") ||
+          routeSegments.some((segment) => typeof segment !== "string") ||
+          queuedMetadataPaths.has(metadataPath)
+        ) {
+          continue;
+        }
+        queuedMetadataPaths.add(metadataPath);
+        urlsToRender.push({
+          kind: "metadata",
+          metadataRouteSegments: routeSegments,
+          urlPath: metadataPath,
+          routePattern,
+          prerenderRouteParams: null,
+          revalidate: false,
+          isSpeculative: false,
+        });
+      }
+    }
+
     // ── Render each URL via direct RSC handler invocation ─────────────────────
 
     /**
@@ -1410,6 +1482,8 @@ export async function prerenderApp({
      * at a single, predictable call site.
      */
     async function renderUrl({
+      kind,
+      metadataRouteSegments,
       urlPath,
       routePattern,
       prerenderRouteParams,
@@ -1418,6 +1492,60 @@ export async function prerenderApp({
       isFallback,
     }: UrlToRender): Promise<PrerenderRouteResult> {
       try {
+        if (kind === "metadata") {
+          const request = new Request(`http://localhost${config.basePath ?? ""}${urlPath}`);
+          const response = await runWithHeadersContext(headersContextFromRequest(request), () =>
+            rscHandler(request),
+          );
+          if (!response.ok) {
+            await response.body?.cancel();
+            return {
+              route: routePattern,
+              status: "error",
+              error: `Metadata route returned ${response.status}`,
+            };
+          }
+          const cacheControl = response.headers.get("cache-control") ?? "";
+          if (!isMetadataResponseCacheable(response)) {
+            await response.body?.cancel();
+            return { route: routePattern, status: "skipped", reason: "dynamic" };
+          }
+
+          const requestCacheLife = readPrerenderCacheLifeHeader(response.headers);
+          const collectedTags = readPrerenderCacheTagsHeader(response.headers);
+          const cacheValue = await buildAppRouteCacheValue(response);
+          cacheValue.headers[VINEXT_METADATA_ROUTE_CACHE_HEADER] = "1";
+          const outputPath = getAppRouteOutputPath(urlPath);
+          const fullPath = path.join(outDir, outputPath);
+          fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+          fs.writeFileSync(fullPath, new Uint8Array(cacheValue.body));
+
+          const renderedCacheControl = resolveRenderedCacheControl(
+            requestCacheLife ?? {},
+            cacheControl,
+            config.expireTime,
+          );
+          const renderedRevalidate = renderedCacheControl.revalidate ?? false;
+          const renderedStale = resolveClientStaleTimeSeconds(requestCacheLife ?? undefined);
+
+          return {
+            route: routePattern,
+            ...(urlPath === routePattern ? {} : { path: urlPath }),
+            status: "rendered",
+            outputFiles: [outputPath],
+            revalidate: renderedRevalidate,
+            ...(typeof renderedRevalidate === "number"
+              ? { expire: renderedCacheControl.expire }
+              : {}),
+            ...(renderedStale === undefined ? {} : { stale: renderedStale }),
+            router: "metadata",
+            headers: cacheValue.headers,
+            responseStatus: cacheValue.status,
+            routeSegments: metadataRouteSegments ?? [],
+            tags: collectedTags,
+          };
+        }
+
         // Invoke RSC handler directly with a synthetic Request.
         // Each request is wrapped in its own ALS context via runWithHeadersContext
         // so per-request state (dynamicUsageDetected, headersContext, etc.) is
@@ -1444,6 +1572,7 @@ export async function prerenderApp({
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
+            const cacheTags = readPrerenderCacheTagsHeader(response.headers);
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1452,6 +1581,7 @@ export async function prerenderApp({
                 html: null,
                 ok: response.ok,
                 requestCacheLife: null,
+                tags: [],
                 status: response.status,
               };
             }
@@ -1468,6 +1598,7 @@ export async function prerenderApp({
               ok: true,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
+              tags: cacheTags,
             };
           },
         );
@@ -1565,6 +1696,9 @@ export async function prerenderApp({
               : Math.min(revalidate, renderedCacheControl.revalidate)
             : (renderedCacheControl.revalidate ?? revalidate);
 
+        // Seed the same unclamped claim the runtime write path persists.
+        const renderedStale = resolveClientStaleTimeSeconds(htmlRender.requestCacheLife);
+
         return {
           route: routePattern,
           status: "rendered",
@@ -1573,7 +1707,9 @@ export async function prerenderApp({
           ...(typeof renderedRevalidate === "number"
             ? { expire: renderedCacheControl.expire }
             : {}),
+          ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
+          ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
@@ -1669,18 +1805,23 @@ export async function prerenderApp({
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
     };
   } finally {
-    if (renderPool) await renderPool.close();
-    setCacheHandler(previousHandler);
-    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
-    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
-    if (ownedProdServerHandle) {
-      await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+    try {
+      if (renderPool) await renderPool.close();
+      setCacheHandler(previousHandler);
+      if (ownedProdServerHandle) {
+        await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+      }
+    } finally {
+      restorePrerenderPhase();
     }
   }
 }
 
+/** Cache life recovered from a prerendered response; `stale` seeds the ISR entry. */
+type PrerenderCacheLife = { expire?: number; revalidate?: number; stale?: number };
+
 function resolveRenderedCacheControl(
-  requestCacheLife: { expire?: number; revalidate?: number },
+  requestCacheLife: PrerenderCacheLife,
   cacheControl: string,
   fallbackExpireSeconds: number,
 ): { expire: number; revalidate?: number } {
@@ -1700,25 +1841,40 @@ function resolveRenderedCacheControl(
   };
 }
 
-function readPrerenderCacheLifeHeader(
-  headers: Headers,
-): { expire?: number; revalidate?: number } | null {
+function readPrerenderCacheLifeHeader(headers: Headers): PrerenderCacheLife | null {
   const value = headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
   if (!value) return null;
 
   try {
-    const parsed = JSON.parse(value) as { expire?: unknown; revalidate?: unknown };
-    const cacheLife: { expire?: number; revalidate?: number } = {};
+    const parsed = JSON.parse(value) as {
+      expire?: unknown;
+      revalidate?: unknown;
+      stale?: unknown;
+    };
+    const cacheLife: PrerenderCacheLife = {};
     if (typeof parsed.revalidate === "number" && Number.isFinite(parsed.revalidate)) {
       cacheLife.revalidate = parsed.revalidate;
     }
     if (typeof parsed.expire === "number" && Number.isFinite(parsed.expire)) {
       cacheLife.expire = parsed.expire;
     }
-    return cacheLife.revalidate === undefined && cacheLife.expire === undefined ? null : cacheLife;
+    if (typeof parsed.stale === "number" && Number.isFinite(parsed.stale) && parsed.stale >= 0) {
+      cacheLife.stale = parsed.stale;
+    }
+    return cacheLife.revalidate === undefined &&
+      cacheLife.expire === undefined &&
+      cacheLife.stale === undefined
+      ? null
+      : cacheLife;
   } catch {
     return null;
   }
+}
+
+function readPrerenderCacheTagsHeader(headers: Headers): string[] {
+  const value = headers.get(NEXT_CACHE_TAGS_HEADER);
+  if (!value) return [];
+  return [...new Set(value.split(",").filter(Boolean))];
 }
 
 function resolveRenderedExpireSeconds(options: {
@@ -1772,8 +1928,12 @@ export function writePrerenderIndex(
         status: r.status,
         revalidate: r.revalidate,
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
+        ...(typeof r.stale === "number" ? { stale: r.stale } : {}),
         router: r.router,
+        ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
+        ...(r.routeSegments ? { routeSegments: r.routeSegments } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
+        ...(typeof r.responseStatus === "number" ? { responseStatus: r.responseStatus } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
       };

@@ -8,6 +8,6 @@ export default getRequestConfig(async ({ requestLocale }) => {
   const resolvedLocale = hasLocale(locales, requested) ? requested : "en";
   return {
     locale: resolvedLocale,
-    messages: (await import(`../messages/${resolvedLocale}.json`)).default,
+    messages: (await import(`@vinext-test/next-intl/locales/${resolvedLocale}.json`)).default,
   };
 });

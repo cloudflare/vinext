@@ -1482,23 +1482,39 @@ describe("App Router route graph builder", () => {
     });
   });
 
-  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
-    // Param names ending in + or * would map to :id+ / :id*, which the trie
-    // matcher interprets as catch-all / optional-catch-all. Skip these routes
-    // entirely to avoid ambiguity.
+  // Param names ending in + or * would map to :id+ / :id*, which the trie
+  // matcher interprets as catch-all / optional-catch-all. Skip these routes
+  // entirely to avoid ambiguity. The + and * cases are split because `*` is a
+  // reserved character in Windows filenames — a literal `[id*]` directory can't
+  // exist there, so that scenario is gated to POSIX (where it's reachable).
+  it("skips routes whose param names end in + (would collide with the catch-all modifier)", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "[id+]/page.tsx", EMPTY_PAGE);
-      await writeAppFile(appDir, "[id*]/page.tsx", EMPTY_PAGE);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const patterns = graph.routes.map((r) => r.pattern);
 
       expect(patterns).not.toContain("/:id+");
-      expect(patterns).not.toContain("/:id*");
       expect(patterns).toHaveLength(0);
     });
   });
+
+  it.runIf(process.platform !== "win32")(
+    "skips routes whose param names end in * (would collide with the optional-catch-all modifier)",
+    async () => {
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "[id*]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((r) => r.pattern);
+
+        expect(patterns).not.toContain("/:id*");
+        expect(patterns).toHaveLength(0);
+      });
+    },
+  );
 
   // Intercepting route source-pattern computation. Mirrors Next.js'
   // `extractInterceptionRouteInformation` which derives the intercepting
@@ -1541,6 +1557,7 @@ describe("App Router route graph builder", () => {
 
     function collectSiblingIntercepts(routes: readonly AppRouteGraphRoute[]) {
       const out: Array<{
+        id?: string;
         ownerRoute: string;
         targetPattern: string;
         sourceMatchPattern: string;
@@ -1553,6 +1570,7 @@ describe("App Router route graph builder", () => {
       for (const route of routes) {
         for (const ir of (route as any).siblingIntercepts ?? []) {
           out.push({
+            id: ir.id,
             ownerRoute: route.pattern,
             targetPattern: ir.targetPattern,
             sourceMatchPattern: ir.sourceMatchPattern,
@@ -1797,6 +1815,7 @@ describe("App Router route graph builder", () => {
         // Also the catchAll page registers a sibling intercept for /showcase/:catchAll+
         expect(intercepts).toContainEqual(
           expect.objectContaining({
+            id: "interception:slot:__vinext_sibling_intercept:/templates:/templates->/showcase/:catchAll+",
             targetPattern: "/showcase/:catchAll+",
             sourceMatchPattern: "/templates",
             convention: "..",

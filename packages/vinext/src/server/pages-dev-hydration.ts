@@ -1,4 +1,5 @@
 import { createNonceAttribute } from "./html.js";
+import { resolveClientRuntimeModule } from "../entries/runtime-entry-module.js";
 
 export type PagesDevHydrationOptions = {
   appModuleSource: string | null;
@@ -13,6 +14,7 @@ export type PagesDevHydrationOptions = {
 
 export function createPagesDevHydrationScript(options: PagesDevHydrationOptions): string {
   const nonceAttr = createNonceAttribute(options.scriptNonce);
+  const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
   const initializeRouter = options.forceRouterReady
     ? "_initializePagesRouterReadyFromNextData(nextData, true);"
     : "_initializePagesRouterReadyFromNextData(nextData);";
@@ -47,6 +49,7 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
 
   return `
 <script type="module"${nonceAttr}>
+import ${JSON.stringify(reactInstanceBootstrapPath)};
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";

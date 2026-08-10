@@ -5,10 +5,19 @@ export type PrerenderManifestRoute = {
   status?: string;
   revalidate?: number | false;
   expire?: number;
+  /**
+   * Client-router reuse bound resolved by the prerender's `cacheLife`. Absent on
+   * manifests written by older builds, which seed entries without a
+   * client-freshness claim and leave the client on its configured staleTimes.
+   */
+  stale?: number;
   path?: string;
   router?: string;
   fallback?: boolean;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | string[]>;
+  responseStatus?: number;
+  routeSegments?: string[];
+  tags?: string[];
 };
 
 export type PrerenderManifest = {
@@ -35,6 +44,12 @@ export function readPrerenderManifest(manifestPath: string): PrerenderManifest |
 
 export function getRenderedAppRoutes(routes: PrerenderManifestRoute[]): PrerenderManifestRoute[] {
   return routes.filter((r) => r.status === "rendered" && r.router === "app");
+}
+
+export function getRenderedMetadataRoutes(
+  routes: PrerenderManifestRoute[],
+): PrerenderManifestRoute[] {
+  return routes.filter((route) => route.status === "rendered" && route.router === "metadata");
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {

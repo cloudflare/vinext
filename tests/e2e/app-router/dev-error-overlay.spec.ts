@@ -211,22 +211,12 @@ test.describe("Dev error overlay", () => {
     await expect(page.getByTestId("link-to-broken")).toBeVisible();
     // Wait for the Link's onClick handler to attach so the click drives a soft
     // RSC navigation (with historyUpdateMode = "push") instead of a full reload.
-    await page.waitForFunction(
-      () => {
-        const runtime = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
-        return (
-          typeof runtime === "object" &&
-          runtime !== null &&
-          "functions" in runtime &&
-          typeof runtime.functions === "object" &&
-          runtime.functions !== null &&
-          "navigate" in runtime.functions &&
-          typeof runtime.functions.navigate === "function"
-        );
-      },
-      undefined,
-      { timeout: 10_000 },
-    );
+    // The navigation runtime publishes `functions.navigate` before React commits
+    // the hydrated tree, so waiting on it alone lets a click land on an anchor
+    // with no listener yet — the browser then follows the href and the reload
+    // canary below is lost. `waitForAppRouterHydration` additionally requires
+    // `__VINEXT_HYDRATED_AT`, which App Router writes from a post-commit effect.
+    await waitForAppRouterHydration(page);
     await page.evaluate(() => {
       (window as unknown as { __vinextReloadCanary?: boolean }).__vinextReloadCanary = true;
     });

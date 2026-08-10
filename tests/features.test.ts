@@ -1944,6 +1944,10 @@ describe("build-time defines (Pages Router)", () => {
       JSON.stringify(false),
     );
   });
+
+  it("Next.js test mode defaults to false", () => {
+    expect(server.config.define?.["process.env.__NEXT_TEST_MODE"]).toBe(JSON.stringify(false));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2935,6 +2939,27 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('media="(prefers-color-scheme: dark)"');
   });
 
+  it("does not serialize event handlers from icon descriptors", () => {
+    const html = renderMetadataToHtml(
+      {
+        icons: {
+          icon: {
+            url: "/icon.png",
+            onLoad: "alert('unsafe')",
+          } as never,
+        },
+      },
+      "/products",
+      { streamedIconKey: "metadata-icons" },
+    );
+
+    expect(html).toBe(
+      '<link data-vinext-streamed-icon="metadata-icons:0" rel="icon" href="/icon.png">',
+    );
+    expect(html).not.toContain("onLoad");
+    expect(html).not.toContain("onload");
+  });
+
   it("renders single descriptor icon objects", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
@@ -3442,6 +3467,92 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
 
   it("body placement: returns null when metadata is null", () => {
     expect(createAppPageRouteBodyMetadata(null, "/a", "body", true)).toBeNull();
+  });
+
+  it("body placement: re-inserts streamed icons into the document head", () => {
+    const node = createAppPageRouteBodyMetadata(
+      {
+        icons: {
+          icon: "/favicon.ico",
+          apple: "/apple-touch-icon.png",
+          shortcut: "/shortcut.png",
+          other: [
+            { rel: "apple-touch-icon-precomposed", url: "/precomposed.png" },
+            { rel: "mask-icon", url: "/mask.svg" },
+          ],
+        },
+      },
+      "/icons",
+      "body",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="icon" href="\/favicon\.ico">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="apple-touch-icon" href="\/apple-touch-icon\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="shortcut icon" href="\/shortcut\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="apple-touch-icon-precomposed" href="\/precomposed\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="mask-icon" href="\/mask\.svg">/,
+    );
+    expect(html).toContain(
+      `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`,
+    );
+    expect(html).toContain(`const a='data-vinext-streamed-icon'`);
+    expect(html).toContain(`.sort((l,r)=>o(l)-o(r)).forEach(el=>document.head.appendChild(el))`);
+    expect(html).toMatch(/<script>document\.querySelectorAll[\s\S]*<\/script><\/div>$/);
+  });
+
+  it("body placement: serializes icon-bearing metadata once", () => {
+    let titleReads = 0;
+    const title = 'data-vinext-streamed-icon="vinext-pending-streamed-icon-key:0';
+    const node = createAppPageRouteBodyMetadata(
+      {
+        get title() {
+          titleReads += 1;
+          return title;
+        },
+        icons: { icon: "/favicon.ico" },
+      },
+      '/icons" data-injected="true',
+      "body",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    // MetadataHead reads a string title twice per serialization: once for the
+    // type check and once for the value. A second serialization would read it
+    // four times.
+    expect(titleReads).toBe(2);
+    expect(html).toContain(`<title>${title}</title>`);
+    expect(html).not.toContain(' data-injected="true"');
+    expect(html).toContain("/icons&quot; data-injected=&quot;true:");
+  });
+
+  it("body placement: includes icon cleanup reconciliation without streamed icons", () => {
+    const node = createAppPageRouteBodyMetadata({ title: "Streamed title" }, "/metadata", "body");
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toContain("document.querySelectorAll('body link");
+  });
+
+  it("body placement: applies the request nonce to the parser-time icon script", () => {
+    const node = createAppPageRouteBodyMetadata(
+      { icons: { icon: "/favicon.ico" } },
+      "/icons",
+      "body",
+      false,
+      "test-nonce",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toMatch(/<script nonce="test-nonce">[\s\S]*<\/script><\/div>$/);
   });
 });
 

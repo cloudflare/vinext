@@ -40,6 +40,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 
 /**
+ * Every ALS handed out by `getOrCreateAls`, so `runOutsideRequestScopes` can
+ * exit all of them without an enumeration that goes stale as shims are added.
+ * Shares the `globalThis` slot for the same cross-module-instance reason.
+ */
+const _REGISTRY_KEY = Symbol.for("vinext.als.registry");
+const _registry = (_g[_REGISTRY_KEY] ??= new Set()) as Set<AsyncLocalStorage<unknown>>;
+
+/**
  * No-op AsyncLocalStorage used when the runtime does not provide a usable
  * `AsyncLocalStorage` constructor.
  *
@@ -79,8 +87,51 @@ class NoopAsyncLocalStorage<T> {
  */
 export function getOrCreateAls<T>(key: string): AsyncLocalStorage<T> {
   const sym = Symbol.for(key);
-  return (_g[sym] ??=
+  const als = (_g[sym] ??=
     typeof AsyncLocalStorage === "function"
       ? new AsyncLocalStorage<T>()
       : new NoopAsyncLocalStorage<T>()) as AsyncLocalStorage<T>;
+  _registry.add(als as AsyncLocalStorage<unknown>);
+  return als;
+}
+
+/**
+ * Enrol an ALS that is *not* created through `getOrCreateAls` into the
+ * scope-exit set. For stores that must stay module-local for identity reasons
+ * (`workUnitAsyncStorage` is a Next.js-compat external module third parties
+ * resolve by specifier) but still hold per-request state.
+ *
+ * Callers register themselves rather than being imported here, so this module
+ * keeps importing nothing but `node:async_hooks` and stays safe to evaluate in
+ * client bundles where that resolves to a constructor-less stub.
+ */
+export function registerAlsForScopeExit(als: AsyncLocalStorage<never>): void {
+  _registry.add(als as unknown as AsyncLocalStorage<unknown>);
+}
+
+/**
+ * Run `fn` — and every async continuation it starts — outside every
+ * request-scoped AsyncLocalStorage vinext installs, so the callback observes no
+ * request at all.
+ *
+ * For one-time module evaluation whose result is cached for the isolate's
+ * lifetime: a dynamic `import()` propagates ALS into the imported module's
+ * top-level evaluation, so without this the first request to reach a route
+ * leaks into module scope and stays there for every request after it.
+ *
+ * Exiting a single store is not enough. The stores are entered at different
+ * depths — the Cloudflare entry enters the standalone execution-context ALS
+ * *outside* the unified request context, and prerendering enters the work-unit
+ * store *inside* it — so anything left entered stays visible. `after()` in
+ * particular takes its `getRequestExecutionContext()` fallback precisely when
+ * the unified store is absent, so a partial exit would enable that path rather
+ * than close it.
+ */
+export function runOutsideRequestScopes<T>(fn: () => T): T {
+  let run = fn;
+  for (const als of _registry) {
+    const inner = run;
+    run = () => als.exit(inner);
+  }
+  return run();
 }

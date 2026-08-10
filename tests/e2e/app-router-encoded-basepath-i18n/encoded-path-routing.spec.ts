@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { waitForAppRouterHydration } from "../helpers";
 
 function getRawPath(
   path: string,
@@ -121,4 +122,35 @@ test("preserves raw redirect captures behind basePath and i18n", async () => {
 
   expect(response.status).toBe(307);
   expect(response.location).toBe("/docs/blog/a%252Fb/a%252Fb");
+});
+
+test("runs an action redirect rewrite through the full pipeline behind basePath", async ({
+  page,
+}) => {
+  await page.goto("/docs/nextjs-compat/action-redirect-middleware");
+  await waitForAppRouterHydration(page);
+  await page.evaluate(() => {
+    Reflect.set(window, "__ACTION_REDIRECT_BASEPATH_DOCUMENT__", "preserved");
+  });
+
+  await page.click("#redirect-to-middleware-rewrite");
+
+  await expect(page).toHaveURL(/\/docs\/middleware-rewrite$/);
+  await expect(page.getByText("Welcome to App Router", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() => Reflect.get(window, "__ACTION_REDIRECT_BASEPATH_DOCUMENT__")),
+  ).toBe("preserved");
+
+  await page.goto("/docs/nextjs-compat/action-redirect-middleware");
+  await waitForAppRouterHydration(page);
+  await page.evaluate(() => {
+    Reflect.set(window, "__ACTION_REDIRECT_BASEPATH_DOCUMENT__", "preserved");
+  });
+  await page.click("#redirect-to-config-redirect");
+
+  await expect(page).toHaveURL(/\/docs\/redirect-test-config$/);
+  await expect(page.getByText("About", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() => Reflect.get(window, "__ACTION_REDIRECT_BASEPATH_DOCUMENT__")),
+  ).toBe("preserved");
 });

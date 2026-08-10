@@ -66,8 +66,10 @@ const {
   authorizeOnDemandRevalidate,
   handleApiRoute,
   hasMiddleware,
+  matchApiRoute,
   matchPageRoute,
   normalizeDataRequest,
+  publicFiles,
   renderPage,
   runMiddleware,
   vinextConfig,
@@ -163,27 +165,15 @@ async function handleRequest(
       }
     }
 
+    const middlewareRequest = request;
     const dataNorm = normalizeDataRequest(request);
-    if (dataNorm.notFoundResponse) return dataNorm.notFoundResponse;
+    if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
+      return dataNorm.notFoundResponse;
+    }
     const isDataReq = dataNorm.isDataReq;
-    if (isDataReq) {
+    if (isDataReq && dataNorm.normalizedPathname) {
       request = dataNorm.request;
       pathname = dataNorm.normalizedPathname;
-    }
-
-    // Checked after basePath stripping so /<basePath>/_next/image works.
-    if (isImageOptimizationPath(pathname) && env?.ASSETS) {
-      const allowedWidths = [
-        ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
-        ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
-      ];
-      return handleConfiguredImageOptimization(
-        request,
-        (assetPath) =>
-          Promise.resolve(env.ASSETS!.fetch(new Request(new URL(assetPath, request.url)))),
-        allowedWidths,
-        imageConfig,
-      );
     }
 
     const deps: PagesPipelineDeps = {
@@ -198,8 +188,12 @@ async function handleRequest(
       isDataRequest: isDataReq,
       hasMiddleware,
       ctx,
+      middlewareRequest:
+        isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,
+      dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
       authorizeOnDemandRevalidate:
         typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
+      matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null,
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:
         typeof runMiddleware === "function"
@@ -212,12 +206,32 @@ async function handleRequest(
           : null,
       handleApi:
         typeof handleApiRoute === "function"
-          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)
+          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")
           : null,
-      serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
+      serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
         if (!env?.ASSETS) return false;
-        return fetchWorkerFilesystemRoute(request, requestPathname, phase, (assetRequest) =>
-          Promise.resolve(env.ASSETS!.fetch(assetRequest)),
+        if (isImageOptimizationPath(requestPathname)) {
+          const imageUrl = new URL(resolvedUrl, request.url);
+          const imageRequest = new Request(imageUrl, request);
+          const allowedWidths = [
+            ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+            ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+          ];
+          return handleConfiguredImageOptimization(
+            imageRequest,
+            (assetPath) =>
+              Promise.resolve(env.ASSETS!.fetch(new Request(new URL(assetPath, request.url)))),
+            allowedWidths,
+            imageConfig,
+          );
+        }
+        return fetchWorkerFilesystemRoute(
+          request,
+          requestPathname,
+          phase,
+          (assetRequest) => Promise.resolve(env.ASSETS!.fetch(assetRequest)),
+          publicFiles,
+          missingBuildAsset,
         );
       },
     };

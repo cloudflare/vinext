@@ -10,9 +10,7 @@
     "allowJs": true,
     "baseUrl": ".",
     "noEmit": true,
-    "types": [
-      "@cloudflare/workers-types"
-    ]
+    "types": ["vinext/types", "@cloudflare/workers-types"]
   },
   "include": [
     "app",

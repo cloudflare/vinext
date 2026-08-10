@@ -36,6 +36,7 @@ import {
  */
 describe("server entry import URL resolution", () => {
   const tmpDirs: string[] = [];
+  const originalRequire = Object.getOwnPropertyDescriptor(globalThis, "require");
 
   function makeTmpDir(): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-entry-import-"));
@@ -44,6 +45,11 @@ describe("server entry import URL resolution", () => {
   }
 
   afterEach(() => {
+    if (originalRequire) {
+      Object.defineProperty(globalThis, "require", originalRequire);
+    } else {
+      Reflect.deleteProperty(globalThis, "require");
+    }
     while (tmpDirs.length > 0) {
       fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
     }
@@ -152,5 +158,34 @@ describe("server entry import URL resolution", () => {
     const chunk = await import(pathToFileURL(fs.realpathSync.native(chunkPath)).href);
     expect(chunk.state).toBe(entry.state);
     expect(chunk.state.ready).toBe(true);
+  });
+
+  it("rebinds require relative to each ESM server entry", async () => {
+    function writeEntry(value: string): string {
+      const dir = makeTmpDir();
+      const entryPath = path.join(dir, "entry.mjs");
+      fs.writeFileSync(
+        path.join(dir, "entry-relative.cjs"),
+        `module.exports = { value: ${JSON.stringify(value)} };\n`,
+      );
+      fs.writeFileSync(
+        entryPath,
+        'export const loaded = globalThis.require("./entry-relative.cjs").value;\n',
+      );
+      return entryPath;
+    }
+
+    Object.defineProperty(globalThis, "require", {
+      configurable: true,
+      value: () => ({ value: "wrong pre-existing resolver" }),
+      writable: true,
+    });
+
+    const [first, second] = await Promise.all([
+      importServerEntryModule(writeEntry("first entry")),
+      importServerEntryModule(writeEntry("second entry")),
+    ]);
+    expect(first.loaded).toBe("first entry");
+    expect(second.loaded).toBe("second entry");
   });
 });

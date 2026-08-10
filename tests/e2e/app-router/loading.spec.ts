@@ -49,6 +49,26 @@ test.describe("Loading boundaries (loading.tsx)", () => {
 
   // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  test("loading boundary streams when a sync server page suspends with use()", async ({ page }) => {
+    void page.goto(`${BASE}/slow-use`);
+
+    await expect(page.locator("#loading-use-fallback")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator("h1")).toHaveText("Slow use() Page", {
+      timeout: 10_000,
+    });
+  });
+
+  test("ancestor loading boundary streams for a nested sync use() page", async ({ page }) => {
+    void page.goto(`${BASE}/slow-use-ancestor/child`);
+
+    await expect(page.locator("#loading-use-ancestor-fallback")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator("h1")).toHaveText("Nested slow use() Page", {
+      timeout: 10_000,
+    });
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
   test("slow nested layout streams its ancestor loading fallback before resolving", async () => {
     const streamFallback = async () => {
       const response = await fetch(`${BASE}/slow-layout-with-loading/slow`);

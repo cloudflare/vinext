@@ -8,6 +8,11 @@ import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 // into the unquoted *name* position where escaping wouldn't help.
 const VALID_ATTR_NAME = /^[a-zA-Z][\w.-]*$/;
 
+// React does not serialize string-valued event props, but this renderer emits
+// raw HTML and therefore has to preserve that safety boundary itself. HTML
+// attribute names are case-insensitive, so reject every `on*` case variant.
+const EVENT_HANDLER_ATTR_NAME = /^on/i;
+
 /**
  * Render captured `<Script strategy="beforeInteractive">` scripts to HTML,
  * ready to splice immediately after `<head ...>` opens. Each entry has already
@@ -39,6 +44,7 @@ export function renderBeforeInteractiveInlineScripts(
         // can't be escaped — a malformed key would break the tag — so we
         // gate at the boundary instead of trying to neutralise it.
         if (!VALID_ATTR_NAME.test(key)) continue;
+        if (EVENT_HANDLER_ATTR_NAME.test(key)) continue;
         // We emit the `data-nscript` marker ourselves below; drop any
         // user-supplied one so the tag never carries a duplicate attribute.
         if (key === "data-nscript") continue;

@@ -26,6 +26,7 @@ type CacheContextLike = {
   tags: string[];
   lifeConfigs: CacheLifeConfig[];
   variant: string;
+  readRootParamNames?: Set<string>;
   hasExplicitRevalidate: boolean;
   hasExplicitExpire: boolean;
   dynamicNestedCacheError: Error | undefined;
@@ -39,6 +40,14 @@ export function _registerCacheContextAccessor(fn: () => CacheContextLike | null)
 
 export function getRegisteredCacheContext(): CacheContextLike | null {
   return getCacheContext?.() ?? null;
+}
+
+/** Record a root-param dependency on the active public `"use cache"` scope. */
+export function _recordUseCacheRootParamRead(name: string): void {
+  const context = getRegisteredCacheContext();
+  if (context && context.variant !== "private") {
+    context.readRootParamNames?.add(name);
+  }
 }
 
 export type UnstableCacheRevalidationMode = "foreground" | "background";
@@ -233,6 +242,31 @@ export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
   const config = state.requestScopedCacheLife;
   state.requestScopedCacheLife = null;
   return config;
+}
+
+/**
+ * Capture access to the current request's cache-life slot for work that may
+ * finish after the AsyncLocalStorage request scope has returned. RSC response
+ * bodies are consumed by the server runtime later, so resolving the active
+ * store from a stream-finalization callback can otherwise read a detached
+ * context and lose cacheLife claims made while rendering the body.
+ */
+export function _captureRequestScopedCacheLifeAccessors(): {
+  consume: () => CacheLifeConfig | null;
+  peek: () => CacheLifeConfig | null;
+} {
+  const state = getCacheState();
+  return {
+    consume() {
+      const config = state.requestScopedCacheLife;
+      state.requestScopedCacheLife = null;
+      return config;
+    },
+    peek() {
+      const config = state.requestScopedCacheLife;
+      return config === null ? null : { ...config };
+    },
+  };
 }
 
 export function recordUnstableCacheObservation(observation: UnstableCacheObservation): void {

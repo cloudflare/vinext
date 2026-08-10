@@ -259,6 +259,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     const unauthorizedLoaders = lazyLoaderArray(unauthorizedPaths, imports);
     const siblingInterceptEntries = (route.siblingIntercepts ?? []).map(
       (ir) => `    {
+      id: ${JSON.stringify(ir.id ?? null)},
       convention: ${JSON.stringify(ir.convention)},
       targetPattern: ${JSON.stringify(ir.targetPattern)},
       sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},

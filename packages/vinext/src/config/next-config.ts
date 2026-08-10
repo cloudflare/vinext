@@ -174,8 +174,14 @@ export type NextConfig = {
    * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
    */
   assetPrefix?: string;
+  /** Cross-origin mode applied to framework scripts and preload links. */
+  crossOrigin?: "anonymous" | "use-credentials";
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /** Keep the original request URL visible to middleware/proxy. */
+  skipProxyUrlNormalize?: boolean;
+  /** @deprecated Use `skipProxyUrlNormalize` instead. */
+  skipMiddlewareUrlNormalize?: boolean;
   /** TypeScript build settings. */
   typescript?: {
     /** Project-relative path to the TypeScript configuration file. */
@@ -220,7 +226,7 @@ export type NextConfig = {
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
-    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
+    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
     /** Allowed image qualities. When unset, any quality from 1-100 is permitted (matches Next.js). */
     qualities?: number[];
@@ -398,6 +404,7 @@ export type ResolvedNextConfig = {
    */
   assetPrefix: string;
   trailingSlash: boolean;
+  skipProxyUrlNormalize: boolean;
   typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
   pageExtensions: string[];
@@ -523,6 +530,8 @@ export type ResolvedNextConfig = {
    * `test/e2e/optimized-loading` test fixture.
    */
   disableOptimizedLoading: boolean;
+  /** Cross-origin mode applied to framework scripts and preload links. */
+  crossOrigin: "anonymous" | "use-credentials" | undefined;
   /**
    * Resolved `reactStrictMode` from next.config, preserved as `boolean | null`
    * so each router can apply its own default (Next.js resolves `null` to OFF
@@ -1545,6 +1554,7 @@ export async function resolveNextConfig(
       basePath: "",
       assetPrefix: "",
       trailingSlash: false,
+      skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
       pageExtensions: normalizePageExtensions(),
@@ -1585,6 +1595,7 @@ export async function resolveNextConfig(
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      crossOrigin: undefined,
       reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},
@@ -1597,6 +1608,27 @@ export async function resolveNextConfig(
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
+  }
+
+  if (
+    config.crossOrigin !== undefined &&
+    config.crossOrigin !== "anonymous" &&
+    config.crossOrigin !== "use-credentials"
+  ) {
+    console.warn(
+      "Invalid next.config options detected:\n" +
+        '    Invalid option at "crossOrigin": expected "anonymous" or "use-credentials"\n' +
+        "See more info here: https://nextjs.org/docs/messages/invalid-next-config",
+    );
+  }
+
+  if (
+    config.skipProxyUrlNormalize !== undefined &&
+    config.skipMiddlewareUrlNormalize !== undefined
+  ) {
+    throw new Error(
+      "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time. Please use `skipProxyUrlNormalize` instead.",
+    );
   }
 
   warnDeprecatedConfigOptions(config, root);
@@ -1878,6 +1910,8 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
+    skipProxyUrlNormalize:
+      config.skipProxyUrlNormalize ?? config.skipMiddlewareUrlNormalize ?? false,
     typescript:
       typeof config.typescript?.tsconfigPath === "string"
         ? { tsconfigPath: config.typescript.tsconfigPath }
@@ -1940,6 +1974,10 @@ export async function resolveNextConfig(
     // Next.js stores this under `experimental.disableOptimizedLoading`.
     // Default `false` matches Next.js: page scripts get `defer` in <head>.
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
+    crossOrigin:
+      config.crossOrigin === "anonymous" || config.crossOrigin === "use-credentials"
+        ? config.crossOrigin
+        : undefined,
     // Preserve `null` (unset) so each router applies its own default — Next.js
     // resolves `null` to OFF for Pages Router, ON for App Router.
     reactStrictMode: typeof config.reactStrictMode === "boolean" ? config.reactStrictMode : null,

@@ -3,6 +3,27 @@ import { type ViteDevServer } from "vite";
 import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
+function expectIconLink(
+  html: string,
+  expected: { rel: string; href: RegExp; type: string; sizes: string },
+) {
+  const matches = [...html.matchAll(/<link\b([^>]*)>/g)]
+    .map(([, attributes]) =>
+      Object.fromEntries(
+        [...attributes.matchAll(/([\w:-]+)="([^"]*)"/g)].map((match) => match.slice(1)),
+      ),
+    )
+    .filter(
+      (attributes) =>
+        attributes.rel === expected.rel &&
+        expected.href.test(attributes.href ?? "") &&
+        attributes.type === expected.type &&
+        attributes.sizes === expected.sizes,
+    );
+
+  expect(matches).toHaveLength(1);
+}
+
 describe("metadata routes integration (App Router)", () => {
   // These tests reuse the App Router dev server from the integration tests
   let server: ViteDevServer;
@@ -167,9 +188,12 @@ describe("metadata routes integration (App Router)", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
 
-    expect(html).toMatch(
-      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-svg-icon\/icon\.svg(?:\?[^"]+)?"[^>]+sizes="any"[^>]+type="image\/svg\+xml"[^>]*>/,
-    );
+    expectIconLink(html, {
+      rel: "icon",
+      href: /\/metadata-svg-icon\/icon\.svg(?:\?[^"]+)?$/,
+      type: "image/svg+xml",
+      sizes: "any",
+    });
   });
 
   it("renders icons.icon descriptor object metadata without crashing", async () => {
@@ -177,9 +201,12 @@ describe("metadata routes integration (App Router)", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
 
-    expect(html).toMatch(
-      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-icons-object\/object-icon\.png"[^>]+sizes="96x96"[^>]+type="image\/png"[^>]*>/,
-    );
+    expectIconLink(html, {
+      rel: "icon",
+      href: /\/metadata-icons-object\/object-icon\.png$/,
+      type: "image/png",
+      sizes: "96x96",
+    });
   });
 
   it("emits exactly one favicon link plus icons metadata shortcut/apple/other in root segment", async () => {
@@ -235,9 +262,12 @@ describe("metadata routes integration (App Router)", () => {
     expect(homeHtml).toMatch(
       /<link[^>]+rel="icon"[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]+)?"[^>]*>/,
     );
-    expect(homeHtml).toMatch(
-      /<link[^>]+rel="icon"[^>]+href="[^"]*\/icon(?:\?[^"]+)?"[^>]+sizes="32x32"[^>]+type="image\/png"[^>]*>/,
-    );
+    expectIconLink(homeHtml, {
+      rel: "icon",
+      href: /\/icon(?:\?[^"]+)?$/,
+      type: "image/png",
+      sizes: "32x32",
+    });
 
     const blogRes = await fetch(`${baseUrl}/blog/hello-world`);
     expect(blogRes.status).toBe(200);
@@ -260,12 +290,18 @@ describe("metadata routes integration (App Router)", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
 
-    expect(html).toMatch(
-      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-multi-image\/big\/icon\/big-small(?:\?[^"]+)?"[^>]+sizes="48x48"[^>]+type="image\/png"[^>]*>/,
-    );
-    expect(html).toMatch(
-      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-multi-image\/big\/icon\/big-medium(?:\?[^"]+)?"[^>]+sizes="72x72"[^>]+type="image\/png"[^>]*>/,
-    );
+    expectIconLink(html, {
+      rel: "icon",
+      href: /\/metadata-multi-image\/big\/icon\/big-small(?:\?[^"]+)?$/,
+      type: "image/png",
+      sizes: "48x48",
+    });
+    expectIconLink(html, {
+      rel: "icon",
+      href: /\/metadata-multi-image\/big\/icon\/big-medium(?:\?[^"]+)?$/,
+      type: "image/png",
+      sizes: "72x72",
+    });
   });
 
   it("uses placeholder urls for static metadata files in dynamic segments", async () => {

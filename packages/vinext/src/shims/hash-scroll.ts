@@ -31,8 +31,9 @@ export function scrollToHashTarget(hash: string): void {
   window.scrollTo(0, 0);
 }
 
-export function scrollToHashTargetOnNextFrame(hash: string): void {
+export function scrollToHashTargetOnNextFrame(hash: string, shouldScroll?: () => boolean): void {
   requestAnimationFrame(() => {
+    if (shouldScroll && !shouldScroll()) return;
     scrollToHashTarget(hash);
   });
 }
