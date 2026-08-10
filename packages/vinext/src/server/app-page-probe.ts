@@ -11,6 +11,7 @@ import {
   type LayoutFlags,
 } from "./app-page-execution.js";
 import { makeObservedAppPageSearchParamsThenable } from "./app-page-search-params-observation.js";
+import { AppElementsWire } from "./app-elements.js";
 import { isPromiseLike } from "../utils/promise.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
@@ -311,8 +312,19 @@ type AppPageProbeSlot =
   | undefined;
 
 type AppPageProbeRoute = Readonly<{
+  childrenSlot?: Readonly<{ ownerTreePath: string }> | null;
   slots?: Readonly<Record<string, AppPageProbeSlot>> | null;
 }>;
+
+export function resolveAppPageProbeMainElementId(
+  route: AppPageProbeRoute,
+  routePath: string,
+  interceptionContext: string | null,
+): string {
+  return route.childrenSlot
+    ? AppElementsWire.encodeSlotId("children", route.childrenSlot.ownerTreePath)
+    : AppElementsWire.encodePageId(routePath, interceptionContext);
+}
 
 type AppPageProbeIntercept =
   | Readonly<{

@@ -65,7 +65,11 @@ export function parsePrefetchVaryMetadata(value: unknown): VinextPrefetchVaryMet
     metadataParamNames: fields.metadataParamNames ?? [],
     metadataSearchParams: fields.metadataSearchParams,
     pageDynamicSuspenseOrdinals: fields.pageDynamicSuspenseOrdinals ?? [],
-    pageDynamicSuspenseOrdinalsByElementId: fields.pageDynamicSuspenseOrdinalsByElementId ?? {},
+    ...(fields.pageDynamicSuspenseOrdinalsByElementId === undefined
+      ? {}
+      : {
+          pageDynamicSuspenseOrdinalsByElementId: fields.pageDynamicSuspenseOrdinalsByElementId,
+        }),
     pageParamNames: fields.pageParamNames,
     pageSearchParams: fields.pageSearchParams,
   };

@@ -5,6 +5,7 @@ import {
   probeAppPage,
   probeAppPageBeforeRender,
   probeReactServerSubtree,
+  resolveAppPageProbeMainElementId,
 } from "../packages/vinext/src/server/app-page-probe.js";
 import {
   consumeDynamicUsage,
@@ -39,6 +40,17 @@ async function registerCachedProbePage<TProps extends Record<string, unknown>, T
 }
 
 describe("app page probe helpers", () => {
+  it("uses the serialized children-slot identity for synthetic page routes", () => {
+    expect(
+      resolveAppPageProbeMainElementId(
+        { childrenSlot: { ownerTreePath: "/blog" } },
+        "/blog/post-1",
+        null,
+      ),
+    ).toBe("slot:children:/blog");
+    expect(resolveAppPageProbeMainElementId({}, "/blog/post-1", null)).toBe("page:/blog/post-1");
+  });
+
   it("reports the Suspense boundary interrupted by connection through an imported helper", async () => {
     const observed: number[] = [];
 

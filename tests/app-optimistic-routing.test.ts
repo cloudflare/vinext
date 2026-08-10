@@ -15,6 +15,7 @@ import {
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
+import { parsePrefetchVaryMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type {
   GraphVersion,
   RouteManifest,
@@ -556,6 +557,115 @@ describe("App Router optimistic routing", () => {
 
     expect(optimistic[pageId]).not.toBe(mainBoundary);
     expect(optimistic[childrenSlotId]).toBe(slotBoundary);
+  });
+
+  it("replays dynamic Suspense tails in named parallel-slot page elements", () => {
+    const namedSlotId = AppElementsWire.encodeSlotId("modal", "/dashboard");
+    const routeManifest = manifest([
+      route({
+        id: "route:/dashboard/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/dashboard/:itemId",
+        patternParts: ["dashboard", ":itemId"],
+        slotIds: [namedSlotId],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/dashboard/phone", null);
+    const pageId = AppElementsWire.encodePageId("/dashboard/phone", null);
+    const mainBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading main") },
+      createElement("div", null, "Cached main"),
+    );
+    const namedSlotBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading modal") },
+      createElement("div", null, "Stale modal"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dashboard"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: mainBoundary,
+      [namedSlotId]: namedSlotBoundary,
+      [routeId]: createElement("main", null, "Route"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: [0],
+      dynamicSuspenseOrdinalsByPageElementId: {
+        [namedSlotId]: [0],
+        [pageId]: [],
+      },
+      elements,
+      href: "/dashboard/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+    const optimistic = createOptimisticRouteElements(template!);
+
+    expect(template?.pageElementIds).toEqual([pageId, namedSlotId]);
+    expect(optimistic[pageId]).toBe(mainBoundary);
+    expect(optimistic[namedSlotId]).not.toBe(namedSlotBoundary);
+  });
+
+  it("preserves legacy global dynamic Suspense ordinals after metadata decoding", () => {
+    const legacyMetadata = parsePrefetchVaryMetadata({
+      loadingParamNames: [],
+      metadataSearchParams: false,
+      pageDynamicSuspenseOrdinals: [0],
+      pageParamNames: [],
+      pageSearchParams: false,
+    });
+    expect(legacyMetadata?.pageDynamicSuspenseOrdinalsByElementId).toBeUndefined();
+
+    const routeManifest = manifest([
+      route({
+        id: "route:/legacy/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/legacy/:itemId",
+        patternParts: ["legacy", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/legacy/phone", null);
+    const pageId = AppElementsWire.encodePageId("/legacy/phone", null);
+    const legacyBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading legacy") },
+      createElement("div", null, "Stale legacy content"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: legacyBoundary,
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: legacyMetadata?.pageDynamicSuspenseOrdinals,
+      dynamicSuspenseOrdinalsByPageElementId:
+        legacyMetadata?.pageDynamicSuspenseOrdinalsByElementId,
+      elements,
+      href: "/legacy/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+
+    expect(createOptimisticRouteElements(template!)[pageId]).not.toBe(legacyBoundary);
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {

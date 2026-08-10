@@ -372,7 +372,10 @@ import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
+import {
+  buildAppPageProbes as __buildAppPageProbes,
+  resolveAppPageProbeMainElementId as __resolveAppPageProbeMainElementId,
+} from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
@@ -905,7 +908,8 @@ export default createAppRscHandler({
         // observes the page's searchParams/headers access. Shared loader, so
         // the import is isolated from the request context here too.
         if (__probeIntercept) await __loadAppInterceptPage(__probeIntercept);
-        const __probeMainPageElementId = __AppElementsWire.encodePageId(
+        const __probeMainPageElementId = __resolveAppPageProbeMainElementId(
+          route,
           cleanPathname,
           interceptionContext,
         );

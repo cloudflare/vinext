@@ -299,7 +299,7 @@ function getPageElementIds(
   }
   for (const slotId of route.slotIds) {
     const parsed = AppElementsWire.parseElementKey(slotId);
-    if (parsed?.kind === "slot" && parsed.name === "children" && Object.hasOwn(elements, slotId)) {
+    if (parsed?.kind === "slot" && Object.hasOwn(elements, slotId)) {
       pageElementIds.add(slotId);
     }
   }
