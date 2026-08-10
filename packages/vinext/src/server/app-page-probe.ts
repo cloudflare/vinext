@@ -481,7 +481,7 @@ export function buildAppPageProbes(options: {
     if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
       continue;
     }
-    const slotElementId = slot?.id ?? `slot:${slotKey}`;
+    const slotElementId = slot?.id ?? AppElementsWire.encodeSlotId(slotKey, "/");
     const awaitResult = !(
       slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)
     );
