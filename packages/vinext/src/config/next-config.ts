@@ -1928,7 +1928,7 @@ export async function resolveNextConfig(
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
-    cachedNavigations: config.cacheComponents === true && experimental?.cachedNavigations === true,
+    cachedNavigations: config.cacheComponents === true && experimental?.cachedNavigations !== false,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,

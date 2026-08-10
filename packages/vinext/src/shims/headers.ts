@@ -985,15 +985,17 @@ export function headers(): Promise<Headers> & Headers {
   }
 
   markDynamicUsage();
-  const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
-  const fallbackShellPromise = !state.headersContext.forceStatic
-    ? delayPprFallbackShellRequestApi("headers", "`headers()`", () => readonlyHeaders)
+  const headersContext = state.headersContext;
+  let readonlyHeaders: Headers | undefined;
+  const getReadonlyHeaders = () => (readonlyHeaders ??= _getReadonlyHeaders(headersContext));
+  const fallbackShellPromise = !headersContext.forceStatic
+    ? delayPprFallbackShellRequestApi("headers", "`headers()`", getReadonlyHeaders)
     : null;
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
 
-  return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, readonlyHeaders);
+  return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, getReadonlyHeaders());
 }
 
 /**
@@ -1022,17 +1024,21 @@ function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
   }
 
   markDynamicUsage();
-  const cookieStore = _areCookiesMutableInCurrentPhase()
-    ? _getMutableCookies(state.headersContext)
-    : _getReadonlyCookies(state.headersContext);
-  const fallbackShellPromise = !state.headersContext.forceStatic
-    ? delayPprFallbackShellRequestApi("cookies", "`cookies()`", () => cookieStore)
+  const headersContext = state.headersContext;
+  const cookiesAreMutable = _areCookiesMutableInCurrentPhase();
+  let cookieStore: RequestCookies | undefined;
+  const getCookieStore = () =>
+    (cookieStore ??= cookiesAreMutable
+      ? _getMutableCookies(headersContext)
+      : _getReadonlyCookies(headersContext));
+  const fallbackShellPromise = !headersContext.forceStatic
+    ? delayPprFallbackShellRequestApi("cookies", "`cookies()`", getCookieStore)
     : null;
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
 
-  return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, cookieStore);
+  return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, getCookieStore());
 }
 
 type VinextReadonlyRequestCookies = Omit<ReadonlyRequestCookies, keyof RequestCookies> &

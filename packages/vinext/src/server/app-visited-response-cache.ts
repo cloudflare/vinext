@@ -1,10 +1,7 @@
 import { resolveCachedRscResponseExpiresAt, type CachedRscResponse } from "vinext/shims/navigation";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
-import {
-  isRscCompatibilityIdCompatible,
-  stripRscCacheBustingSearchParam,
-} from "./app-rsc-cache-busting.js";
+import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import type { BfcacheIdMap } from "./app-history-state.js";
 
 type VisitedResponseCacheNavigationKind = "navigate" | "refresh" | "traverse";
@@ -24,32 +21,6 @@ export type VisitedResponseCacheEntry = {
 
 export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
-
-export function canStoreCachedNavigationStage(options: {
-  clientCompatibilityId: string | null;
-  currentGeneration: number;
-  expectedGeneration: number;
-  responseCompatibilityId: string | null;
-}): boolean {
-  return (
-    options.currentGeneration === options.expectedGeneration &&
-    isRscCompatibilityIdCompatible(options.responseCompatibilityId, options.clientCompatibilityId)
-  );
-}
-
-export function scheduleCachedNavigationStageFills(
-  fillStage: (stage: "runtime" | "static") => Promise<boolean>,
-): { complete: Promise<void>; staticStage: Promise<void> } {
-  const staticResult = fillStage("static");
-  return {
-    staticStage: staticResult.then(() => {}),
-    complete: staticResult.then(async (supportsRuntimeStage) => {
-      if (supportsRuntimeStage) {
-        await fillStage("runtime");
-      }
-    }),
-  };
-}
 
 export function startAuthoritativeCachedNavigationResponse<T>(
   startResponse: () => Promise<T>,
@@ -154,16 +125,6 @@ export function canPublishCachedNavigationRuntimeStage(
   stageGeneration: number,
 ): boolean {
   return staticStage?.stageGeneration === stageGeneration;
-}
-
-export function cancelPendingCachedNavigationStageFill<
-  T extends { abortController: AbortController },
->(pendingFills: Map<string, T>, cacheKey: string): boolean {
-  const pending = pendingFills.get(cacheKey);
-  if (pending === undefined) return false;
-  pendingFills.delete(cacheKey);
-  pending.abortController.abort();
-  return true;
 }
 
 function normalizeVisitedResponseCacheLookupUrl(rscUrl: string): string | null {

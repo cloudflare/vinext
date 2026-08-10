@@ -2,16 +2,13 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
-  cancelPendingCachedNavigationStageFill,
   canPublishCachedNavigationRuntimeStage,
-  canStoreCachedNavigationStage,
   createCachedNavigationStageCacheKey,
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
   isCachedNavigationStagePairFresh,
   isVisitedResponseCacheEntryFresh,
-  scheduleCachedNavigationStageFills,
   startAuthoritativeCachedNavigationResponse,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
@@ -47,80 +44,6 @@ describe("visited response cache freshness", () => {
         "slot:modal:/target slot:sidebar:/target",
       ),
     );
-  });
-
-  it("detaches an expired stage's hanging fill so a later generation can refill", () => {
-    const cacheKey = createCachedNavigationStageCacheKey("/target", null, null);
-    const staleController = new AbortController();
-    const pending = new Map([[cacheKey, { abortController: staleController, generation: 1 }]]);
-
-    expect(cancelPendingCachedNavigationStageFill(pending, cacheKey)).toBe(true);
-    expect(staleController.signal.aborted).toBe(true);
-    expect(pending.has(cacheKey)).toBe(false);
-
-    const refillController = new AbortController();
-    pending.set(cacheKey, { abortController: refillController, generation: 2 });
-    expect(pending.get(cacheKey)?.generation).toBe(2);
-    expect(refillController.signal.aborted).toBe(false);
-  });
-
-  it("rejects cached-navigation stage fills invalidated or version-skewed before storage", () => {
-    expect(
-      canStoreCachedNavigationStage({
-        clientCompatibilityId: "build-a",
-        currentGeneration: 2,
-        expectedGeneration: 1,
-        responseCompatibilityId: "build-a",
-      }),
-    ).toBe(false);
-    expect(
-      canStoreCachedNavigationStage({
-        clientCompatibilityId: "build-a",
-        currentGeneration: 1,
-        expectedGeneration: 1,
-        responseCompatibilityId: "build-b",
-      }),
-    ).toBe(false);
-    expect(
-      canStoreCachedNavigationStage({
-        clientCompatibilityId: "build-a",
-        currentGeneration: 1,
-        expectedGeneration: 1,
-        responseCompatibilityId: "build-a",
-      }),
-    ).toBe(true);
-  });
-
-  it("publishes the static stage without awaiting the runtime fill", async () => {
-    let finishStatic!: (supportsRuntimeStage: boolean) => void;
-    let finishRuntime!: (stored: boolean) => void;
-    const requestedStages: string[] = [];
-    const fills = scheduleCachedNavigationStageFills((stage) => {
-      requestedStages.push(stage);
-      return new Promise<boolean>((resolve) => {
-        if (stage === "static") finishStatic = resolve;
-        else finishRuntime = resolve;
-      });
-    });
-    let staticPublished = false;
-    let allComplete = false;
-    void fills.staticStage.then(() => {
-      staticPublished = true;
-    });
-    void fills.complete.then(() => {
-      allComplete = true;
-    });
-
-    expect(requestedStages).toEqual(["static"]);
-    finishStatic(true);
-    await fills.staticStage;
-    expect(staticPublished).toBe(true);
-    expect(allComplete).toBe(false);
-    expect(requestedStages).toEqual(["static", "runtime"]);
-
-    finishRuntime(true);
-    await fills.complete;
-    expect(allComplete).toBe(true);
   });
 
   it("does not gate the authoritative response on hanging cached-stage work", async () => {

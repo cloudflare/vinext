@@ -2577,10 +2577,17 @@ describe("resolveNextConfig cachedNavigations validation", () => {
     expect(cachedNavigationsWarning).toBeUndefined();
   });
 
-  it("does not warn when experimental.cachedNavigations is false", async () => {
+  it("enables cachedNavigations by default with cacheComponents", async () => {
+    const config = await resolveNextConfig({ cacheComponents: true });
+
+    expect(config.cachedNavigations).toBe(true);
+  });
+
+  it("allows cacheComponents projects to opt out of cachedNavigations", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await resolveNextConfig({
+    const config = await resolveNextConfig({
+      cacheComponents: true,
       experimental: { cachedNavigations: false },
     });
 
@@ -2588,6 +2595,7 @@ describe("resolveNextConfig cachedNavigations validation", () => {
       (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
     );
     expect(cachedNavigationsWarning).toBeUndefined();
+    expect(config.cachedNavigations).toBe(false);
   });
 });
 

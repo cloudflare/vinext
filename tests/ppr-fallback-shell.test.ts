@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  advanceCachedNavigationToDynamicStage,
   beginPprFallbackShellFinalRender,
   createPprFallbackShellState,
   createPprFallbackShellSuspensePromise,
@@ -63,6 +64,37 @@ describe("ppr fallback shell cache task tracking", () => {
       expect(shouldPprFallbackShellSuspendRequestApi("headers")).toBe(true);
       expect(shouldPprFallbackShellSuspendRequestApi("connection")).toBe(true);
     });
+  });
+
+  it("defers request API snapshots until the cached-navigation dynamic stage", async () => {
+    const { cookies, headers, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const context = {
+      cookies: new Map([["session", "abc123"]]),
+      headers: new Headers({ "x-test": "value" }),
+    };
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "navigation",
+      fallbackParamNames: [],
+      requestApiStage: "static",
+      routePattern: "/runtime-prefetchable",
+    });
+    setHeadersContext(context);
+
+    try {
+      const staged = runWithPprFallbackShellState(state, () => [headers(), cookies()] as const);
+      expect(context).not.toHaveProperty("readonlyHeaders");
+      expect(context).not.toHaveProperty("readonlyCookies");
+
+      advanceCachedNavigationToDynamicStage(state);
+      await Promise.all(staged);
+
+      expect(context).toHaveProperty("readonlyHeaders");
+      expect(context).toHaveProperty("readonlyCookies");
+    } finally {
+      setHeadersContext(null);
+      state.abortController.abort();
+    }
   });
 
   it("allows request-derived cache inputs but suspends connection in a runtime stage", () => {
