@@ -1047,7 +1047,7 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).toBeNull();
   });
 
-  it("dedupes pending and fresh Cache Components dynamic router.prefetch calls but refetches after expiry", async () => {
+  it("dedupes pending and fresh Cache Components encoded dynamic router.prefetch calls but refetches after expiry", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
