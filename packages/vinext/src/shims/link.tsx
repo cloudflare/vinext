@@ -441,6 +441,7 @@ function prefetchUrl(
         const {
           getPrefetchInterceptionContext,
           getPrefetchCache,
+          getFreshPrefetchCacheEntry,
           getPrefetchedUrls,
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
@@ -686,8 +687,7 @@ function prefetchUrl(
                   shellRscUrl,
                   interceptionContext,
                 );
-                const shellCache = getPrefetchCache();
-                let shellEntry = shellCache.get(shellCacheKey);
+                let shellEntry = getFreshPrefetchCacheEntry(shellCacheKey);
                 if (shellEntry === undefined) {
                   getPrefetchedUrls().add(shellCacheKey);
                   prefetchRscResponse(
@@ -713,9 +713,10 @@ function prefetchUrl(
                       prefetchKind: "route-tree",
                     },
                   );
-                  shellEntry = shellCache.get(shellCacheKey);
+                  shellEntry = getFreshPrefetchCacheEntry(shellCacheKey);
                 }
                 await shellEntry?.pending?.catch(() => {});
+                shellEntry = getFreshPrefetchCacheEntry(shellCacheKey);
                 const renderedPathAndSearch = shellEntry?.snapshot?.renderedPathAndSearch;
                 if (renderedPathAndSearch) {
                   const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);

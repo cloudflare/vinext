@@ -407,6 +407,21 @@ export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
 }
 
 /**
+ * Read an exact prefetch entry without allowing a settled stale value to
+ * steer a later request. Timers are an eviction optimization, not a freshness
+ * guarantee: background throttling can leave an expired route-tree entry in
+ * the Map until the next foreground read.
+ */
+export function getFreshPrefetchCacheEntry(cacheKey: string): PrefetchCacheEntry | undefined {
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry === undefined || entry.pending) return entry;
+  if (resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) return entry;
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  return undefined;
+}
+
+/**
  * Get or create the shared set of already-prefetched RSC URLs on window.
  * Keyed by interception-aware cache key so distinct source routes do not alias.
  */
@@ -1230,11 +1245,15 @@ function parseRenderedPathAndSearchHeader(value: string | null): string | null {
  */
 export async function snapshotRscResponse(response: Response): Promise<CachedRscResponse> {
   try {
-    return createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+    const snapshot = createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+    const expiresAt = restoredRscResponseExpiresAt.get(response);
+    return expiresAt === undefined ? snapshot : { ...snapshot, expiresAt };
   } finally {
     releaseAppPrefetchFetchSlot(response);
   }
 }
+
+const restoredRscResponseExpiresAt = new WeakMap<Response, number>();
 
 /**
  * Reconstruct a Response from a cached RSC snapshot.
@@ -1280,10 +1299,14 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
     );
   }
 
-  return new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
+  const response = new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
     status: 200,
     headers,
   });
+  if (isCacheExpiresAt(cached.expiresAt)) {
+    restoredRscResponseExpiresAt.set(response, cached.expiresAt);
+  }
+  return response;
 }
 
 /**
@@ -2785,8 +2808,7 @@ const _appRouter: AppRouterInstance = {
                 routeTreeRscUrl,
                 interceptionContext,
               );
-              const cache = getPrefetchCache();
-              let routeTreeEntry = cache.get(routeTreeCacheKey);
+              let routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
               if (routeTreeEntry === undefined) {
                 prefetched.add(routeTreeCacheKey);
                 prefetchRscResponse(
@@ -2810,9 +2832,22 @@ const _appRouter: AppRouterInstance = {
                     prefetchKind: "route-tree",
                   },
                 );
-                routeTreeEntry = cache.get(routeTreeCacheKey);
+                routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
               }
               await routeTreeEntry?.pending?.catch(() => {});
+              routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+              const renderedPathAndSearch = routeTreeEntry?.snapshot?.renderedPathAndSearch;
+              if (renderedPathAndSearch) {
+                const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
+                const cachedRenderedResponse = peekPrefetchResponseForNavigation(
+                  renderedRscUrl,
+                  interceptionContext,
+                  mountedSlotsHeader,
+                );
+                if (cachedRenderedResponse) {
+                  return restoreRscResponse(cachedRenderedResponse);
+                }
+              }
               return fetchFullRscPayload();
             })()
           : fetchFullRscPayload();
