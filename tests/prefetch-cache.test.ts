@@ -275,7 +275,13 @@ describe("prefetch cache eviction", () => {
     );
     expect(fetch).toHaveBeenCalledTimes(1);
 
-    now += 120_001;
+    now += 119_999;
+    appRouterInstance.prefetch("/runtime-instant");
+    await settlePrefetchSetup();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    now += 2;
     appRouterInstance.prefetch("/runtime-instant");
     await settlePrefetchSetup();
 

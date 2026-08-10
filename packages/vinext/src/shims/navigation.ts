@@ -2826,9 +2826,24 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
-      } else if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
-        attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
-        return;
+      } else {
+        // An instant request starts as learning-only, but a response that
+        // reaches the end of the tree is promoted to a reusable navigation
+        // entry. Reuse that promoted result until its cacheLife-derived
+        // deadline without discarding a still-partial instant shell.
+        if (
+          policy.prefetchInstantShell !== undefined &&
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
+            additionalRscUrls,
+            onInvalidate: options?.onInvalidate,
+          })
+        ) {
+          return;
+        }
+        if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
+          attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
+          return;
+        }
       }
       prefetched.add(cacheKey);
       prefetchRscResponse(

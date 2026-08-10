@@ -2358,6 +2358,16 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
 
       observer.dispatchIntersectingEntry(result.anchor, false);
+      vi.mocked(Date.now).mockReturnValue(now + 119_999);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+
+      // A complete runtime instant response is promoted to a navigation
+      // entry. Reuse it for repeated viewport prefetches until the completed
+      // cacheLife stale time elapses.
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      observer.dispatchIntersectingEntry(result.anchor, false);
       vi.mocked(Date.now).mockReturnValue(now + 120_001);
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 2);

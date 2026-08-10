@@ -624,12 +624,18 @@ function prefetchUrl(
             purpose: "prefetch",
           });
         };
+        // A runtime instant shell starts as learning-only, but a response that
+        // reaches the end of the tree is promoted to a navigation entry. A
+        // later viewport pass must reuse that promoted entry until its
+        // cacheLife-derived deadline instead of issuing another instant fetch.
+        const canReuseNavigationCacheEntry =
+          autoPrefetch.cacheForNavigation || isInstantShellPrefetch !== undefined;
         const hasExactNavigationCacheEntry =
-          autoPrefetch.cacheForNavigation &&
+          canReuseNavigationCacheEntry &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader);
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
-          (autoPrefetch.cacheForNavigation &&
+          (canReuseNavigationCacheEntry &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
             }));
