@@ -1592,13 +1592,16 @@ export async function prerenderApp({
             },
           );
           const hintsResponse = await rscHandler(hintsRequest);
-          if (!hintsResponse.ok) {
+          if (hintsResponse.status === 404) {
+            await hintsResponse.body?.cancel();
+          } else if (!hintsResponse.ok) {
             const detail = await hintsResponse.text();
             throw new Error(
               `[vinext] prerenderApp: prefetch hint collection returned ${hintsResponse.status} for ${urlPath}: ${detail}`,
             );
+          } else {
+            prefetchHints = (await hintsResponse.json()) as TreePrefetch;
           }
-          prefetchHints = (await hintsResponse.json()) as TreePrefetch;
         }
 
         if (htmlCacheControl.includes("no-store")) {

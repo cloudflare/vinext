@@ -48,6 +48,7 @@ export type AppRouteTreePrefetchRoute = {
   layoutTreePositions?: readonly number[];
   layouts?: readonly unknown[];
   page?: unknown;
+  pattern?: string;
   routeSegments: readonly string[];
   slots?: Readonly<Record<string, AppRouteTreePrefetchSlot>> | null;
 };
@@ -428,7 +429,7 @@ function isTreePrefetch(
 }
 
 function getPrecomputedTree(route: AppRouteTreePrefetchRoute): TreePrefetch | null {
-  if (!("pattern" in route) || typeof route.pattern !== "string") return null;
+  if (typeof route.pattern !== "string") return null;
   const tree = globalThis.__VINEXT_PREFETCH_HINTS__?.[route.pattern];
   return isTreePrefetch(tree) ? tree : null;
 }
