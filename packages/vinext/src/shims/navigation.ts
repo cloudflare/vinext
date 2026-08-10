@@ -1326,6 +1326,67 @@ export async function prepareNavigationPrefetchSnapshot(
 }
 
 /**
+ * Gate a navigation-reusable prefetch behind the route-tree request shared by
+ * `<Link>` and `router.prefetch()`. Callers retain control of fetch scheduling
+ * and request-only options while freshness, deduplication, and alias reuse stay
+ * identical across both entry points.
+ */
+export async function fetchRouteTreeGatedPrefetch(options: {
+  fetchFullRscPayload: () => Promise<Response>;
+  fetchRouteTree: (rscUrl: string, headers: Headers) => Promise<Response>;
+  fullHref: string;
+  headers: Headers;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+}): Promise<Response> {
+  const {
+    fetchFullRscPayload,
+    fetchRouteTree,
+    fullHref,
+    headers,
+    interceptionContext,
+    mountedSlotsHeader,
+  } = options;
+  const routeTreeHeaders = new Headers(headers);
+  routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+  routeTreeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+  const routeTreeRscUrl = await createRscRequestUrl(fullHref, routeTreeHeaders);
+  const routeTreeCacheKey = AppElementsWire.encodeCacheKey(routeTreeRscUrl, interceptionContext);
+  let routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  if (routeTreeEntry === undefined) {
+    getPrefetchedUrls().add(routeTreeCacheKey);
+    prefetchRscResponse(
+      routeTreeRscUrl,
+      fetchRouteTree(routeTreeRscUrl, routeTreeHeaders),
+      interceptionContext,
+      mountedSlotsHeader,
+      undefined,
+      {
+        cacheForNavigation: false,
+        optimisticRouteShell: false,
+        prefetchKind: "route-tree",
+      },
+    );
+    routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  }
+  await routeTreeEntry?.pending?.catch(() => {});
+  routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  const renderedPathAndSearch = routeTreeEntry?.snapshot?.renderedPathAndSearch;
+  if (renderedPathAndSearch) {
+    const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
+    const cachedRenderedResponse = peekPrefetchResponseForNavigation(
+      renderedRscUrl,
+      interceptionContext,
+      mountedSlotsHeader,
+    );
+    if (cachedRenderedResponse) {
+      return restoreRscResponse(cachedRenderedResponse);
+    }
+  }
+  return fetchFullRscPayload();
+}
+
+/**
  * Prefetch an RSC response and snapshot it for later consumption.
  * Stores the in-flight promise so immediate clicks can await it instead
  * of firing a duplicate fetch.
@@ -2799,57 +2860,24 @@ const _appRouter: AppRouterInstance = {
         );
       const fetchPromise =
         reusable && kind === "auto" && requiresRouteTreePrefetch
-          ? (async () => {
-              const routeTreeHeaders = new Headers(headers);
-              routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-              routeTreeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
-              const routeTreeRscUrl = await createRscRequestUrl(fullHref, routeTreeHeaders);
-              const routeTreeCacheKey = AppElementsWire.encodeCacheKey(
-                routeTreeRscUrl,
-                interceptionContext,
-              );
-              let routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
-              if (routeTreeEntry === undefined) {
-                prefetched.add(routeTreeCacheKey);
-                prefetchRscResponse(
-                  routeTreeRscUrl,
-                  scheduleAppPrefetchFetch(
-                    (signal) =>
-                      fetch(routeTreeRscUrl, {
-                        headers: routeTreeHeaders,
-                        credentials: "include",
-                        priority: "low" as RequestInit["priority"],
-                        signal,
-                      }),
-                    "low",
-                  ),
-                  interceptionContext,
-                  mountedSlotsHeader,
-                  undefined,
-                  {
-                    cacheForNavigation: false,
-                    optimisticRouteShell: false,
-                    prefetchKind: "route-tree",
-                  },
-                );
-                routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
-              }
-              await routeTreeEntry?.pending?.catch(() => {});
-              routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
-              const renderedPathAndSearch = routeTreeEntry?.snapshot?.renderedPathAndSearch;
-              if (renderedPathAndSearch) {
-                const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
-                const cachedRenderedResponse = peekPrefetchResponseForNavigation(
-                  renderedRscUrl,
-                  interceptionContext,
-                  mountedSlotsHeader,
-                );
-                if (cachedRenderedResponse) {
-                  return restoreRscResponse(cachedRenderedResponse);
-                }
-              }
-              return fetchFullRscPayload();
-            })()
+          ? fetchRouteTreeGatedPrefetch({
+              fetchFullRscPayload,
+              fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
+                scheduleAppPrefetchFetch(
+                  (signal) =>
+                    fetch(routeTreeRscUrl, {
+                      headers: routeTreeHeaders,
+                      credentials: "include",
+                      priority: "low" as RequestInit["priority"],
+                      signal,
+                    }),
+                  "low",
+                ),
+              fullHref,
+              headers,
+              interceptionContext,
+              mountedSlotsHeader,
+            })
           : fetchFullRscPayload();
       prefetchRscResponse(
         rscUrl,
