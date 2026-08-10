@@ -18,6 +18,7 @@ type ProductionApp = {
     adminOnly: string;
     adminShared: string;
     boundaryOnly: string;
+    cachedProtected: string;
     cookieOwner: string;
     dynamicProtected: string;
     globalErrorOnly: string;
@@ -110,6 +111,7 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       adminOnly: findActionId(builtSource, "$$hoist_0_adminOnly"),
       adminShared: findActionId(builtSource, "adminSharedAction"),
       boundaryOnly: findActionId(builtSource, "boundaryOnlyAction"),
+      cachedProtected: findActionId(builtSource, "cachedProtectedAction"),
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
       globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),
@@ -261,11 +263,12 @@ test.describe("production server action ownership", () => {
       ["mixed", "mixed-static", "MIXED_STATIC_OK"],
       ["mixed", "mixed-dynamic", "MIXED_DYNAMIC_OK"],
       ["report/dynamic/example", "dynamic-protected", "DYNAMIC_PROTECTED_ACTION_EXECUTED"],
+      ["report/cache-owner", "cached-protected", "CACHED_PROTECTED_ACTION_EXECUTED"],
       ["report/shared", "public-shared", "PUBLIC_SHARED_ACTION_EXECUTED"],
       ["same-name/action-owner", "same-name-action", "SAME_NAME_ACTION_OK:distinct"],
     ] as const;
 
-    const expectedAssertions = 23;
+    const expectedAssertions = 24;
     let completedAssertions = 0;
     for (const [route, id, expected] of cases) {
       await expect(await executeAction(page, route, id)).toHaveText(expected);
@@ -357,6 +360,17 @@ test.describe("production server action ownership", () => {
     expect(response.status).toBe(200);
     expect(response.body).toBe("{}");
     expect(response.body).not.toContain("PROTECTED_CLIENT_ACTION_EXECUTED");
+  });
+
+  test("routes callable cached references through their owner middleware", async ({ page }) => {
+    const response = await postAction(
+      page,
+      "/ownership/report/public",
+      app.actionIds.cachedProtected,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toBe("{}");
+    expect(response.body).not.toContain("CACHED_PROTECTED_ACTION_EXECUTED");
   });
 
   test("keeps offline-computable production action ids harmless", async ({ page }) => {
