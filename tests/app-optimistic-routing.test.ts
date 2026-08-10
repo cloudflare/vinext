@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Fragment, isValidElement, Suspense } from "react";
+import { createElement, Fragment, isValidElement, Suspense, type ReactNode } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -123,6 +123,24 @@ function createBlogElements(): AppElements {
       createElement("main", null, "Page slot"),
     ),
   };
+}
+
+function elementTreeContainsText(value: unknown, text: string, depth = 0): boolean {
+  if (depth > 200) return false;
+  if (value === text) return true;
+  if (Array.isArray(value)) {
+    return value.some((entry) => elementTreeContainsText(entry, text, depth + 1));
+  }
+  if (!isValidElement<{ children?: unknown }>(value)) return false;
+  return elementTreeContainsText(value.props.children, text, depth + 1);
+}
+
+function nestElement(value: ReactNode, depth: number): ReactNode {
+  let nested: ReactNode = value;
+  for (let index = 0; index < depth; index++) {
+    nested = createElement("div", null, nested);
+  }
+  return nested;
 }
 
 function createBlogLoadingShellElements(): AppElements {
@@ -666,6 +684,98 @@ describe("App Router optimistic routing", () => {
     });
 
     expect(createOptimisticRouteElements(template!)[pageId]).not.toBe(legacyBoundary);
+  });
+
+  it("replaces every page Suspense child for conservative completion metadata", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/conservative/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/conservative/:itemId",
+        patternParts: ["conservative", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/conservative/phone", null);
+    const pageId = AppElementsWire.encodePageId("/conservative/phone", null);
+    const firstBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading first") },
+      createElement("div", null, "Stale first"),
+    );
+    const secondBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading second") },
+      createElement("div", null, "Stale second"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement("section", null, firstBoundary, secondBoundary),
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/conservative/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      pageAllSuspenseDynamic: true,
+      preservePageElements: true,
+      routeManifest,
+    });
+    const optimistic = createOptimisticRouteElements(template!);
+
+    expect(optimistic[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("discards conservative page subtrees beyond the traversal depth limit", async () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/deep/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/deep/:itemId",
+        patternParts: ["deep", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/deep/phone", null);
+    const pageId = AppElementsWire.encodePageId("/deep/phone", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: nestElement("Stale beyond traversal limit", 105) as never,
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/deep/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      pageAllSuspenseDynamic: true,
+      preservePageElements: true,
+      routeManifest,
+    })!;
+
+    expect(elementTreeContainsText(elements[pageId], "Stale beyond traversal limit")).toBe(true);
+    const synchronous = createOptimisticRouteElements(template);
+    expect(elementTreeContainsText(synchronous[pageId], "Stale beyond traversal limit")).toBe(
+      false,
+    );
+
+    const prepared = await prepareOptimisticRouteTemplate(template);
+    expect(elementTreeContainsText(prepared.elements[pageId], "Stale beyond traversal limit")).toBe(
+      false,
+    );
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {

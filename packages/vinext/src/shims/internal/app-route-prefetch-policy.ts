@@ -107,6 +107,18 @@ function mergeVaryParamNames(
   return Array.from(new Set([...(current ?? []), ...observed])).sort();
 }
 
+function getAllRouteParamNames(route: VinextLinkPrefetchRoute): string[] {
+  const names = new Set<string>();
+  for (const part of route.patternParts) {
+    if (!part.startsWith(":")) continue;
+    names.add(part.replace(/^:/, "").replace(/[+*]$/, ""));
+  }
+  for (const slot of route.slotParamPatterns ?? []) {
+    for (const name of slot.paramNames) names.add(name);
+  }
+  return [...names];
+}
+
 function resolvePrefetchSlotVaryKey(
   url: URL,
   route: VinextLinkPrefetchRoute,
@@ -163,20 +175,22 @@ export function learnAppPrefetchVaryMetadata(
   if (!match) return;
 
   const route = match.route;
-  route.loadingShellVaryParamNames = mergeVaryParamNames(
-    route.loadingShellVaryParamNames,
-    metadata.loadingParamNames,
-  );
-  route.metadataVaryParamNames = mergeVaryParamNames(
-    route.metadataVaryParamNames,
-    metadata.metadataParamNames,
-  );
-  route.prefetchVaryParamNames = mergeVaryParamNames(
-    route.prefetchVaryParamNames,
-    metadata.pageParamNames,
-  );
+  const conservativeParamNames = metadata.varyAllParams ? getAllRouteParamNames(route) : [];
+  route.loadingShellVaryParamNames = mergeVaryParamNames(route.loadingShellVaryParamNames, [
+    ...metadata.loadingParamNames,
+    ...conservativeParamNames,
+  ]);
+  route.metadataVaryParamNames = mergeVaryParamNames(route.metadataVaryParamNames, [
+    ...metadata.metadataParamNames,
+    ...conservativeParamNames,
+  ]);
+  route.prefetchVaryParamNames = mergeVaryParamNames(route.prefetchVaryParamNames, [
+    ...metadata.pageParamNames,
+    ...conservativeParamNames,
+  ]);
   route.runtimePrefetchVaryParamNames = mergeVaryParamNames(route.runtimePrefetchVaryParamNames, [
     ...metadata.pageParamNames,
+    ...conservativeParamNames,
   ]);
   route.prefetchVarySearchParams ||= metadata.pageSearchParams;
   route.loadingShellVarySearchParams ||= metadata.metadataSearchParams;

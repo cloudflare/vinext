@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { toLinkPrefetchRoute } from "../packages/vinext/src/entries/app-browser-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import {
+  appendRscCompletionMetadata,
+  decodePrefetchVaryHeader,
+  extractRscCompletionMetadata,
+} from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import {
   encodeAppPrefetchRuntimeTemplateVariantKey,
   learnAppPrefetchVaryMetadata,
   resolveAutoAppRoutePrefetch,
@@ -267,6 +272,112 @@ describe("App Router prefetch vary analysis", () => {
       );
       expect(resolveAppPrefetchSharedCacheKey("/items/books/one?q=1", "loading-shell")).not.toBe(
         resolveAppPrefetchSharedCacheKey("/items/books/one?q=2", "loading-shell"),
+      );
+    } finally {
+      if (originalFlags.cacheComponents === undefined) delete process.env.__NEXT_CACHE_COMPONENTS;
+      else process.env.__NEXT_CACHE_COMPONENTS = originalFlags.cacheComponents;
+      if (originalFlags.optimisticRouting === undefined)
+        delete process.env.__VINEXT_OPTIMISTIC_ROUTING;
+      else process.env.__VINEXT_OPTIMISTIC_ROUTING = originalFlags.optimisticRouting;
+      if (originalFlags.varyParams === undefined) delete process.env.__VINEXT_VARY_PARAMS;
+      else process.env.__VINEXT_VARY_PARAMS = originalFlags.varyParams;
+      if (originalWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = originalWindow;
+    }
+  });
+
+  it("keeps late param variation after oversized Suspense metadata is coarsened", async () => {
+    const originalWindow = globalThis.window;
+    const originalFlags = {
+      cacheComponents: process.env.__NEXT_CACHE_COMPONENTS,
+      optimisticRouting: process.env.__VINEXT_OPTIMISTIC_ROUTING,
+      varyParams: process.env.__VINEXT_VARY_PARAMS,
+    };
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    process.env.__VINEXT_OPTIMISTIC_ROUTING = "true";
+    process.env.__VINEXT_VARY_PARAMS = "true";
+    const route = createRoute();
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/items/books/one",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [route],
+    };
+    try {
+      const pageDynamicSuspenseOrdinalsByElementId = Object.fromEntries(
+        Array.from({ length: 64 }, (_, index) => [`page:${index}:${"x".repeat(230)}`, [index % 4]]),
+      );
+      const body = appendRscCompletionMetadata(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-payload"));
+            controller.close();
+          },
+        }),
+        () => ({
+          prefetchVary: {
+            loadingParamNames: [],
+            metadataParamNames: [],
+            metadataSearchParams: false,
+            pageDynamicSuspenseOrdinals: [0, 1, 2, 3],
+            pageDynamicSuspenseOrdinalsByElementId,
+            // This dependency is observed only after the initial response
+            // headers, inside a late Suspense render.
+            pageParamNames: ["itemId"],
+            pageSearchParams: false,
+          },
+        }),
+      );
+      const extracted = extractRscCompletionMetadata(await new Response(body).arrayBuffer());
+      expect(new TextDecoder().decode(extracted.buffer)).toBe("flight-payload");
+      expect(extracted.metadata?.prefetchVary).not.toHaveProperty(
+        "pageDynamicSuspenseOrdinalsByElementId",
+      );
+
+      learnAppPrefetchVaryMetadata("/items/books/one", extracted.metadata!.prefetchVary!);
+      expect(resolveAppPrefetchSharedCacheKey("/items/books/one", "navigation")).not.toBe(
+        resolveAppPrefetchSharedCacheKey("/items/books/two", "navigation"),
+      );
+    } finally {
+      if (originalFlags.cacheComponents === undefined) delete process.env.__NEXT_CACHE_COMPONENTS;
+      else process.env.__NEXT_CACHE_COMPONENTS = originalFlags.cacheComponents;
+      if (originalFlags.optimisticRouting === undefined)
+        delete process.env.__VINEXT_OPTIMISTIC_ROUTING;
+      else process.env.__VINEXT_OPTIMISTIC_ROUTING = originalFlags.optimisticRouting;
+      if (originalFlags.varyParams === undefined) delete process.env.__VINEXT_VARY_PARAMS;
+      else process.env.__VINEXT_VARY_PARAMS = originalFlags.varyParams;
+      if (originalWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = originalWindow;
+    }
+  });
+
+  it("learns malformed wire metadata as vary-all instead of sharing by omission", () => {
+    const originalWindow = globalThis.window;
+    const originalFlags = {
+      cacheComponents: process.env.__NEXT_CACHE_COMPONENTS,
+      optimisticRouting: process.env.__VINEXT_OPTIMISTIC_ROUTING,
+      varyParams: process.env.__VINEXT_VARY_PARAMS,
+    };
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    process.env.__VINEXT_OPTIMISTIC_ROUTING = "true";
+    process.env.__VINEXT_VARY_PARAMS = "true";
+    const route = createRoute();
+    (globalThis as any).window = {
+      location: { href: "http://localhost/", origin: "http://localhost" },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [route],
+    };
+    try {
+      learnAppPrefetchVaryMetadata("/items/books/one", decodePrefetchVaryHeader("%invalid")!);
+
+      expect(resolveAppPrefetchSharedCacheKey("/items/books/one", "navigation")).not.toBe(
+        resolveAppPrefetchSharedCacheKey("/items/books/two", "navigation"),
+      );
+      expect(resolveAppPrefetchSharedCacheKey("/items/books/one", "navigation")).not.toBe(
+        resolveAppPrefetchSharedCacheKey("/items/games/one", "navigation"),
+      );
+      expect(resolveAppPrefetchSharedCacheKey("/items/books/one?q=1", "navigation")).not.toBe(
+        resolveAppPrefetchSharedCacheKey("/items/books/one?q=2", "navigation"),
       );
     } finally {
       if (originalFlags.cacheComponents === undefined) delete process.env.__NEXT_CACHE_COMPONENTS;

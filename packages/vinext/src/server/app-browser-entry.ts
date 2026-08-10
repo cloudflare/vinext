@@ -507,6 +507,8 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    pageAllSuspenseDynamic:
+      preservePageElements && options.entry.snapshot.prefetchVary?.pageAllSuspenseDynamic === true,
     preservePageElements,
     routeManifest: options.routeManifest,
     variantKey,

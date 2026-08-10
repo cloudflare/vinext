@@ -20,10 +20,18 @@ export type VinextPrefetchVaryMetadata = {
   loadingParamNames: string[];
   metadataParamNames: string[];
   metadataSearchParams: boolean;
+  /** Treat every preserved page Suspense child as runtime-only. */
+  pageAllSuspenseDynamic?: boolean;
   pageDynamicSuspenseOrdinals: number[];
   pageDynamicSuspenseOrdinalsByElementId?: Record<string, number[]>;
   pageParamNames: string[];
   pageSearchParams: boolean;
+  /**
+   * Conservative wire fallback used when the precise dependency set cannot be
+   * represented within the completion-metadata framing limit. The client must
+   * then key every route and parallel-slot param by value.
+   */
+  varyAllParams?: boolean;
 };
 
 export type VinextLinkPrefetchRoute = {

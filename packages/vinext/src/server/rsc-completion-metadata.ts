@@ -8,6 +8,7 @@ const FOOTER_TAG_BYTE = 0x00;
 const FOOTER_PREFIX_BYTES = 2;
 const FOOTER_LENGTH_BYTES = 4;
 const MAX_FOOTER_BYTES = 4096;
+const MAX_PREFETCH_VARY_HEADER_LENGTH = 4096;
 
 export type RscCompletionMetadata = Readonly<{
   dynamicStaleTimeSeconds?: number;
@@ -19,10 +20,18 @@ function isDynamicStaleTimeSeconds(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isDenseArray(value: readonly unknown[]): boolean {
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
+}
+
 function isStringArray(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&
     value.length <= 64 &&
+    isDenseArray(value) &&
     value.every((entry) => typeof entry === "string" && entry.length <= 128)
   );
 }
@@ -31,6 +40,7 @@ function isOrdinalArray(value: unknown): value is number[] {
   return (
     Array.isArray(value) &&
     value.length <= 64 &&
+    isDenseArray(value) &&
     value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 1000)
   );
 }
@@ -39,24 +49,43 @@ function isOrdinalRecord(value: unknown): value is Record<string, number[]> {
   return (
     typeof value === "object" &&
     value !== null &&
+    !Array.isArray(value) &&
     Object.keys(value).length <= 64 &&
     Object.entries(value).every(([key, ordinals]) => key.length <= 256 && isOrdinalArray(ordinals))
+  );
+}
+
+function isOrdinalRecordCoveredByGlobalUnion(
+  record: Record<string, number[]>,
+  globalOrdinals: readonly number[],
+): boolean {
+  const globalOrdinalSet = new Set(globalOrdinals);
+  return Object.values(record).every((ordinals) =>
+    ordinals.every((ordinal) => globalOrdinalSet.has(ordinal)),
   );
 }
 
 export function parsePrefetchVaryMetadata(value: unknown): VinextPrefetchVaryMetadata | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const fields = value as Record<string, unknown>;
+  const pageDynamicSuspenseOrdinals = fields.pageDynamicSuspenseOrdinals ?? [];
+  const pageDynamicSuspenseOrdinalsByElementId = fields.pageDynamicSuspenseOrdinalsByElementId;
   if (
     !isStringArray(fields.loadingParamNames) ||
     (fields.metadataParamNames !== undefined && !isStringArray(fields.metadataParamNames)) ||
     typeof fields.metadataSearchParams !== "boolean" ||
-    (fields.pageDynamicSuspenseOrdinals !== undefined &&
-      !isOrdinalArray(fields.pageDynamicSuspenseOrdinals)) ||
-    (fields.pageDynamicSuspenseOrdinalsByElementId !== undefined &&
-      !isOrdinalRecord(fields.pageDynamicSuspenseOrdinalsByElementId)) ||
+    (fields.pageAllSuspenseDynamic !== undefined &&
+      typeof fields.pageAllSuspenseDynamic !== "boolean") ||
+    !isOrdinalArray(pageDynamicSuspenseOrdinals) ||
+    (pageDynamicSuspenseOrdinalsByElementId !== undefined &&
+      (!isOrdinalRecord(pageDynamicSuspenseOrdinalsByElementId) ||
+        !isOrdinalRecordCoveredByGlobalUnion(
+          pageDynamicSuspenseOrdinalsByElementId,
+          pageDynamicSuspenseOrdinals,
+        ))) ||
     !isStringArray(fields.pageParamNames) ||
-    typeof fields.pageSearchParams !== "boolean"
+    typeof fields.pageSearchParams !== "boolean" ||
+    (fields.varyAllParams !== undefined && typeof fields.varyAllParams !== "boolean")
   ) {
     return undefined;
   }
@@ -64,38 +93,83 @@ export function parsePrefetchVaryMetadata(value: unknown): VinextPrefetchVaryMet
     loadingParamNames: fields.loadingParamNames,
     metadataParamNames: fields.metadataParamNames ?? [],
     metadataSearchParams: fields.metadataSearchParams,
-    pageDynamicSuspenseOrdinals: fields.pageDynamicSuspenseOrdinals ?? [],
-    ...(fields.pageDynamicSuspenseOrdinalsByElementId === undefined
+    ...(fields.pageAllSuspenseDynamic === true ? { pageAllSuspenseDynamic: true } : {}),
+    pageDynamicSuspenseOrdinals,
+    ...(pageDynamicSuspenseOrdinalsByElementId === undefined
       ? {}
       : {
-          pageDynamicSuspenseOrdinalsByElementId: fields.pageDynamicSuspenseOrdinalsByElementId,
+          pageDynamicSuspenseOrdinalsByElementId,
         }),
     pageParamNames: fields.pageParamNames,
     pageSearchParams: fields.pageSearchParams,
+    ...(fields.varyAllParams === true ? { varyAllParams: true } : {}),
   };
 }
 
+function createConservativePrefetchVaryMetadata(): VinextPrefetchVaryMetadata {
+  return {
+    loadingParamNames: [],
+    metadataParamNames: [],
+    // A malformed or irreducibly large claim must not let query-dependent
+    // output share either. Over-varying is preferable to stale content.
+    metadataSearchParams: true,
+    pageAllSuspenseDynamic: true,
+    pageDynamicSuspenseOrdinals: [],
+    pageParamNames: [],
+    pageSearchParams: true,
+    varyAllParams: true,
+  };
+}
+
+function prefetchVaryWireCandidates(
+  metadata: VinextPrefetchVaryMetadata,
+): VinextPrefetchVaryMetadata[] {
+  const parsed = parsePrefetchVaryMetadata(metadata);
+  if (parsed === undefined) return [createConservativePrefetchVaryMetadata()];
+
+  const candidates = [parsed];
+  if (parsed.pageDynamicSuspenseOrdinalsByElementId !== undefined) {
+    const { pageDynamicSuspenseOrdinalsByElementId: _, ...coarsened } = parsed;
+    // The flat ordinal union applies to every page element when the keyed map
+    // is absent. That can discard extra dynamic children, but cannot retain a
+    // child that was observed as dynamic, so it is a safe bounded fallback.
+    candidates.push(coarsened);
+  }
+  candidates.push(createConservativePrefetchVaryMetadata());
+  return candidates;
+}
+
 export function encodePrefetchVaryHeader(metadata: VinextPrefetchVaryMetadata): string {
-  return encodeURIComponent(JSON.stringify(metadata));
+  for (const candidate of prefetchVaryWireCandidates(metadata)) {
+    const encoded = encodeURIComponent(JSON.stringify(candidate));
+    if (encoded.length <= MAX_PREFETCH_VARY_HEADER_LENGTH) return encoded;
+  }
+  // The conservative candidate is fixed-size, so this path remains bounded
+  // even if the limit is accidentally reduced below its current contract.
+  return encodeURIComponent(JSON.stringify(createConservativePrefetchVaryMetadata()));
 }
 
 export function decodePrefetchVaryHeader(
   value: string | null,
 ): VinextPrefetchVaryMetadata | undefined {
   if (value === null) return undefined;
+  if (value.length > MAX_PREFETCH_VARY_HEADER_LENGTH) {
+    return createConservativePrefetchVaryMetadata();
+  }
   try {
-    return parsePrefetchVaryMetadata(JSON.parse(decodeURIComponent(value)));
+    return (
+      parsePrefetchVaryMetadata(JSON.parse(decodeURIComponent(value))) ??
+      createConservativePrefetchVaryMetadata()
+    );
   } catch {
-    return undefined;
+    return createConservativePrefetchVaryMetadata();
   }
 }
 
-function encodeFooter(metadata: RscCompletionMetadata): Uint8Array | undefined {
+function encodeFooterCandidate(metadata: RscCompletionMetadata): Uint8Array | undefined {
   const payload = encoder.encode(JSON.stringify(metadata));
   const footer = new Uint8Array(payload.byteLength + FOOTER_LENGTH_BYTES + FOOTER_PREFIX_BYTES);
-  if (footer.byteLength > MAX_FOOTER_BYTES) {
-    return undefined;
-  }
+  if (footer.byteLength > MAX_FOOTER_BYTES) return undefined;
   footer[0] = FRAME_ESCAPE_BYTE;
   footer[1] = FOOTER_TAG_BYTE;
   footer.set(payload, FOOTER_PREFIX_BYTES);
@@ -104,6 +178,40 @@ function encodeFooter(metadata: RscCompletionMetadata): Uint8Array | undefined {
     payload.byteLength,
   );
   return footer;
+}
+
+function createCompletionMetadataCandidate(
+  metadata: RscCompletionMetadata,
+  prefetchVary: VinextPrefetchVaryMetadata | undefined,
+): RscCompletionMetadata {
+  return {
+    ...(isDynamicStaleTimeSeconds(metadata.dynamicStaleTimeSeconds)
+      ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
+      : {}),
+    ...(prefetchVary === undefined ? {} : { prefetchVary }),
+    ...(metadata.serverStaleTimeSeconds === null ||
+    isDynamicStaleTimeSeconds(metadata.serverStaleTimeSeconds)
+      ? { serverStaleTimeSeconds: metadata.serverStaleTimeSeconds }
+      : {}),
+  };
+}
+
+function encodeFooter(metadata: RscCompletionMetadata): Uint8Array {
+  if (metadata.prefetchVary !== undefined) {
+    for (const candidate of prefetchVaryWireCandidates(metadata.prefetchVary)) {
+      const footer = encodeFooterCandidate(createCompletionMetadataCandidate(metadata, candidate));
+      if (footer !== undefined) return footer;
+    }
+  } else {
+    const footer = encodeFooterCandidate(createCompletionMetadataCandidate(metadata, undefined));
+    if (footer !== undefined) return footer;
+  }
+  // Known scalar fields plus the conservative candidate are fixed-size. The
+  // non-null assertion documents that invariant without adding a stream-time
+  // failure branch for producer metadata.
+  return encodeFooterCandidate(
+    createCompletionMetadataCandidate(metadata, createConservativePrefetchVaryMetadata()),
+  )!;
 }
 
 function invalidFooter(): never {
@@ -239,8 +347,7 @@ export function appendRscCompletionMetadata(
       }
       const metadata = getMetadata();
       if (metadata) {
-        const footer = encodeFooter(metadata);
-        if (footer) controller.enqueue(footer);
+        controller.enqueue(encodeFooter(metadata));
       }
       controller.close();
     },

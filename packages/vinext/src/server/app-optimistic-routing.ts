@@ -35,6 +35,7 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
+  pageAllSuspenseDynamic?: boolean;
   dynamicSuspenseOrdinals?: readonly number[];
   dynamicSuspenseOrdinalsByPageElementId?: Readonly<Record<string, readonly number[]>>;
   mountedSlotsHeader: string | null;
@@ -323,16 +324,22 @@ type SuspenseReplacementResult = {
 function replaceObservedDynamicSuspenseChildren(
   value: AppElementValue,
   dynamicOrdinals: ReadonlySet<number>,
+  replaceAllSuspense: boolean,
   nextOrdinal: { value: number },
   depth = 0,
 ): SuspenseReplacementResult {
-  if (depth > 100) return { replaced: false, value };
+  if (depth > 100) {
+    return replaceAllSuspense
+      ? { replaced: true, value: createElement(OptimisticRouteSegment) }
+      : { replaced: false, value };
+  }
   if (Array.isArray(value)) {
     let replaced = false;
     const nextValue = value.map((entry) => {
       const result = replaceObservedDynamicSuspenseChildren(
         entry,
         dynamicOrdinals,
+        replaceAllSuspense,
         nextOrdinal,
         depth + 1,
       );
@@ -346,7 +353,7 @@ function replaceObservedDynamicSuspenseChildren(
   if (!isUnknownRecord(props)) return { replaced: false, value };
   const isSuspense = value.type === Suspense;
   const suspenseOrdinal = isSuspense ? nextOrdinal.value++ : null;
-  if (suspenseOrdinal !== null && dynamicOrdinals.has(suspenseOrdinal)) {
+  if (suspenseOrdinal !== null && (replaceAllSuspense || dynamicOrdinals.has(suspenseOrdinal))) {
     return {
       replaced: true,
       value: cloneElement(value as ReactElement, undefined, createElement(OptimisticRouteSegment)),
@@ -356,7 +363,13 @@ function replaceObservedDynamicSuspenseChildren(
   const childResult =
     children === undefined
       ? { replaced: false, value: children as AppElementValue }
-      : replaceObservedDynamicSuspenseChildren(children, dynamicOrdinals, nextOrdinal, depth + 1);
+      : replaceObservedDynamicSuspenseChildren(
+          children,
+          dynamicOrdinals,
+          replaceAllSuspense,
+          nextOrdinal,
+          depth + 1,
+        );
   if (childResult.replaced) {
     return {
       replaced: true,
@@ -384,10 +397,15 @@ function readReactLazyNode(value: unknown): {
 async function replaceObservedDynamicSuspenseChildrenAsync(
   value: AppElementValue,
   dynamicOrdinals: ReadonlySet<number>,
+  replaceAllSuspense: boolean,
   nextOrdinal: { value: number },
   depth = 0,
 ): Promise<SuspenseReplacementResult> {
-  if (depth > 100) return { replaced: false, value };
+  if (depth > 100) {
+    return replaceAllSuspense
+      ? { replaced: true, value: createElement(OptimisticRouteSegment) }
+      : { replaced: false, value };
+  }
 
   const lazyNode = readReactLazyNode(value);
   if (lazyNode !== null) {
@@ -402,6 +420,7 @@ async function replaceObservedDynamicSuspenseChildrenAsync(
     return replaceObservedDynamicSuspenseChildrenAsync(
       resolved as AppElementValue,
       dynamicOrdinals,
+      replaceAllSuspense,
       nextOrdinal,
       depth + 1,
     );
@@ -414,6 +433,7 @@ async function replaceObservedDynamicSuspenseChildrenAsync(
       const result = await replaceObservedDynamicSuspenseChildrenAsync(
         entry,
         dynamicOrdinals,
+        replaceAllSuspense,
         nextOrdinal,
         depth + 1,
       );
@@ -427,7 +447,7 @@ async function replaceObservedDynamicSuspenseChildrenAsync(
   if (!isUnknownRecord(props)) return { replaced: false, value };
   const isSuspense = value.type === Suspense;
   const suspenseOrdinal = isSuspense ? nextOrdinal.value++ : null;
-  if (suspenseOrdinal !== null && dynamicOrdinals.has(suspenseOrdinal)) {
+  if (suspenseOrdinal !== null && (replaceAllSuspense || dynamicOrdinals.has(suspenseOrdinal))) {
     return {
       replaced: true,
       value: cloneElement(value as ReactElement, undefined, createElement(OptimisticRouteSegment)),
@@ -438,6 +458,7 @@ async function replaceObservedDynamicSuspenseChildrenAsync(
   const childResult = await replaceObservedDynamicSuspenseChildrenAsync(
     children,
     dynamicOrdinals,
+    replaceAllSuspense,
     nextOrdinal,
     depth + 1,
   );
@@ -475,6 +496,7 @@ export async function prepareOptimisticRouteTemplate(
     const result = await replaceObservedDynamicSuspenseChildrenAsync(
       preserved,
       new Set(dynamicOrdinals ?? []),
+      template.pageAllSuspenseDynamic === true,
       { value: 0 },
     );
     elements[pageElementId] = result.value;
@@ -487,6 +509,7 @@ export function createOptimisticRouteTemplate(options: {
   allowLoadingShell?: boolean;
   basePath: string;
   elements: AppElements;
+  pageAllSuspenseDynamic?: boolean;
   dynamicSuspenseOrdinals?: readonly number[];
   dynamicSuspenseOrdinalsByPageElementId?: Readonly<Record<string, readonly number[]>>;
   href: string;
@@ -544,6 +567,7 @@ export function createOptimisticRouteTemplate(options: {
 
   return {
     elements: options.elements,
+    ...(options.pageAllSuspenseDynamic === true ? { pageAllSuspenseDynamic: true } : {}),
     ...(options.dynamicSuspenseOrdinals && options.dynamicSuspenseOrdinals.length > 0
       ? { dynamicSuspenseOrdinals: [...options.dynamicSuspenseOrdinals] }
       : {}),
@@ -574,6 +598,7 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
         const result = replaceObservedDynamicSuspenseChildren(
           preserved,
           new Set(dynamicOrdinals ?? []),
+          template.pageAllSuspenseDynamic === true,
           { value: 0 },
         );
         elements[pageElementId] = result.value;
