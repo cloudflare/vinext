@@ -307,7 +307,9 @@ test.describe("Next.js compat: client cache", () => {
 
     await page.click(`a[href="${home}"]`);
     await expect(page.locator("#client-cache-search-home")).toBeVisible();
-    await advanceTime(page, 270_000);
+    // Next's BFCache-backed Full-prefetch path remains claimable at the exact
+    // static deadline and expires immediately after it.
+    await advanceTime(page, 270_001);
     requests.length = 0;
     await page.click(`a[href="${target}?timeout=0"]`);
     await expect(page.locator("#client-cache-search-id")).toHaveText("0");
@@ -422,7 +424,9 @@ test.describe("Next.js compat: client cache", () => {
     await cachedHomeLink.click();
     await expect(page.locator("#client-cache-home")).toBeVisible();
 
-    await advanceTime(page, 5 * 60 * 1_000);
+    // Cross the static deadline: Next accepts a BFCache-backed Full-prefetch
+    // claim when `now === staleAt` and rejects it only once `now > staleAt`.
+    await advanceTime(page, 5 * 60 * 1_000 + 1);
 
     requests.length = 0;
     const renewedTargetLink = await revealAccordionLink(page, `${ROOT}/0`);
