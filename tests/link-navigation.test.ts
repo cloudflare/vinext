@@ -1768,6 +1768,170 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("does not resume a Link prefetch across a cache invalidation (#2718)", async () => {
+    // A hover intent rather than a viewport entry: invalidation re-pings
+    // *visible* links so they legitimately re-prefetch the fresh generation,
+    // which would mask the stale resume this test pins down. A hovered link
+    // gets no re-ping, so any fetch below can only come from the cancelled
+    // setup resuming.
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+    });
+    const { getPrefetchCache, invalidatePrefetchCache } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    try {
+      // The intent prefetch starts synchronously, so its setup is in flight
+      // (registered, awaiting its module imports) when router.refresh()
+      // reaches invalidatePrefetchCache().
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      invalidatePrefetchCache();
+      await flushPrefetchTasks();
+
+      // A resumed setup would repopulate a navigation-reusable entry built
+      // from the pre-refresh cache generation.
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(getPrefetchCache().size).toBe(0);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  // A navigation cancels Link prefetch setup only for the route it is about
+  // to fetch itself. These two cases differ only in where the navigation
+  // goes, so together they pin the scoping: a global "any navigation cancels
+  // everything" rule passes the first and fails the second.
+  it("cancels a pending Link prefetch superseded by a navigation to the same route (#2718)", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+    const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+
+    try {
+      // Yield one microtask so the queued viewport prefetch has started its
+      // setup before the navigation begins.
+      observer.dispatchIntersectingEntry(result.anchor);
+      await Promise.resolve();
+      // The navigation fetches this route itself; a late prefetch would make
+      // it two requests for one route. Only the synchronous navigation-start
+      // notification matters here — the harness runtime stubs the actual
+      // navigation, so any fetch below can only come from the prefetch.
+      void navigateClientSide("/viewport-prefetch-target", "push", false).catch(() => {});
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps a pending Link prefetch when the navigation goes elsewhere (#2718)", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+    const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await Promise.resolve();
+      // Nothing else is going to fetch the link's route, so dropping its
+      // pending prefetch here would make viewport prefetching depend on
+      // unrelated navigation timing.
+      void navigateClientSide("/intent-prefetch-target", "push", false).catch(() => {});
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("cancels a pending Link prefetch on same-route navigation under a basePath (#2718)", async () => {
+    // The cancellation key must come from the app-relative href on both sides.
+    // Deriving it from the basePath-prefixed browser href double-prefixes it
+    // (/docs + /docs/intent-prefetch-target), so the navigation's key never
+    // matches and the same-route prefetch survives as a duplicate request.
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        location: {
+          href: "https://example.com/docs/current",
+          origin: "https://example.com",
+          pathname: "/docs/current",
+          search: "",
+        },
+      },
+    });
+    const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      void navigateClientSide("/intent-prefetch-target", "push", false).catch(() => {});
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not register a staged loading shell after a cache invalidation (#2718)", async () => {
+    // An explicit full prefetch launches its loading-shell warmup without
+    // awaiting it, and the outer setup finishes while that helper is still
+    // awaiting createRscRequestUrl(). Hover intent rather than a viewport
+    // entry, for the same reason as the invalidation test above: a visible
+    // link would legitimately re-prefetch after the invalidation and mask the
+    // staged leak.
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+    const { getPrefetchCache, invalidatePrefetchCache } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    try {
+      // Timing, driven entirely from the stubbed fetch boundary: a
+      // high-priority intent prefetch issues its full-payload fetch
+      // synchronously inside the setup closure, in the same synchronous
+      // stretch that launches the shell helper. A microtask scheduled from
+      // that fetch call therefore runs after the closure returns but before
+      // the helper's createRscRequestUrl() can resolve — its SHA-256 digest
+      // completes through the event loop — so the invalidation lands
+      // deterministically inside the helper's pre-write window.
+      result.fetch.mockImplementationOnce(() => {
+        void Promise.resolve().then(() => invalidatePrefetchCache());
+        return Promise.resolve(new Response(""));
+      });
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      // A resumed helper would fetch the shell and register it in the
+      // invalidated cache generation.
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expect(getPrefetchCache().size).toBe(0);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches a visible Link when the exact cache entry has gone stale", async () => {
     const observer = stubIntersectionObserver();
 

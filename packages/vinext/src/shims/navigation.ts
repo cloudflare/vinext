@@ -65,6 +65,12 @@ import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
+import {
+  beginPrefetchSetup,
+  cancelPendingPrefetchSetups,
+  finishPrefetchSetup,
+  toAppPrefetchDestination,
+} from "./internal/app-prefetch-setup.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
   resolveDirectHybridClientRouteOwner,
@@ -782,68 +788,6 @@ function evictPrefetchCacheIfNeeded(): void {
     } else {
       break;
     }
-  }
-}
-
-/**
- * `router.prefetch()` calls whose asynchronous setup is still running. Each one
- * registers a token before its first `await` and re-checks `cancelled` after,
- * so superseded setup cannot register a cache entry or start a request.
- *
- * Cancellation is sticky and scoped to the destination:
- *   - a navigation to the same href (`notifyAppNavigationStart`) will fetch that
- *     route itself, so a late prefetch would duplicate the request. Navigations
- *     elsewhere leave the prefetch alone — nothing else is going to fetch it,
- *     and dropping it would make an explicit prefetch timing-dependent.
- *   - invalidating the whole cache (`invalidatePrefetchCache`, reached via
- *     `router.refresh()`) cancels every pending setup, which would otherwise
- *     repopulate one route from the pre-refresh generation.
- *
- * Sticky matters: a navigation to `/a` followed by one to `/b` must leave a
- * pending `/a` prefetch cancelled, which comparing against a "current
- * destination" value would not.
- *
- * `linkPrefetchNavigationEpoch` in link.tsx still uses a global counter for the
- * navigation case; unifying the two is tracked separately.
- */
-type PendingPrefetchSetup = { readonly destination: string; cancelled: boolean };
-const pendingPrefetchSetups = new Set<PendingPrefetchSetup>();
-
-function beginPrefetchSetup(destination: string): PendingPrefetchSetup {
-  const setup: PendingPrefetchSetup = { destination, cancelled: false };
-  pendingPrefetchSetups.add(setup);
-  return setup;
-}
-
-/** Passing `null` cancels every pending setup regardless of destination. */
-function cancelPendingPrefetchSetups(destination: string | null): void {
-  for (const setup of pendingPrefetchSetups) {
-    if (destination === null || setup.destination === destination) {
-      setup.cancelled = true;
-    }
-  }
-}
-
-/**
- * Normalize a navigation or prefetch target to the browser href both sides
- * compare on. Returns null when the target is not same-origin — no same-origin
- * prefetch can be a duplicate of it — and on the server, where
- * `navigateClientSide` can still be reached but there is nothing to cancel.
- */
-function toAppPrefetchDestination(href: string): string | null {
-  if (isServer) return null;
-  let localHref = href;
-  if (isExternalUrl(href)) {
-    const localPath = toSameOriginAppPath(href, __basePath);
-    if (localPath == null) return null;
-    localHref = localPath;
-  }
-  const browserHref = toBrowserNavigationHref(localHref, window.location.href, __basePath);
-  try {
-    const url = new URL(browserHref, window.location.href);
-    return `${url.pathname}${url.search}`;
-  } catch {
-    return browserHref.split("#", 1)[0];
   }
 }
 
@@ -2797,7 +2741,7 @@ const _appRouter: AppRouterInstance = {
         console.error("[vinext] RSC prefetch setup error:", error);
       })
       .finally(() => {
-        pendingPrefetchSetups.delete(setup);
+        finishPrefetchSetup(setup);
       });
   },
 };
