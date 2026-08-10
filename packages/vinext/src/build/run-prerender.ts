@@ -35,6 +35,7 @@ import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import { enterPrerenderPhase } from "./prerender-phase.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -161,15 +162,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
-  // Mark the entire prerender orchestration so the socket-error backstop
-  // re-throws peer-disconnect errors during user fetch() calls instead of
-  // silently absorbing them and producing corrupt output. prerender.ts
-  // sets and clears this var around its own render passes, but we widen
-  // the scope here to cover startProdServer / shared-server setup that
-  // happens before those phases run. See server/socket-error-backstop.ts.
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
-  process.env.VINEXT_PRERENDER = "1";
-
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned with the rest of vinext's build output on rebuild and co-located
   // with server artifacts.
@@ -226,6 +218,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // and ensures both phases render against the same built bundle.
   let sharedProdServer: { server: HttpServer; port: number } | null = null;
   let sharedPrerenderSecret: string | undefined;
+  // Match Next's static-worker phase while user modules execute. This wider
+  // scope also covers shared-server startup; the nested router helpers restore
+  // back to this value and this cleanup restores the ordinary caller phase.
+  const restorePrerenderPhase = enterPrerenderPhase();
 
   try {
     if (appDir && pagesDir) {
@@ -319,12 +315,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
     }
   } finally {
-    // Close the shared prod server if we started one.
-    if (sharedProdServer) {
-      await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
+    try {
+      // Close the shared prod server if we started one.
+      if (sharedProdServer) {
+        await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
+      }
+    } finally {
+      restorePrerenderPhase();
     }
-    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
-    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
   }
 
   if (allRoutes.length === 0) {
