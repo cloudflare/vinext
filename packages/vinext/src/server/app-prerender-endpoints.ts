@@ -1,5 +1,6 @@
 import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
 import {
+  VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_PREFETCH_HINTS_PATH,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
@@ -29,6 +30,7 @@ type HandleAppPrerenderEndpointOptions = {
   }) => Promise<TreePrefetch | null>;
   discardPrefetchHead?: (affinity: string) => void;
   isPrerenderEnabled?: () => boolean;
+  getMetadataRoutePaths?: () => Promise<unknown>;
   loadPagesRoutes?: () => Promise<unknown>;
   pathname: string;
   prerenderAffinity?: string | null;
@@ -54,6 +56,11 @@ export async function handleAppPrerenderEndpoint(
   if (options.pathname === VINEXT_PRERENDER_PREFETCH_HINTS_PATH) {
     if (!options.collectPrefetchHints) return null;
     return handlePrefetchHintsEndpoint(request, options);
+  }
+
+  if (options.pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH) {
+    if (!options.getMetadataRoutePaths) return null;
+    return handleMetadataRoutesEndpoint(options);
   }
 
   return null;
@@ -85,6 +92,20 @@ async function handlePrefetchHintsEndpoint(
       rscData,
     });
     return tree ? jsonResponse(tree) : notFoundResponse();
+  } catch (error) {
+    return jsonResponse({ error: String(error) }, 500);
+  }
+}
+
+async function handleMetadataRoutesEndpoint(
+  options: HandleAppPrerenderEndpointOptions,
+): Promise<Response> {
+  if (!isEnabled(options)) {
+    return notFoundResponse();
+  }
+
+  try {
+    return jsonResponse(await options.getMetadataRoutePaths?.());
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
   }

@@ -57,6 +57,9 @@ export const VINEXT_PRERENDER_PREFETCH_HINTS_PATH = "/__vinext/prerender/prefetc
 /** Pins related build-time render requests to the same prerender worker. */
 export const VINEXT_PRERENDER_AFFINITY_HEADER = "x-vinext-prerender-affinity";
 
+/** Internal endpoint used to enumerate cached dynamic metadata route paths. */
+export const VINEXT_PRERENDER_METADATA_ROUTES_PATH = "/__vinext/prerender/metadata-routes";
+
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
 
@@ -80,6 +83,9 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
+
+/** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
+export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
