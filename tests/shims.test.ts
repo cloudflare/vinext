@@ -7273,6 +7273,57 @@ describe('"use cache" runtime', () => {
     expect(Reflect.get(cached, Symbol.for("vinext.useCacheAcceptsSecondArgument"))).toBe(true);
   });
 
+  it("excludes arguments beyond the declared arity", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    let calls = 0;
+    const cached = registerCachedFunction(
+      async (value: number, ...extra: unknown[]) => {
+        calls++;
+        return { value, extra };
+      },
+      "test:declared-arity",
+      "",
+      { argumentCount: 1 },
+    );
+
+    expect(await cached(1, "first")).toEqual({ value: 1, extra: [] });
+    expect(await cached(1, "second")).toEqual({ value: 1, extra: [] });
+    expect(calls).toBe(1);
+  });
+
+  it("excludes framework arguments from zero-arity cached functions", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    let calls = 0;
+    const cached = registerCachedFunction(
+      async (...args: unknown[]) => {
+        calls++;
+        return args;
+      },
+      "test:zero-arity",
+      "",
+      { argumentCount: 0 },
+    );
+
+    expect(await cached("first")).toEqual([]);
+    expect(await cached("second")).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
+  it("preserves rest arguments when declared arity is unknown", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const cached = registerCachedFunction(
+      async (...args: unknown[]) => args,
+      "test:rest-args",
+      "",
+      {},
+    );
+
+    expect(await cached(1, 2)).toEqual([1, 2]);
+  });
+
   it("falls back to JSON when RSC module is unavailable (test environment)", async () => {
     // In vitest, @vitejs/plugin-rsc/react/rsc is not available (no Vite RSC
     // environment). The runtime should gracefully fall back to JSON.stringify
