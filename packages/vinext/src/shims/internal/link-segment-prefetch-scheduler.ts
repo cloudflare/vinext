@@ -120,6 +120,13 @@ export function createLinkSegmentPrefetchScheduler(
     //
     // An explicit full prefetch may intentionally reuse an equivalent rewrite
     // target, so it must never take this path either.
+    if (
+      instance.fetchStrategy !== "auto" ||
+      priority !== "default" ||
+      !hasRecentUserInteraction()
+    ) {
+      return false;
+    }
     const cacheIdentity = getCacheIdentity(instance);
     const unfinished = Array.from(unfinishedTasks);
     if (
@@ -132,13 +139,8 @@ export function createLinkSegmentPrefetchScheduler(
       return false;
     }
     const pendingTasks = unfinished.filter((task) => !task.isCanceled);
-    return (
-      instance.fetchStrategy === "auto" &&
-      priority === "default" &&
-      hasRecentUserInteraction() &&
-      pendingTasks.some(
-        (task) => !task.isCanceled && task.instance !== instance && task.batchId < batchId,
-      )
+    return pendingTasks.some(
+      (task) => !task.isCanceled && task.instance !== instance && task.batchId < batchId,
     );
   }
 
