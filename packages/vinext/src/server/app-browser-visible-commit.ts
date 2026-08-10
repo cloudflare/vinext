@@ -157,11 +157,28 @@ function reduceApprovedVisibleCommitState(
     case "traverse":
     case "navigate":
     case "replace": {
+      const isAuthoritativeDetachedHandoff =
+        action.operation.navigationCommitKind === "authoritative" &&
+        action.operation.navigationId !== undefined &&
+        state.activeOperation?.navigationId === action.operation.navigationId &&
+        state.activeOperation.navigationCommitKind === "detached";
+      const detachedHandoffSkippedLayoutIds = isAuthoritativeDetachedHandoff
+        ? new Set(action.skippedLayoutIds)
+        : null;
       const bfcacheCompatiblePreserveElementIds =
         action.reuseCurrentBfcacheIds && action.operation.lane !== "refresh"
           ? commit.decision.preserveElementIds.filter((id) => {
               const previousBfcacheId = state.bfcacheIds[id];
-              return previousBfcacheId !== undefined && action.bfcacheIds[id] === previousBfcacheId;
+              if (previousBfcacheId === undefined) return false;
+              if (action.bfcacheIds[id] === previousBfcacheId) return true;
+
+              // The authoritative action is prepared from the navigation's
+              // initiating state, so a layout first mounted by its detached
+              // shell receives a different speculative bfcache id. When the
+              // server subsequently omits that layout with an explicit skip
+              // proof, the mounted shell layout is the authoritative retained
+              // value. Preserve both its element and its current identity.
+              return detachedHandoffSkippedLayoutIds?.has(id) === true;
             })
           : [];
       const preservedSlotOwnerElementIdSet = new Set(bfcacheCompatiblePreserveElementIds);
@@ -178,9 +195,12 @@ function reduceApprovedVisibleCommitState(
       const previousBfcacheIdentities = createBfcacheSegmentIdentityMap({
         elements: state.elements,
       });
-      const preservePreviousBfcacheIdIds = preservePreviousSlotIds.filter(
-        (id) => previousBfcacheIdentities[id] !== undefined,
-      );
+      const preservePreviousBfcacheIdIds = [
+        ...preservePreviousSlotIds.filter((id) => previousBfcacheIdentities[id] !== undefined),
+        ...bfcacheCompatiblePreserveElementIds.filter(
+          (id) => detachedHandoffSkippedLayoutIds?.has(id) === true,
+        ),
+      ];
       const hmrPreservedSlotOwnerLayoutIds =
         action.operation.lane === "hmr"
           ? bfcacheCompatiblePreserveElementIds.filter((id) =>

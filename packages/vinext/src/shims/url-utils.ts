@@ -216,7 +216,12 @@ export function isHashOnlyBrowserUrlChange(
     // Keep this raw comparison distinct from the App Router planner's parsed
     // search-param comparison until their separate navigation lifecycles are
     // deliberately unified.
-    return currentPathname === nextPathname && current.search === next.search && next.hash !== "";
+    return (
+      currentPathname === nextPathname &&
+      current.search === next.search &&
+      next.hash !== "" &&
+      next.hash !== current.hash
+    );
   } catch {
     return false;
   }

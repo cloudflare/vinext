@@ -83,6 +83,18 @@ describe("navigationPlanner early navigation intent classification", () => {
     expect(decision).toMatchObject({ kind: "sameDocumentScroll", hash: "#section" });
   });
 
+  it("refreshes page segments when navigating to the current hash again", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    const decision = classify({
+      currentHref: "https://example.com/docs?q=1#section",
+      targetHref: "https://example.com/docs?q=1#section",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+  });
+
   it("classifies a same-path search change as a cache-bypassing flight navigation", () => {
     const decision = classify({
       currentHref: "https://example.com/docs?q=1",

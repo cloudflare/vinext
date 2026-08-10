@@ -1,0 +1,634 @@
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  createLinkSegmentPrefetchScheduler,
+  type LinkSegmentPrefetchInstance,
+  type LinkSegmentPrefetchPhaseRequest,
+} from "../packages/vinext/src/shims/internal/link-segment-prefetch-scheduler.js";
+
+type Deferred = {
+  promise: Promise<void>;
+  resolve(): void;
+};
+
+function createDeferred(): Deferred {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  if (resolve === undefined) throw new Error("Expected a deferred resolver");
+  return { promise, resolve };
+}
+
+async function flushScheduler(): Promise<void> {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+}
+
+function createInstance(
+  href: string,
+  fetchStrategy: LinkSegmentPrefetchInstance["fetchStrategy"] = "auto",
+): LinkSegmentPrefetchInstance {
+  return { fetchStrategy, href, isVisible: true };
+}
+
+function createHarness() {
+  const deferred: Deferred[] = [];
+  const requests: LinkSegmentPrefetchPhaseRequest[] = [];
+  const runPhase = vi.fn((request: LinkSegmentPrefetchPhaseRequest) => {
+    requests.push({ ...request });
+    const result = createDeferred();
+    deferred.push(result);
+    return result.promise.then(() => "fulfilled" as const);
+  });
+  return {
+    deferred,
+    requests,
+    runPhase,
+    scheduler: createLinkSegmentPrefetchScheduler({ runPhase }),
+  };
+}
+
+describe("Cache Components Link prefetch scheduling", () => {
+  // Ported from Next.js:
+  // test/e2e/app-dir/segment-cache/prefetch-scheduling/prefetch-scheduling.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/prefetch-scheduling/prefetch-scheduling.test.ts
+  it("raises hovered viewport tasks and preserves most-recent-first segment order", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const page2 = createInstance("/cancellation/2");
+    const page4 = createInstance("/cancellation/4");
+    const page5 = createInstance("/cancellation/5");
+
+    scheduler.schedule(page2, "default");
+    scheduler.schedule(page4, "default");
+    scheduler.schedule(page5, "default");
+    await flushScheduler();
+
+    scheduler.schedule(page2, "intent");
+    scheduler.schedule(page5, "intent");
+    for (const request of deferred.splice(0)) request.resolve();
+    await flushScheduler();
+
+    expect(
+      requests.slice(3).map(({ href, phase, priority }) => ({ href, phase, priority })),
+    ).toEqual([
+      { href: "/cancellation/5", phase: "segment", priority: "intent" },
+      { href: "/cancellation/2", phase: "segment", priority: "default" },
+      { href: "/cancellation/4", phase: "segment", priority: "default" },
+    ]);
+
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests).toHaveLength(6);
+  });
+
+  it("does not let a stalled demoted hover starve unrelated default segments", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const stalledHover = createInstance("/stalled-hover");
+    const latestHover = createInstance("/latest-hover");
+    const unrelated = createInstance("/unrelated");
+
+    scheduler.schedule(stalledHover, "default");
+    scheduler.schedule(stalledHover, "intent");
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      href: "/stalled-hover",
+      phase: "segment",
+      priority: "intent",
+    });
+
+    scheduler.schedule(latestHover, "intent");
+    scheduler.schedule(unrelated, "default");
+    await flushScheduler();
+    expect(requests.slice(-2)).toEqual([
+      expect.objectContaining({ href: "/latest-hover", phase: "route-tree" }),
+      expect.objectContaining({ href: "/unrelated", phase: "route-tree" }),
+    ]);
+
+    deferred.at(-1)?.resolve();
+    await flushScheduler();
+
+    expect(requests.at(-1)).toMatchObject({
+      href: "/unrelated",
+      phase: "segment",
+      priority: "default",
+    });
+  });
+
+  it("keeps a thousand same-batch two-phase tasks below the scheduler regression budget", async () => {
+    const taskCount = 1_000;
+    let requestCount = 0;
+    let resolveComplete: (() => void) | undefined;
+    const complete = new Promise<void>((resolve) => {
+      resolveComplete = resolve;
+    });
+    const scheduler = createLinkSegmentPrefetchScheduler({
+      runPhase() {
+        requestCount += 1;
+        if (requestCount === taskCount * 2) resolveComplete?.();
+        return Promise.resolve("fulfilled" as const);
+      },
+    });
+    const batchId = scheduler.createBatch();
+    const startedAt = performance.now();
+
+    for (let index = 0; index < taskCount; index += 1) {
+      scheduler.schedule(createInstance(`/benchmark/${index}`), "default", batchId);
+    }
+    await complete;
+
+    expect(requestCount).toBe(taskCount * 2);
+    expect(performance.now() - startedAt).toBeLessThan(500);
+  });
+
+  it("reserves bandwidth only for the most recently hovered task", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const initial = Array.from({ length: 4 }, (_, index) =>
+      createInstance(`/cancellation/${index + 4}`),
+    );
+    const page2 = createInstance("/cancellation/2");
+    const page3 = createInstance("/cancellation/3");
+
+    for (const instance of initial) scheduler.schedule(instance, "default");
+    await flushScheduler();
+    expect(requests).toHaveLength(4);
+
+    scheduler.schedule(page2, "default");
+    scheduler.schedule(page3, "default");
+    await flushScheduler();
+    expect(requests).toHaveLength(4);
+
+    scheduler.schedule(page2, "intent");
+    await flushScheduler();
+    scheduler.schedule(page3, "intent");
+    await flushScheduler();
+    expect(requests.slice(4).map(({ href, phase }) => ({ href, phase }))).toEqual([
+      { href: "/cancellation/2", phase: "route-tree" },
+      { href: "/cancellation/3", phase: "route-tree" },
+    ]);
+
+    deferred[4]?.resolve();
+    deferred[5]?.resolve();
+    await flushScheduler();
+
+    expect(requests.at(-1)).toMatchObject({
+      href: "/cancellation/3",
+      phase: "segment",
+      priority: "intent",
+    });
+    expect(
+      requests.some((request) => request.href === "/cancellation/2" && request.phase === "segment"),
+    ).toBe(false);
+  });
+
+  it("prioritizes newly revealed links over older visibility-batch route trees", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const olderBatch = scheduler.createBatch();
+    const newerBatch = scheduler.createBatch();
+    const older = Array.from({ length: 5 }, (_, index) =>
+      createInstance(`/cancellation/${index + 1}`),
+    );
+    const page8 = createInstance("/cancellation/8");
+
+    for (const instance of older) scheduler.schedule(instance, "default", olderBatch);
+    scheduler.schedule(page8, "default", newerBatch);
+    await flushScheduler();
+
+    expect(requests).toHaveLength(4);
+    expect(requests[0]).toMatchObject({ href: "/cancellation/8", phase: "route-tree" });
+
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    expect(requests.filter((request) => request.href === "/cancellation/8")).toHaveLength(1);
+  });
+
+  it("applies shared viewport bandwidth to full-prefetch links without changing strategy", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instances = Array.from({ length: 5 }, (_, index) =>
+      createInstance(`/full/${index + 1}`, "full"),
+    );
+
+    for (const instance of instances) scheduler.schedule(instance, "default");
+    await flushScheduler();
+
+    expect(requests).toHaveLength(4);
+    expect(requests).toEqual(
+      expect.arrayContaining(
+        instances.slice(1).map((instance) =>
+          expect.objectContaining({
+            fetchStrategy: "full",
+            href: instance.href,
+            phase: "route-tree",
+            priority: "default",
+          }),
+        ),
+      ),
+    );
+
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "full",
+      href: "/full/1",
+      phase: "route-tree",
+      priority: "default",
+    });
+
+    deferred.at(-1)?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "full",
+      href: "/full/5",
+      phase: "segment",
+      priority: "default",
+    });
+  });
+
+  it("gives dynamic-on-hover upgrades intent bandwidth and preserves their full strategy", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const blocking = Array.from({ length: 4 }, (_, index) =>
+      createInstance(`/blocking/${index + 1}`),
+    );
+    const dynamic = createInstance("/blog/hello");
+
+    scheduler.schedule(dynamic, "default");
+    for (const instance of blocking) scheduler.schedule(instance, "default");
+    await flushScheduler();
+    expect(requests).toHaveLength(4);
+
+    dynamic.fetchStrategy = "full-after-shell";
+    scheduler.schedule(dynamic, "intent");
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "full-after-shell",
+      href: "/blog/hello",
+      phase: "route-tree",
+      priority: "intent",
+    });
+
+    deferred.at(-1)?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "full-after-shell",
+      href: "/blog/hello",
+      phase: "segment",
+      priority: "intent",
+    });
+  });
+
+  it("reuses completed work unless explicitly restarted or upgraded", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instance = createInstance("/blog/hello");
+
+    scheduler.schedule(instance, "default");
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests).toHaveLength(2);
+
+    scheduler.schedule(instance, "default");
+    scheduler.schedule(instance, "intent");
+    await flushScheduler();
+    expect(requests).toHaveLength(2);
+
+    scheduler.schedule(instance, "default", undefined, true);
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "auto",
+      href: "/blog/hello",
+      phase: "route-tree",
+      // Next preserves Intent when the invalidated task is still the most
+      // recently hovered Link, even though the cache ping itself is Default.
+      priority: "intent",
+    });
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    instance.fetchStrategy = "full-after-shell";
+    scheduler.schedule(instance, "intent");
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "full-after-shell",
+      href: "/blog/hello",
+      phase: "route-tree",
+      priority: "intent",
+    });
+  });
+
+  it("restarts from the route tree when strategy upgrades during a running segment", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instance = createInstance("/blog/hello");
+
+    scheduler.schedule(instance, "default");
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({ fetchStrategy: "auto", phase: "segment" });
+
+    instance.fetchStrategy = "full-after-shell";
+    scheduler.schedule(instance, "intent");
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "full-after-shell",
+      href: "/blog/hello",
+      phase: "route-tree",
+      priority: "intent",
+    });
+  });
+
+  it("restarts from the route tree when invalidated during a running segment", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instance = createInstance("/blog/hello");
+
+    scheduler.schedule(instance, "default");
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)?.phase).toBe("segment");
+
+    scheduler.schedule(instance, "default", undefined, true);
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    expect(requests.at(-1)).toMatchObject({
+      fetchStrategy: "auto",
+      href: "/blog/hello",
+      phase: "route-tree",
+      priority: "default",
+    });
+  });
+
+  it("demotes the prior intent task when a completed link becomes the latest hover", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const completed = createInstance("/completed");
+    const running = createInstance("/running");
+
+    scheduler.schedule(completed, "default");
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    scheduler.schedule(running, "default");
+    await flushScheduler();
+    scheduler.schedule(running, "intent");
+    scheduler.schedule(completed, "intent");
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    expect(requests.at(-1)).toMatchObject({
+      href: "/running",
+      phase: "segment",
+      priority: "default",
+    });
+  });
+
+  it("retains most-recent intent priority when a completed Link exits and re-enters", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instance = createInstance("/reenter-intent");
+
+    scheduler.schedule(instance, "default");
+    scheduler.schedule(instance, "intent");
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    instance.isVisible = false;
+    scheduler.cancel(instance);
+    instance.isVisible = true;
+    scheduler.schedule(instance, "default");
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      href: "/reenter-intent",
+      phase: "route-tree",
+      priority: "intent",
+    });
+
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      href: "/reenter-intent",
+      phase: "segment",
+      priority: "intent",
+    });
+  });
+
+  it("cancels the segment handoff when navigation starts during the route-tree phase", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instance = createInstance("/blog/hello");
+
+    scheduler.schedule(instance, "default");
+    await flushScheduler();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.phase).toBe("route-tree");
+
+    scheduler.cancelAll();
+    deferred.shift()?.resolve();
+    await flushScheduler();
+
+    expect(requests).toHaveLength(1);
+  });
+
+  it("preserves a rejected route tree without advancing to segment requests", async () => {
+    const requests: LinkSegmentPrefetchPhaseRequest[] = [];
+    const scheduler = createLinkSegmentPrefetchScheduler({
+      async runPhase(request) {
+        requests.push(request);
+        return "rejected";
+      },
+    });
+
+    scheduler.schedule(createInstance("/missing"), "default");
+    await flushScheduler();
+
+    expect(requests).toEqual([expect.objectContaining({ href: "/missing", phase: "route-tree" })]);
+  });
+
+  it("forces segment fetches only for a later visibility batch revealed by interaction", async () => {
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn((type: string, listener: () => void) => {
+        listeners.set(type, listener);
+      }),
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+
+    try {
+      const { deferred, requests, scheduler } = createHarness();
+      scheduler.registerUserInteractionListeners();
+      listeners.get("pointerdown")?.();
+
+      const firstBatch = scheduler.createBatch();
+      scheduler.schedule(createInstance("/cancellation/1"), "default", firstBatch);
+      await flushScheduler();
+      expect(requests[0]).toMatchObject({
+        forceSegmentCacheFetch: false,
+        href: "/cancellation/1",
+        phase: "route-tree",
+      });
+
+      const laterBatch = scheduler.createBatch();
+      scheduler.schedule(createInstance("/cancellation/8"), "default", laterBatch);
+      await flushScheduler();
+      expect(requests[1]).toMatchObject({
+        forceSegmentCacheFetch: true,
+        href: "/cancellation/8",
+        phase: "route-tree",
+      });
+
+      deferred[1]?.resolve();
+      await flushScheduler();
+      expect(requests[2]).toMatchObject({
+        forceSegmentCacheFetch: true,
+        href: "/cancellation/8",
+        phase: "segment",
+      });
+
+      scheduler.schedule(createInstance("/rewrite-to-dynamic", "full"), "default", laterBatch);
+      await flushScheduler();
+      expect(requests[3]).toMatchObject({
+        forceSegmentCacheFetch: false,
+        href: "/rewrite-to-dynamic",
+        phase: "route-tree",
+      });
+
+      deferred[3]?.resolve();
+      await flushScheduler();
+      expect(requests[4]).toMatchObject({
+        forceSegmentCacheFetch: false,
+        href: "/rewrite-to-dynamic",
+        phase: "segment",
+      });
+    } finally {
+      now.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not force a later-batch duplicate that already has pending cache work", async () => {
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn((type: string, listener: () => void) => {
+        listeners.set(type, listener);
+      }),
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+
+    try {
+      const { requests, scheduler } = createHarness();
+      scheduler.registerUserInteractionListeners();
+      listeners.get("pointerdown")?.();
+
+      const firstBatch = scheduler.createBatch();
+      scheduler.schedule(createInstance("/duplicate#first"), "default", firstBatch);
+      await flushScheduler();
+
+      const laterBatch = scheduler.createBatch();
+      scheduler.schedule(createInstance("/duplicate#second"), "default", laterBatch);
+      await flushScheduler();
+
+      expect(requests.filter((request) => request.href.startsWith("/duplicate#"))).toEqual([
+        expect.objectContaining({ forceSegmentCacheFetch: false, phase: "route-tree" }),
+        expect.objectContaining({ forceSegmentCacheFetch: false, phase: "route-tree" }),
+      ]);
+    } finally {
+      now.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("preserves a canceled request's cache identity across a mutable strategy upgrade", async () => {
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn((type: string, listener: () => void) => {
+        listeners.set(type, listener);
+      }),
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+
+    try {
+      const { requests, scheduler } = createHarness();
+      scheduler.registerUserInteractionListeners();
+      listeners.get("pointerdown")?.();
+
+      const firstBatch = scheduler.createBatch();
+      const original = createInstance("/duplicate#first");
+      scheduler.schedule(original, "default", firstBatch);
+      scheduler.schedule(createInstance("/older-pending"), "default", firstBatch);
+      await flushScheduler();
+
+      original.isVisible = false;
+      scheduler.cancel(original);
+      original.fetchStrategy = "full-after-shell";
+
+      const laterBatch = scheduler.createBatch();
+      scheduler.schedule(createInstance("/duplicate#second"), "default", laterBatch);
+      await flushScheduler();
+
+      expect(requests.find((request) => request.href === "/duplicate#second")).toMatchObject({
+        forceSegmentCacheFetch: false,
+        phase: "route-tree",
+      });
+    } finally {
+      now.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("cancels queued and running viewport tasks before the segment phase", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instances = Array.from({ length: 7 }, (_, index) =>
+      createInstance(`/cancellation/${index + 1}`),
+    );
+
+    for (const instance of instances) scheduler.schedule(instance, "default");
+    await flushScheduler();
+    expect(requests).toHaveLength(4);
+
+    for (const instance of instances) {
+      instance.isVisible = false;
+      scheduler.cancel(instance);
+    }
+    for (const request of deferred.splice(0)) request.resolve();
+    await flushScheduler();
+
+    expect(requests).toHaveLength(4);
+    expect(requests.every((request) => request.phase === "route-tree")).toBe(true);
+  });
+
+  it("reschedules a canceled task when its Link re-enters the viewport", async () => {
+    const { deferred, requests, scheduler } = createHarness();
+    const instance = createInstance("/cancellation/5");
+
+    scheduler.schedule(instance, "default");
+    await flushScheduler();
+    instance.isVisible = false;
+    scheduler.cancel(instance);
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests).toHaveLength(1);
+
+    instance.isVisible = true;
+    scheduler.schedule(instance, "default");
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({ phase: "route-tree" });
+
+    deferred.shift()?.resolve();
+    await flushScheduler();
+    expect(requests.at(-1)).toMatchObject({
+      href: "/cancellation/5",
+      phase: "segment",
+      priority: "default",
+    });
+  });
+});

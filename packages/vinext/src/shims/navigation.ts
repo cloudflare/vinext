@@ -326,6 +326,7 @@ export type PrefetchOptions = {
 export type PrefetchCacheKind = "loading-shell" | "navigation" | "route-tree";
 
 export type PrefetchCacheEntry = {
+  authoritativeSegmentShell?: boolean;
   cacheForNavigation?: boolean;
   expiresAt?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
@@ -1325,6 +1326,7 @@ export function prefetchRscResponse(
   mountedSlotsHeader: string | null = null,
   options?: PrefetchOptions,
   behavior: {
+    authoritativeSegmentShell?: boolean;
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
     honorDynamicStaleTime?: boolean;
@@ -1344,6 +1346,7 @@ export function prefetchRscResponse(
   }
 
   const entry: PrefetchCacheEntry = {
+    authoritativeSegmentShell: behavior.authoritativeSegmentShell === true,
     cacheForNavigation: behavior.cacheForNavigation ?? true,
     cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
@@ -1367,7 +1370,7 @@ export function prefetchRscResponse(
         entry.snapshot = snapshot;
         entry.size = snapshot.buffer.byteLength;
         adjustPrefetchCacheByteSize(cache, entry.size - previousSize);
-        entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
+        const navigationExpiresAt = resolvePrefetchedRscResponseExpiresAt(
           entry.timestamp,
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
@@ -1377,6 +1380,16 @@ export function prefetchRscResponse(
           // the later navigation response still honors dynamicStaleTime.
           behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
         );
+        if (behavior.authoritativeSegmentShell === true && navigationExpiresAt <= Date.now()) {
+          // A unified segment response can contain a reusable static shell
+          // even when its dynamic page data has a zero stale time. Keep that
+          // shell for optimistic rendering, but never admit the stale dynamic
+          // payload as a navigation-cache hit.
+          entry.cacheForNavigation = false;
+          entry.expiresAt = entry.timestamp + (behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL);
+        } else {
+          entry.expiresAt = navigationExpiresAt;
+        }
         if (behavior.prepareSnapshot) {
           try {
             const preparedElements = await behavior.prepareSnapshot(snapshot);
@@ -2344,6 +2357,17 @@ function resetStaleLinkStatus(): void {
   getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
 }
 
+function cancelAppPrefetchesForDestination(destination: string): void {
+  cancelPendingPrefetchSetups(destination);
+  getNavigationRuntime()?.functions.cancelLinkPrefetchTasks?.();
+}
+
+/** Cancel prefetch work only after App Router proves a traversal needs RSC. */
+export function cancelAppPrefetchesForTraversal(): void {
+  const destination = toAppPrefetchDestination(window.location.href);
+  if (destination !== null) cancelAppPrefetchesForDestination(destination);
+}
+
 /**
  * Signal that a navigation to `href` is starting, for the callers that will
  * fetch the destination. Separate from `resetStaleLinkStatus()` because a raw
@@ -2358,22 +2382,14 @@ function notifyAppNavigationStart(href: string): void {
   // the destination above precisely because it does not select a resource —
   // which makes checking for the same-document case here load-bearing.
   if (destination !== null && !isHashOnlyBrowserUrlChange(href, window.location.href, __basePath)) {
-    cancelPendingPrefetchSetups(destination);
+    cancelAppPrefetchesForDestination(destination);
   }
   resetStaleLinkStatus();
 }
 
-/**
- * popstate variant. The browser has already applied the history entry by the
- * time this runs, so the pre-navigation URL that `isHashOnlyBrowserUrlChange`
- * needs is gone. Back/forward across a route boundary does drive an RSC fetch
- * (`app-browser-entry.ts`'s popstate handler), so cancelling by destination is
- * right; a hash-only entry over-cancels, which costs one re-prefetch and can
- * never cause a duplicate request.
- */
+/** Reset Link status for every traversal; the App browser entry separately
+ * cancels prefetch work only after ruling out a same-route hash traversal. */
 function notifyAppPopstateNavigationStart(): void {
-  const destination = toAppPrefetchDestination(window.location.href);
-  if (destination !== null) cancelPendingPrefetchSetups(destination);
   resetStaleLinkStatus();
 }
 

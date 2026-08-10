@@ -98,6 +98,67 @@ describe("app browser client reuse manifest", () => {
     expect(settingsEntry).toEqual(profileEntry);
   });
 
+  it("includes static layouts owned by an optimistic target shell", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    const optimisticElements = createVisibleState({
+      extraEntries: {
+        "layout:/": "root layout",
+        "layout:/partially-static/target-page": "prefetched target layout",
+      },
+      layoutFlags: {
+        "layout:/": "s",
+        "layout:/partially-static/target-page": "s",
+      },
+      layoutIds: ["layout:/", "layout:/partially-static/target-page"],
+      routeId: "route:/partially-static/target-page",
+    }).elements;
+    const header = createClientReuseManifestHeaderFromVisibleAppState(
+      createVisibleState({
+        extraEntries: { "layout:/": "root layout" },
+        layoutFlags: { "layout:/": "s" },
+        layoutIds: ["layout:/"],
+      }),
+      { retainedElements: [optimisticElements] },
+    );
+
+    const parsed = parseClientReuseManifestHeader(header);
+    expect(parsed.kind).toBe("parsed");
+    if (parsed.kind !== "parsed") {
+      throw new Error("Expected client reuse manifest to parse");
+    }
+    expect(parsed.manifest.entries.map((entry) => entry.id)).toEqual([
+      "layout:/",
+      "layout:/partially-static/target-page",
+    ]);
+  });
+
+  it("includes dynamic layouts only for an exact same-route navigation", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    const state = createVisibleState({
+      extraEntries: { "layout:/same-page-nav": "mounted dynamic layout" },
+      layoutFlags: { "layout:/same-page-nav": "d" },
+      layoutIds: ["layout:/same-page-nav"],
+      routeId: "route:/same-page-nav",
+    });
+
+    expect(createClientReuseManifestHeaderFromVisibleAppState(state)).toBeNull();
+    const parsed = parseClientReuseManifestHeader(
+      createClientReuseManifestHeaderFromVisibleAppState(state, {
+        sameRoutePathname: "/same-page-nav",
+      }),
+    );
+    expect(parsed.kind).toBe("parsed");
+    if (parsed.kind !== "parsed") {
+      throw new Error("Expected client reuse manifest to parse");
+    }
+    expect(parsed.manifest.entries.map((entry) => entry.id)).toEqual(["layout:/same-page-nav"]);
+    expect(parsed.manifest.entries[0].variantCacheKey).toMatch(/^same-route-layout:/);
+  });
+
   it("trims entries rather than emitting an oversized manifest header", () => {
     const layoutIds = Array.from({ length: 12 }, (_, index) => `layout:/section-${index}`);
     const header = createClientReuseManifestHeaderFromVisibleAppState(
