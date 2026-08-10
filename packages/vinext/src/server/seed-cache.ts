@@ -35,10 +35,21 @@ import {
   getDataCacheHandler,
   setDataCacheHandler,
   type CachedAppPageValue,
+  type CachedRouteValue,
 } from "vinext/shims/cache-handler";
-import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
-import { buildAppPageCacheTags } from "./app-page-cache.js";
-import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
+import {
+  appIsrCacheKey,
+  isrCacheKey,
+  isrSet,
+  isrSetPrerenderedAppPage,
+  type IsrWritePolicy,
+} from "./isr-cache.js";
+import { buildAppPageCacheTags, buildAppRouteCacheTags } from "./app-page-cache.js";
+import {
+  getAppRouteOutputPath,
+  getOutputPath,
+  getRscOutputPath,
+} from "../utils/prerender-output-paths.js";
 import {
   addPregeneratedConcretePath,
   clearPregeneratedConcretePaths,
@@ -47,6 +58,7 @@ import {
 import {
   readPrerenderManifest,
   getRenderedAppRoutes,
+  getRenderedMetadataRoutes,
   isFallbackShellArtifactPath,
 } from "./prerender-manifest.js";
 import { createPrerenderDataCacheRuntimeHandler } from "./prerender-data-cache.js";
@@ -66,10 +78,16 @@ type PrerenderCacheSeedMetadata = {
 type PrerenderCacheSeedOptions = {
   buildAppPageHtmlKey?: (pathname: string) => string;
   buildAppPageRscKey?: (pathname: string) => string;
+  buildAppRouteKey?: (pathname: string) => string;
   writeAppPageEntry?: (
     key: string,
     data: CachedAppPageValue,
     metadata: PrerenderCacheSeedMetadata,
+  ) => Promise<void>;
+  writeAppRouteEntry?: (
+    key: string,
+    data: CachedRouteValue,
+    policy: IsrWritePolicy,
   ) => Promise<void>;
 };
 
@@ -112,6 +130,7 @@ export async function seedMemoryCacheFromPrerender(
     setDataCacheHandler(runtimeDataCacheHandler);
   }
   const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
+  const writeAppRouteEntry = options?.writeAppRouteEntry ?? isrSet;
   let seeded = 0;
 
   const appRoutes = getRenderedAppRoutes(routes);
@@ -169,6 +188,35 @@ export async function seedMemoryCacheFromPrerender(
     }
   }
 
+  for (const route of getRenderedMetadataRoutes(routes)) {
+    const artifactPathname = route.path ?? route.route;
+    const cachePathname = normalizePregeneratedPathname(artifactPathname);
+    const artifactPath = path.join(prerenderDir, getAppRouteOutputPath(artifactPathname));
+    if (!fs.existsSync(artifactPath)) continue;
+    if (typeof route.revalidate === "number" && route.revalidate <= 0) continue;
+
+    const body = fs.readFileSync(artifactPath);
+    const data: CachedRouteValue = {
+      kind: "APP_ROUTE",
+      body: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
+      headers: route.headers ?? {},
+      status: route.responseStatus ?? 200,
+    };
+    const key =
+      options?.buildAppRouteKey?.(cachePathname) ?? appIsrCacheKey(cachePathname, "route", buildId);
+    await writeAppRouteEntry(key, data, {
+      cacheControl: {
+        revalidate: typeof route.revalidate === "number" ? route.revalidate : false,
+        ...(typeof route.expire === "number" ? { expire: route.expire } : {}),
+        ...(typeof route.stale === "number" && Number.isFinite(route.stale) && route.stale >= 0
+          ? { stale: route.stale }
+          : {}),
+      },
+      tags: buildAppRouteCacheTags(cachePathname, route.tags ?? [], route.routeSegments ?? []),
+    });
+    seeded++;
+  }
+
   return seeded;
 }
 
@@ -190,7 +238,7 @@ async function seedHtml(
   key: string,
   pathname: string,
   trailingSlash: boolean,
-  headers: Record<string, string> | undefined,
+  headers: Record<string, string | string[]> | undefined,
   postponed: string | undefined,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,

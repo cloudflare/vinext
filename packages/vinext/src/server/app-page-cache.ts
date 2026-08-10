@@ -30,6 +30,7 @@ import {
   parseAppPprPostponedState,
   stripAppPprDynamicFallbackShellMarker,
 } from "./app-ppr-fallback-shell.js";
+import { buildPageCacheTags } from "./implicit-tags.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -160,6 +161,14 @@ export function buildAppPageCacheTags(pathname: string, extraTags: readonly stri
   // pathnames match what `revalidatePath`/`revalidateTag` produce after
   // their own encoding pass.
   return tags.map(encodeCacheTag);
+}
+
+export function buildAppRouteCacheTags(
+  pathname: string,
+  extraTags: readonly string[],
+  routeSegments: readonly string[],
+): string[] {
+  return buildPageCacheTags(pathname, [...extraTags], [...routeSegments], "route");
 }
 
 function buildAppPageCachedHeaders(options: {
