@@ -2863,6 +2863,71 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("prefetches root-param routes through a concrete route tree before the page segment", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/root-param/aaa",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          {
+            canPrefetchLoadingShell: true,
+            patternParts: ["root-param", ":value"],
+            isDynamic: true,
+            hasRootParams: true,
+          },
+        ],
+      },
+    });
+
+    try {
+      let releaseRouteTree: ((response: Response) => void) | undefined;
+      const routeTreeResponse = new Promise<Response>((resolve) => {
+        releaseRouteTree = resolve;
+      });
+      result.fetch
+        .mockImplementationOnce(() => routeTreeResponse)
+        .mockImplementation(() => Promise.resolve(new Response("concrete root-param page")));
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const routeTreeInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const routeTreeHeaders = routeTreeInit?.headers as Headers | undefined;
+      expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
+
+      releaseRouteTree?.(new Response(""));
+      await waitForFetchCalls(result.fetch, 2);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[1],
+        "/root-param/aaa",
+        expect.objectContaining({ credentials: "include", priority: "low" }),
+      );
+      const pageInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
+      const pageHeaders = pageInit?.headers as Headers | undefined;
+      expect(pageHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(pageHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
+      const pageRequestUrl = result.fetch.mock.calls[1]?.[0];
+      expect(typeof pageRequestUrl).toBe("string");
+      expect(pageRequestUrl as string).not.toContain("%5Bvalue%5D");
+
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const navigationEntry = Array.from(getPrefetchCache().values()).find(
+        (entry) => entry.prefetchKind === "navigation",
+      );
+      expect(navigationEntry?.cacheForNavigation).toBe(true);
+    } finally {
+      await flushPrefetchTasks();
+      result.restoreNodeEnv();
+    }
+  });
+
   it("upgrades automatic dynamic links to full prefetch on unstable_dynamicOnHover intent", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({

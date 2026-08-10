@@ -47,6 +47,8 @@ export type AppRoutePrefetchPolicy = {
   /** Render the configured `unstable_instant` shell stage. */
   prefetchInstantShell?: "runtime" | "static";
   prefetchShellFirst: boolean;
+  /** Fetch the route tree before the concrete page segment. */
+  requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
 };
 
@@ -122,6 +124,8 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!route) return NO_APP_ROUTE_PREFETCH;
   if (route.hasRuntimeInstant) return runtimeInstantPolicy();
   if (route.hasInstant) return staticInstantPolicy();
+  const requiresRouteTreePrefetch =
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
   const routeUrl = new URL(routeHref, "http://vinext.local");
@@ -141,7 +145,8 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   const hasCacheComponentsLearningOnlyDynamicPath =
     route.isDynamic &&
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
-    (isFullyDynamicRootRoute || ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname));
+    (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
+      (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
@@ -150,12 +155,13 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     // branches must be derived from the click-time target tree.
     cacheForNavigation:
       !hasSearchParams &&
-      !route.canPrefetchLoadingShell &&
       !hasCacheComponentsLearningOnlyDynamicPath &&
-      route.requiresDynamicNavigationRequest !== true,
+      (requiresRouteTreePrefetch ||
+        (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true)),
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
-    prefetchShellFirst: hasSearchParams || !route.isDynamic,
+    prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
+    ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };
 }
