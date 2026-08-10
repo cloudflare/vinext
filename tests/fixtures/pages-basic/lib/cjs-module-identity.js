@@ -11,6 +11,9 @@ export function readCjsModuleIdentity() {
     localRuntimePath: path.join(localIdentity.dirname, "local-runtime.js"),
     localTypes: localIdentity.types,
     shadowedProcess: localIdentity.shadowedProcess,
+    shadowedGlobalThis: localIdentity.shadowedGlobalThis,
+    filenameReadable: localIdentity.filenameReadable,
+    concatenatedPath: localIdentity.concatenatedPath,
     userMarkerTypes: localIdentity.userMarkerTypes,
   };
 }

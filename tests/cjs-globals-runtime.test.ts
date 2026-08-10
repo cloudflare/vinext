@@ -83,6 +83,9 @@ export function readIdentity() {
     localRuntimePath: path.join(localIdentity.dirname, "local-runtime.js"),
     linkedRuntimePath: path.join(linkedIdentity.dirname, "linked-runtime.js"),
     shadowedProcess: localIdentity.shadowedProcess,
+    shadowedGlobalThis: localIdentity.shadowedGlobalThis,
+    filenameReadable: localIdentity.filenameReadable,
+    concatenatedPath: localIdentity.concatenatedPath,
     userMarkerTypes: localIdentity.userMarkerTypes,
     types: [
       typeof __filename,
@@ -104,12 +107,23 @@ export function readIdentity() {
     ),
     fs.writeFile(
       path.join(root, "lib/local-identity.cjs"),
-      `const path = require("node:path");
+      `const fs = require("node:fs");
+const path = require("node:path");
 const process = { marker: "local-process" };
+const globalThis = {};
 exports.dirname = __dirname;
 exports.types = typeof __filename + ":" + typeof __dirname;
 exports.consistent = path.dirname(__filename) === __dirname;
 exports.shadowedProcess = process.marker;
+exports.shadowedGlobalThis = Object.keys(globalThis).length === 0 ? "local-globalThis" : "wrong";
+exports.concatenatedPath = __dirname + "/concatenated.js";
+try {
+  exports.filenameReadable = fs.statSync(__filename).isFile();
+} catch {
+  // Vite evaluates source modules from memory in workerd development, so the
+  // host source path is identity metadata rather than a mounted virtual file.
+  exports.filenameReadable = false;
+}
 exports.userMarkerTypes =
   typeof globalThis.__VINEXT_EMITTED_CJS_FILENAME__ + ":" +
   typeof globalThis.__VINEXT_EMITTED_CJS_DIRNAME__;
@@ -132,6 +146,9 @@ export default function Page(props: ReturnType<typeof readIdentity>) {
     <p id="identity-types">{props.types}</p>
     <p id="identity-consistent">{String(props.consistent)}</p>
     <p id="shadowed-process">{props.shadowedProcess}</p>
+    <p id="shadowed-global-this">{props.shadowedGlobalThis}</p>
+    <p id="filename-readable">{String(props.filenameReadable)}</p>
+    <p id="concatenated-path">{props.concatenatedPath}</p>
     <p id="user-marker-types">{props.userMarkerTypes}</p>
   </>;
 }
@@ -295,6 +312,9 @@ function expectFunctionalIdentity(html: string): void {
   );
   expect(htmlValue(html, "identity-consistent")).toBe("true");
   expect(htmlValue(html, "shadowed-process")).toBe("local-process");
+  expect(htmlValue(html, "shadowed-global-this")).toBe("local-globalThis");
+  expect(path.basename(htmlValue(html, "concatenated-path"))).toBe("concatenated.js");
+  expect(htmlValue(html, "concatenated-path")).not.toContain("__VINEXT_EMITTED_CJS_");
   expect(htmlValue(html, "user-marker-types")).toBe("undefined:undefined");
   expect(path.basename(htmlValue(html, "dependency-runtime-path"))).toBe("dependency-runtime.js");
   expect(path.basename(htmlValue(html, "nested-runtime-path"))).toBe("nested-runtime.js");
@@ -443,6 +463,7 @@ describe("bundled CJS globals on the hybrid Node production runtime", () => {
       path.join(canonicalRoot, "dist/server"),
     );
     expectFunctionalIdentity(html);
+    expect(htmlValue(html, "filename-readable")).toBe("true");
     expectPathAbsent(serverBundle, cjsPackageDir);
     expectPathAbsent(serverBundle, linkedCjsPackageDir);
     expect(serverBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
@@ -579,6 +600,7 @@ describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
     expect(htmlValue(html, "nested-runtime-path")).toBe("/bundle/nested-runtime.js");
     expect(htmlValue(html, "linked-runtime-path")).toBe("/bundle/linked-runtime.js");
     expectFunctionalIdentity(html);
+    expect(htmlValue(html, "filename-readable")).toBe("true");
     expectPathAbsent(workerBundle, cjsPackageDir);
     expectPathAbsent(workerBundle, linkedCjsPackageDir);
     expect(workerBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
@@ -652,6 +674,7 @@ describe("bundled CJS globals on the Nitro Node runtime", () => {
       path.join(canonicalRoot, ".output/server"),
     );
     expectFunctionalIdentity(html);
+    expect(htmlValue(html, "filename-readable")).toBe("true");
     expectPathAbsent(nitroBundle, cjsPackageDir);
     expectPathAbsent(nitroBundle, linkedCjsPackageDir);
     expect(nitroBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);

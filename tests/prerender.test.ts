@@ -564,6 +564,9 @@ describe("prerenderPages — default mode (pages-basic)", () => {
       const html = fs.readFileSync(path.join(outDir, "cjs-dependency-globals-static.html"), "utf8");
       expect(html).toContain('<p id="identity-types">string:string</p>');
       expect(html).toContain('<p id="identity-consistent">true</p>');
+      expect(html).toContain('<p id="shadowed-global-this">local-globalThis</p>');
+      expect(html).toContain('<p id="filename-readable">true</p>');
+      expect(html).toMatch(/<p id="concatenated-path">.*\/server\/concatenated\.js<\/p>/);
     }
   });
 

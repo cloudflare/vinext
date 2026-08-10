@@ -14,6 +14,9 @@ export function CjsDependencyGlobalsView({
   localRuntimePath,
   localTypes,
   shadowedProcess,
+  shadowedGlobalThis,
+  filenameReadable,
+  concatenatedPath,
   userMarkerTypes,
 }) {
   return (
@@ -25,6 +28,9 @@ export function CjsDependencyGlobalsView({
       <p id="local-runtime-path">{localRuntimePath}</p>
       <p id="local-identity-types">{localTypes}</p>
       <p id="shadowed-process">{shadowedProcess}</p>
+      <p id="shadowed-global-this">{shadowedGlobalThis}</p>
+      <p id="filename-readable">{String(filenameReadable)}</p>
+      <p id="concatenated-path">{concatenatedPath}</p>
       <p id="user-marker-types">{userMarkerTypes}</p>
     </>
   );

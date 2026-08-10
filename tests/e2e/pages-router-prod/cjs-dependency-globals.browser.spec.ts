@@ -14,6 +14,9 @@ test("starts an ESM Pages bundle with top-level await and CommonJS globals", asy
   await expect(page.locator("#local-runtime-path")).toHaveText(/dist\/server\/local-runtime\.js$/);
   await expect(page.locator("#local-identity-types")).toHaveText("string:string");
   await expect(page.locator("#shadowed-process")).toHaveText("local-process");
+  await expect(page.locator("#shadowed-global-this")).toHaveText("local-globalThis");
+  await expect(page.locator("#filename-readable")).toHaveText("true");
+  await expect(page.locator("#concatenated-path")).toHaveText(/dist\/server\/concatenated\.js$/);
   await expect(page.locator("#user-marker-types")).toHaveText("undefined:undefined");
 });
 
@@ -25,5 +28,8 @@ test("prerenders the same CommonJS dependency and module identity", async ({ pag
   await expect(page.locator("#identity-consistent")).toHaveText("true");
   await expect(page.locator("#local-runtime-path")).toHaveText(/dist\/server\/local-runtime\.js$/);
   await expect(page.locator("#shadowed-process")).toHaveText("local-process");
+  await expect(page.locator("#shadowed-global-this")).toHaveText("local-globalThis");
+  await expect(page.locator("#filename-readable")).toHaveText("true");
+  await expect(page.locator("#concatenated-path")).toHaveText(/dist\/server\/concatenated\.js$/);
   await expect(page.locator("#user-marker-types")).toHaveText("undefined:undefined");
 });

@@ -97,10 +97,12 @@ export function createImportMetaUrlPlugin(options: {
   // retained across restarts. Cap the rare token-bearing dependency set to
   // avoid retaining arbitrary ids from long-running dev servers.
   const dependencyFormatCache = new Map<string, DependencyFormatCacheEntry>();
-  // Raw CommonJS cannot contain import.meta before Rolldown lowers it. Use two
-  // private per-capability placeholders that user source cannot predict, then
-  // replace them after lowering. This fixed-size provenance state stays valid
-  // for cached transforms and every output of the capability.
+  // Raw CommonJS cannot contain import.meta before Rolldown lowers it. Keep two
+  // private per-capability string literals behind an own getter, then replace
+  // only those return values after lowering. Unlike a bare literal, the marker
+  // cannot fold into a surrounding `__dirname + "/file"` expression.
+  // The fixed-size provenance state stays valid for cached transforms and every
+  // output of the capability.
   const emittedCjsGlobals = createEmittedCjsGlobals();
   function commonJsDependencyCanonicalId(id: string): string | null {
     const cleanId = cleanModuleId(id);
@@ -219,9 +221,7 @@ export function createImportMetaUrlPlugin(options: {
           environment,
           this.environment.mode === "build" && mayContainServerCjsGlobal(code)
             ? emittedCjsGlobals.initializers
-            : explicitCommonJs
-              ? sourcePathCjsGlobalInitializers(canonicalId)
-              : undefined,
+            : sourcePathCjsGlobalInitializers(canonicalId),
         );
         entry.results.set(transformKind, { value });
         return value;
@@ -321,21 +321,12 @@ function rewriteCanonicalSourceIdentity(
       : undefined,
     cjsGlobalInitializers:
       environment === "server" && mayContainServerCjsGlobal(code)
-        ? (cjsGlobalInitializers ?? PORTABLE_ESM_CJS_GLOBAL_INITIALIZERS)
+        ? (cjsGlobalInitializers ?? sourcePathCjsGlobalInitializers(canonicalId))
         : undefined,
   });
 }
 
 type CjsGlobalInitializers = Record<CjsGlobalName, string>;
-
-// Development modules use native ESM identity. Node exposes the direct fields;
-// Vite's workerd module runner supplies an absolute source URL for the fallback.
-const PORTABLE_ESM_CJS_GLOBAL_INITIALIZERS: CjsGlobalInitializers = {
-  __filename:
-    "(import.meta.filename ?? globalThis.decodeURIComponent(new globalThis.URL(import.meta.url).pathname))",
-  __dirname:
-    '(import.meta.dirname ?? (globalThis.decodeURIComponent(new globalThis.URL(".", import.meta.url).pathname).replace(/\\\/$/, "") || "/"))',
-};
 
 function createEmittedCjsGlobals(): {
   initializers: CjsGlobalInitializers;
@@ -344,52 +335,82 @@ function createEmittedCjsGlobals(): {
   const nonce = randomUUID().replaceAll("-", "");
   const filenameMarker = `__VINEXT_EMITTED_CJS_FILENAME_${nonce}__`;
   const dirnameMarker = `__VINEXT_EMITTED_CJS_DIRNAME_${nonce}__`;
+  const filenameSentinel = JSON.stringify(filenameMarker);
+  const dirnameSentinel = JSON.stringify(dirnameMarker);
   return {
     initializers: {
-      __filename: `globalThis.${filenameMarker}`,
-      __dirname: `globalThis.${dirnameMarker}`,
+      __filename: emittedCjsPathInitializer(filenameSentinel),
+      __dirname: emittedCjsPathInitializer(dirnameSentinel),
     },
     replacements: new Map([
-      [filenameMarker, "__filename"],
-      [dirnameMarker, "__dirname"],
+      [filenameSentinel, "__filename"],
+      [dirnameSentinel, "__dirname"],
     ]),
   };
 }
 
-function emittedRuntimePathExpression(fileName: string): string {
-  const normalizedFileName = toSlash(fileName).replace(/^\.\//, "").replace(/^\/+/, "");
-  if (!normalizedFileName) return "globalThis.process.cwd()";
-  return `(globalThis.process.cwd().replace(/[\\\\/]$/, "") + ${JSON.stringify(`/${normalizedFileName}`)})`;
+function emittedCjsPathInitializer(sentinel: string): string {
+  return `({ get value() { return ${sentinel}; } }).value`;
 }
 
 function finalizeEmittedCjsGlobals(
   code: string,
-  emittedCjsGlobalNames: ReadonlyMap<string, CjsGlobalName>,
+  emittedCjsGlobalSentinels: ReadonlyMap<string, CjsGlobalName>,
   fileName: string,
 ): RewriteResult | null {
   if (!code.includes("__VINEXT_EMITTED_CJS_")) return null;
+  const runtimeBindings = new Set(code.match(/\b__vinext_cjs_(?:process|fs|identity)_*\b/g) ?? []);
+  function selectRuntimeBinding(base: string): string {
+    let binding = base;
+    while (runtimeBindings.has(binding)) binding += "_";
+    return binding;
+  }
+  const processNamespaceBinding = selectRuntimeBinding("__vinext_cjs_process");
+  const fsNamespaceBinding = selectRuntimeBinding("__vinext_cjs_fs");
+  const identityBinding = selectRuntimeBinding("__vinext_cjs_identity");
   const emittedFileName = toSlash(fileName).replace(/^\.\//, "").replace(/^\/+/, "");
+  const processCwd = `${processNamespaceBinding}.cwd()`;
+  const emittedPathFallback = emittedFileName
+    ? `(${processCwd}.replace(/[\\\\/]$/, "") + ${JSON.stringify(`/${emittedFileName}`)})`
+    : processCwd;
   const emittedDirName = path.dirname(emittedFileName);
-  const replacements: Record<CjsGlobalName, string> = {
-    __filename: `(import.meta.filename ?? ${emittedRuntimePathExpression(emittedFileName)})`,
-    __dirname: `(import.meta.dirname ?? ${
-      emittedDirName === "."
-        ? "globalThis.process.cwd()"
-        : emittedRuntimePathExpression(emittedDirName)
-    })`,
+  const emittedDirFallback =
+    emittedDirName === "."
+      ? processCwd
+      : `(${processCwd}.replace(/[\\\\/]$/, "") + ${JSON.stringify(`/${emittedDirName}`)})`;
+  const replacements: CjsGlobalInitializers = {
+    __filename: `${identityBinding}.filename`,
+    __dirname: `${identityBinding}.dirname`,
   };
   const output = new MagicString(code);
   let changed = false;
-  for (const [marker, globalName] of emittedCjsGlobalNames) {
-    const expression = `globalThis.${marker}`;
-    let start = code.indexOf(expression);
+  for (const [sentinel, globalName] of emittedCjsGlobalSentinels) {
+    let start = code.indexOf(sentinel);
     while (start !== -1) {
-      output.overwrite(start, start + expression.length, replacements[globalName]);
+      output.overwrite(start, start + sentinel.length, replacements[globalName]);
       changed = true;
-      start = code.indexOf(expression, start + expression.length);
+      start = code.indexOf(sentinel, start + sentinel.length);
     }
   }
   if (!changed) return null;
+  const runtimePreamble = [
+    `import * as ${processNamespaceBinding} from "node:process";`,
+    `import * as ${fsNamespaceBinding} from "node:fs";`,
+    `const ${identityBinding} = (() => {`,
+    `  const filename = import.meta.filename;`,
+    `  const native = typeof filename === "string" && ${fsNamespaceBinding}.existsSync(filename);`,
+    `  return {`,
+    `    filename: native ? filename : ${emittedPathFallback},`,
+    `    dirname: native ? import.meta.dirname : ${emittedDirFallback},`,
+    `  };`,
+    `})();`,
+    "",
+  ].join("\n");
+  if (code.startsWith("#!")) {
+    output.appendLeft(code.indexOf("\n") + 1, runtimePreamble);
+  } else {
+    output.prepend(runtimePreamble);
+  }
   return {
     code: output.toString(),
     map: output.generateMap({ hires: "boundary" }),

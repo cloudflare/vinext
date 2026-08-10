@@ -3479,8 +3479,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (name !== "client" && config.consumer !== "client") {
           // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
           // container. Register only the thin adapter for the same module-
-          // identity capability; it selects Node or Worker identity from the
-          // actual runtime target.
+          // identity capability; parsing, dependency classification, marker
+          // state, and emitted identity finalization stay shared with Vite.
           config.optimizeDeps ??= {};
           config.optimizeDeps.rolldownOptions ??= {};
           const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;

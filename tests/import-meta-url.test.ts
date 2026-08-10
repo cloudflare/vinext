@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { parseAst } from "vite";
+import { build, parseAst } from "vite";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -15,37 +15,54 @@ function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
 }
 
-const EMITTED_CJS_GLOBAL_INITIALIZERS = {
-  __filename:
-    "(import.meta.filename ?? globalThis.decodeURIComponent(new globalThis.URL(import.meta.url).pathname))",
-  __dirname:
-    '(import.meta.dirname ?? (globalThis.decodeURIComponent(new globalThis.URL(".", import.meta.url).pathname).replace(/\\\/$/, "") || "/"))',
-} as const;
-
-function expectInjectedCjsGlobal(
+function expectSourceCjsGlobal(
   code: string | undefined,
-  name: keyof typeof EMITTED_CJS_GLOBAL_INITIALIZERS,
+  name: "__filename" | "__dirname",
+  id: string,
 ): void {
-  expect(code).toContain(`var ${name} = ${EMITTED_CJS_GLOBAL_INITIALIZERS[name]};`);
+  const filename = toSlash(fs.realpathSync(id));
+  const value = name === "__filename" ? filename : path.posix.dirname(filename);
+  expect(code).toContain(`var ${name} = ${JSON.stringify(value)};`);
 }
 
-function expectBundledCjsGlobal(
-  code: string | undefined,
-  name: keyof typeof EMITTED_CJS_GLOBAL_INITIALIZERS,
-): void {
+function expectBundledCjsGlobal(code: string | undefined, name: "__filename" | "__dirname"): void {
   const marker = name === "__filename" ? "FILENAME" : "DIRNAME";
   expect(code).toMatch(
-    new RegExp(`var ${name} = globalThis\\.__VINEXT_EMITTED_CJS_${marker}_[a-f0-9]{32}__;`),
+    new RegExp(
+      `var ${name} = \\(\\{ get value\\(\\) \\{ return "__VINEXT_EMITTED_CJS_${marker}_[a-f0-9]{32}__"; \\} \\}\\)\\.value;`,
+    ),
   );
 }
 
 function expectFinalizedCjsGlobal(
   code: string | undefined,
-  name: keyof typeof EMITTED_CJS_GLOBAL_INITIALIZERS,
+  name: "__filename" | "__dirname",
+  fileName = "entry.js",
 ): void {
+  const processNamespaceBinding = code?.match(
+    /(?:^|\n)import \* as (__vinext_cjs_process_*) from "node:process";/,
+  )?.[1];
+  expect(processNamespaceBinding).toBeDefined();
+  const fsNamespaceBinding = code?.match(
+    /(?:^|\n)import \* as (__vinext_cjs_fs_*) from "node:fs";/,
+  )?.[1];
+  expect(fsNamespaceBinding).toBeDefined();
+  const identityBinding = code?.match(
+    /(?:^|\n)const (__vinext_cjs_identity_*) = \(\(\) => \{/,
+  )?.[1];
+  expect(identityBinding).toBeDefined();
   const field = name === "__filename" ? "filename" : "dirname";
-  expect(code).toContain(`var ${name} = (import.meta.${field} ?? `);
-  expect(code).toContain("globalThis.process.cwd()");
+  const dirname = path.posix.dirname(fileName);
+  expect(code).toContain(
+    `var ${name} = ({ get value() { return ${identityBinding}.${field}; } }).value;`,
+  );
+  expect(code).toContain(`${processNamespaceBinding}.cwd()`);
+  expect(code).toContain(`${fsNamespaceBinding}.existsSync(filename)`);
+  if (name === "__filename") {
+    expect(code).toContain(JSON.stringify(`/${fileName}`));
+  } else if (dirname !== ".") {
+    expect(code).toContain(JSON.stringify(`/${dirname}`));
+  }
   expect(code).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
 }
 
@@ -192,9 +209,9 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    expectInjectedCjsGlobal(result?.code, "__filename");
-    expectInjectedCjsGlobal(result?.code, "__dirname");
-    expect(result?.code).not.toContain(realRoot);
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
+    expect(result?.code).not.toContain("import.meta");
     expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
 
@@ -287,8 +304,8 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    expectInjectedCjsGlobal(result?.code, "__filename");
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
     expect(result?.code).not.toContain("process.cwd");
     expect(result?.code).not.toContain("__VINEXT_EMITTED_CJS_");
   });
@@ -313,9 +330,25 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(
       "exports.userValue = globalThis.__VINEXT_EMITTED_CJS_FILENAME__;",
     );
-    expect(result?.code).toContain(
-      "var __dirname = (import.meta.dirname ?? globalThis.process.cwd());",
+    expectFinalizedCjsGlobal(result?.code, "__dirname");
+  });
+
+  it("finalizes an isolated marker without absorbing an adjacent string concat", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      'exports.path = __dirname + "/foo";',
+      cjsDependencyPath,
     );
+    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      transformed?.code ?? "",
+      { fileName: "entry.js" },
+      { format: "es" },
+    );
+
+    expectFinalizedCjsGlobal(emitted?.code, "__dirname");
+    expect(emitted?.code).toContain('__dirname + "/foo"');
   });
 
   it("removes private marker randomness from emitted output", () => {
@@ -346,6 +379,8 @@ describe("vinext:import-meta-url plugin", () => {
       { fileName: "entry.js" },
       { format: "es" },
     );
+    expectFinalizedCjsGlobal(firstEmitted?.code, "__dirname");
+    expectFinalizedCjsGlobal(secondEmitted?.code, "__dirname");
     expect(firstEmitted?.code).toBe(secondEmitted?.code);
   });
 
@@ -366,8 +401,124 @@ describe("vinext:import-meta-url plugin", () => {
       { format: "es" },
     );
 
-    expect(emitted?.code).toContain("var e = (import.meta.dirname ?? globalThis.process.cwd());");
+    expect(emitted?.code).toContain(
+      "var e = ({ get value() { return __vinext_cjs_identity.dirname; } }).value;",
+    );
+    expect(emitted?.code).toContain("__vinext_cjs_process.cwd()");
     expect(emitted?.code).not.toMatch(/__VINEXT_EMITTED_CJS_DIRNAME_[a-f0-9]{32}__/);
+  });
+
+  it("finalizes private markers when CommonJS source shadows process and globalThis", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      [
+        'const process = { cwd() { throw new Error("captured process") } };',
+        "const globalThis = {};",
+        "const __vinext_cjs_process = {};",
+        "exports.dirname = __dirname;",
+        "exports.locals = [process, globalThis, __vinext_cjs_process];",
+      ].join("\n"),
+      cjsDependencyPath,
+    );
+    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      transformed?.code ?? "",
+      { fileName: "entry.js" },
+      { format: "es" },
+    );
+
+    expectFinalizedCjsGlobal(emitted?.code, "__dirname");
+    expect(emitted?.code).toContain('import * as __vinext_cjs_process_ from "node:process";');
+    expect(emitted?.code).toContain("const process = {");
+    expect(emitted?.code).toContain("const globalThis = {};");
+    expect(emitted?.code).not.toContain("globalThis.process");
+    expect(emitted?.code).not.toMatch(/__VINEXT_EMITTED_CJS_DIRNAME_[a-f0-9]{32}__/);
+  });
+
+  it("selects a collision-free process binding with one emitted-code scan", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      `const __vinext_cjs_process = 0;
+const __vinext_cjs_process_ = 1;
+const __vinext_cjs_fs = 2;
+const __vinext_cjs_identity = 3;
+const __vinext_cjs_process_${"_".repeat(4_096)} = 2;
+exports.dirname = __dirname;`,
+      cjsDependencyPath,
+    );
+    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      transformed?.code ?? "",
+      { fileName: "entry.js" },
+      { format: "es" },
+    );
+
+    expect(emitted?.code).toContain('import * as __vinext_cjs_process__ from "node:process";');
+    expect(emitted?.code).toContain('import * as __vinext_cjs_fs_ from "node:fs";');
+    expect(emitted?.code).toContain("const __vinext_cjs_identity_ = (() => {");
+    expectFinalizedCjsGlobal(emitted?.code, "__dirname");
+  });
+
+  it("keeps concat markers isolated through a real Rolldown generate", async () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      '#!/usr/bin/env node\nexport const joined = __dirname + "/foo";',
+      cjsDependencyPath,
+    );
+    const result = await build({
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        {
+          name: "test:concat-cjs-entry",
+          resolveId(id) {
+            return id === "virtual:concat-cjs-entry" ? `\0${id}` : null;
+          },
+          load(id) {
+            return id === "\0virtual:concat-cjs-entry" ? transformed?.code : null;
+          },
+        },
+        capability.optimizeDepsPlugin,
+      ],
+      build: {
+        ssr: true,
+        write: false,
+        rolldownOptions: { input: "virtual:concat-cjs-entry" },
+      },
+    });
+    const [{ output }] = (Array.isArray(result) ? result : [result]) as Array<{
+      output: Array<{ type: string; code?: string }>;
+    }>;
+    const chunk = output.find((item) => item.type === "chunk");
+
+    expect(chunk?.code).toMatch(
+      /^#!\/usr\/bin\/env node\nimport\s*\*\s*as\s+\w+\s+from\s*["'`]node:process["'`];/,
+    );
+    expect(chunk?.code).toContain("/foo");
+    expect(chunk?.code).toMatch(/node:process/);
+    expect(chunk?.code).not.toContain("__VINEXT_EMITTED_CJS_");
+  });
+
+  it("quotes nested emitted chunk paths without losing spaces", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      "exports.paths = [__filename, __dirname];",
+      cjsDependencyPath,
+    );
+    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      transformed?.code ?? "",
+      { fileName: "chunks/path with spaces/entry.js" },
+      { format: "es" },
+    );
+
+    expectFinalizedCjsGlobal(emitted?.code, "__filename", "chunks/path with spaces/entry.js");
+    expectFinalizedCjsGlobal(emitted?.code, "__dirname", "chunks/path with spaces/entry.js");
+    expect(emitted?.code.match(/\.existsSync\(/g)).toHaveLength(1);
   });
 
   it("finalizes exact private markers without reparsing the emitted chunk", () => {
@@ -518,7 +669,7 @@ describe("vinext:import-meta-url plugin", () => {
       { fileName: "worker/entry.js" },
       { format: "es" },
     );
-    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname");
+    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname", "worker/entry.js");
   });
 
   it("keeps explicit project CommonJS parseable before lowering", async () => {
@@ -548,8 +699,8 @@ describe("vinext:import-meta-url plugin", () => {
       { fileName: "server/entry.js" },
       { format: "es" },
     );
-    expectFinalizedCjsGlobal(emittedResult?.code, "__filename");
-    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname");
+    expectFinalizedCjsGlobal(emittedResult?.code, "__filename", "server/entry.js");
+    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname", "server/entry.js");
   });
 
   it("does not inject when __filename or __dirname are declared at top level", () => {
@@ -603,7 +754,7 @@ describe("vinext:import-meta-url plugin", () => {
     // so it is injected and correctly shadowed by the nested let.
     expect(result).not.toBeNull();
     expect(result?.code).not.toContain(`var __filename =`);
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
   });
 
   it.each([
@@ -671,8 +822,8 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).not.toBeNull();
-    expectInjectedCjsGlobal(result?.code, "__filename");
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
     expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
 
@@ -687,8 +838,8 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).not.toBeNull();
-    expectInjectedCjsGlobal(result?.code, "__filename");
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
     expect(result?.code).toContain(`__filename = "local-file";`);
     expect(result?.code).toContain(`__dirname++;`);
   });
@@ -711,8 +862,8 @@ describe("vinext:import-meta-url plugin", () => {
 
     // class expressions are not top-level declarations, so injection happens
     expect(result).not.toBeNull();
-    expectInjectedCjsGlobal(result?.code, "__filename");
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
     // Inside the class body, `__filename` refers to the class name binding,
     // which shadows the injected var. This is correct JS semantics.
     expect(result?.code).toContain(`return __filename;`);
@@ -737,8 +888,8 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).not.toBeNull();
-    expectInjectedCjsGlobal(result?.code, "__filename");
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
     // Original references preserved
     expect(result?.code).toContain(`file = __filename`);
     expect(result?.code).toContain(`[__dirname]: dir`);
@@ -756,8 +907,8 @@ describe("vinext:import-meta-url plugin", () => {
 
     // With binding injection, `{ __filename, __dirname }` naturally expands to
     // `{ __filename: <injected-value>, __dirname: <injected-value> }`
-    expectInjectedCjsGlobal(result?.code, "__filename");
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
     expect(result?.code).toContain(`{ __filename, __dirname }`);
   });
 
@@ -778,7 +929,7 @@ describe("vinext:import-meta-url plugin", () => {
     const result = rewriteServerCjsGlobals(`console.log(__filename);`, pagePath, linkedRoot);
 
     expect(result).not.toBeNull();
-    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
   });
 
   it("does not inject when destructuring declarations shadow the globals", () => {
@@ -976,7 +1127,7 @@ describe("vinext:import-meta-url plugin", () => {
   it("injects for computed member reads (obj[__filename])", () => {
     const result = rewriteServerCjsGlobals(`console.log(obj[__filename]);\n`, pagePath, linkedRoot);
 
-    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectSourceCjsGlobal(result?.code, "__filename", pagePath);
   });
 
   it("injects a name with a real read even when the other only appears as a member", () => {
@@ -988,7 +1139,7 @@ describe("vinext:import-meta-url plugin", () => {
 
     // __dirname is read freely → injected; __filename only appears as a member
     // property → not injected.
-    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expectSourceCjsGlobal(result?.code, "__dirname", pagePath);
     expect(result?.code).not.toContain(`var __filename =`);
   });
 
