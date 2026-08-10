@@ -346,7 +346,7 @@ export default function proxy(request: NextRequest) {
         expect(rootResponse).toBeInstanceOf(Response);
         if (!(rootResponse instanceof Response)) return;
         expect(await rootResponse.text()).toContain("hello world");
-        expect(logSpy).toHaveBeenCalledWith(fs.realpathSync.native(path.join(tmpDir, "proxy.ts")));
+        expect(logSpy).toHaveBeenCalledWith(path.join(tmpDir, "dist", "server", "index.js"));
       } finally {
         logSpy.mockRestore();
       }
