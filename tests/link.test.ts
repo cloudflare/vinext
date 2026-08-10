@@ -423,6 +423,47 @@ describe("Link App Router prefetch mode", () => {
       }
     }
   });
+
+  it("keeps Cache Components encoded delimiters and fully dynamic roots learning-only", () => {
+    const originalWindow = globalThis.window;
+    const originalCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        { canPrefetchLoadingShell: false, patternParts: [":slug"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["products", ":slug"],
+          isDynamic: true,
+        },
+      ],
+    };
+
+    try {
+      // Ported from Next.js:
+      // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+      expect(resolveAutoAppRoutePrefetch("/foo").cacheForNavigation).toBe(false);
+      expect(resolveAutoAppRoutePrefetch("/products/foo").cacheForNavigation).toBe(true);
+      expect(resolveAutoAppRoutePrefetch("/products/foo%2Fbar").cacheForNavigation).toBe(false);
+      expect(resolveAutoAppRoutePrefetch("/products/foo%5Cbar").cacheForNavigation).toBe(false);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+      if (originalCacheComponents === undefined) {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      } else {
+        process.env.__NEXT_CACHE_COMPONENTS = originalCacheComponents;
+      }
+    }
+  });
 });
 
 // ─── resolveHref (internal helper, tested via component output) ─────────
