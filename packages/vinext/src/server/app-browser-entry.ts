@@ -65,6 +65,7 @@ import {
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
 import { retryScrollTo, scrollToHashTargetOnNextFrame } from "vinext/shims/hash-scroll";
+import type { CachedNavigationWireData } from "vinext/shims/ppr-fallback-shell";
 import { AppRouterScrollCommitProvider } from "vinext/shims/app-router-scroll";
 import {
   beginAppRouterScrollIntent,
@@ -127,10 +128,14 @@ import {
 } from "./app-browser-state.js";
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
+  canPublishCachedNavigationRuntimeStage,
   createVisitedResponseCacheEntry,
+  createCachedNavigationStageCacheKey,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  isCachedNavigationStagePairFresh,
   isVisitedResponseCacheEntryFresh,
+  startAuthoritativeCachedNavigationResponse,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
 import {
@@ -199,6 +204,7 @@ import {
 import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
 
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+const HAS_CACHED_NAVIGATIONS = !!process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS;
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
@@ -335,7 +341,10 @@ function isRouterStatePromise(
 
 let latestClientParams: Record<string, string | string[]> = {};
 const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
+const cachedNavigationStageCache = new Map<string, VisitedResponseCacheEntry>();
+const cachedNavigationRuntimeStageCache = new Map<string, VisitedResponseCacheEntry>();
 let clientNavigationCacheGeneration = 0;
+let cachedNavigationFillGeneration = 0;
 // Sticky bit: stays true once BrowserRoot has committed at least once. Used by
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
 // torn down by a render error" (full reload to recover).
@@ -426,6 +435,8 @@ function stageClientParams(params: Record<string, string | string[]>): void {
 
 function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
+  cachedNavigationStageCache.clear();
+  cachedNavigationRuntimeStageCache.clear();
 }
 
 function clearPrefetchState(): void {
@@ -800,6 +811,190 @@ function storeVisitedResponseSnapshot(
       deletePrefetchResponseSnapshot(rscUrl, prefetchSnapshot, interceptionContext);
     }
   };
+}
+
+function storeCachedNavigationStage(options: {
+  bfcacheIds: AppRouterState["bfcacheIds"];
+  elements: AppElements;
+  fillGeneration: number;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+  params: Record<string, string | string[]>;
+  partial: boolean;
+  pathAndSearch: string;
+  response: CachedRscResponse;
+  stage: "runtime" | "static";
+  supportsRuntimeStage: boolean;
+}): void {
+  const cacheKey = createCachedNavigationStageCacheKey(
+    options.pathAndSearch,
+    options.interceptionContext,
+    options.mountedSlotsHeader,
+  );
+  const stageCache =
+    options.stage === "static" ? cachedNavigationStageCache : cachedNavigationRuntimeStageCache;
+  if (options.stage === "static") {
+    const existing = cachedNavigationStageCache.get(cacheKey);
+    if (
+      existing?.stageGeneration !== undefined &&
+      existing.stageGeneration > options.fillGeneration
+    ) {
+      return;
+    }
+    stageCache.delete(cacheKey);
+    // A new static stage begins a new paired publication for this route. Drop
+    // the prior runtime stage so generations can never be combined; this
+    // static stage remains independently reusable if its own runtime fill
+    // hangs.
+    cachedNavigationRuntimeStageCache.delete(cacheKey);
+    while (cachedNavigationStageCache.size >= MAX_VISITED_RESPONSE_CACHE_SIZE) {
+      const oldest = cachedNavigationStageCache.keys().next().value;
+      if (oldest === undefined) break;
+      cachedNavigationStageCache.delete(oldest);
+      cachedNavigationRuntimeStageCache.delete(oldest);
+    }
+  } else if (
+    !canPublishCachedNavigationRuntimeStage(
+      cachedNavigationStageCache.get(cacheKey),
+      options.fillGeneration,
+    )
+  ) {
+    // Runtime stages are refinements, not independently renderable trees. If
+    // their static base was evicted while the fill was in flight, discard the
+    // orphaned refinement too.
+    return;
+  } else {
+    stageCache.delete(cacheKey);
+  }
+  const entry = createVisitedResponseCacheEntry({
+    bfcacheIds: options.bfcacheIds,
+    elements: options.elements,
+    fallbackTtlMs: options.stage === "static" ? PREFETCH_CACHE_TTL : DYNAMIC_NAVIGATION_CACHE_TTL,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+    // Each response earns its lifetime when it is fully decoded and published,
+    // not when the potentially slow two-stage fill was scheduled.
+    now: Date.now(),
+    params: options.params,
+    partial: options.partial,
+    response: options.response,
+    stage: options.stage,
+    stageGeneration: options.fillGeneration,
+  });
+  stageCache.set(cacheKey, entry);
+}
+
+function readEmbeddedCachedNavigationData(elements: AppElements): CachedNavigationWireData | null {
+  const value = elements[AppElementsWire.keys.cachedNavigation];
+  if (typeof value !== "object" || value === null || !("staticStage" in value)) return null;
+  return value as CachedNavigationWireData;
+}
+
+async function decodeEmbeddedCachedNavigationStage(
+  buffer: ArrayBuffer,
+  close: boolean,
+): Promise<AppElements> {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(buffer));
+      if (close) controller.close();
+    },
+  });
+  return decodeAppElementsPromise(createFromReadableStream<AppWireElements>(stream));
+}
+
+function publishEmbeddedCachedNavigationStages(options: {
+  bfcacheIds: AppRouterState["bfcacheIds"];
+  buffer: ArrayBuffer;
+  elements: AppElements;
+  generation: number;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+  params: Record<string, string | string[]>;
+  pathAndSearch: string;
+  response: CachedRscResponse;
+}): void {
+  const data = readEmbeddedCachedNavigationData(options.elements);
+  if (!data) return;
+  const fillGeneration = ++cachedNavigationFillGeneration;
+  void Promise.resolve(data.staticStage)
+    .then(async (staticStage) => {
+      if (
+        staticStage.byteLength <= 0 ||
+        staticStage.byteLength > options.buffer.byteLength ||
+        options.generation !== clientNavigationCacheGeneration
+      ) {
+        return;
+      }
+      const staticBuffer = options.buffer.slice(0, staticStage.byteLength);
+      // The prefix references the descriptor promises that resolve after its
+      // byte boundary. Keep the decoder open even for an otherwise complete
+      // route so those intentionally absent rows are not treated as truncation.
+      const staticElements = await decodeEmbeddedCachedNavigationStage(staticBuffer, false);
+      if (options.generation !== clientNavigationCacheGeneration) return;
+      const {
+        completedDynamicStaleTimeSeconds: _completedDynamicStaleTimeSeconds,
+        dynamicStaleTimeSeconds: _dynamicStaleTimeSeconds,
+        expiresAt: _expiresAt,
+        serverStaleTime: _serverStaleTime,
+        ...responseBase
+      } = options.response;
+      const staticResponse = {
+        ...responseBase,
+        buffer: staticBuffer,
+        ...(staticStage.staleTimeSeconds === undefined
+          ? {}
+          : {
+              serverStaleTime: {
+                kind: "resolved" as const,
+                seconds: staticStage.staleTimeSeconds,
+              },
+            }),
+      } satisfies CachedRscResponse;
+      storeCachedNavigationStage({
+        ...options,
+        elements: staticElements,
+        fillGeneration,
+        partial: staticStage.partial,
+        response: staticResponse,
+        stage: "static",
+        supportsRuntimeStage: data.runtimeStage !== null,
+      });
+
+      if (data.runtimeStage === null) return;
+      const [runtimeBuffer, runtimePartial, runtimeStaleTimeSeconds] = await Promise.all([
+        new Response(data.runtimeStage.readable).arrayBuffer(),
+        Promise.resolve(data.runtimeStage.partial),
+        Promise.resolve(data.runtimeStage.staleTimeSeconds),
+      ]);
+      if (options.generation !== clientNavigationCacheGeneration) return;
+      const runtimeElements = await decodeEmbeddedCachedNavigationStage(
+        runtimeBuffer,
+        !runtimePartial,
+      );
+      if (options.generation !== clientNavigationCacheGeneration) return;
+      const runtimeResponse = {
+        ...responseBase,
+        buffer: runtimeBuffer,
+        ...(runtimeStaleTimeSeconds === undefined
+          ? {}
+          : {
+              serverStaleTime: {
+                kind: "resolved" as const,
+                seconds: runtimeStaleTimeSeconds,
+              },
+            }),
+      } satisfies CachedRscResponse;
+      storeCachedNavigationStage({
+        ...options,
+        elements: runtimeElements,
+        fillGeneration,
+        partial: runtimePartial,
+        response: runtimeResponse,
+        stage: "runtime",
+        supportsRuntimeStage: true,
+      });
+    })
+    .catch(() => {});
 }
 
 // Build the absolute current-document href the early-intent planner compares
@@ -1518,7 +1713,7 @@ function bootstrapHydration(
   const initialParams = initialNavigationSnapshot.params;
   const initialPathAndSearch = createSnapshotPathAndSearch(initialNavigationSnapshot);
   const initialCacheBuffer = new Response(cacheBranch).arrayBuffer();
-  void Promise.all([root, initialCacheBuffer])
+  const initialCacheReady = Promise.all([root, initialCacheBuffer])
     .then(async ([elements, buffer]) => {
       if (cacheGeneration !== clientNavigationCacheGeneration) return;
       const metadata = AppElementsWire.readMetadata(elements);
@@ -1557,11 +1752,22 @@ function bootstrapHydration(
         initialRscBootstrap?.initialCacheKind === "static"
           ? PREFETCH_CACHE_TTL
           : DYNAMIC_NAVIGATION_CACHE_TTL;
+      publishEmbeddedCachedNavigationStages({
+        bfcacheIds: createInitialBfcacheIdMap(elements),
+        buffer,
+        elements,
+        generation: cacheGeneration,
+        interceptionContext: metadata.interceptionContext,
+        mountedSlotsHeader,
+        params: initialParams,
+        pathAndSearch: initialPathAndSearch,
+        response: snapshot,
+      });
       hydrationCachePublication.publish(() => {
         if (cacheGeneration !== clientNavigationCacheGeneration) return () => {};
         // Initial hydration seeds the visited/BFCache path, not Link's
         // prefetch cache; a later visible Link should still prefetch.
-        return storeVisitedResponseSnapshot(
+        const cleanup = storeVisitedResponseSnapshot(
           rscUrl,
           metadata.interceptionContext,
           snapshot,
@@ -1571,6 +1777,7 @@ function bootstrapHydration(
           elements,
           false,
         );
+        return cleanup;
       });
     })
     .catch(() => {});
@@ -1636,7 +1843,7 @@ function bootstrapHydration(
       startTransition,
     });
   }
-  markInitialAppRouterBootstrapHydrated();
+  void initialCacheReady.finally(markInitialAppRouterBootstrapHydrated);
 
   let activeNavigationAbortController: AbortController | null = null;
 
@@ -1822,21 +2029,49 @@ function bootstrapHydration(
                 createRscRequestUrl(href, requestHeaders),
               ),
             );
-        const visitedResponseCandidate = shouldBypassNavigationCache
-          ? {
-              cacheKey: AppElementsWire.encodeCacheKey(rscUrl, requestInterceptionContext),
-              entry: null,
-              facts: {
-                candidate: "missing",
+        let cachedNavigationStage: VisitedResponseCacheEntry | null = null;
+        let hadCachedNavigationStage = false;
+        const cachedNavigationStageKey = createCachedNavigationStageCacheKey(
+          targetPathAndSearch,
+          requestInterceptionContext,
+          mountedSlotsHeader,
+        );
+        if (HAS_CACHED_NAVIGATIONS && navigationKind === "navigate") {
+          const staticStage = cachedNavigationStageCache.get(cachedNavigationStageKey);
+          if (staticStage) {
+            hadCachedNavigationStage = true;
+            const runtimeStage = cachedNavigationRuntimeStageCache.get(cachedNavigationStageKey);
+            if (
+              isCachedNavigationStagePairFresh(staticStage, runtimeStage, {
                 navigationKind,
-              } satisfies Extract<VisitedResponseCacheCandidateFacts, { candidate: "missing" }>,
+                now: Date.now(),
+              })
+            ) {
+              cachedNavigationStage = staticStage;
+              cachedNavigationStageCache.delete(cachedNavigationStageKey);
+              cachedNavigationStageCache.set(cachedNavigationStageKey, staticStage);
+            } else {
+              cachedNavigationStageCache.delete(cachedNavigationStageKey);
+              cachedNavigationRuntimeStageCache.delete(cachedNavigationStageKey);
             }
-          : readVisitedResponseCacheCandidate(
-              rscUrl,
-              requestInterceptionContext,
-              mountedSlotsHeader,
-              navigationKind,
-            );
+          }
+        }
+        const visitedResponseCandidate =
+          shouldBypassNavigationCache || hadCachedNavigationStage
+            ? {
+                cacheKey: AppElementsWire.encodeCacheKey(rscUrl, requestInterceptionContext),
+                entry: null,
+                facts: {
+                  candidate: "missing",
+                  navigationKind,
+                } satisfies Extract<VisitedResponseCacheCandidateFacts, { candidate: "missing" }>,
+              }
+            : readVisitedResponseCacheCandidate(
+                rscUrl,
+                requestInterceptionContext,
+                mountedSlotsHeader,
+                navigationKind,
+              );
         const visitedResponseDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
           visitedResponseCandidate.facts,
         );
@@ -1875,7 +2110,112 @@ function bootstrapHydration(
           targetHref: currentHref,
           visitedResponse,
         });
-        if (reuseDecision.kind === "reuseVisitedResponse" && cachedRoute) {
+        let usedCachedNavigationStage = false;
+        let cachedNavigationLiveResponsePromise: Promise<Response> | null = null;
+        if (cachedNavigationStage?.elements) {
+          const stageParams = cachedNavigationStage.params;
+          const stageNavigationSnapshot = createClientNavigationRenderSnapshot(
+            currentHref,
+            stageParams,
+          );
+          restoredBfcacheIds = cachedNavigationStage.bfcacheIds ?? restoredBfcacheIds;
+          const stageRenderPromise = renderNavigationPayload({
+            actionType: toActionType(navigationKind),
+            historyUpdateMode: currentHistoryMode,
+            navigationCommitKind: cachedNavigationStage.partial ? "detached" : undefined,
+            navigationInitiationState,
+            navigationSnapshot: stageNavigationSnapshot,
+            navId,
+            operationLane: toOperationLane(navigationKind),
+            params: stageParams,
+            payload: cachedNavigationStage.elements,
+            payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+            pendingRouterState: null,
+            previousNextUrl: requestPreviousNextUrl,
+            restoredBfcacheIds,
+            reuseCurrentBfcacheIds,
+            scrollIntent,
+            targetHref: currentHref,
+            traversalIntent: activeTraversalIntent,
+            visibleCommitMode: "synchronous",
+          });
+          if (!cachedNavigationStage.partial) {
+            const stageRenderOutcome = await stageRenderPromise;
+            if (stageRenderOutcome !== "committed") return;
+            return;
+          }
+          detachedNavigationCommits = true;
+          usedCachedNavigationStage = true;
+          // The partial payload intentionally contains unresolved Flight chunks.
+          // Its synchronous detached commit can display their Suspense fallbacks,
+          // but its acknowledgement may remain pending with those chunks. Start
+          // the authoritative connection()-resolving request concurrently rather
+          // than serializing it behind that acknowledgement. Runtime-stage cache
+          // fill may also continue in parallel; neither background task may delay
+          // the visible navigation request.
+          cachedNavigationLiveResponsePromise = startAuthoritativeCachedNavigationResponse(
+            () =>
+              fetch(rscUrl, {
+                headers: requestHeaders,
+                credentials: "include",
+                priority: "auto",
+                signal: navigationAbortController.signal,
+              }),
+            null,
+            stageRenderPromise,
+          );
+          const runtimeRefinementHref = currentHref;
+          const runtimeRefinementHistoryMode = currentHistoryMode;
+          const runtimeRefinementBfcacheIds = restoredBfcacheIds;
+          const renderRuntimeRefinement = async (): Promise<void> => {
+            if (!browserNavigationController.isCurrentNavigation(navId)) return;
+            const runtimeStageEntry =
+              cachedNavigationRuntimeStageCache.get(cachedNavigationStageKey);
+            const runtimeStage =
+              runtimeStageEntry &&
+              runtimeStageEntry.stageGeneration === cachedNavigationStage.stageGeneration &&
+              isVisitedResponseCacheEntryFresh(runtimeStageEntry, {
+                navigationKind,
+                now: Date.now(),
+              })
+                ? runtimeStageEntry
+                : null;
+            if (!runtimeStage?.elements) return;
+            const runtimeParams = runtimeStage.params;
+            await renderNavigationPayload({
+              actionType: toActionType(navigationKind),
+              historyUpdateMode: runtimeRefinementHistoryMode,
+              navigationCommitKind: "detached",
+              navigationInitiationState,
+              navigationSnapshot: createClientNavigationRenderSnapshot(
+                runtimeRefinementHref,
+                runtimeParams,
+              ),
+              navId,
+              operationLane: toOperationLane(navigationKind),
+              params: runtimeParams,
+              payload: runtimeStage.elements,
+              payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+              pendingRouterState: null,
+              previousNextUrl: requestPreviousNextUrl,
+              restoredBfcacheIds: runtimeStage.bfcacheIds ?? runtimeRefinementBfcacheIds,
+              reuseCurrentBfcacheIds,
+              scrollIntent,
+              targetHref: runtimeRefinementHref,
+              traversalIntent: activeTraversalIntent,
+              visibleCommitMode: "synchronous",
+            });
+          };
+          const runtimeStageEntry = cachedNavigationRuntimeStageCache.get(cachedNavigationStageKey);
+          if (runtimeStageEntry?.stageGeneration === cachedNavigationStage.stageGeneration) {
+            void renderRuntimeRefinement().catch(() => {});
+          }
+        }
+        if (
+          !usedCachedNavigationStage &&
+          reuseDecision.kind === "reuseVisitedResponse" &&
+          cachedRoute
+        ) {
           const cachedFetchDecision = navigationPlanner.classifyRscFetchResult({
             clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
             compatibilityIdHeader: cachedRoute.response.compatibilityIdHeader ?? null,
@@ -1968,13 +2308,15 @@ function bootstrapHydration(
         // Continue using the slot state captured at navigation start for fetches
         // and prefetch compatibility decisions.
 
-        let navResponse: Response | undefined;
+        let navResponse: Response | undefined = cachedNavigationLiveResponsePromise
+          ? await cachedNavigationLiveResponsePromise
+          : undefined;
         let navResponseExpiresAt: number | undefined;
         let navResponseUrl: string | null = null;
         let consumedPrefetchSnapshot: CachedRscResponse | undefined;
         let prefetchedElements: AppElements | undefined;
         let fallbackReuseDecision = reuseDecision;
-        if (reuseDecision.kind === "consumePrefetch") {
+        if (!usedCachedNavigationStage && reuseDecision.kind === "consumePrefetch") {
           const prefetchedResponse = settledPrefetchedResponse
             ? consumePrefetchResponse(
                 targetPathAndSearch,
@@ -2030,7 +2372,11 @@ function bootstrapHydration(
         // real fetch commits, but that shell is a detached commit (see below)
         // that is always superseded by the authoritative fetch — the same as
         // cross-route navigations — so it never persists stale page content.
-        if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
+        if (
+          !usedCachedNavigationStage &&
+          !navResponse &&
+          fallbackReuseDecision.kind === "attemptOptimisticRouteShell"
+        ) {
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
             mountedSlotsHeader,
@@ -2350,6 +2696,25 @@ function bootstrapHydration(
               true,
               prefetchSnapshot,
             );
+          }
+          // Consuming an existing cached-navigation stage must not renew its
+          // lifetime from the accompanying authoritative request. Next keeps
+          // the original PPR/PPRRuntime entry until it expires; only a cache
+          // miss publishes a new fill generation.
+          if (committedState && !usedCachedNavigationStage) {
+            const committedUrl = new URL(currentHref, window.location.origin);
+            const stageOptions = {
+              bfcacheIds: committedState.bfcacheIds,
+              buffer: responseSnapshot.buffer,
+              elements: renderedElements,
+              generation: navigationCacheGeneration,
+              interceptionContext,
+              mountedSlotsHeader,
+              params: navParams,
+              pathAndSearch: committedUrl.pathname + committedUrl.search,
+              response: responseSnapshot,
+            };
+            publishEmbeddedCachedNavigationStages(stageOptions);
           }
         } catch {
           // The visible navigation already committed. A cache snapshot failure

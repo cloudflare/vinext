@@ -1332,6 +1332,8 @@ describe("App Router entry templates", () => {
     expect(code).toContain("interceptLayoutSegments:");
     expect(code).toContain("interceptBranchSegments:");
     expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
+    expect(code).toContain("cacheComponents: false");
+    expect(code).toContain("route: route.pattern");
     expect(code).toContain("? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))");
     expect(code).toContain(
       "const __isEdge = route ? __isEdgeRuntime(__resolveRouteRuntime(route))",

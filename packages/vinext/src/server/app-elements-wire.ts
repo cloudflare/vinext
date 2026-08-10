@@ -16,6 +16,7 @@ import { releaseAppElementRenderDependency } from "./app-render-dependency.js";
 import type { BfcacheSegmentIdentity } from "./bfcache-identity.js";
 import { compareStrings } from "../utils/compare.js";
 import { isUnknownRecord } from "../utils/record.js";
+import type { CachedNavigationWireData } from "vinext/shims/ppr-fallback-shell";
 
 const APP_INTERCEPTION_SEPARATOR = "\0";
 const LEGACY_APP_SOURCE_PAGE_KEY = "__sourcePage";
@@ -23,6 +24,7 @@ const LEGACY_APP_SOURCE_PAGE_KEY = "__sourcePage";
 export const APP_ARTIFACT_COMPATIBILITY_KEY = "__artifactCompatibility";
 export const APP_CACHE_ENTRY_REUSE_PROOF_KEY = "__cacheEntryReuseProof";
 export const APP_DYNAMIC_STALE_TIME_KEY = "__dynamicStaleTime";
+const APP_CACHED_NAVIGATION_KEY = "__cachedNavigation";
 export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
@@ -157,6 +159,7 @@ export type AppElementValue =
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
+  | CachedNavigationWireData
   | AppElementsInterception
   | readonly string[]
   | readonly AppElementsSlotBinding[];
@@ -168,6 +171,7 @@ type AppWireElementValue =
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
+  | CachedNavigationWireData
   | AppElementsInterception
   | readonly string[]
   | readonly AppElementsSlotBinding[];
@@ -257,6 +261,7 @@ export type AppOutgoingElements = Readonly<
     | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
+    | CachedNavigationWireData
     | AppElementsInterception
     | number
     | readonly string[]
@@ -267,6 +272,7 @@ export type AppOutgoingElements = Readonly<
 type AppElementsWireKeys = {
   readonly artifactCompatibility: typeof APP_ARTIFACT_COMPATIBILITY_KEY;
   readonly cacheEntryReuseProof: typeof APP_CACHE_ENTRY_REUSE_PROOF_KEY;
+  readonly cachedNavigation: typeof APP_CACHED_NAVIGATION_KEY;
   readonly dynamicStaleTime: typeof APP_DYNAMIC_STALE_TIME_KEY;
   readonly interception: typeof APP_INTERCEPTION_KEY;
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
@@ -291,6 +297,7 @@ type AppElementsWireCodec = {
     element: ReactNode | AppElements;
     artifactCompatibility?: ArtifactCompatibilityEnvelope;
     cacheEntryReuseProof?: CacheEntryReuseProof;
+    cachedNavigation?: CachedNavigationWireData;
     dynamicStaleTimeSeconds?: number;
     layoutFlags: LayoutFlags;
     skipDisposition?: ClientReuseManifestSkipDisposition;
@@ -684,6 +691,7 @@ export function buildOutgoingAppPayload(input: {
   element: ReactNode | AppElements;
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
+  cachedNavigation?: CachedNavigationWireData;
   dynamicStaleTimeSeconds?: number;
   layoutFlags: LayoutFlags;
   skipDisposition?: ClientReuseManifestSkipDisposition;
@@ -699,6 +707,7 @@ export function buildOutgoingAppPayload(input: {
     | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
+    | CachedNavigationWireData
     | AppElementsInterception
     | number
     | readonly string[]
@@ -719,6 +728,9 @@ export function buildOutgoingAppPayload(input: {
     input.artifactCompatibility ?? createArtifactCompatibilityEnvelope();
   if (input.cacheEntryReuseProof) {
     payload[APP_CACHE_ENTRY_REUSE_PROOF_KEY] = input.cacheEntryReuseProof;
+  }
+  if (input.cachedNavigation) {
+    payload[APP_CACHED_NAVIGATION_KEY] = input.cachedNavigation;
   }
   if (input.dynamicStaleTimeSeconds !== undefined) {
     payload[APP_DYNAMIC_STALE_TIME_KEY] = input.dynamicStaleTimeSeconds;
@@ -926,6 +938,7 @@ export const AppElementsWire: AppElementsWireCodec = {
   keys: {
     artifactCompatibility: APP_ARTIFACT_COMPATIBILITY_KEY,
     cacheEntryReuseProof: APP_CACHE_ENTRY_REUSE_PROOF_KEY,
+    cachedNavigation: APP_CACHED_NAVIGATION_KEY,
     dynamicStaleTime: APP_DYNAMIC_STALE_TIME_KEY,
     interception: APP_INTERCEPTION_KEY,
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,

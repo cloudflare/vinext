@@ -4,6 +4,11 @@ import {
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import {
+  createPprFallbackShellSuspensePromiseForState,
+  delayCachedNavigationValue,
+  getPprFallbackShellState,
+} from "./ppr-fallback-shell.js";
 
 export type RootParams = Record<string, string | string[] | undefined>;
 
@@ -71,7 +76,22 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
       `Route ${usage.routePattern} used \`import('next/root-params').${name}()\` inside a Route Handler. Support for this API in Route Handlers is planned for a future version of Next.js.`,
     );
   }
-  return Promise.resolve(getState().rootParams?.[name]);
+  const value = getState().rootParams?.[name];
+  const fallbackShellState = getPprFallbackShellState();
+  if (fallbackShellState?.fallbackParamNames.has(name)) {
+    const stagedValue = delayCachedNavigationValue(() => value);
+    if (stagedValue) return stagedValue;
+  }
+  if (
+    fallbackShellState?.requestApiStage === "static" &&
+    fallbackShellState.fallbackParamNames.has(name)
+  ) {
+    return createPprFallbackShellSuspensePromiseForState(
+      fallbackShellState,
+      `\`import('next/root-params').${name}()\``,
+    );
+  }
+  return Promise.resolve(value);
 }
 
 export function runWithRootParamsUsage<T>(

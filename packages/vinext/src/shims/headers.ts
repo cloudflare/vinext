@@ -23,7 +23,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import { delayPprFallbackShellRequestApi } from "./ppr-fallback-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -985,12 +985,14 @@ export function headers(): Promise<Headers> & Headers {
   }
 
   markDynamicUsage();
-  const fallbackShellPromise = createPprFallbackShellSuspensePromise<Headers>("`headers()`");
+  const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
+  const fallbackShellPromise = !state.headersContext.forceStatic
+    ? delayPprFallbackShellRequestApi("headers", "`headers()`", () => readonlyHeaders)
+    : null;
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
 
-  const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
   return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, readonlyHeaders);
 }
 
@@ -1020,14 +1022,15 @@ function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
   }
 
   markDynamicUsage();
-  const fallbackShellPromise = createPprFallbackShellSuspensePromise<RequestCookies>("`cookies()`");
-  if (fallbackShellPromise) {
-    return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
-  }
-
   const cookieStore = _areCookiesMutableInCurrentPhase()
     ? _getMutableCookies(state.headersContext)
     : _getReadonlyCookies(state.headersContext);
+  const fallbackShellPromise = !state.headersContext.forceStatic
+    ? delayPprFallbackShellRequestApi("cookies", "`cookies()`", () => cookieStore)
+    : null;
+  if (fallbackShellPromise) {
+    return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
+  }
 
   return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, cookieStore);
 }

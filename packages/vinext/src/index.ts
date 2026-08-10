@@ -84,6 +84,7 @@ import {
 } from "./config/next-config.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { mergeServerExternalPackages } from "./config/server-external-packages.js";
+import { validateAppSegmentConfigSource } from "./plugins/app-segment-config-validation.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
@@ -1829,6 +1830,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       filter: skipCommonjsForLocalCjs,
     }),
     {
+      name: "vinext:app-segment-config-validation",
+      enforce: "pre" as const,
+      transform: {
+        filter: {
+          id: /\.[cm]?[jt]sx?(?:\?.*)?$/,
+          code: /unstable_(?:instant|dynamicStaleTime)/,
+        },
+        handler(code: string, id: string) {
+          const cleanId = toSlash(stripViteModuleQuery(id));
+          if (!fileMatcher.isPageFile(cleanId)) return null;
+          if (!isInsideDirectory(canonicalize(appDir), canonicalize(cleanId))) return null;
+
+          const segmentName = fileMatcher.stripExtension(path.basename(cleanId));
+          if (segmentName !== "page" && segmentName !== "layout" && segmentName !== "default") {
+            return null;
+          }
+
+          const route = `/${fileMatcher.stripExtension(path.relative(appDir, cleanId))}`;
+          validateAppSegmentConfigSource(code, {
+            cacheComponents: nextConfig.cacheComponents === true,
+            isClientModule: getLeadingReactDirective(code) === "use client",
+            route,
+          });
+          return null;
+        },
+      },
+    } satisfies Plugin,
+    {
       name: "vinext:global-not-found-css-isolation",
       apply: "build",
       enforce: "pre",
@@ -2360,6 +2389,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // See: packages/next/src/build/define-env.ts
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
           nextConfig.cacheComponents ?? false,
+        );
+        defines["process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS"] = JSON.stringify(
+          nextConfig.cachedNavigations,
         );
 
         // User-defined compile-time constants from `compiler.define` in

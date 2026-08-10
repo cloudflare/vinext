@@ -412,6 +412,8 @@ export type ResolvedNextConfig = {
   serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  /** Cache static/runtime stages learned from completed navigations. */
+  cachedNavigations: boolean;
   appNavFailHandling: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
@@ -1561,6 +1563,7 @@ export async function resolveNextConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1738,8 +1741,8 @@ export async function resolveNextConfig(
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
   //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
-  // vinext does not yet implement varyParams, optimisticRouting, or cachedNavigations,
-  // so we warn when appShells is enabled and explain which co-flags are missing.
+  // vinext does not yet implement the combined appShells feature, so we warn
+  // when it is enabled and explain which required co-flags are missing.
   const appShells = experimental?.appShells === true;
   if (appShells) {
     const missingCoFlags: string[] = [];
@@ -1815,12 +1818,11 @@ export async function resolveNextConfig(
     );
   }
 
-  // Warn when experimental.cachedNavigations is set without cacheComponents.
-  // Next.js throws in this case; vinext warns because the feature is a no-op without it.
+  // Next.js rejects cached navigations unless cache components are enabled.
   if (experimental?.cachedNavigations === true && !config.cacheComponents) {
-    console.warn(
-      "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
-        "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
+    throw new Error(
+      "`experimental.cachedNavigations` requires `cacheComponents` to be enabled. " +
+        "Please update your next.config accordingly.",
     );
   }
 
@@ -1926,6 +1928,7 @@ export async function resolveNextConfig(
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
+    cachedNavigations: config.cacheComponents === true && experimental?.cachedNavigations === true,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,

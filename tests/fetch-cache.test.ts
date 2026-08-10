@@ -60,6 +60,11 @@ const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/heade
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
+const {
+  advanceCachedNavigationToDynamicStage,
+  createPprFallbackShellState,
+  runWithPprFallbackShellState,
+} = await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -3301,6 +3306,32 @@ describe("fetch cache shim", () => {
       expect(peekDynamicFetchObservations()).toContain(
         "https://api.example.com/large-body-page-output",
       );
+    });
+
+    it("defers an oversized cache-key bypass out of the cached-navigation static stage", async () => {
+      const state = createPprFallbackShellState({
+        cachedNavigationStage: "navigation",
+        fallbackParamNames: [],
+        routePattern: "/oversized-fetch",
+      });
+      const pending = runWithPprFallbackShellState(state, () =>
+        fetch("https://api.example.com/large-body-cached-navigation", {
+          method: "POST",
+          body: "x".repeat(1024 * 1024 + 1),
+          next: { revalidate: 60 },
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(peekDynamicFetchObservations()).toContain(
+          "https://api.example.com/large-body-cached-navigation",
+        );
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      advanceCachedNavigationToDynamicStage(state);
+      await expect(pending.then((response) => response.status)).resolves.toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("oversized Request body bypasses cache without cloning the body when content-length exceeds the limit", async () => {

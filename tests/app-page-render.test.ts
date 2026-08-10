@@ -29,6 +29,7 @@ import {
 import {
   NEXT_CACHE_TAGS_HEADER,
   NEXT_ROUTER_STALE_TIME_HEADER,
+  VINEXT_CACHED_NAVIGATION_PARTIAL_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
@@ -43,6 +44,7 @@ import {
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
+import { createPprFallbackShellState } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -1340,6 +1342,32 @@ describe("app page render lifecycle", () => {
       dynamicStaleTimeSeconds: 60,
       serverStaleTimeSeconds: 240,
     });
+  });
+
+  it("marks cached navigation fallback shells partial when a dynamic boundary rendered", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts
+    // A fallback shell can finish before its scheduled abort fires. The observed
+    // boundary is still authoritative: the client must issue a live request to
+    // complete the navigation instead of treating the cached stage as complete.
+    const common = createCommonOptions();
+    const abortController = new AbortController();
+    const fallbackShellState = createPprFallbackShellState({
+      cachedNavigationStage: "static",
+      fallbackParamNames: [],
+      routePattern: "/cached-navigation",
+    });
+    fallbackShellState.hasDynamicBoundary = true;
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      dynamicStaleTimeSeconds: 60,
+      isRscRequest: true,
+      pprFallbackShellSignal: abortController.signal,
+      pprFallbackShellState: fallbackShellState,
+    });
+
+    expect(abortController.signal.aborted).toBe(false);
+    expect(response.headers.get(VINEXT_CACHED_NAVIGATION_PARTIAL_HEADER)).toBe("1");
+    await expect(response.text()).resolves.toBe("flight-data");
   });
 
   it("omits the dynamic stale time header during prerender (isPrerender=true)", async () => {

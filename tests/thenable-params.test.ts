@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  advanceCachedNavigationToDynamicStage,
   createPprFallbackShellState,
   preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
@@ -180,6 +181,53 @@ describe("makeThenableParams", () => {
     expect(typeof (thrown as Promise<unknown>).then).toBe("function");
   });
 
+  it("suspends the complete searchParams value only in the static cached-navigation stage", () => {
+    const staticState = createPprFallbackShellState({
+      fallbackParamNames: [],
+      requestApiStage: "static",
+      routePattern: "/search",
+    });
+    let staticThrown: unknown;
+
+    runWithPprFallbackShellState(staticState, () => {
+      const searchParams = makeThenableParams(
+        { q: "query" },
+        {
+          observeParamAccess() {},
+          requestApiKind: "searchParams",
+        },
+      );
+      try {
+        Reflect.get(searchParams, "q");
+      } catch (error) {
+        staticThrown = error;
+      }
+    });
+    staticState.abortController.abort();
+
+    const runtimeState = createPprFallbackShellState({
+      fallbackParamNames: [],
+      requestApiStage: "runtime",
+      routePattern: "/search",
+    });
+    const runtimeValue = runWithPprFallbackShellState(runtimeState, () =>
+      Reflect.get(
+        makeThenableParams(
+          { q: "query" },
+          {
+            observeParamAccess() {},
+            requestApiKind: "searchParams",
+          },
+        ),
+        "q",
+      ),
+    );
+
+    expect(staticThrown).toBeDefined();
+    expect(typeof (staticThrown as Promise<unknown>).then).toBe("function");
+    expect(runtimeValue).toBe("query");
+  });
+
   it("awaited params object suspends on fallback param access", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
@@ -197,6 +245,29 @@ describe("makeThenableParams", () => {
     });
 
     state.abortController.abort();
+  });
+
+  it("defers an awaited fallback params value until a cached-navigation learning render advances", async () => {
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "navigation",
+      fallbackParamNames: ["slug"],
+      routePattern: "/blog/:slug",
+    });
+
+    const params = runWithPprFallbackShellState(state, () => makeThenableParams({ slug: "post" }));
+    let settled = false;
+    expect(state.hasDynamicBoundary).toBe(false);
+    const pending = params.then((value) => {
+      settled = true;
+      return value;
+    });
+
+    expect(state.hasDynamicBoundary).toBe(true);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    advanceCachedNavigationToDynamicStage(state);
+    const resolved = await pending;
+    expect(resolved.slug).toBe("post");
   });
 
   it("awaiting params during fallback-shell prerender observes only accessed known params", async () => {

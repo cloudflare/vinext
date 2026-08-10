@@ -466,6 +466,7 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
 
 function __resolveRouteFetchCacheMode(route) {
   return __resolveAppPageFetchCacheMode({
+    cacheComponents: ${JSON.stringify(cacheComponents)},
     layouts: route.layouts,
     page: route.page,
     parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
@@ -473,11 +474,13 @@ function __resolveRouteFetchCacheMode(route) {
       ...(slot.configLayouts ?? []),
       slot.page ?? slot.default,
     ]),
+    route: route.pattern,
   });
 }
 
 function __resolveRouteDynamicConfig(route) {
   return __resolveAppPageSegmentConfig({
+    cacheComponents: ${JSON.stringify(cacheComponents)},
     layouts: route.layouts,
     page: route.page,
     parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
@@ -485,11 +488,13 @@ function __resolveRouteDynamicConfig(route) {
       ...(slot.configLayouts ?? []),
       slot.page ?? slot.default,
     ]),
+    route: route.pattern,
   }).dynamicConfig ?? null;
 }
 
 function __resolveRouteRuntime(route) {
   return __resolveAppPageSegmentConfig({
+    cacheComponents: ${JSON.stringify(cacheComponents)},
     layouts: route.layouts,
     page: route.page,
     parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
@@ -497,6 +502,7 @@ function __resolveRouteRuntime(route) {
       ...(slot.configLayouts ?? []),
       slot.page ?? slot.default,
     ]),
+    route: route.pattern,
   }).runtime ?? null;
 }
 
@@ -772,6 +778,7 @@ export default createAppRscHandler({
   }) {
     const PageComponent = route.page?.default;
     const __segmentConfig = __resolveAppPageSegmentConfig({
+      cacheComponents: ${JSON.stringify(cacheComponents)},
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       page: route.page,
@@ -783,6 +790,7 @@ export default createAppRscHandler({
         routeSegments: slot.routeSegments,
       })),
       parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
+      route: route.pattern,
       routeSegments: route.routeSegments,
     });
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
@@ -821,6 +829,7 @@ export default createAppRscHandler({
           isProduction: process.env.NODE_ENV === "production",
         }, layoutParamAccess, displayPathname, scriptNonce);
       },
+      cacheComponents: ${JSON.stringify(cacheComponents)},
       clientReuseManifest,
       cleanPathname,
       displayPathname,

@@ -5,9 +5,15 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRenderDependency,
+  prepareAppComponentCachedNavigationRuntime,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
 } from "../packages/vinext/src/server/app-render-dependency.js";
+import {
+  createPprFallbackShellState,
+  preparePprFallbackShellFinalRender,
+  runWithPprFallbackShellState,
+} from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -38,6 +44,23 @@ async function renderHtml(element: React.ReactNode): Promise<string> {
 }
 
 describe("app render dependency helpers", () => {
+  it("marks an omitted runtime branch partial even without fallback params", () => {
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "runtime",
+      fallbackParamNames: [],
+      requestApiStage: "runtime",
+      routePattern: "/runtime",
+    });
+    preparePprFallbackShellFinalRender(state);
+
+    const rendered = runWithPprFallbackShellState(state, () =>
+      prepareAppComponentCachedNavigationRuntime(false, true),
+    );
+
+    expect(rendered).toBe(false);
+    expect(state.hasDynamicBoundary).toBe(true);
+  });
+
   it("documents that React can render a sync sibling before an async sibling completes", async () => {
     let activeLocale = "en";
 

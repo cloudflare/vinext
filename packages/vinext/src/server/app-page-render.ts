@@ -3,6 +3,18 @@ import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
+import {
+  advanceCachedNavigationToDynamicStage,
+  beginPprFallbackShellFinalRender,
+  getCachedNavigationWireData,
+  getPprFallbackShellState,
+  prepareCachedNavigationRuntimeRender,
+  resolveCachedNavigationStaticStage,
+  runWithPprFallbackShellState,
+  waitForCachedNavigationRuntimeReady,
+  waitForPprFallbackShellCacheReady,
+  type PprFallbackShellState,
+} from "vinext/shims/ppr-fallback-shell";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
@@ -82,7 +94,10 @@ import type {
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
-import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
+import {
+  VINEXT_CACHED_NAVIGATION_PARTIAL_HEADER,
+  VINEXT_RSC_COMPLETION_METADATA_HEADER,
+} from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 
 type AppPageBoundaryOnError = (
@@ -161,6 +176,7 @@ type RenderAppPageLifecycleOptions = {
   params: Record<string, unknown>;
   pprFallbackShellSignal?: AbortSignal;
   pprFallbackShellReactSignal?: AbortSignal;
+  pprFallbackShellState?: PprFallbackShellState;
   abortPprFallbackShell?: () => void;
   rootParams?: RootParams;
   peekRenderObservationState?: () => AppPageRenderObservationState;
@@ -625,6 +641,118 @@ function wrapRscResponseForDevErrorReporting(
   });
 }
 
+export function prepareCachedNavigationLearningElement<T>(element: T): {
+  element: T;
+  elementWithoutCachedNavigation: T;
+  state: PprFallbackShellState | null;
+} {
+  const state = getPprFallbackShellState();
+  const learningState = state?.cachedNavigationStage === "navigation" ? state : null;
+  const wireData = getCachedNavigationWireData();
+  if (!wireData || !isAppElementsRecord(element)) {
+    return { element, elementWithoutCachedNavigation: element, state: learningState };
+  }
+  return {
+    element: {
+      ...element,
+      [AppElementsWire.keys.cachedNavigation]: wireData,
+    } as T,
+    elementWithoutCachedNavigation: element,
+    state: learningState,
+  };
+}
+
+export function stageCachedNavigationLearningStream(options: {
+  elementWithoutCachedNavigation: ReactNode | AppOutgoingElements;
+  onError: AppPageBoundaryOnError;
+  peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
+  prerenderToReadableStream?: RenderAppPageLifecycleOptions["prerenderToReadableStream"];
+  state: PprFallbackShellState | null;
+  stream: ReadableStream<Uint8Array>;
+}): ReadableStream<Uint8Array> {
+  if (!options.state) return options.stream;
+
+  const state = options.state;
+  const [responseStream, staticStageStream] = options.stream.tee();
+  let staticStageActive = true;
+  let staticStageByteLength = 0;
+  const staticStageReader = staticStageStream.getReader();
+  const staticStageCount = (async () => {
+    while (staticStageActive) {
+      const { done, value } = await staticStageReader.read();
+      if (done) break;
+      if (staticStageActive) staticStageByteLength += value.byteLength;
+    }
+  })();
+
+  void waitForPprFallbackShellCacheReady(state)
+    .then(async () => {
+      const staleTimeSeconds = resolveClientStaleTimeSeconds(options.peekRequestCacheLife?.());
+      const partial = advanceCachedNavigationToDynamicStage(state);
+      staticStageActive = false;
+      void staticStageReader.cancel().catch(() => {});
+      void staticStageCount.catch(() => {});
+      resolveCachedNavigationStaticStage(state, {
+        byteLength: staticStageByteLength,
+        partial,
+        ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds }),
+      });
+      const runtimeStage = state.cachedNavigationRuntimeStage;
+      if (!runtimeStage) return;
+
+      void waitForCachedNavigationRuntimeReady(state)
+        .then(async () => {
+          const runtimeStaleTimeSeconds = resolveClientStaleTimeSeconds(
+            options.peekRequestCacheLife?.(),
+          );
+          runtimeStage.resolveStaleTimeSeconds(runtimeStaleTimeSeconds);
+          if (!options.prerenderToReadableStream) {
+            runtimeStage.resolvePartial(true);
+            await runtimeStage.writable.close();
+            return;
+          }
+
+          const runtimeState = prepareCachedNavigationRuntimeRender(state);
+          const pendingResult = runWithPprFallbackShellState(runtimeState, () =>
+            options.prerenderToReadableStream!(options.elementWithoutCachedNavigation, {
+              onError: options.onError,
+              signal: runtimeState.reactAbortController.signal,
+            }),
+          );
+          setTimeout(
+            () =>
+              runWithPprFallbackShellState(runtimeState, () =>
+                beginPprFallbackShellFinalRender(runtimeState),
+              ),
+            0,
+          );
+          const result = await pendingResult;
+          runtimeStage.resolvePartial(runtimeState.hasDynamicBoundary);
+          await result.prelude.pipeTo(runtimeStage.writable);
+        })
+        .catch(async () => {
+          runtimeStage.resolvePartial(true);
+          runtimeStage.resolveStaleTimeSeconds(undefined);
+          try {
+            await runtimeStage.writable.close();
+          } catch {
+            // Best-effort embedded refinement; the live response is valid.
+          }
+        });
+    })
+    .catch(() => {
+      staticStageActive = false;
+      void staticStageReader.cancel().catch(() => {});
+      advanceCachedNavigationToDynamicStage(state);
+      resolveCachedNavigationStaticStage(state, {
+        byteLength: 0,
+        partial: true,
+      });
+    });
+
+  return responseStream;
+}
+
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
@@ -649,10 +777,19 @@ export async function renderAppPageLifecycle(
   const probePageBeforeRender =
     options.isRscRequest ||
     (configuredProbePageBeforeRender && !(options.peekDynamicUsage?.() ?? false));
+  const cachedNavigationState =
+    options.pprFallbackShellState?.cachedNavigationStage === "navigation"
+      ? options.pprFallbackShellState
+      : null;
   const preRenderResult = await probeAppPageBeforeRender({
     hasLoadingBoundary: options.hasLoadingBoundary,
     probePageBeforeRender,
-    skipProbes: options.pprFallbackShellSignal !== undefined,
+    // Request APIs deliberately pause the navigation-learning render until
+    // public cache work has settled. Probing those components outside React
+    // would await the same gate before the Flight stream exists, deadlocking
+    // the request. Learning renders therefore use the same no-probe path as
+    // explicit static/runtime stage renders.
+    skipProbes: options.pprFallbackShellSignal !== undefined || cachedNavigationState !== null,
     layoutCount: options.layoutCount,
     probeLayoutAt(layoutIndex) {
       return options.probeLayoutAt(layoutIndex);
@@ -715,7 +852,7 @@ export async function renderAppPageLifecycle(
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
-  const outgoingElement = AppElementsWire.encodeOutgoingPayload({
+  const outgoingElementWithoutCachedNavigation = AppElementsWire.encodeOutgoingPayload({
     element: options.element,
     layoutFlags,
     ...(dynamicStaleTimeSeconds !== undefined &&
@@ -726,6 +863,9 @@ export async function renderAppPageLifecycle(
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
     skipDisposition: options.isRscRequest ? skipDisposition : undefined,
   });
+  const { element: outgoingElement } = prepareCachedNavigationLearningElement(
+    outgoingElementWithoutCachedNavigation,
+  );
 
   const compileEnd = options.isProduction ? undefined : performance.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
@@ -753,6 +893,15 @@ export async function renderAppPageLifecycle(
     return options.renderToReadableStream(outgoingElement, {
       onError: rscErrorTracker.onRenderError,
     });
+  });
+
+  rscStream = stageCachedNavigationLearningStream({
+    elementWithoutCachedNavigation: outgoingElementWithoutCachedNavigation,
+    onError: rscErrorTracker.onRenderError,
+    peekRequestCacheLife: options.peekRequestCacheLife,
+    prerenderToReadableStream: options.prerenderToReadableStream,
+    state: cachedNavigationState,
+    stream: rscStream,
   });
 
   let pprFallbackShellRsc: Uint8Array | null = null;
@@ -786,7 +935,7 @@ export async function renderAppPageLifecycle(
     });
   const rscCapture = pprFallbackShellRsc
     ? {
-        ssrStream: createBufferedRscStream(false),
+        ssrStream: createBufferedRscStream(options.isRscRequest),
         ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
@@ -883,40 +1032,53 @@ export async function renderAppPageLifecycle(
     // if uncaught by user code. Full parity with Next.js would require checking
     // invalidDynamicUsageError after SSR rendering, which is deferred as out of scope
     // for this PR focused on client-side navigations.
-    const completionHeaders = new Headers(rscResponse.headers);
-    completionHeaders.set(VINEXT_RSC_COMPLETION_METADATA_HEADER, "1");
-    const completionResponse =
+    const stageHeaders = new Headers(rscResponse.headers);
+    if (
+      options.pprFallbackShellSignal?.aborted ||
+      options.pprFallbackShellState?.hasDynamicBoundary
+    ) {
+      stageHeaders.set(VINEXT_CACHED_NAVIGATION_PARTIAL_HEADER, "1");
+    }
+    const responseWithStageHeaders = new Response(rscResponse.body, {
+      status: rscResponse.status,
+      statusText: rscResponse.statusText,
+      headers: stageHeaders,
+    });
+    const shouldAppendCompletionMetadata =
       dynamicStaleTimeSeconds !== undefined &&
       options.isPrerender !== true &&
       !options.isForceStatic &&
-      rscResponse.body
-        ? new Response(
-            appendRscCompletionMetadata(rscResponse.body, () => {
-              if (!finalizeRenderDynamicUsage()) return undefined;
-              const completedServerStaleTimeSeconds = resolveClientStaleTimeSeconds(
-                options.peekRequestCacheLife?.(),
-              );
-              // A known-dynamic response already carries its BFCache bound in
-              // the header. Add a footer only when it has a distinct completed
-              // cacheLife claim for runtime-prefetch expiry.
-              if (shouldEmitDynamicStaleTime && completedServerStaleTimeSeconds === undefined) {
-                return undefined;
-              }
-              return {
-                dynamicStaleTimeSeconds,
-                serverStaleTimeSeconds:
-                  completedServerStaleTimeSeconds === undefined
-                    ? null
-                    : Math.floor(completedServerStaleTimeSeconds),
-              };
-            }),
-            {
-              status: rscResponse.status,
-              statusText: rscResponse.statusText,
-              headers: completionHeaders,
-            },
-          )
-        : rscResponse;
+      responseWithStageHeaders.body;
+    const completionHeaders = new Headers(stageHeaders);
+    completionHeaders.set(VINEXT_RSC_COMPLETION_METADATA_HEADER, "1");
+    const completionResponse = shouldAppendCompletionMetadata
+      ? new Response(
+          appendRscCompletionMetadata(responseWithStageHeaders.body!, () => {
+            if (!finalizeRenderDynamicUsage()) return undefined;
+            const completedServerStaleTimeSeconds = resolveClientStaleTimeSeconds(
+              options.peekRequestCacheLife?.(),
+            );
+            // A known-dynamic response already carries its BFCache bound in
+            // the header. Add a footer only when it has a distinct completed
+            // cacheLife claim for runtime-prefetch expiry.
+            if (shouldEmitDynamicStaleTime && completedServerStaleTimeSeconds === undefined) {
+              return undefined;
+            }
+            return {
+              dynamicStaleTimeSeconds,
+              serverStaleTimeSeconds:
+                completedServerStaleTimeSeconds === undefined
+                  ? null
+                  : Math.floor(completedServerStaleTimeSeconds),
+            };
+          }),
+          {
+            status: rscResponse.status,
+            statusText: rscResponse.statusText,
+            headers: completionHeaders,
+          },
+        )
+      : responseWithStageHeaders;
 
     const devRscResponse =
       !options.isProduction && completionResponse.body && options.consumeInvalidDynamicUsageError

@@ -323,14 +323,16 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
   // result may enter commit approval only if its token proves it belongs to the
   // active navigation and the visible commit version it started from is still
   // current. The token verifies; ApprovedVisibleCommit (downstream) mutates.
-  // A detached/optimistic payload and the authoritative payload that follows
-  // are two renders in one navigation lifecycle. The first visible commit may
-  // advance the version, but it does not supersede its own authoritative data.
-  const isAuthoritativeSameNavigationHandoff =
+  // Detached cached-navigation stages and the authoritative payload that
+  // follows are refinements within one navigation lifecycle. Each visible
+  // stage may advance the version, but it does not supersede a later stage or
+  // the navigation's own authoritative data.
+  const isSameNavigationDetachedHandoff =
     options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
     options.currentState.activeOperation.navigationCommitKind === "detached" &&
-    options.pending.action.operation.navigationCommitKind === "authoritative";
-  const visibleCommitVersion = isAuthoritativeSameNavigationHandoff
+    (options.pending.action.operation.navigationCommitKind === "authoritative" ||
+      options.pending.action.operation.navigationCommitKind === "detached");
+  const visibleCommitVersion = isSameNavigationDetachedHandoff
     ? options.pending.action.operation.startedVisibleCommitVersion
     : options.currentState.visibleCommitVersion;
   const verdict = verifyOperationTokenForCommit(token, {

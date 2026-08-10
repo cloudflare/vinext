@@ -81,6 +81,12 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 
+/** Marks a cached-navigation stage response that still has dynamic holes. */
+export const VINEXT_CACHED_NAVIGATION_PARTIAL_HEADER = "X-Vinext-Cached-Navigation-Partial";
+
+/** Signals that a route opts into a request-derived runtime cache stage. */
+export const VINEXT_CACHED_NAVIGATION_RUNTIME_HEADER = "X-Vinext-Cached-Navigation-Runtime";
+
 /** Disabled-by-default client hint describing already-held App Router payload entries. */
 export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
 

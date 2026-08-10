@@ -33,6 +33,7 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import { delayCachedNavigationValue } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { after, connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
@@ -281,6 +282,7 @@ function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
 
 type CreateDispatchOptionsOverrides = {
   buildPageElement?: DispatchOptions["buildPageElement"];
+  cacheComponents?: boolean;
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
   dynamicConfig?: DispatchOptions["dynamicConfig"];
@@ -343,6 +345,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     }));
   const options: DispatchOptions = {
     buildPageElement,
+    cacheComponents: overrides.cacheComponents,
     cleanPathname: overrides.cleanPathname ?? "/posts/hello",
     clearRequestContext,
     createRscOnErrorHandler() {
@@ -2358,6 +2361,102 @@ describe("app page dispatch", () => {
       pathname: "/photos/123",
       searchParams: new URLSearchParams("from=feed"),
     });
+  });
+
+  it("learns cached-navigation stages from a source-route interception without hanging request data", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({ params: ["id"], pattern: "/photos/[id]" });
+    let delayedContent: Promise<string> | null = null;
+    let capturedWireData: unknown;
+    const { options } = createDispatchOptions({
+      cleanPathname: "/photos/123",
+      async buildPageElement() {
+        delayedContent = delayCachedNavigationValue(() => "resolved source intercept");
+        return {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: "/feed",
+            rootLayoutTreePath: "/",
+            routeId: "route:/feed",
+          }),
+        } as unknown as Readonly<Record<string, React.ReactNode>>;
+      },
+      isRscRequest: true,
+      pprFallbackShell: {
+        cachedNavigationStage: "navigation",
+        fallbackParamNames: [],
+        routePattern: "/feed",
+      },
+      pprRuntime: appPagePprRuntime,
+      renderToReadableStream(element) {
+        if (!isUnknownRecord(element)) throw new Error("Expected intercepted AppElements");
+        capturedWireData = element[AppElementsWire.keys.cachedNavigation];
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            void delayedContent?.then((content) => {
+              controller.enqueue(new TextEncoder().encode(content));
+              controller.close();
+            });
+          },
+        });
+      },
+      route: currentRoute,
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          interceptBranchSegments: ["(.)photos", "[id]"],
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    await expect(response.text()).resolves.toBe("resolved source intercept");
+    expect(capturedWireData).toBeTruthy();
+    const staticStage = await Reflect.get(capturedWireData as object, "staticStage");
+    expect(staticStage).toMatchObject({ partial: true });
+  });
+
+  it("validates deferred instant config on the active intercept module", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({ params: ["id"], pattern: "/photos/[id]" });
+    const buildPageElement = vi.fn(async () => React.createElement("main"));
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cacheComponents: true,
+      cleanPathname: "/photos/123",
+      isRscRequest: true,
+      route: currentRoute,
+    });
+
+    await expect(
+      dispatchAppPage({
+        ...options,
+        findIntercept() {
+          return {
+            interceptBranchSegments: ["(.)photos", "[id]"],
+            matchedParams: { id: "123" },
+            page: {
+              default: "modal-page",
+              unstable_instant: { prefetch: "runtime", samples: [] },
+            },
+            slotKey: "modal@app/feed/@modal",
+            sourceRouteIndex: 1,
+          };
+        },
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1 ? sourceRoute : undefined;
+        },
+      }),
+    ).rejects.toThrow(/Invalid unstable_instant value/);
+    expect(buildPageElement).not.toHaveBeenCalled();
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {

@@ -30,6 +30,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import { delayPprFallbackShellRequestApi } from "./ppr-fallback-shell.js";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -633,6 +634,17 @@ function markUncachedFetchForPageOutput(input: string | URL | Request): void {
   markDynamicUsage();
 }
 
+function delayUncachedFetchForStaticStage(
+  input: string | URL | Request,
+  fetchValue: () => Promise<Response>,
+): Promise<Response> | null {
+  return delayPprFallbackShellRequestApi(
+    "fetch",
+    `fetch(${JSON.stringify(getFetchObservationUrl(input))})`,
+    fetchValue,
+  );
+}
+
 function recordCacheableFetchObservation(input: string | URL | Request): void {
   _getState().cacheableFetchUrls.add(getFetchObservationUrl(input));
 }
@@ -1119,6 +1131,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // If no caching options at all, just pass through to original fetch
     if (!nextOpts && !cacheDirective) {
       recordDynamicFetchObservation(input);
+      const pending = delayUncachedFetchForStaticStage(input, () => dedupeFetch(input, init));
+      if (pending) return pending;
       return dedupeFetch(input, init);
     }
 
@@ -1135,6 +1149,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
       markUncachedFetchForPageOutput(input);
+      const pending = delayUncachedFetchForStaticStage(input, () => dedupeFetch(input, cleanInit));
+      if (pending) return pending;
       return dedupeFetch(input, cleanInit);
     }
 
@@ -1159,6 +1175,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init, cacheDirective);
       recordDynamicFetchObservation(input);
+      const pending = delayUncachedFetchForStaticStage(input, () => dedupeFetch(input, cleanInit));
+      if (pending) return pending;
       return dedupeFetch(input, cleanInit);
     }
 
@@ -1185,6 +1203,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // next: {} with no revalidate or tags — pass through
         const cleanInit = stripNextFromInit(init, cacheDirective);
         recordDynamicFetchObservation(input);
+        const pending = delayUncachedFetchForStaticStage(input, () =>
+          dedupeFetch(input, cleanInit),
+        );
+        if (pending) return pending;
         return dedupeFetch(input, cleanInit);
       }
     }
@@ -1228,6 +1250,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // the observation (downgrading the page output to fresh render)
         // without marking the whole page dynamic.
         recordDynamicFetchObservation(input);
+        const pending = delayUncachedFetchForStaticStage(input, () =>
+          dedupeFetch(input, fetchInit),
+        );
+        if (pending) return pending;
         return dedupeFetch(input, fetchInit);
       }
       throw err;

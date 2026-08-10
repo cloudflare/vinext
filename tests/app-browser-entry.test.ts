@@ -4736,6 +4736,36 @@ describe("app browser navigation lifecycle settlement", () => {
         ),
         nextElements: Promise.resolve(
           createResolvedElements("route:/items", "/", null, {
+            "page:/items": React.createElement("main", null, "runtime stage"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/items?filter=active",
+        navId,
+        navigationCommitKind: "detached",
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+        props: { children: "runtime stage" },
+      });
+
+      void renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/items?filter=active",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/items", "/", null, {
             "page:/items": React.createElement("main", null, "authoritative"),
           }),
         ),

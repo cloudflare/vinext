@@ -2078,6 +2078,7 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -2535,31 +2536,23 @@ describe("resolveNextConfig swcEnvOptions warning", () => {
   });
 });
 
-describe("resolveNextConfig cachedNavigations warning", () => {
+describe("resolveNextConfig cachedNavigations validation", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("emits a warning when experimental.cachedNavigations is set without cacheComponents", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await resolveNextConfig({
-      experimental: { cachedNavigations: true },
-    });
-
-    const cachedNavigationsWarning = warn.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
-    );
-
-    expect(cachedNavigationsWarning).toBeDefined();
-    expect(cachedNavigationsWarning![0]).toContain("experimental.cachedNavigations");
-    expect(cachedNavigationsWarning![0]).toContain("cacheComponents: true");
+  it("throws when experimental.cachedNavigations is set without cacheComponents", async () => {
+    await expect(
+      resolveNextConfig({
+        experimental: { cachedNavigations: true },
+      }),
+    ).rejects.toThrow("`experimental.cachedNavigations` requires `cacheComponents` to be enabled");
   });
 
   it("does not warn when experimental.cachedNavigations is set with cacheComponents", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await resolveNextConfig({
+    const config = await resolveNextConfig({
       cacheComponents: true,
       experimental: { cachedNavigations: true },
     });
@@ -2568,6 +2561,7 @@ describe("resolveNextConfig cachedNavigations warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
     );
     expect(cachedNavigationsWarning).toBeUndefined();
+    expect(config.cachedNavigations).toBe(true);
   });
 
   it("does not warn when experimental.cachedNavigations is not set", async () => {

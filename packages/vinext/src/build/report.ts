@@ -162,6 +162,63 @@ export function hasExportedName(code: string, name: string): boolean {
   return false;
 }
 
+export type StaticExportValue =
+  | { found: false }
+  | { found: true; supported: false }
+  | { found: true; supported: true; value: unknown };
+
+/**
+ * Extract a JSON-shaped named export using the same static forms that Next's
+ * segment-config analysis accepts. Unlike `hasExportedName`, this checks the
+ * public/exported name, so `export { instant as unstable_instant }` resolves
+ * the local `instant` binding.
+ */
+export function extractStaticExportValue(code: string, name: string): StaticExportValue {
+  const program = parseRouteModule(code);
+  if (!program) return { found: false };
+
+  const bindings = new Map<string, Expression>();
+  for (const statement of program.body) {
+    const declaration =
+      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+    if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") continue;
+    for (const declarator of declaration.declarations) {
+      const binding = bindingName(declarator.id);
+      if (binding && declarator.init) bindings.set(binding, declarator.init);
+    }
+  }
+
+  let initializer: Expression | null = null;
+  let found = false;
+  for (const statement of program.body) {
+    if (statement.type !== "ExportNamedDeclaration" || statement.exportKind === "type") continue;
+
+    const declaration = statement.declaration;
+    if (declaration?.type === "VariableDeclaration") {
+      for (const declarator of declaration.declarations) {
+        if (bindingName(declarator.id) !== name) continue;
+        found = true;
+        initializer = declarator.init;
+      }
+    }
+
+    for (const specifier of statement.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.exported) !== name) continue;
+      found = true;
+      if (statement.source !== null) return { found: true, supported: false };
+      const localName = moduleExportNameValue(specifier.local);
+      initializer = localName ? (bindings.get(localName) ?? null) : null;
+    }
+  }
+
+  if (!found || !initializer) return found ? { found: true, supported: false } : { found: false };
+  const value = extractStaticJsonValueWithBindings(initializer, bindings, new Set());
+  return value === UNSUPPORTED_STATIC_VALUE
+    ? { found: true, supported: false }
+    : { found: true, supported: true, value };
+}
+
 function hasNamedExportInProgram(program: Program, name: string): boolean {
   for (const node of program.body) {
     if (node.type !== "ExportNamedDeclaration") continue;
@@ -334,6 +391,49 @@ function extractStaticJsonValue(expression: Expression): unknown {
   }
 
   return UNSUPPORTED_STATIC_VALUE;
+}
+
+function extractStaticJsonValueWithBindings(
+  expression: Expression,
+  bindings: ReadonlyMap<string, Expression>,
+  seen: Set<string>,
+): unknown {
+  const value = unwrapStaticExpression(expression);
+  if (value.type === "Identifier") {
+    if (seen.has(value.name)) return UNSUPPORTED_STATIC_VALUE;
+    const binding = bindings.get(value.name);
+    if (!binding) return UNSUPPORTED_STATIC_VALUE;
+    seen.add(value.name);
+    const resolved = extractStaticJsonValueWithBindings(binding, bindings, seen);
+    seen.delete(value.name);
+    return resolved;
+  }
+
+  if (value.type === "ArrayExpression") {
+    const items: unknown[] = [];
+    for (const element of value.elements) {
+      if (!element || element.type === "SpreadElement") return UNSUPPORTED_STATIC_VALUE;
+      const item = extractStaticJsonValueWithBindings(element, bindings, seen);
+      if (item === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+      items.push(item);
+    }
+    return items;
+  }
+
+  if (value.type === "ObjectExpression") {
+    const object: Record<string, unknown> = {};
+    for (const property of value.properties) {
+      if (property.type !== "Property" || property.computed) return UNSUPPORTED_STATIC_VALUE;
+      const key = propertyKeyName(property.key);
+      if (!key) return UNSUPPORTED_STATIC_VALUE;
+      const propertyValue = extractStaticJsonValueWithBindings(property.value, bindings, seen);
+      if (propertyValue === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+      object[key] = propertyValue;
+    }
+    return object;
+  }
+
+  return extractStaticJsonValue(value);
 }
 
 function isStaticMiddlewareMatcher(value: unknown): value is StaticMiddlewareMatcher {

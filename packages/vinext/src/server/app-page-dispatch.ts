@@ -2,7 +2,11 @@ import { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
+import {
+  _captureRequestScopedCacheLifeAccessors,
+  _consumeRequestScopedCacheLife,
+  _setRequestScopedCacheLife,
+} from "vinext/shims/cache-request-state";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
@@ -59,7 +63,11 @@ import {
   validateAppPageDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
-import { renderAppPageLifecycle } from "./app-page-render.js";
+import {
+  prepareCachedNavigationLearningElement,
+  renderAppPageLifecycle,
+  stageCachedNavigationLearningStream,
+} from "./app-page-render.js";
 import {
   consumeAppPageRenderObservationState,
   discardAppPageRenderState,
@@ -82,7 +90,12 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import { validateAppRouteSegmentConfig } from "./app-segment-config.js";
+import {
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_CACHED_NAVIGATION_RUNTIME_HEADER,
+} from "./headers.js";
+import { routeUsesRuntimeCachedNavigations } from "./app-cached-navigation-runtime.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -294,6 +307,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       serveStreamingMetadata?: boolean;
     },
   ) => Promise<AppPageElement>;
+  cacheComponents?: boolean;
   clientReuseManifest?: ClientReuseManifestParseResult;
   cleanPathname: string;
   displayPathname?: string;
@@ -348,6 +362,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   params: AppPageParams;
   pprFallbackCacheShells?: readonly AppPagePprFallbackCacheShell[] | null;
   pprFallbackShell?: {
+    cachedNavigationStage?: "navigation" | "runtime" | "static";
     fallbackParamNames: readonly string[];
     routePattern: string;
   };
@@ -905,6 +920,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       interceptSearchParams,
       interceptLayoutParamAccess,
     ) {
+      for (const segment of [
+        ...(interceptOpts?.interceptLayouts ?? []),
+        interceptOpts?.interceptPage,
+      ]) {
+        if (!segment || (typeof segment !== "object" && typeof segment !== "function")) continue;
+        validateAppRouteSegmentConfig(segment, {
+          cacheComponents: options.cacheComponents === true,
+          route: interceptRoute.pattern,
+        });
+      }
       // Deliberately no save/restore around buildPageElement: when this
       // callback runs, resolveAppPageIntercept returns the intercept response
       // directly and the dispatch never falls through to the original route.
@@ -966,8 +991,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       );
       // No inner runWithFetchDedupe here: dispatchAppPage already activated
       // dedupe at line 294, and this callback runs inside dispatchAppPageInner.
-      const interceptStream = options.renderToReadableStream(interceptElement, {
+      const prepared = prepareCachedNavigationLearningElement(interceptElement);
+      const interceptStream = options.renderToReadableStream(prepared.element, {
         onError: interceptOnError,
+      });
+      const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
+      const stagedInterceptStream = stageCachedNavigationLearningStream({
+        elementWithoutCachedNavigation: prepared.elementWithoutCachedNavigation,
+        onError: interceptOnError,
+        peekRequestCacheLife() {
+          return requestCacheLife.peek();
+        },
+        prerenderToReadableStream: options.prerenderToReadableStream,
+        state: prepared.state,
+        stream: interceptStream,
       });
       const interceptHeaders = new Headers({
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
@@ -976,10 +1013,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
       applyRscDeploymentIdHeader(interceptHeaders);
-      return new Response(interceptStream, {
+      const response = new Response(stagedInterceptStream, {
         status: options.middlewareContext.status ?? 200,
         headers: interceptHeaders,
       });
+      if (
+        options.renderMode === "cached-navigation-static-stage" &&
+        routeUsesRuntimeCachedNavigations(sourceRoute)
+      ) {
+        response.headers.set(VINEXT_CACHED_NAVIGATION_RUNTIME_HEADER, "1");
+      }
+      return response;
     },
     async resolveSearchParams(sourceRoute, searchParams) {
       await options.ensureRouteLoaded?.(sourceRoute);
@@ -1043,7 +1087,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
 
   const fallbackShellState = options.pprRuntime?.getState() ?? null;
-  if (fallbackShellState && process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) {
+  if (
+    fallbackShellState &&
+    fallbackShellState.cachedNavigationStage !== "navigation" &&
+    ((process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) ||
+      fallbackShellState.cachedNavigationStage === "static" ||
+      fallbackShellState.cachedNavigationStage === "runtime")
+  ) {
     const warmupBuildResult = await buildCurrentPageElement();
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
@@ -1054,7 +1104,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       renderToReadableStream: options.renderToReadableStream,
       state: fallbackShellState,
     });
+    const cachedNavigationWarmupCacheLife =
+      fallbackShellState.cachedNavigationStage === null ? null : _consumeRequestScopedCacheLife();
     discardAppPageRenderState();
+    if (cachedNavigationWarmupCacheLife) {
+      _setRequestScopedCacheLife(cachedNavigationWarmupCacheLife);
+    }
   }
 
   const pageBuildResult = await buildCurrentPageElement();
@@ -1079,13 +1134,23 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     options.debugClassification,
   );
   const activeFallbackShellState = options.pprRuntime?.getState() ?? null;
-  const pprFallbackShellSignal = activeFallbackShellState?.abortController.signal;
-  const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
+  const isPartialStageRender =
+    activeFallbackShellState?.cachedNavigationStage === "static" ||
+    activeFallbackShellState?.cachedNavigationStage === "runtime" ||
+    (process.env.VINEXT_PRERENDER === "1" &&
+      activeFallbackShellState !== null &&
+      activeFallbackShellState.cachedNavigationStage !== "navigation");
+  const pprFallbackShellSignal = isPartialStageRender
+    ? activeFallbackShellState?.abortController.signal
+    : undefined;
+  const pprFallbackShellReactSignal = isPartialStageRender
+    ? activeFallbackShellState?.reactAbortController.signal
+    : undefined;
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
 
-  return renderAppPageLifecycle({
+  const response = await renderAppPageLifecycle({
     basePath: options.basePath,
     clientTraceMetadata: options.clientTraceMetadata,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
@@ -1145,12 +1210,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     params: options.params,
     pprFallbackShellSignal,
     pprFallbackShellReactSignal,
+    pprFallbackShellState: activeFallbackShellState ?? undefined,
     renderedPathAndSearch: options.renderedPathAndSearch,
-    abortPprFallbackShell: activeFallbackShellState
-      ? () => {
-          options.pprRuntime!.beginFinalRender(activeFallbackShellState);
-        }
-      : undefined,
+    abortPprFallbackShell:
+      isPartialStageRender && activeFallbackShellState
+        ? () => {
+            options.pprRuntime!.beginFinalRender(activeFallbackShellState);
+          }
+        : undefined,
     layoutParamAccess,
     rootParams: options.rootParams,
     peekRenderObservationState() {
@@ -1215,6 +1282,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
   });
+  if (
+    options.renderMode === "cached-navigation-static-stage" &&
+    routeUsesRuntimeCachedNavigations(route, interceptResult.interceptOpts)
+  ) {
+    response.headers.set(VINEXT_CACHED_NAVIGATION_RUNTIME_HEADER, "1");
+  }
+  return response;
 }
 
 async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(

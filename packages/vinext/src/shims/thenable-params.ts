@@ -1,6 +1,9 @@
 import {
   createPprFallbackShellSuspensePromiseForState,
+  delayCachedNavigationValue,
+  delayCachedNavigationValueForState,
   getPprFallbackShellState,
+  shouldPprFallbackShellSuspendRequestApi,
 } from "./ppr-fallback-shell.js";
 
 function hasParamProperty<T extends Record<string, unknown>>(obj: T, prop: PropertyKey): boolean {
@@ -70,6 +73,7 @@ export type ThenableParams<T extends Record<string, unknown>> = Promise<T> &
 export type ThenableParamsObserver = Readonly<{
   observeParamAccess: (keys: readonly string[]) => void;
   observeReactPromiseStatus?: boolean;
+  requestApiKind?: "searchParams";
 }>;
 
 function observeParamKeys(
@@ -202,11 +206,17 @@ export function makeThenableParams<T extends Record<string, unknown>>(
 ): ThenableParams<T> {
   const plain = { ...obj };
   const fallbackShellState = getPprFallbackShellState();
+  const suspendEntireValue =
+    observer?.requestApiKind === "searchParams" &&
+    shouldPprFallbackShellSuspendRequestApi("searchParams");
   const fallbackParamNames =
     fallbackShellState &&
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
       ? fallbackShellState.fallbackParamNames
       : null;
+  const suspendAwaitedValue =
+    suspendEntireValue ||
+    (fallbackParamNames !== null && fallbackShellState?.cachedNavigationStage === "navigation");
   let fallbackShellPromise: Promise<T> | null = null;
   let fallbackShellPromiseController: AbortController | null = null;
 
@@ -221,7 +231,17 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     // diverge between the `get` and `getOwnPropertyDescriptor` traps).
     // Promise creation stays lazy so the dynamic-boundary side effects only
     // fire on first actual fallback-key access.
-    if (!fallbackParamNames || !fallbackShellState) return null;
+    if ((!fallbackParamNames && !suspendEntireValue) || !fallbackShellState) return null;
+    const stagedValue =
+      fallbackShellState.cachedNavigationStage === "navigation"
+        ? delayCachedNavigationValueForState(fallbackShellState, () => plain)
+        : delayCachedNavigationValue(() => plain);
+    if (stagedValue) return stagedValue;
+    // Fallback params are absent from the static stage but become concrete
+    // request values in the runtime stage. The same thenable is constructed
+    // for both renders, so key the suspension off the stage instead of the
+    // mere presence of fallback-param metadata.
+    if (fallbackShellState.requestApiStage === "runtime" && !suspendEntireValue) return null;
     // `preparePprFallbackShellFinalRender` swaps in a fresh `AbortController`
     // on the warmup->final transition. Re-derive the hanging promise whenever
     // the live controller has changed so suspension always tracks the
@@ -258,7 +278,10 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   const handler: ProxyHandler<Promise<T>> = {
     get(target, prop, receiver) {
       if (isPromiseContinuation(prop)) {
-        const value = Reflect.get(target, prop, receiver);
+        const continuationTarget = suspendAwaitedValue
+          ? (getFallbackShellPromise() ?? target)
+          : target;
+        const value = Reflect.get(continuationTarget, prop, continuationTarget);
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
           // Only observe all keys when NOT in fallback-shell mode.
@@ -267,8 +290,13 @@ export function makeThenableParams<T extends Record<string, unknown>>(
           if (!fallbackParamNames) {
             observeAllParamKeys(observer, plain);
           }
-          return Reflect.apply(value, target, args);
+          return Reflect.apply(value, continuationTarget, args);
         };
+      }
+
+      if (suspendEntireValue && !isWellKnownProperty(prop)) {
+        const pending = getFallbackShellPromise();
+        if (pending) throw pending;
       }
 
       if (prop === "status" && observer?.observeReactPromiseStatus === true) {
@@ -291,6 +319,10 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       return typeof value === "function" ? value.bind(target) : value;
     },
     getOwnPropertyDescriptor(target, prop) {
+      if (suspendEntireValue && !isWellKnownProperty(prop)) {
+        const pending = getFallbackShellPromise();
+        if (pending) throw pending;
+      }
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
@@ -318,6 +350,10 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       return Reflect.getOwnPropertyDescriptor(target, prop);
     },
     has(target, prop) {
+      if (suspendEntireValue && !isWellKnownProperty(prop)) {
+        const pending = getFallbackShellPromise();
+        if (pending) throw pending;
+      }
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
@@ -327,6 +363,10 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       );
     },
     ownKeys() {
+      if (suspendEntireValue) {
+        const pending = getFallbackShellPromise();
+        if (pending) throw pending;
+      }
       observeReadableParamKeys(observer, plain);
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },

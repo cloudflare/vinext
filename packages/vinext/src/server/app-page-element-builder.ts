@@ -1,5 +1,6 @@
 import { Suspense, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
+import { enableCachedNavigationRuntimeStage } from "vinext/shims/ppr-fallback-shell";
 import {
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
@@ -44,13 +45,20 @@ import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import {
   createAppPageRenderDependency,
-  invokeAppComponent,
+  invokeAppComponentWithCachedNavigationRuntime,
   isAppRenderSuspension,
   isReactOwnedAppComponent,
+  prepareAppComponentCachedNavigationRuntime,
   renderAfterAppDependencies,
+  renderAppComponentWithCachedNavigationRuntime,
   type AppPageRenderDependency,
 } from "./app-render-dependency.js";
 import { isPromiseLike } from "../utils/promise.js";
+import {
+  moduleUsesRuntimeCachedNavigations,
+  resolveCachedNavigationRuntimeModuleChain,
+  routeUsesRuntimeCachedNavigations,
+} from "./app-cached-navigation-runtime.js";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -507,10 +515,26 @@ export async function buildPageElements<
     EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
       ? createAppPageRenderDependency()
       : null;
+  const routeLayoutRuntimeRequestApis = resolveCachedNavigationRuntimeModuleChain(route.layouts);
+  const routeDescendantsRuntimeRequestApis = routeLayoutRuntimeRequestApis.at(-1) ?? false;
+  const interceptLayoutRuntimeRequestApis = resolveCachedNavigationRuntimeModuleChain(
+    opts?.interceptLayouts ?? [],
+    routeDescendantsRuntimeRequestApis,
+  );
+  const pageAncestorsRuntimeRequestApis = isSiblingIntercept
+    ? (interceptLayoutRuntimeRequestApis.at(-1) ?? routeDescendantsRuntimeRequestApis)
+    : routeDescendantsRuntimeRequestApis;
+  const pageRuntimeRequestApis =
+    pageAncestorsRuntimeRequestApis || moduleUsesRuntimeCachedNavigations(effectivePageModule);
+  const hasRuntimeCachedNavigationBranch = routeUsesRuntimeCachedNavigations(route, opts);
+  if (hasRuntimeCachedNavigationBranch) {
+    enableCachedNavigationRuntimeStage();
+  }
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
     renderDependency?: AppPageRenderDependency | null,
+    runtimeRequestApis = false,
   ) => {
     if (isReactOwnedAppComponent(PageComponent)) {
       const invocationProps = { ...props };
@@ -521,7 +545,11 @@ export async function buildPageElements<
             })
           : makeThenableParams(pageSearchParams);
       }
-      return createElement(PageComponent, invocationProps);
+      return renderAppComponentWithCachedNavigationRuntime(
+        PageComponent,
+        invocationProps,
+        runtimeRequestApis,
+      );
     }
 
     const PageInvoker = () => {
@@ -533,7 +561,12 @@ export async function buildPageElements<
       }
 
       try {
-        const result = invokeAppComponent(PageComponent, invocationProps);
+        prepareAppComponentCachedNavigationRuntime(runtimeRequestApis);
+        const result = invokeAppComponentWithCachedNavigationRuntime(
+          PageComponent,
+          invocationProps,
+          runtimeRequestApis,
+        );
         if (isPromiseLike(result)) {
           if (renderDependency) {
             // A declared-async page reaches its first continuation before this
@@ -589,9 +622,14 @@ export async function buildPageElements<
   // slot-based path handles this inside buildSlotOverrides/app-page-route-wiring,
   // but sibling intercepts bypass that path entirely. We apply the wrapping here
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
-  let siblingInterceptElement: ReturnType<typeof createElement> | null =
+  let siblingInterceptElement: React.ReactNode =
     isSiblingIntercept && EffectivePageComponent
-      ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
+      ? createPageElement(
+          EffectivePageComponent,
+          pageProps,
+          pageRenderDependency,
+          pageRuntimeRequestApis,
+        )
       : null;
   if (isSiblingIntercept && siblingInterceptElement !== null) {
     const layoutIndexesByTreePosition = new Map<number, number[]>();
@@ -636,10 +674,14 @@ export async function buildPageElements<
           interceptLayoutSegments,
           effectiveParams,
         );
-        siblingInterceptElement = createElement(
+        siblingInterceptElement = renderAppComponentWithCachedNavigationRuntime(
           LayoutComponent,
-          { params: makeThenableParams(interceptLayoutParams) },
-          siblingInterceptElement,
+          {
+            children: siblingInterceptElement,
+            params: makeThenableParams(interceptLayoutParams),
+          },
+          interceptLayoutRuntimeRequestApis[layoutIndex] ?? routeDescendantsRuntimeRequestApis,
+          true,
         );
       }
     }
@@ -649,9 +691,16 @@ export async function buildPageElements<
     element: isSiblingIntercept
       ? siblingInterceptElement
       : EffectivePageComponent
-        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
+        ? createPageElement(
+            EffectivePageComponent,
+            pageProps,
+            pageRenderDependency,
+            pageRuntimeRequestApis,
+          )
         : null,
-    createPageElement,
+    createPageElement(PageComponent, props, runtimeRequestApis) {
+      return createPageElement(PageComponent, props, null, runtimeRequestApis);
+    },
     // Fall back to vinext's built-in default global error module so that
     // uncaught client render errors are caught by the route-level
     // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
@@ -659,6 +708,7 @@ export async function buildPageElements<
     globalErrorModule:
       globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
     isRscRequest,
+    hasRuntimeCachedNavigationBranch,
     layoutParamAccess: options.layoutParamAccess,
     mountedSlotIds,
     makeThenableParams,

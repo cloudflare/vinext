@@ -26,6 +26,7 @@ import {
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
+  APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
@@ -42,6 +43,13 @@ import {
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
 import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
+import {
+  beginPprFallbackShellFinalRender,
+  createPprFallbackShellState,
+  preparePprFallbackShellFinalRender,
+  runWithPprFallbackShellState,
+  trackPprFallbackShellCacheTask,
+} from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
 /**
  * Build the resolved semantic branch the route matcher hands to slot overrides.
@@ -222,6 +230,14 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
   }
 
   return text + decoder.decode();
+}
+
+async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > 200) throw new Error(message);
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
 }
 
 async function renderHtml(node: ReactNode): Promise<string> {
@@ -3059,6 +3075,130 @@ describe("app page route wiring helpers", () => {
     expect(slotLayoutPos).toBeLessThan(outerLayoutPos);
     expect(outerLayoutPos).toBeLessThan(innerLayoutPos);
     expect(innerLayoutPos).toBeLessThan(pagePos);
+  });
+
+  it("uses an active intercept-only runtime opt-in when omitting ineligible ancestors", async () => {
+    let slotLayoutRan = false;
+    let interceptLayoutRan = false;
+    let overridePageRan = false;
+
+    async function RuntimeSlotLayout(props: { children?: ReactNode }) {
+      await trackPprFallbackShellCacheTask(() => Promise.resolve(), "private");
+      slotLayoutRan = true;
+      return createElement("section", null, props.children);
+    }
+
+    function InheritedInterceptLayout(props: { children?: ReactNode }) {
+      interceptLayoutRan = true;
+      return createElement("div", null, props.children);
+    }
+
+    function InheritedOverridePage() {
+      overridePageRan = true;
+      return createElement("p", null, "runtime override");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: {
+              default: RuntimeSlotLayout,
+            },
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: { default: InheritedOverridePage },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      hasRuntimeCachedNavigationBranch: true,
+      slotOverrides: {
+        sidebar: {
+          layoutModules: [{ default: InheritedInterceptLayout }],
+          pageModule: {
+            default: InheritedOverridePage,
+            unstable_instant: { prefetch: "runtime" },
+          },
+          props: {},
+        },
+      },
+    });
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "runtime",
+      fallbackParamNames: [],
+      requestApiStage: "runtime",
+      routePattern: "/dashboard",
+    });
+    preparePprFallbackShellFinalRender(state);
+    const { ElementsContext } = await import("../packages/vinext/src/shims/slot.js");
+    const flatEntries = Object.values(elements)
+      .filter((entry): entry is ReactElement => isValidElement(entry))
+      .map((entry, index) => createElement(Fragment, { key: index }, entry));
+    const { renderToReadableStream } = await import("react-dom/server.edge");
+
+    let htmlPromise: Promise<string> | null = null;
+    try {
+      runWithPprFallbackShellState(state, () => {
+        htmlPromise = renderToReadableStream(
+          createElement(
+            ElementsContext.Provider,
+            { value: elements },
+            createElement(Fragment, null, flatEntries),
+          ),
+          {
+            onError(error: unknown) {
+              if (state.reactAbortController.signal.aborted) return;
+              throw error instanceof Error ? error : new Error(String(error));
+            },
+            signal: state.reactAbortController.signal,
+          },
+        ).then(readStream);
+        void htmlPromise.catch(() => {});
+        beginPprFallbackShellFinalRender(state);
+      });
+
+      await waitForCondition(
+        () => overridePageRan,
+        "Timed out waiting for the intercepted runtime slot branch",
+      );
+      expect(slotLayoutRan).toBe(false);
+      expect(interceptLayoutRan).toBe(false);
+      expect(state.hasRuntimeEligibleComponent).toBe(true);
+      expect(state.hasRuntimeCacheTask).toBe(false);
+      await expect(htmlPromise).resolves.toContain("runtime override");
+      expect(state.pendingRuntimeDiscoveryScopes).toBe(0);
+      expect(state.pendingCacheTasks).toBe(0);
+    } finally {
+      if (!state.reactAbortController.signal.aborted) {
+        state.reactAbortController.abort();
+        state.abortController.abort();
+      }
+      await (htmlPromise as Promise<string> | null)?.catch(() => "");
+    }
   });
 
   it("retains slot-root loading outside intercepted branch loading", () => {

@@ -41,10 +41,16 @@ import {
   createAppRenderDependency,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
+  renderAppComponentWithCachedNavigationRuntime,
   renderAppComponentWithDependencyBarrier,
   type AppPageRenderDependency,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
+import {
+  moduleUsesRuntimeCachedNavigations,
+  resolveCachedNavigationRuntimeModuleChain,
+  routeUsesRuntimeCachedNavigations,
+} from "./app-cached-navigation-runtime.js";
 import {
   resolveAppPageBranchParams,
   resolveAppPageSegmentParamScopeKeys,
@@ -242,6 +248,7 @@ type BuildAppPageRouteElementOptions<
   createPageElement?: (
     component: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
+    runtimeRequestApis: boolean,
   ) => ReactNode;
   pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
@@ -254,6 +261,7 @@ type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
+  hasRuntimeCachedNavigationBranch?: boolean;
   interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
   isRscRequest?: boolean;
@@ -813,6 +821,8 @@ export function buildAppPageElements<
   const interceptionContext =
     renderIdentity?.interceptionContext ?? options.interceptionContext ?? null;
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
+  const hasRuntimeCachedNavigationBranch =
+    options.hasRuntimeCachedNavigationBranch ?? routeUsesRuntimeCachedNavigations(options.route);
   const routeSegments = options.route.routeSegments ?? [];
   const routeId =
     renderIdentity?.routeId ??
@@ -829,6 +839,9 @@ export function buildAppPageElements<
     ? `__vinext_streaming_metadata_outlet:${routeId}`
     : null;
   const layoutEntries = createAppPageLayoutEntries(options.route);
+  const layoutRuntimeRequestApis = resolveCachedNavigationRuntimeModuleChain(
+    layoutEntries.map((entry) => entry.layoutModule),
+  );
   const templateEntries = createAppPageTemplateEntries(options.route);
   const loadingEntries = createAppPageLoadingEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
@@ -1173,17 +1186,20 @@ export function buildAppPageElements<
 
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
-    let layoutElement: ReactNode = layoutDependency ? (
-      renderAppComponentWithDependencyBarrier(
-        LayoutComponent,
-        { ...layoutProps, children: <Children /> },
-        layoutDependency,
-      )
-    ) : (
-      <LayoutComponent {...layoutProps}>
-        <Children />
-      </LayoutComponent>
-    );
+    let layoutElement: ReactNode = layoutDependency
+      ? renderAppComponentWithDependencyBarrier(
+          LayoutComponent,
+          { ...layoutProps, children: <Children /> },
+          layoutDependency,
+          layoutRuntimeRequestApis[index] ?? false,
+          hasRuntimeCachedNavigationBranch,
+        )
+      : renderAppComponentWithCachedNavigationRuntime(
+          LayoutComponent,
+          { ...layoutProps, children: <Children /> },
+          layoutRuntimeRequestApis[index] ?? false,
+          hasRuntimeCachedNavigationBranch,
+        );
     const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
@@ -1263,6 +1279,22 @@ export function buildAppPageElements<
       continue;
     }
 
+    const inheritedRuntimeRequestApis =
+      targetIndex >= 0 ? (layoutRuntimeRequestApis[targetIndex] ?? false) : false;
+    const slotRuntimeModules = [
+      slot.layout,
+      ...(hasSlotTreeOverride ? (slotOverride?.layoutModules ?? []) : (slot.configLayouts ?? [])),
+    ];
+    const slotLayoutRuntimeRequestApis = resolveCachedNavigationRuntimeModuleChain(
+      slotRuntimeModules,
+      inheritedRuntimeRequestApis,
+    );
+    const slotDescendantsRuntimeRequestApis =
+      slotLayoutRuntimeRequestApis.at(-1) ?? inheritedRuntimeRequestApis;
+    const slotPageRuntimeRequestApis =
+      slotDescendantsRuntimeRequestApis ||
+      moduleUsesRuntimeCachedNavigations(slotOverride?.pageModule ?? slot.page ?? slot.default);
+
     let slotElement: ReactNode;
     if (prefetchSlotLoadingEntry) {
       const PrefetchSlotLoadingComponent = getDefaultExport(
@@ -1281,10 +1313,14 @@ export function buildAppPageElements<
         Object.assign(slotProps, slotOverride.props);
       }
       slotElement = options.createPageElement
-        ? options.createPageElement(slotComponent!, slotProps)
+        ? options.createPageElement(slotComponent!, slotProps, slotPageRuntimeRequestApis)
         : (() => {
             const SlotComponent = slotComponent!;
-            return <SlotComponent {...slotProps} />;
+            return renderAppComponentWithCachedNavigationRuntime(
+              SlotComponent,
+              slotProps,
+              slotPageRuntimeRequestApis,
+            );
           })();
       if (overrideOrPageComponent) {
         // Named parallel-slot entries flatten the slot page and its layout
@@ -1296,11 +1332,15 @@ export function buildAppPageElements<
     }
     const branchLayouts = new Map<
       number,
-      { component: AppPageComponent; params: AppPageParams }[]
+      { component: AppPageComponent; params: AppPageParams; runtimeRequestApis: boolean }[]
     >();
     const addBranchLayout = (
       treePosition: number,
-      entry: { component: AppPageComponent; params: AppPageParams },
+      entry: {
+        component: AppPageComponent;
+        params: AppPageParams;
+        runtimeRequestApis: boolean;
+      },
     ) => {
       const entries = branchLayouts.get(treePosition) ?? [];
       entries.push(entry);
@@ -1316,6 +1356,8 @@ export function buildAppPageElements<
         addBranchLayout(treePosition, {
           component,
           params: resolveSlotLayoutParams(branchSegments, treePosition, slotParams),
+          runtimeRequestApis:
+            slotLayoutRuntimeRequestApis[layoutIndex + 1] ?? inheritedRuntimeRequestApis,
         });
       }
     } else {
@@ -1329,6 +1371,8 @@ export function buildAppPageElements<
             ...slotOwnerParams,
             ...resolveSlotLayoutParams(slotRouteSegments, treePosition, slotParams),
           },
+          runtimeRequestApis:
+            slotLayoutRuntimeRequestApis[layoutIndex + 1] ?? inheritedRuntimeRequestApis,
         });
       }
     }
@@ -1337,7 +1381,11 @@ export function buildAppPageElements<
     if (slotLayoutComponent) {
       const rootEntries = branchLayouts.get(0) ?? [];
       branchLayouts.set(0, [
-        { component: slotLayoutComponent, params: slotOwnerParams },
+        {
+          component: slotLayoutComponent,
+          params: slotOwnerParams,
+          runtimeRequestApis: slotLayoutRuntimeRequestApis[0] ?? inheritedRuntimeRequestApis,
+        },
         ...rootEntries,
       ]);
     }
@@ -1412,10 +1460,14 @@ export function buildAppPageElements<
       for (let layoutIndex = layoutEntriesAtPosition.length - 1; layoutIndex >= 0; layoutIndex--) {
         const layoutEntry = layoutEntriesAtPosition[layoutIndex];
         const LayoutComponent = layoutEntry.component;
-        slotElement = (
-          <LayoutComponent params={options.makeThenableParams(layoutEntry.params)}>
-            {slotElement}
-          </LayoutComponent>
+        slotElement = renderAppComponentWithCachedNavigationRuntime(
+          LayoutComponent,
+          {
+            children: slotElement,
+            params: options.makeThenableParams(layoutEntry.params),
+          },
+          layoutEntry.runtimeRequestApis,
+          true,
         );
       }
     }

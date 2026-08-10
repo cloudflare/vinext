@@ -11,6 +11,7 @@ type AppRouteSegmentConfigModule = {
   revalidate?: unknown;
   runtime?: unknown;
   unstable_dynamicStaleTime?: unknown;
+  unstable_instant?: unknown;
 };
 
 type EffectiveAppPageSegmentConfig = {
@@ -31,13 +32,21 @@ type ParallelAppPageSegmentConfigBranch = {
 };
 
 type ResolveAppPageSegmentConfigOptions = {
+  cacheComponents?: boolean;
   layouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   layoutTreePositions?: readonly number[];
   page?: AppRouteSegmentConfigModule | null;
   parallelBranches?: readonly (ParallelAppPageSegmentConfigBranch | null | undefined)[];
   parallelPages?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   parallelSegments?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
+  route?: string;
   routeSegments?: readonly string[];
+};
+
+type ValidateAppRouteSegmentConfigOptions = {
+  cacheComponents: boolean;
+  isClientModule?: boolean;
+  route: string;
 };
 
 const DYNAMIC_VALUES = new Set<unknown>(["auto", "error", "force-dynamic", "force-static"]);
@@ -50,6 +59,155 @@ const FETCH_CACHE_VALUES = new Set<unknown>([
   "only-cache",
   "only-no-store",
 ]);
+const INSTANT_CONFIG_KEYS = new Set([
+  "prefetch",
+  "samples",
+  "from",
+  "unstable_disableValidation",
+  "unstable_disableDevValidation",
+  "unstable_disableBuildValidation",
+]);
+const INSTANT_SAMPLE_KEYS = new Set(["cookies", "headers", "params", "searchParams"]);
+const INSTANT_COOKIE_KEYS = new Set(["name", "value"]);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isInstantParamRecord(value: unknown, allowNull: boolean): boolean {
+  if (!isPlainRecord(value)) return false;
+  return Object.values(value).every(
+    (entry) =>
+      typeof entry === "string" ||
+      (allowNull && entry === null) ||
+      (Array.isArray(entry) && entry.every((item) => typeof item === "string")),
+  );
+}
+
+function isInstantSample(value: unknown): boolean {
+  if (!isPlainRecord(value) || !hasOnlyKeys(value, INSTANT_SAMPLE_KEYS)) return false;
+
+  if (
+    value.cookies !== undefined &&
+    (!Array.isArray(value.cookies) ||
+      !value.cookies.every(
+        (cookie) =>
+          isPlainRecord(cookie) &&
+          hasOnlyKeys(cookie, INSTANT_COOKIE_KEYS) &&
+          typeof cookie.name === "string" &&
+          (typeof cookie.value === "string" || cookie.value === null),
+      ))
+  ) {
+    return false;
+  }
+
+  if (
+    value.headers !== undefined &&
+    (!Array.isArray(value.headers) ||
+      !value.headers.every(
+        (header) =>
+          Array.isArray(header) &&
+          header.length === 2 &&
+          typeof header[0] === "string" &&
+          (typeof header[1] === "string" || header[1] === null),
+      ))
+  ) {
+    return false;
+  }
+
+  if (value.params !== undefined && !isInstantParamRecord(value.params, false)) return false;
+  if (value.searchParams !== undefined && !isInstantParamRecord(value.searchParams, true)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isInstantConfig(value: unknown): boolean {
+  if (value === false) return true;
+  if (!isPlainRecord(value) || !hasOnlyKeys(value, INSTANT_CONFIG_KEYS)) return false;
+  if (value.prefetch !== "static" && value.prefetch !== "runtime") return false;
+
+  if (value.samples !== undefined) {
+    if (
+      !Array.isArray(value.samples) ||
+      value.samples.length === 0 ||
+      !value.samples.every(isInstantSample)
+    ) {
+      return false;
+    }
+  } else if (value.prefetch === "runtime") {
+    return false;
+  }
+
+  if (value.from !== undefined && !isStringArray(value.from)) return false;
+  for (const key of [
+    "unstable_disableValidation",
+    "unstable_disableDevValidation",
+    "unstable_disableBuildValidation",
+  ] as const) {
+    if (value[key] !== undefined && value[key] !== true) return false;
+  }
+
+  return true;
+}
+
+function describeInvalidInstant(value: unknown, route: string): string {
+  return (
+    `Invalid segment configuration options detected for "${route}". ` +
+    "Read more at https://nextjs.org/docs/app/api-reference/file-conventions/route-segment-config\n" +
+    `Invalid unstable_instant value ${JSON.stringify(value)} on "${route}", must be an object ` +
+    'with `prefetch: "static"` or `prefetch: "runtime"`, or `false`. Read more at ' +
+    "https://nextjs.org/docs/messages/invalid-instant-configuration"
+  );
+}
+
+/**
+ * Validate the segment-level `unstable_instant` contract used by Next.js.
+ *
+ * This deliberately checks export presence rather than truthiness: exporting
+ * `false` is valid schema-wise, but still requires Cache Components and still
+ * conflicts with `unstable_dynamicStaleTime`, matching Next's static-info pass.
+ */
+export function validateAppRouteSegmentConfig(
+  segment: AppRouteSegmentConfigModule,
+  options: ValidateAppRouteSegmentConfigOptions,
+): void {
+  if (!("unstable_instant" in segment)) return;
+
+  if (options.isClientModule) {
+    throw new Error(
+      `Page "${options.route}" cannot export "unstable_instant" from a Client Component module. ` +
+        'To use this API, convert this module to a Server Component by removing the "use client" directive.',
+    );
+  }
+
+  if (!options.cacheComponents) {
+    throw new Error(
+      `Page "${options.route}" cannot use \`export const unstable_instant = ...\` without enabling \`cacheComponents\`.`,
+    );
+  }
+
+  if ("unstable_dynamicStaleTime" in segment) {
+    throw new Error(
+      `Page "${options.route}" cannot use both \`export const unstable_dynamicStaleTime\` and \`export const unstable_instant\`.`,
+    );
+  }
+
+  if (!isInstantConfig(segment.unstable_instant)) {
+    throw new Error(describeInvalidInstant(segment.unstable_instant, options.route));
+  }
+}
 
 function isRouteSegmentDynamic(value: unknown): value is AppRouteSegmentDynamic {
   return DYNAMIC_VALUES.has(value);
@@ -231,6 +389,13 @@ export function resolveAppPageSegmentConfig(
 ): EffectiveAppPageSegmentConfig {
   const segments = [...(options.layouts ?? []), options.page];
   const parallelSegments = getParallelSegments(options);
+  for (const segment of [...segments, ...parallelSegments]) {
+    if (!segment) continue;
+    validateAppRouteSegmentConfig(segment, {
+      cacheComponents: options.cacheComponents === true,
+      route: options.route ?? "unknown",
+    });
+  }
   // Reduction strategies differ by field:
   // - dynamic: child segments override parents.
   // - dynamicParams: false is sticky across the route tree.
