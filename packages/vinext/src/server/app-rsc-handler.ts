@@ -225,6 +225,7 @@ type DispatchMatchedPageOptions<TRoute> = {
     | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    kind: "cache-components-prerender" | "fallback-shell";
     routePattern: string;
   };
   renderedConcreteUrlPaths?: ReadonlySet<string>;
@@ -367,6 +368,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: HandleProgressiveActionRequestOptions<TRoute>,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
   handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
+  getPartialPrerenderPaths?: () => readonly string[];
   isMetadataRoutePath?: (cleanPathname: string) => boolean | Promise<boolean>;
   getPrerenderMetadataRoutePaths?: () => Promise<unknown>;
   createPprFallbackShells?: (
@@ -607,6 +609,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Matches Next.js: test/e2e/app-dir/hooks/hooks.test.ts —
   //   "should have the canonical url pathname on rewrite"
   const canonicalPathname = cleanPathname;
+
+  if (pathname === "/__vinext/prefetch-policy" && request.method === "GET") {
+    options.clearRequestContext();
+    return Response.json(
+      { partialPrerenderPaths: options.getPartialPrerenderPaths?.() ?? [] },
+      { headers: { "Cache-Control": "public, max-age=0, must-revalidate" } },
+    );
+  }
 
   const basePathState = { basePath: options.basePath, hadBasePath };
   let cleanPathnameIsRequestPathname = true;
@@ -1546,9 +1556,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     pprFallbackShell: isPrerenderFallbackShell
       ? {
           fallbackParamNames: prerenderRouteParamsMatch.fallbackParamNames,
+          kind: "fallback-shell",
           routePattern: route.pattern,
         }
-      : undefined,
+      : process.env.VINEXT_PRERENDER === "1" &&
+          options.createPprFallbackShells !== undefined &&
+          request.method === "GET" &&
+          !isRscRequest
+        ? {
+            fallbackParamNames: [],
+            kind: "cache-components-prerender",
+            routePattern: route.pattern,
+          }
+        : undefined,
     renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
     skipStaticParamsValidation: isPrerenderFallbackShell,
     staticParamsValidationParams:

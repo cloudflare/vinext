@@ -23,7 +23,10 @@ import {
   isrCacheKey,
   getRevalidateDuration,
 } from "../packages/vinext/src/server/isr-cache.js";
-import { getRenderedConcreteUrlPathsForRoute } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
+import {
+  getPartialPrerenderPaths,
+  getRenderedConcreteUrlPathsForRoute,
+} from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -115,6 +118,40 @@ describe("seedMemoryCacheFromPrerender", () => {
       const rscText = new TextDecoder().decode(rscValue.rscData!);
       expect(rscText).toBe("RSC payload for about");
     }
+  });
+
+  it("seeds partial Cache Components RSC under its loading-shell identity", async () => {
+    const buildId = "partial-shell-build";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/short-lived-cache",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            rscRenderMode: "prefetch-loading-shell",
+          },
+        ],
+      },
+      {
+        "short-lived-cache.html": "<html><body>Loading...</body></html>",
+        "short-lived-cache.rsc": "partial RSC shell",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/short-lived-cache", buildId);
+    await expect(getCacheHandler().get(baseKey + ":rsc")).resolves.toBeNull();
+    const shellEntry = await getCacheHandler().get(baseKey + ":rsc:prefetch-loading-shell");
+    expect(shellEntry?.value?.kind).toBe("APP_PAGE");
+    if (shellEntry?.value?.kind === "APP_PAGE") {
+      expect(new TextDecoder().decode(shellEntry.value.rscData!)).toBe("partial RSC shell");
+    }
+    expect(getPartialPrerenderPaths()).toEqual(["/short-lived-cache"]);
   });
 
   it("seeds prerendered metadata responses as App Route entries", async () => {

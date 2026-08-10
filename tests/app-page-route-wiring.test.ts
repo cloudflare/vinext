@@ -40,6 +40,10 @@ import {
   buildPageElements as buildResolvedPageElements,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
+import {
+  createNestedBfcacheSlotSegmentId,
+  isNestedBfcacheSlotSegmentIdFor,
+} from "../packages/vinext/src/server/bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
 import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
 
@@ -1798,7 +1802,7 @@ describe("app page route wiring helpers", () => {
     const fooOtherIdIdentities =
       AppElementsWire.readMetadata(fooOtherIdElements).bfcacheSegmentIdentities;
     const nestedSegmentIds = Object.keys(fooIdentities)
-      .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
+      .filter((id) => isNestedBfcacheSlotSegmentIdFor(id, modalSlotId))
       .sort();
     expect(nestedSegmentIds).toHaveLength(4);
     const [outerGroupSegmentId, usernameSegmentId, nestedGroupSegmentId, idSegmentId] =
@@ -1921,7 +1925,7 @@ describe("app page route wiring helpers", () => {
     const changedLeafIdentities =
       AppElementsWire.readMetadata(changedLeafElements).bfcacheSegmentIdentities;
     const nestedIds = Object.keys(firstIdentities)
-      .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
+      .filter((id) => isNestedBfcacheSlotSegmentIdFor(id, modalSlotId))
       .sort();
 
     expect(nestedIds).toHaveLength(3);
@@ -2059,7 +2063,7 @@ describe("app page route wiring helpers", () => {
     const otherTargetIdentities =
       AppElementsWire.readMetadata(otherTargetElements).bfcacheSegmentIdentities;
     const nestedIds = Object.keys(firstIdentities)
-      .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
+      .filter((id) => isNestedBfcacheSlotSegmentIdFor(id, modalSlotId))
       .sort();
 
     expect(nestedIds).toHaveLength(3);
@@ -2135,7 +2139,7 @@ describe("app page route wiring helpers", () => {
 
     expect(identities[modalSlotId]).toBeUndefined();
     expect(
-      Object.keys(identities).some((id) => id.startsWith("slot:\0vinext_bfcache_segment_")),
+      Object.keys(identities).some((id) => isNestedBfcacheSlotSegmentIdFor(id, modalSlotId)),
     ).toBe(false);
     expect(fallbackBoundary?.props.stateKey).toBe(JSON.stringify(["photo", "id|1|d"]));
   });
@@ -2216,7 +2220,7 @@ describe("app page route wiring helpers", () => {
       buildSlotElements({ defaultModule: null, pageModule: null }),
     ).bfcacheSegmentIdentities;
     const firstSegmentId = Object.keys(activeIdentities).find((id) =>
-      id.startsWith("slot:\0vinext_bfcache_segment_"),
+      isNestedBfcacheSlotSegmentIdFor(id, modalSlotId),
     );
 
     expect(firstSegmentId).toBeTypeOf("string");
@@ -2320,6 +2324,108 @@ describe("app page route wiring helpers", () => {
     expect(JSON.parse(baseline[modalSlotId])[1]).toBe("graph-slot:modal");
   });
 
+  it("retains a primary page when a sibling navigation inserts a deeper layout", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    const buildElements = (withNestedLayout: boolean) => {
+      const routeSegments = withNestedLayout
+        ? ["per-page-config", "parallel-slots"]
+        : ["per-page-config"];
+      const layouts = withNestedLayout
+        ? [{ default: RootLayout }, { default: GroupLayout }, { default: SlotLayout }]
+        : [{ default: RootLayout }, { default: GroupLayout }];
+      return buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(value) {
+          return Promise.resolve(value);
+        },
+        matchedParams: {},
+        resolvedMetadata: null,
+        resolvedViewport: {},
+        route: {
+          error: null,
+          errors: layouts.map(() => null),
+          ids: {
+            layouts: layouts.map(
+              (_, index) => `graph-layout:/${routeSegments.slice(0, index).join("/")}`,
+            ),
+            page: `graph-page:/${routeSegments.join("/")}`,
+            rootBoundary: "graph-root:/",
+            route: `graph-route:/${routeSegments.join("/")}`,
+            routeHandler: null,
+            slots: {},
+            templates: [],
+          },
+          layoutTreePositions: layouts.map((_, index) => index),
+          layouts,
+          loading: null,
+          notFound: null,
+          notFounds: layouts.map(() => null),
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: `/${routeSegments.join("/")}`,
+        rootNotFoundModule: null,
+      });
+    };
+
+    const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+    let source: AppElements;
+    let destination: AppElements;
+    try {
+      process.env.__NEXT_CACHE_COMPONENTS = "true";
+      source = buildElements(false);
+      destination = buildElements(true);
+    } finally {
+      if (previousCacheComponents === undefined) {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      } else {
+        process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+      }
+    }
+    const ownerLayoutId = AppElementsWire.encodeLayoutId("/per-page-config");
+    const primaryChildId = createNestedBfcacheSlotSegmentId(ownerLayoutId, 1);
+    const sourceIdentities = AppElementsWire.readMetadata(source).bfcacheSegmentIdentities;
+    const destinationIdentities =
+      AppElementsWire.readMetadata(destination).bfcacheSegmentIdentities;
+
+    expect(source[primaryChildId]).toBeNull();
+    expect(destination[primaryChildId]).toBeNull();
+    expect(sourceIdentities[primaryChildId]).toBeDefined();
+    expect(destinationIdentities[primaryChildId]).toBeDefined();
+    expect(destinationIdentities[primaryChildId]).not.toBe(sourceIdentities[primaryChildId]);
+    expect(
+      findElement(
+        source[AppElementsWire.encodeRouteId("/per-page-config", null)],
+        (element) =>
+          getElementTypeName(element.type) === "BfcacheSegmentBoundary" &&
+          element.props.id === primaryChildId,
+      )?.props.stateKey,
+    ).toBe("__PAGE__");
+    expect(
+      findElement(
+        destination[AppElementsWire.encodeRouteId("/per-page-config/parallel-slots", null)],
+        (element) =>
+          getElementTypeName(element.type) === "BfcacheSegmentBoundary" &&
+          element.props.id === primaryChildId,
+      )?.props.stateKey,
+    ).toBe("parallel-slots");
+
+    const sourceIds = createNextBfcacheIdMap({
+      current: {},
+      currentElements: source,
+      elements: source,
+    });
+    const destinationIds = createNextBfcacheIdMap({
+      current: sourceIds,
+      currentElements: source,
+      elements: destination,
+    });
+    expect(destinationIds[primaryChildId]).not.toBe(sourceIds[primaryChildId]);
+  });
+
   it.each([false, true])(
     "binds nested slot identities to their dynamic owner with cacheComponents=%s",
     (cacheComponents) => {
@@ -2389,7 +2495,7 @@ describe("app page route wiring helpers", () => {
         const alphaOtherLeafIdentities =
           AppElementsWire.readMetadata(alphaOtherLeafElements).bfcacheSegmentIdentities;
         const nestedSegmentId = Object.keys(alphaIdentities)
-          .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
+          .filter((id) => isNestedBfcacheSlotSegmentIdFor(id, modalSlotId))
           .sort()
           .at(-1);
 
@@ -2492,7 +2598,7 @@ describe("app page route wiring helpers", () => {
         const secondIdentities =
           AppElementsWire.readMetadata(secondElements).bfcacheSegmentIdentities;
         const nestedSegmentIds = Object.keys(firstIdentities)
-          .filter((candidate) => candidate.startsWith("slot:\0vinext_bfcache_segment_"))
+          .filter((candidate) => isNestedBfcacheSlotSegmentIdFor(candidate, panelSlotId))
           .sort();
         const groupSegmentId = nestedSegmentIds[0];
         const nestedSegmentId = nestedSegmentIds.at(-1);
@@ -2573,7 +2679,7 @@ describe("app page route wiring helpers", () => {
       const secondIdentities =
         AppElementsWire.readMetadata(secondElements).bfcacheSegmentIdentities;
       const firstSegmentId = Object.keys(firstIdentities).find((id) =>
-        id.startsWith("slot:\0vinext_bfcache_segment_"),
+        isNestedBfcacheSlotSegmentIdFor(id, panelSlotId),
       );
       expect(firstSegmentId).toBeTypeOf("string");
       if (firstSegmentId === undefined) return;
@@ -2655,7 +2761,7 @@ describe("app page route wiring helpers", () => {
       const secondIdentities =
         AppElementsWire.readMetadata(secondElements).bfcacheSegmentIdentities;
       const branchSegmentId = Object.keys(firstIdentities).find((id) =>
-        id.startsWith("slot:\0vinext_bfcache_segment_"),
+        isNestedBfcacheSlotSegmentIdFor(id, panelSlotId),
       );
       expect(branchSegmentId).toBeTypeOf("string");
       if (branchSegmentId === undefined) return;
@@ -2727,7 +2833,7 @@ describe("app page route wiring helpers", () => {
       const defaultIdentities =
         AppElementsWire.readMetadata(defaultElements).bfcacheSegmentIdentities;
       const branchSegmentId = Object.keys(activeIdentities).find((id) =>
-        id.startsWith("slot:\0vinext_bfcache_segment_"),
+        isNestedBfcacheSlotSegmentIdFor(id, panelSlotId),
       );
 
       expect(branchSegmentId).toBeTypeOf("string");
@@ -2816,7 +2922,7 @@ describe("app page route wiring helpers", () => {
         throw new Error("Expected BFCache identity metadata");
       }
       const identityId = Object.keys(identities).find((id) =>
-        id.startsWith("slot:\0vinext_bfcache_segment_"),
+        isNestedBfcacheSlotSegmentIdFor(id, modalSlotId),
       );
       const identity = identityId
         ? (identities as Readonly<Record<string, unknown>>)[identityId]
@@ -2934,10 +3040,10 @@ describe("app page route wiring helpers", () => {
       "graph-route:/photo/[id]/details",
     );
     const baseSegmentIds = Object.keys(base)
-      .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
+      .filter((id) => isNestedBfcacheSlotSegmentIdFor(id, modalSlotId))
       .sort();
     const extendedSegmentIds = Object.keys(extended)
-      .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
+      .filter((id) => isNestedBfcacheSlotSegmentIdFor(id, modalSlotId))
       .sort();
 
     expect(baseSegmentIds).toHaveLength(2);

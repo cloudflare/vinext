@@ -24,7 +24,9 @@ import {
   VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
 
@@ -676,6 +678,65 @@ describe("prefetch cache eviction", () => {
     expect(consumed).not.toBeNull();
     if (consumed === null) return;
     await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
+  });
+
+  it("uses the manifest policy only for partial Cache Components router.prefetch routes", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    vi.resetModules();
+    const {
+      appRouterInstance: cacheComponentsRouter,
+      getPrefetchCache: getCacheComponentsPrefetchCache,
+    } = await import("../packages/vinext/src/shims/navigation.js");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: ["partial"], isDynamic: false },
+      { canPrefetchLoadingShell: false, patternParts: ["complete"], isDynamic: false },
+    ];
+    const rscHeaders: Headers[] = [];
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(toRscUrlString(input), "http://localhost");
+      if (url.pathname === "/__vinext/prefetch-policy") {
+        return Response.json({ partialPrerenderPaths: ["/partial"] });
+      }
+      rscHeaders.push(new Headers(init?.headers));
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    try {
+      cacheComponentsRouter.prefetch("/partial");
+      await waitForPrefetchSetup(() => rscHeaders.length === 1);
+      cacheComponentsRouter.prefetch("/complete");
+      await waitForPrefetchSetup(() => rscHeaders.length === 2);
+
+      expect(rscHeaders[0]?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect(rscHeaders[1]?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(rscHeaders[0]?.get("Next-Router-Prefetch")).toBe("1");
+      expect(rscHeaders[0]?.get("Next-Router-Segment-Prefetch")).toBe("1");
+      expect(
+        fetch.mock.calls.filter(([input]) => toRscUrlString(input).includes("prefetch-policy")),
+      ).toHaveLength(1);
+      await waitForPrefetchSetup(() => {
+        const entries = Array.from(getCacheComponentsPrefetchCache().values());
+        return entries.length === 2 && entries.every((entry) => entry.pending === undefined);
+      });
+      const entries = Array.from(getCacheComponentsPrefetchCache().entries());
+      const partialEntry = entries.find(([key]) => key.startsWith("/partial?"))?.[1];
+      const completeEntry = entries.find(([key]) => key.startsWith("/complete?"))?.[1];
+      expect(partialEntry).toMatchObject({
+        cacheForNavigation: true,
+        optimisticRouteShell: false,
+        prefetchKind: "navigation",
+      });
+      expect(completeEntry).toMatchObject({
+        cacheForNavigation: true,
+        optimisticRouteShell: false,
+        prefetchKind: "navigation",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("gates Cache Components root-param router.prefetch behind the route tree", async () => {

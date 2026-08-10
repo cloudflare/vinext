@@ -42,11 +42,18 @@ import {
   NEXT_CACHE_TAGS_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../server/headers.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  parseAppRscRenderMode,
+  type AppRscRenderMode,
+} from "../server/app-rsc-render-mode.js";
 import {
   encodePrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
@@ -175,6 +182,8 @@ export type PrerenderRouteResult =
       routeSegments?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
+      /** Cache identity of the captured RSC artifact when it is not a complete navigation. */
+      rscRenderMode?: AppRscRenderMode;
     }
   | {
       route: string;
@@ -1573,6 +1582,13 @@ export async function prerenderApp({
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
+            const parsedRscRenderMode = parseAppRscRenderMode(
+              response.headers.get(VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER),
+            );
+            const rscRenderMode =
+              parsedRscRenderMode === APP_RSC_RENDER_MODE_NAVIGATION
+                ? undefined
+                : parsedRscRenderMode;
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1581,6 +1597,7 @@ export async function prerenderApp({
                 html: null,
                 ok: response.ok,
                 requestCacheLife: null,
+                rscRenderMode,
                 tags: [],
                 status: response.status,
               };
@@ -1597,6 +1614,7 @@ export async function prerenderApp({
               html,
               ok: true,
               requestCacheLife: responseCacheLife ?? processCacheLife,
+              rscRenderMode,
               status: response.status,
               tags: cacheTags,
             };
@@ -1713,6 +1731,7 @@ export async function prerenderApp({
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
+          ...(htmlRender.rscRenderMode ? { rscRenderMode: htmlRender.rscRenderMode } : {}),
         };
       } catch (e) {
         renderPool?.recordRenderError(e);
@@ -1936,6 +1955,7 @@ export function writePrerenderIndex(
         ...(typeof r.responseStatus === "number" ? { responseStatus: r.responseStatus } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
+        ...(r.rscRenderMode ? { rscRenderMode: r.rscRenderMode } : {}),
       };
     }
     if (r.status === "skipped") {
@@ -1949,6 +1969,14 @@ export function writePrerenderIndex(
     ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
     routes: indexRoutes,
     pregeneratedConcretePaths: buildPregeneratedConcretePathTable({ routes: indexRoutes }),
+    partialPrerenderPaths: indexRoutes.flatMap((route) =>
+      route.status === "rendered" &&
+      route.router === "app" &&
+      route.rscRenderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
+      route.fallback !== true
+        ? [route.path ?? route.route]
+        : [],
+    ),
   };
   fs.writeFileSync(
     path.join(outDir, "vinext-prerender.json"),

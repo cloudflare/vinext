@@ -78,6 +78,9 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
+/** Prerender-only side channel identifying the captured RSC artifact's render mode. */
+export const VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER = "x-vinext-prerender-rsc-render-mode";
+
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 

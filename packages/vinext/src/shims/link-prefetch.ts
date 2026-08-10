@@ -14,6 +14,41 @@ export type LinkPrefetchDecision =
       priority: LinkPrefetchPriority;
     };
 
+export type LinkViewportPrefetchState = {
+  identity: string | null;
+  prefetched: boolean;
+};
+
+export type LinkIntentPrefetchState = {
+  active: boolean;
+  identity: string | null;
+};
+
+export function beginLinkIntentPrefetch(state: LinkIntentPrefetchState, identity: string): boolean {
+  if (state.identity !== identity) {
+    state.identity = identity;
+    state.active = false;
+  }
+  if (state.active) return false;
+  state.active = true;
+  return true;
+}
+
+export function endLinkIntentPrefetch(state: LinkIntentPrefetchState): void {
+  state.active = false;
+}
+
+export function syncLinkViewportPrefetchIdentity(
+  state: LinkViewportPrefetchState,
+  identity: string,
+): boolean {
+  if (state.identity !== identity) {
+    state.identity = identity;
+    state.prefetched = false;
+  }
+  return state.prefetched;
+}
+
 export function canLinkPrefetch(input: {
   nodeEnv: string | undefined;
   prefetch: boolean | "auto" | null | undefined;

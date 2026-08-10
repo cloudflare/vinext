@@ -54,6 +54,7 @@ export type AppPageCacheOutcomeMetric = Readonly<{
     | "query-variant-unproven"
     | "read-error"
     | "served"
+    | "stale-bypassed"
     | "stale-empty-entry";
 }>;
 type AppPageCacheOutcomeRecorder = (metric: AppPageCacheOutcomeMetric) => void;
@@ -81,6 +82,7 @@ type BuildAppPageCachedResponseOptions = {
 };
 
 type ReadAppPageCacheResponseOptions = {
+  bypassStaleResponse?: boolean;
   cleanPathname: string;
   clearRequestContext: () => void;
   isEdgeRuntime?: boolean;
@@ -448,6 +450,17 @@ export async function readAppPageCacheResponse(
         reason: "empty-entry",
       });
       options.isrDebug?.("MISS (empty cached entry)", options.cleanPathname);
+    }
+
+    if (cached?.isStale && cachedValue && options.bypassStaleResponse) {
+      recordAppPageCacheOutcome(options.recordCacheOutcome, {
+        artifact,
+        cacheKey: isrKey,
+        outcome: "miss",
+        reason: "stale-bypassed",
+      });
+      options.isrDebug?.("MISS (stale partial RSC)", options.cleanPathname);
+      return null;
     }
 
     if (cached?.isStale && cachedValue) {

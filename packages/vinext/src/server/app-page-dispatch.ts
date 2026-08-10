@@ -22,6 +22,7 @@ import {
   closeAfterResponse,
   createRequestContext,
   runWithRequestContext,
+  runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import {
   ensureFetchPatch,
@@ -60,10 +61,7 @@ import {
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
 import { renderAppPageLifecycle } from "./app-page-render.js";
-import {
-  consumeAppPageRenderObservationState,
-  discardAppPageRenderState,
-} from "./app-page-render-observation.js";
+import { consumeAppPageRenderObservationState } from "./app-page-render-observation.js";
 import {
   mergeMiddlewareResponseHeaders,
   type AppPageMiddlewareContext,
@@ -76,13 +74,19 @@ import {
 } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -349,6 +353,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   pprFallbackCacheShells?: readonly AppPagePprFallbackCacheShell[] | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    kind: "cache-components-prerender" | "fallback-shell";
     routePattern: string;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
@@ -708,6 +713,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     })
   ) {
     const { readAppPageCacheResponse } = await import("./app-page-cache.js");
+    // A Cache Components prerender captures the resumable PPR Flight response,
+    // not a complete navigation response. Whole-route prefetches still need
+    // that artifact, but an ordinary navigation must render the missing dynamic
+    // data instead of replaying the partial stream as complete.
+    const isPrerenderPartialCacheRead =
+      options.isRscRequest &&
+      options.renderMode === APP_RSC_RENDER_MODE_NAVIGATION &&
+      options.request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) === "1" &&
+      options.request.headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) === null;
+    const cacheReadRenderMode = isPrerenderPartialCacheRead
+      ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+      : options.renderMode;
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
@@ -723,7 +740,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
-      renderMode: options.renderMode,
+      renderMode: cacheReadRenderMode,
+      bypassStaleResponse: cacheReadRenderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       expireSeconds: options.expireSeconds,
       revalidateSeconds: resolveAppPageCacheReadRevalidateSeconds({
         isDynamicError,
@@ -1048,13 +1066,25 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
-    await options.pprRuntime!.warm({
-      element: warmupBuildResult.element,
-      onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
-      renderToReadableStream: options.renderToReadableStream,
-      state: fallbackShellState,
-    });
-    discardAppPageRenderState();
+    await runWithUnifiedStateMutation(
+      (ctx) => {
+        ctx.cacheableFetchUrls = new Set();
+        ctx.currentRequestTags = [];
+        ctx.dynamicFetchUrls = new Set();
+        ctx.dynamicUsageDetected = false;
+        ctx.invalidDynamicUsageError = null;
+        ctx.renderRequestApiUsage = new Set();
+        ctx.requestScopedCacheLife = null;
+        ctx.unstableCacheObservations = new Map();
+      },
+      () =>
+        options.pprRuntime!.warm({
+          element: warmupBuildResult.element,
+          onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
+          renderToReadableStream: options.renderToReadableStream,
+          state: fallbackShellState,
+        }),
+    );
   }
 
   const pageBuildResult = await buildCurrentPageElement();
@@ -1085,7 +1115,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
 
-  return renderAppPageLifecycle({
+  const response = await renderAppPageLifecycle({
     basePath: options.basePath,
     clientTraceMetadata: options.clientTraceMetadata,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
@@ -1215,6 +1245,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
   });
+
+  if (
+    options.pprFallbackShell?.kind === "cache-components-prerender" &&
+    activeFallbackShellState?.hasDynamicBoundary === true
+  ) {
+    response.headers.set(
+      VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER,
+      APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    );
+  }
+
+  return response;
 }
 
 async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(

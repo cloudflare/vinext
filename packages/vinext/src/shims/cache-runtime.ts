@@ -50,7 +50,13 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
-import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
+import {
+  createPprFallbackShellSuspensePromiseForState,
+  getPprFallbackShellState,
+  readPprFallbackShellWarmupCacheResult,
+  rememberPprFallbackShellWarmupCacheResult,
+  trackPprFallbackShellCacheTask,
+} from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
 
@@ -660,6 +666,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (knownRootParamNames && rootParams) {
         cacheKey += computeRootParamsCacheKeySuffix(rootParams, knownRootParamNames);
       }
+      let pprCacheKey = `${cacheVariant}\0${cacheKey}`;
 
       // Check cache — deserialize via RSC stream when available, JSON otherwise.
       // Pass soft tags so that revalidatePath() / revalidateTag() invalidation
@@ -667,6 +674,22 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // The soft tags are path-derived implicit tags set by the enclosing route
       // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
       const softTags = getCurrentFetchSoftTags();
+      const pprState = getPprFallbackShellState();
+      const warmupResult = pprState
+        ? readPprFallbackShellWarmupCacheResult(pprState, pprCacheKey)
+        : null;
+      if (warmupResult && !_hasPendingRevalidatedTag([...warmupResult.tags, ...softTags])) {
+        propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
+        if (isDynamicCacheLife(warmupResult.cacheLife)) {
+          return await createPprFallbackShellSuspensePromiseForState<TResult>(
+            pprState!,
+            'a short-lived "use cache" entry',
+          );
+        }
+        propagateCacheTagsToRequest(warmupResult.tags);
+        recordCacheHitLife(warmupResult.cacheLife);
+        return warmupResult.value as TResult;
+      }
       // A handler failure (e.g. a transient KV error, or a key the store
       // rejects) must not surface as a render error: fall through to fresh
       // execution so control-flow signals like notFound()/redirect() thrown by
@@ -691,6 +714,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         const redirectNames = rootParamNamesFromTags(redirectValue.tags);
         const combinedNames = addKnownRootParamNames(id, redirectNames);
         cacheKey = coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, combinedNames);
+        pprCacheKey = `${cacheVariant}\0${cacheKey}`;
         try {
           existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
         } catch (error) {
@@ -704,6 +728,15 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         existing.cacheState !== "stale" &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
+        const existingLife = cacheControlToCacheLife(existing.cacheControl);
+        // Keep the intentional PPR suspension outside the decode catch. Its
+        // abort rejection is control flow, not evidence of a corrupt entry.
+        if (pprState?.phase === "final" && isDynamicCacheLife(existingLife)) {
+          return await createPprFallbackShellSuspensePromiseForState<TResult>(
+            pprState,
+            'a short-lived "use cache" entry',
+          );
+        }
         try {
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
           // Surface the cached entry's tags to the surrounding request so the
@@ -720,11 +753,25 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               {},
               { preserveServerReferences: true },
             );
+            if (pprState) {
+              rememberPprFallbackShellWarmupCacheResult(pprState, pprCacheKey, {
+                cacheLife: existingLife,
+                tags: existing.value.tags ?? [],
+                value: result,
+              });
+            }
             recordRequestScopedCacheControl(existing.cacheControl);
             return result;
           }
           // JSON-serialized entry (legacy or no RSC available)
           const result = JSON.parse(existing.value.data.body);
+          if (pprState) {
+            rememberPprFallbackShellWarmupCacheResult(pprState, pprCacheKey, {
+              cacheLife: existingLife,
+              tags: existing.value.tags ?? [],
+              value: result,
+            });
+          }
           recordRequestScopedCacheControl(existing.cacheControl);
           return result;
         } catch {
@@ -744,6 +791,25 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         ctx.readRootParamNames && ctx.readRootParamNames.size > 0
           ? addKnownRootParamNames(id, ctx.readRootParamNames)
           : knownRootParamsByFunctionId.get(id);
+      const resultCacheKey =
+        rootParamNames && rootParamNames.size > 0 && rootParams
+          ? coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames)
+          : cacheKey;
+      pprCacheKey = `${cacheVariant}\0${resultCacheKey}`;
+
+      if (pprState) {
+        rememberPprFallbackShellWarmupCacheResult(pprState, pprCacheKey, {
+          cacheLife: effectiveLife,
+          tags: ctx.tags,
+          value: result,
+        });
+      }
+      if (pprState?.phase === "final" && isDynamicCacheLife(effectiveLife)) {
+        return await createPprFallbackShellSuspensePromiseForState<TResult>(
+          pprState,
+          'a short-lived "use cache" entry',
+        );
+      }
 
       recordRequestScopedCacheLife(effectiveLife);
       // Bubble the cache scope's tags up to the surrounding request so the
@@ -781,8 +847,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           };
 
           if (rootParamNames && rootParamNames.size > 0 && rootParams) {
-            const specificCacheKey =
-              coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
+            const specificCacheKey = resultCacheKey;
             const redirectTags = [
               ...ctx.tags,
               ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
@@ -853,19 +918,31 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   throw error;
 }
 
+function cacheControlToCacheLife(cacheControl: CacheControlMetadata | undefined): CacheLifeConfig {
+  return {
+    revalidate: cacheControl?.revalidate === false ? undefined : cacheControl?.revalidate,
+    expire: cacheControl?.expire,
+    stale: cacheControl?.stale,
+  };
+}
+
+function isDynamicCacheLife(cacheLife: CacheLifeConfig): boolean {
+  return (
+    cacheLife.revalidate === 0 ||
+    (cacheLife.expire !== undefined && cacheLife.expire < DYNAMIC_EXPIRE)
+  );
+}
+
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
+  recordCacheHitLife(cacheControlToCacheLife(cacheControl));
+}
+
+function recordCacheHitLife(life: CacheLifeConfig): void {
   // A hit must contribute the same claim its producing execution did — both to
   // the request scope and, when nested, to the enclosing cache scope (like the
   // MISS path's `parentCtx.lifeConfigs.push`); otherwise the inner claim
   // vanishes once the outer entry goes warm.
-  const life: CacheLifeConfig = {
-    // `false` is an indefinite lifetime and does not constrain the enclosing
-    // scope's finite revalidation window.
-    revalidate: cacheControl.revalidate === false ? undefined : cacheControl.revalidate,
-    expire: cacheControl.expire,
-    stale: cacheControl.stale,
-  };
   const parentCtx = cacheContextStorage.getStore();
   parentCtx?.lifeConfigs.push(life);
 
@@ -878,12 +955,11 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
   if (
     parentCtx &&
     parentCtx.variant !== "private" &&
-    (cacheControl.revalidate === 0 ||
-      (cacheControl.expire !== undefined && cacheControl.expire < DYNAMIC_EXPIRE))
+    (life.revalidate === 0 || (life.expire !== undefined && life.expire < DYNAMIC_EXPIRE))
   ) {
     const error = new NestedDynamicUseCacheError();
     if (typeof Error.captureStackTrace === "function") {
-      Error.captureStackTrace(error, recordRequestScopedCacheControl);
+      Error.captureStackTrace(error, recordCacheHitLife);
     }
     parentCtx.dynamicNestedCacheError ??= error;
   }

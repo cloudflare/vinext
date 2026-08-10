@@ -52,7 +52,7 @@ import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/s
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
-import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import { shouldIgnorePprFallbackShellRenderError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
@@ -93,12 +93,6 @@ export type FontData = {
 type StaticPrerender = typeof import("react-dom/static.edge").prerender;
 
 function isReactDevelopmentRuntime(): boolean {
-  if (process.env.NODE_ENV === "production") {
-    return false;
-  }
-  if (process.env.NODE_ENV === "development") {
-    return true;
-  }
   return Function.prototype.toString.call(createReactElement).includes("getOwner");
 }
 
@@ -112,17 +106,10 @@ function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPr
 }
 
 async function loadStaticPrerender(): Promise<StaticPrerender> {
-  // Prefer the stable ESM entry in all environments. Future React dev builds
-  // may export prerender() here, so this is the first path we attempt.
-  const staticRenderer: unknown = await import("react-dom/static.edge");
-  if (isStaticPrerenderModule(staticRenderer)) {
-    return staticRenderer.prerender;
-  }
-
-  // Fallback: React development builds historically did not export prerender()
-  // from the ESM entry, so reach into the CJS artifact. The path is fragile
-  // because it depends on React's internal file layout, but it is only used
-  // when the stable ESM entry does not provide prerender().
+  // The prerender phase can set NODE_ENV=production after React was loaded, so
+  // choose the renderer from the actual React implementation rather than the
+  // current environment variable. Mixing development React with the production
+  // renderer installs a dispatcher that lacks development-only methods.
   if (isReactDevelopmentRuntime()) {
     try {
       const [{ createRequire }, path] = await Promise.all([
@@ -156,6 +143,11 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
         cause: error,
       });
     }
+  }
+
+  const staticRenderer: unknown = await import("react-dom/static.edge");
+  if (isStaticPrerenderModule(staticRenderer)) {
+    return staticRenderer.prerender;
   }
 
   throw new Error("[vinext] react-dom/static.edge did not expose prerender().");
@@ -595,10 +587,9 @@ export async function handleSsr(
             : undefined,
           maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
           onError(error: unknown) {
-            if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
+            if (shouldIgnorePprFallbackShellRenderError(pprFallbackShellSignal, error)) {
               return undefined;
             }
-
             errorMetaRenderer.capture(error);
 
             if (error && typeof error === "object" && "digest" in error) {

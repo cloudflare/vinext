@@ -104,6 +104,38 @@ export function findVisitedResponseCacheEntry(
   return null;
 }
 
+export function hasVisitedResponseCacheIdentity(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  now = Date.now(),
+  navigationKind: Exclude<VisitedResponseCacheNavigationKind, "refresh"> = "navigate",
+): boolean {
+  const normalizedTarget = normalizeVisitedResponseCacheLookupUrl(rscUrl);
+  if (normalizedTarget === null) return false;
+
+  for (const [cacheKey, entry] of cache) {
+    const source = parseVisitedResponseCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (normalizeVisitedResponseCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    if (entry.mountedSlotsHeader !== mountedSlotsHeader) continue;
+
+    if (
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind,
+        now,
+      })
+    ) {
+      return true;
+    }
+
+    cache.delete(cacheKey);
+  }
+
+  return false;
+}
+
 export function deleteVisitedResponseCacheEntry(
   cache: Map<string, VisitedResponseCacheEntry>,
   rscUrl: string,

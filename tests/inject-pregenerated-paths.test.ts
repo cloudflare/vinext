@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { injectPregeneratedConcretePaths } from "../packages/vinext/src/build/inject-pregenerated-paths.js";
-import { clearPregeneratedConcretePaths } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
+import {
+  clearPregeneratedConcretePaths,
+  getPartialPrerenderPaths,
+} from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 
 let tmpDir: string;
 
@@ -21,6 +24,7 @@ beforeEach(() => {
 afterEach(() => {
   clearPregeneratedConcretePaths();
   delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+  delete globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS;
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -81,6 +85,7 @@ describe("injectPregeneratedConcretePaths", () => {
       JSON.stringify({
         buildId: "test",
         pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
+        partialPrerenderPaths: ["/blog/post-a"],
       }),
     );
 
@@ -93,10 +98,13 @@ describe("injectPregeneratedConcretePaths", () => {
     expect(globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS).toEqual([
       ["/blog/:slug", ["/blog/post-a"]],
     ]);
+    expect(globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS).toEqual(["/blog/post-a"]);
+    expect(output.match(/__VINEXT_PREGENERATED_CONCRETE_PATHS_START__/g)).toHaveLength(1);
   });
 
   it("clears the current-process global when no concrete paths are available", () => {
     globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old/:slug", ["/old/post"]]];
+    globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS = ["/old/post"];
     writeFile(
       "dist/server/index.js",
       [
@@ -111,6 +119,7 @@ describe("injectPregeneratedConcretePaths", () => {
     injectPregeneratedConcretePaths(tmpDir);
 
     expect(globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS).toBeUndefined();
+    expect(globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS).toBeUndefined();
   });
 
   it("hydrates the concrete-path registry from the generated Worker entry", async () => {
@@ -120,9 +129,10 @@ describe("injectPregeneratedConcretePaths", () => {
     writeFile(
       "dist/server/index.js",
       [
-        `import { getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
+        `import { getPartialPrerenderPaths, getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
         "initPregeneratedPathsFromGlobals();",
         'export const renderedPaths = [...(getRenderedConcreteUrlPathsForRoute("/blog/:slug") ?? [])];',
+        "export const partialPaths = [...getPartialPrerenderPaths()];",
         'export default { fetch() { return new Response("ok"); } };',
         "",
       ].join("\n"),
@@ -132,6 +142,7 @@ describe("injectPregeneratedConcretePaths", () => {
       JSON.stringify({
         buildId: "test",
         pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
+        partialPrerenderPaths: ["/blog/post-a%20draft"],
       }),
     );
 
@@ -139,7 +150,11 @@ describe("injectPregeneratedConcretePaths", () => {
 
     const entryUrl = pathToFileURL(path.join(tmpDir, "dist/server/index.js")).href;
     const workerEntry: unknown = await import(`${entryUrl}?t=${Date.now()}`);
-    expect(workerEntry).toMatchObject({ renderedPaths: ["/blog/post-a"] });
+    expect(workerEntry).toMatchObject({
+      renderedPaths: ["/blog/post-a"],
+      partialPaths: ["/blog/post-a draft"],
+    });
+    expect(getPartialPrerenderPaths()).toEqual(["/blog/post-a draft"]);
   });
 
   it("strips an earlier injection when the manifest is corrupt", () => {

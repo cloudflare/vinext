@@ -46,6 +46,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../server/headers.js";
@@ -63,7 +64,10 @@ import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
-import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  type AppRscRenderMode,
+} from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
@@ -2822,14 +2826,26 @@ const _appRouter: AppRouterInstance = {
       const kind = options?.kind === "full" ? "full" : "auto";
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
-      const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
-        await import("./internal/app-route-prefetch-policy.js");
+      const {
+        hasPartialPrerenderForRoute,
+        resolveAutoAppRoutePrefetch,
+        resolveFullAppRoutePrefetch,
+      } = await import("./internal/app-route-prefetch-policy.js");
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
       const requiresRouteTreePrefetch = policy.requiresRouteTreePrefetch === true;
+      if (
+        String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
+        reusable &&
+        kind === "auto" &&
+        !requiresRouteTreePrefetch &&
+        (await hasPartialPrerenderForRoute(rewrittenPrefetchHref ?? fullHref))
+      ) {
+        headers.set(VINEXT_RSC_RENDER_MODE_HEADER, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+      }
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.
       if (reusable && kind === "full") {

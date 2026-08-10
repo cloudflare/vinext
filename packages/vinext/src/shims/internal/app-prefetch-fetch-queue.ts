@@ -49,23 +49,28 @@ export function releaseAppPrefetchFetchSlot(response: Response): void {
 export function scheduleAppPrefetchFetch(
   fetcher: (signal: AbortSignal) => Promise<Response>,
   priority: "low" | "high",
+  onRelease?: () => void,
 ): Promise<Response> {
   const controller = new AbortController();
   if (priority === "high") {
     const promise = fetcher(controller.signal);
     const control = { cancel: () => controller.abort() };
     appPrefetchFetchControls.set(promise, control);
-    void promise.then(
-      (response) => {
-        // Keep cancellation live while the response body streams. The
-        // consumer releases this after snapshotting (or when dropping a
-        // non-success response), matching the low-priority lifecycle below.
-        (response as Response & Record<symbol, (() => void) | undefined>)[
-          APP_PREFETCH_FETCH_SLOT_RELEASE_KEY
-        ] = () => appPrefetchFetchControls.delete(promise);
-      },
-      () => appPrefetchFetchControls.delete(promise),
-    );
+    let didRelease = false;
+    const release = () => {
+      if (didRelease) return;
+      didRelease = true;
+      appPrefetchFetchControls.delete(promise);
+      onRelease?.();
+    };
+    void promise.then((response) => {
+      // Keep cancellation live while the response body streams. The
+      // consumer releases this after snapshotting (or when dropping a
+      // non-success response), matching the low-priority lifecycle below.
+      (response as Response & Record<symbol, (() => void) | undefined>)[
+        APP_PREFETCH_FETCH_SLOT_RELEASE_KEY
+      ] = release;
+    }, release);
     return promise;
   }
 
@@ -82,6 +87,7 @@ export function scheduleAppPrefetchFetch(
         didRelease = true;
         appPrefetchFetchControls.delete(promise);
         activeDefaultAppPrefetchRequests -= 1;
+        onRelease?.();
         drainDefaultAppPrefetchQueue();
       };
 
@@ -120,6 +126,7 @@ export function scheduleAppPrefetchFetch(
       defaultAppPrefetchQueue.splice(index, 1);
       appPrefetchFetchControls.delete(promise);
       controller.abort();
+      onRelease?.();
       rejectPromise(controller.signal.reason);
     },
   });

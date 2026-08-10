@@ -46,6 +46,7 @@ import {
   getRscOutputPath,
 } from "../utils/prerender-output-paths.js";
 import {
+  addPartialPrerenderPath,
   addPregeneratedConcretePath,
   clearPregeneratedConcretePaths,
   normalizePregeneratedPathname,
@@ -56,6 +57,12 @@ import {
   getRenderedMetadataRoutes,
   isFallbackShellArtifactPath,
 } from "./prerender-manifest.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  getRscRenderModeCacheVariant,
+  parseAppRscRenderMode,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 
 type PrerenderCacheSeedMetadata = {
   expireSeconds?: number;
@@ -71,7 +78,7 @@ type PrerenderCacheSeedMetadata = {
 
 type PrerenderCacheSeedOptions = {
   buildAppPageHtmlKey?: (pathname: string) => string;
-  buildAppPageRscKey?: (pathname: string) => string;
+  buildAppPageRscKey?: (pathname: string, renderMode?: AppRscRenderMode) => string;
   buildAppRouteKey?: (pathname: string) => string;
   writeAppPageEntry?: (
     key: string,
@@ -134,7 +141,14 @@ export async function seedMemoryCacheFromPrerender(
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
     const baseKey = isrCacheKey("app", cachePathname, buildId);
     const htmlKey = options?.buildAppPageHtmlKey?.(cachePathname) ?? baseKey + ":html";
-    const rscKey = options?.buildAppPageRscKey?.(cachePathname) ?? baseKey + ":rsc";
+    const rscRenderMode = parseAppRscRenderMode(route.rscRenderMode ?? null);
+    if (rscRenderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) {
+      addPartialPrerenderPath(concretePathname);
+    }
+    const rscVariant = getRscRenderModeCacheVariant(rscRenderMode);
+    const rscKey =
+      options?.buildAppPageRscKey?.(cachePathname, rscRenderMode) ??
+      baseKey + (rscVariant ? `:rsc:${rscVariant}` : ":rsc");
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
     const staleSeconds =

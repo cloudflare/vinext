@@ -429,6 +429,7 @@ __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMem
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
 import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptPage as __loadAppInterceptPage } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import {
+  getPartialPrerenderPaths as __getPartialPrerenderPaths,
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
 } from ${JSON.stringify(pregeneratedConcretePathsPath)};
@@ -682,8 +683,8 @@ export async function seedMemoryCacheFromPrerender(serverDir) {
     buildAppPageHtmlKey(pathname) {
       return __isrHtmlKey(pathname);
     },
-    buildAppPageRscKey(pathname) {
-      return __isrRscKey(pathname);
+    buildAppPageRscKey(pathname, renderMode) {
+      return __isrRscKey(pathname, null, renderMode);
     },
     buildAppRouteKey(pathname) {
       return __isrRouteKey(pathname);
@@ -729,6 +730,7 @@ __setPagesClientAssets(__pagesClientAssets);
 export default createAppRscHandler({
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
+  getPartialPrerenderPaths: __getPartialPrerenderPaths,
   ensureRouteLoaded: __ensureRouteLoaded,
   prefetchInlining: ${JSON.stringify(prefetchInlining)},
   clearRequestContext() {

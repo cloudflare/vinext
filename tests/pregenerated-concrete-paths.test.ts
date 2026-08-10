@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vite-plus/test";
 import {
   clearPregeneratedConcretePaths,
+  getPartialPrerenderPaths,
   addPregeneratedConcretePath,
   getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals,
@@ -14,6 +15,8 @@ import {
 describe("pregenerated concrete paths", () => {
   afterEach(() => {
     clearPregeneratedConcretePaths();
+    delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+    delete globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS;
   });
 
   it("returns undefined for an unknown route pattern", () => {
@@ -87,6 +90,14 @@ describe("pregenerated concrete paths", () => {
     expect([...getRenderedConcreteUrlPathsForRoute("/:locale/blog/:slug")!]).toEqual([
       "/en/blog/hello world",
     ]);
+  });
+
+  it("initializes partial prerender paths independently from the Worker global", () => {
+    globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS = ["/blog/hello%20world"];
+
+    initPregeneratedPathsFromGlobals();
+
+    expect(getPartialPrerenderPaths()).toEqual(["/blog/hello world"]);
   });
 
   describe("isFallbackShellArtifactPath", () => {

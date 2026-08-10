@@ -5,6 +5,7 @@ import {
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  hasVisitedResponseCacheIdentity,
   isVisitedResponseCacheEntryFresh,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
@@ -296,5 +297,152 @@ describe("visited response cache freshness", () => {
         null,
       ),
     ).toBeNull();
+  });
+
+  it("matches prefetch suppression by URL, interception context, and mounted slots", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      mountedSlotsHeader: "slot:modal",
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    cache.set(AppElementsWire.encodeCacheKey("/target?_rsc=old", "/feed"), entry);
+
+    expect(
+      hasVisitedResponseCacheIdentity(cache, "/target?_rsc=new", "/feed", "slot:modal", 1_000_000),
+    ).toBe(true);
+    expect(
+      hasVisitedResponseCacheIdentity(
+        cache,
+        "/target?_rsc=new",
+        "/gallery",
+        "slot:modal",
+        1_000_000,
+      ),
+    ).toBe(false);
+    expect(
+      hasVisitedResponseCacheIdentity(cache, "/target?_rsc=new", "/feed", null, 1_000_000),
+    ).toBe(false);
+
+    cache.clear();
+    expect(
+      hasVisitedResponseCacheIdentity(cache, "/target?_rsc=new", "/feed", "slot:modal", 1_000_000),
+    ).toBe(false);
+  });
+
+  it("scans every normalized URL variant for the requested mounted slots", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const now = 1_000_000;
+    cache.set(
+      AppElementsWire.encodeCacheKey("/target?_rsc=first", "/feed"),
+      createVisitedResponseCacheEntry({
+        mountedSlotsHeader: "slot:sidebar",
+        now,
+        params: {},
+        response: createCachedResponse(),
+      }),
+    );
+    cache.set(
+      AppElementsWire.encodeCacheKey("/target?_rsc=second", "/feed"),
+      createVisitedResponseCacheEntry({
+        mountedSlotsHeader: "slot:modal",
+        now,
+        params: {},
+        response: createCachedResponse(),
+      }),
+    );
+
+    expect(
+      hasVisitedResponseCacheIdentity(cache, "/target?_rsc=current", "/feed", "slot:modal", now),
+    ).toBe(true);
+  });
+
+  it("does not suppress prefetch for expired identities and evicts stale matches", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const now = 1_000_000;
+    const staleKey = AppElementsWire.encodeCacheKey("/target?_rsc=stale", "/feed");
+    cache.set(
+      staleKey,
+      createVisitedResponseCacheEntry({
+        mountedSlotsHeader: "slot:modal",
+        now,
+        params: {},
+        response: createCachedResponse({ dynamicStaleTimeSeconds: 10 }),
+      }),
+    );
+
+    expect(
+      hasVisitedResponseCacheIdentity(
+        cache,
+        "/target?_rsc=current",
+        "/feed",
+        "slot:modal",
+        now + 10_000,
+      ),
+    ).toBe(false);
+    expect(cache.has(staleKey)).toBe(false);
+  });
+
+  it("retains a dynamically stale identity while it is still valid for traversal", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const now = 1_000_000;
+    const key = AppElementsWire.encodeCacheKey("/target?_rsc=visited", "/feed");
+    cache.set(
+      key,
+      createVisitedResponseCacheEntry({
+        mountedSlotsHeader: "slot:modal",
+        now,
+        params: {},
+        response: createCachedResponse({ dynamicStaleTimeSeconds: 10 }),
+      }),
+    );
+
+    expect(
+      hasVisitedResponseCacheIdentity(
+        cache,
+        "/target?_rsc=current",
+        "/feed",
+        "slot:modal",
+        now + 120_000,
+        "traverse",
+      ),
+    ).toBe(true);
+    expect(cache.has(key)).toBe(true);
+  });
+
+  it("continues past an expired slot match to a fresh normalized variant", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const now = 1_000_000;
+    const staleKey = AppElementsWire.encodeCacheKey("/target?_rsc=stale", "/feed");
+    cache.set(
+      staleKey,
+      createVisitedResponseCacheEntry({
+        mountedSlotsHeader: "slot:modal",
+        now,
+        params: {},
+        response: createCachedResponse({ dynamicStaleTimeSeconds: 10 }),
+      }),
+    );
+    cache.set(
+      AppElementsWire.encodeCacheKey("/target?_rsc=fresh", "/feed"),
+      createVisitedResponseCacheEntry({
+        mountedSlotsHeader: "slot:modal",
+        now: now + 9_000,
+        params: {},
+        response: createCachedResponse({ dynamicStaleTimeSeconds: 10 }),
+      }),
+    );
+
+    expect(
+      hasVisitedResponseCacheIdentity(
+        cache,
+        "/target?_rsc=current",
+        "/feed",
+        "slot:modal",
+        now + 10_000,
+      ),
+    ).toBe(true);
+    expect(cache.has(staleKey)).toBe(false);
   });
 });

@@ -112,6 +112,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
               makeThenableParams,
             })
         : undefined),
+    getPartialPrerenderPaths: overrides.getPartialPrerenderPaths,
     handleServerActionRequest:
       "handleServerActionRequest" in overrides
         ? overrides.handleServerActionRequest
@@ -166,6 +167,25 @@ function prerenderRouteParamsHeader(payload: unknown): string {
 }
 
 describe("createAppRscHandler", () => {
+  it("serves the partial-prerender policy beneath basePath", async () => {
+    const clearRequestContext = vi.fn();
+    const getPartialPrerenderPaths = vi.fn(() => ["/partial", "/blog/known"]);
+    const handler = createHandler({ clearRequestContext, getPartialPrerenderPaths });
+
+    const response = await handler(
+      new Request("https://example.test/docs/__vinext/prefetch-policy"),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    await expect(response.json()).resolves.toEqual({
+      partialPrerenderPaths: ["/partial", "/blog/known"],
+    });
+    expect(getPartialPrerenderPaths).toHaveBeenCalledOnce();
+    expect(clearRequestContext).toHaveBeenCalledOnce();
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
   it("applies basePath: false rewrites outside the App Router basePath", async () => {

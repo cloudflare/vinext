@@ -15,6 +15,10 @@ import {
   buildAppRouteCacheTags,
 } from "vinext/internal/server/app-page-cache";
 import {
+  getRscRenderModeCacheVariant,
+  parseAppRscRenderMode,
+} from "vinext/internal/server/app-rsc-render-mode";
+import {
   getRenderedAppRoutes,
   getRenderedMetadataRoutes,
   readPrerenderManifest,
@@ -141,7 +145,13 @@ export function buildPrerenderKVPairs(
     const tags = buildAppPageCacheTags(cachePathname, route.tags ?? []);
     const metadata = buildMetadata(tags);
     const htmlKey = appIsrCacheKey(cachePathname, "html", manifest.buildId);
-    const rscKey = appIsrCacheKey(cachePathname, "rsc", manifest.buildId);
+    const rscRenderMode = parseAppRscRenderMode(route.rscRenderMode ?? null);
+    const rscVariant = getRscRenderModeCacheVariant(rscRenderMode);
+    const rscKey = appIsrCacheKey(
+      cachePathname,
+      rscVariant ? `rsc:${rscVariant}` : "rsc",
+      manifest.buildId,
+    );
 
     pairs.push({
       key: keySpace.entryKey(htmlKey),

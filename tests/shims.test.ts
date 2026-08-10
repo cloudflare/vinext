@@ -6970,6 +6970,125 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
   });
 
+  it("omits short-lived use cache entries from a Cache Components prerender", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const {
+      setCacheHandler,
+      MemoryCacheHandler,
+      cacheLife,
+      cacheTag,
+      _peekRequestScopedCacheLife,
+    } = await import("../packages/vinext/src/shims/cache.js");
+    const {
+      createPprFallbackShellState,
+      preparePprFallbackShellFinalRender,
+      runWithPprFallbackShellState,
+    } = await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    const { getCollectedFetchTags } = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const { createRequestContext, runWithRequestContext, runWithUnifiedStateMutation } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler({ cacheMaxMemorySize: 0 }));
+
+    let shortCalls = 0;
+    const shortLived = registerCachedFunction(async () => {
+      shortCalls++;
+      cacheLife("seconds");
+      cacheTag("short-lived");
+      return "short";
+    }, "test:ppr-short-cache-life");
+    let longCalls = 0;
+    const longLived = registerCachedFunction(async () => {
+      longCalls++;
+      cacheLife("minutes");
+      cacheTag("long-lived");
+      return "long";
+    }, "test:ppr-long-cache-life");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/cache-life",
+    });
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      await runWithUnifiedStateMutation(
+        (ctx) => {
+          ctx.currentRequestTags = [];
+          ctx.requestScopedCacheLife = null;
+        },
+        () =>
+          runWithPprFallbackShellState(state, async () => {
+            await Promise.all([shortLived(), longLived()]);
+          }),
+      );
+      preparePprFallbackShellFinalRender(state);
+      expect(shortCalls).toBe(1);
+      expect(longCalls).toBe(1);
+      expect(getCollectedFetchTags()).toEqual([]);
+
+      await expect(runWithPprFallbackShellState(state, () => longLived())).resolves.toBe("long");
+      expect(longCalls).toBe(1);
+      const finalShort = runWithPprFallbackShellState(state, () => shortLived());
+      const finalShortOutcome = finalShort.then(
+        () => "settled",
+        () => "rejected",
+      );
+      await expect(
+        Promise.race([
+          finalShortOutcome,
+          new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
+        ]),
+      ).resolves.toBe("pending");
+      expect(shortCalls).toBe(1);
+      expect(_peekRequestScopedCacheLife()).toEqual({
+        stale: 300,
+        revalidate: 60,
+        expire: 3600,
+      });
+      expect(getCollectedFetchTags()).toEqual(["long-lived"]);
+
+      state.abortController.abort();
+      await expect(finalShortOutcome).resolves.toBe("rejected");
+    });
+  });
+
+  it("does not re-execute a cached function when the PPR suspension is aborted", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife, _runWithCacheState } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const {
+      createPprFallbackShellState,
+      preparePprFallbackShellFinalRender,
+      runWithPprFallbackShellState,
+    } = await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(async () => {
+      callCount++;
+      cacheLife("seconds");
+      return "short";
+    }, "test:ppr-aborted-cache-hit");
+
+    await _runWithCacheState(() => cached());
+    expect(callCount).toBe(1);
+
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/cache-life",
+    });
+    preparePprFallbackShellFinalRender(state);
+    const finalResult = _runWithCacheState(() =>
+      runWithPprFallbackShellState(state, () => cached()),
+    );
+    state.abortController.abort();
+
+    await expect(finalResult).rejects.toBeDefined();
+    expect(callCount).toBe(1);
+  });
+
   it("a use cache hit re-registers its client stale time on the request scope", async () => {
     // The enclosing render's minimum is what gets persisted onto the page cache
     // entry. If a warm `use cache` hit contributed revalidate/expire but dropped
@@ -7051,6 +7170,106 @@ describe('"use cache" runtime', () => {
     });
     expect(outerCalls).toBe(1);
     expect(warmStale).toBe(30);
+  });
+
+  it("a PPR warmup hit constrains a cache scope first executed during the final render", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const {
+      setCacheHandler,
+      MemoryCacheHandler,
+      cacheLife,
+      _peekRequestScopedCacheLife,
+      _runWithCacheState,
+    } = await import("../packages/vinext/src/shims/cache.js");
+    const {
+      createPprFallbackShellState,
+      preparePprFallbackShellFinalRender,
+      runWithPprFallbackShellState,
+    } = await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let innerCalls = 0;
+    let outerCalls = 0;
+    const inner = registerCachedFunction(async () => {
+      cacheLife({ stale: 30, revalidate: 300, expire: 600 });
+      innerCalls++;
+      return "inner";
+    }, "test:ppr-warmup-nested-inner");
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return await inner();
+    }, "test:ppr-warmup-nested-outer");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/cache-life",
+    });
+
+    // Only the inner scope executes during warmup. The outer scope first runs
+    // in the final render, where its child is served from the warmup handoff.
+    await _runWithCacheState(() => runWithPprFallbackShellState(state, () => inner()));
+    preparePprFallbackShellFinalRender(state);
+    await _runWithCacheState(() => runWithPprFallbackShellState(state, () => outer()));
+    expect(innerCalls).toBe(1);
+    expect(outerCalls).toBe(1);
+
+    // The final-render outer entry must persist the inner warmup result's
+    // minimum lifetime, so a later outer HIT advertises the same stale claim.
+    const warmStale = await _runWithCacheState(async () => {
+      await outer();
+      return _peekRequestScopedCacheLife()?.stale;
+    });
+    expect(outerCalls).toBe(1);
+    expect(warmStale).toBe(30);
+  });
+
+  it("a PPR warmup hit propagates root-param dependencies into the enclosing cache key", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife, _runWithCacheState } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    const {
+      createPprFallbackShellState,
+      preparePprFallbackShellFinalRender,
+      runWithPprFallbackShellState,
+    } = await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let innerCalls = 0;
+    let outerCalls = 0;
+    const inner = registerCachedFunction(async () => {
+      innerCalls++;
+      cacheLife("minutes");
+      return await getRootParam("lang");
+    }, "test:ppr-warmup-root-param-inner");
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return await inner();
+    }, "test:ppr-warmup-root-param-outer");
+    const invoke = (lang: string, fn: () => Promise<unknown>) =>
+      _runWithCacheState(() => runWithRootParamsScope({ lang }, fn));
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/[lang]/cache-life",
+    });
+
+    await invoke("en", () => runWithPprFallbackShellState(state, () => inner()));
+    preparePprFallbackShellFinalRender(state);
+    await expect(
+      invoke("en", () => runWithPprFallbackShellState(state, () => outer())),
+    ).resolves.toBe("en");
+    expect(innerCalls).toBe(1);
+    expect(outerCalls).toBe(1);
+
+    // The final-render outer entry learned `lang` through the inner warmup
+    // handoff. A different root param must miss both entries, while the
+    // original value remains reusable.
+    await expect(invoke("fr", () => outer())).resolves.toBe("fr");
+    await expect(invoke("en", () => outer())).resolves.toBe("en");
+    expect(innerCalls).toBe(2);
+    expect(outerCalls).toBe(2);
   });
 
   it("registerCachedFunction collects cacheTag", async () => {

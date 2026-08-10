@@ -14,6 +14,7 @@ import type {
   AppPageTemplateEntry,
 } from "./app-page-route-wiring.js";
 import {
+  APP_PAGE_SEGMENT_KEY,
   resolveAppPageRouteStateKey,
   resolveAppPageSemanticSegmentStateKey,
   resolveAppPageTemplateStateKey,
@@ -45,6 +46,11 @@ type AppPageSlotSegmentPlan<TModule extends AppPageModule> = Readonly<{
 
 type AppPageSegmentPlan<TModule extends AppPageModule> = Readonly<{
   bfcacheSegmentIdentities: Readonly<Record<string, string>>;
+  primaryBfcacheSegments: readonly Readonly<{
+    id: string;
+    stateKey: string;
+    treePosition: number;
+  }>[];
   routeResetKey: string;
   slots: readonly AppPageSlotSegmentPlan<TModule>[];
 }>;
@@ -72,6 +78,7 @@ export function createAppPageSegmentPlan<
   TErrorModule extends AppPageErrorModule,
 >(options: {
   includeSlot: (ownerTreePosition: number, targetTreePosition: number) => boolean;
+  includePrimarySegment: (treePosition: number) => boolean;
   interception: AppElementsInterception | null;
   layoutEntries: readonly AppPageLayoutEntry<TModule, TErrorModule>[];
   matchedParams: AppPageParams;
@@ -138,6 +145,54 @@ export function createAppPageSegmentPlan<
       kind: "template",
       rootBoundaryId,
     });
+  }
+
+  const primaryBfcacheSegments: {
+    id: string;
+    stateKey: string;
+    treePosition: number;
+  }[] = [];
+  for (const [layoutIndex, layoutEntry] of options.layoutEntries.entries()) {
+    const nextLayoutTreePosition =
+      options.layoutEntries[layoutIndex + 1]?.treePosition ?? options.routeSegments.length + 1;
+    const ownerLayoutGraphId = graphIds
+      ? requireGraphSequenceId(graphIds.layouts, layoutIndex, "layout")
+      : layoutEntry.id;
+    for (
+      let treePosition = layoutEntry.treePosition;
+      treePosition < nextLayoutTreePosition && treePosition <= options.routeSegments.length;
+      treePosition++
+    ) {
+      if (!options.includePrimarySegment(treePosition)) continue;
+      const stateKey =
+        treePosition === options.routeSegments.length
+          ? APP_PAGE_SEGMENT_KEY
+          : resolveAppPageSemanticSegmentStateKey(
+              {
+                marker: null,
+                paramSource: "route",
+                segment: options.routeSegments[treePosition]!,
+              },
+              options.matchedParams,
+            );
+      const id = createNestedBfcacheSlotSegmentId(
+        layoutEntry.id,
+        treePosition - layoutEntry.treePosition + 1,
+      );
+      identities[id] = deriveBfcacheSegmentIdentity({
+        boundSegmentKey:
+          treePosition === options.routeSegments.length
+            ? JSON.stringify([routeResetKey, APP_PAGE_SEGMENT_KEY])
+            : resolveAppPageTemplateStateKey(
+                options.routeSegments,
+                treePosition,
+                options.matchedParams,
+              ),
+        kind: "segment",
+        ownerLayoutGraphId,
+      });
+      primaryBfcacheSegments.push({ id, stateKey, treePosition });
+    }
   }
 
   const slotBindingsById = new Map(
@@ -350,6 +405,7 @@ export function createAppPageSegmentPlan<
 
   return Object.freeze({
     bfcacheSegmentIdentities: Object.freeze(identities),
+    primaryBfcacheSegments: Object.freeze(primaryBfcacheSegments),
     routeResetKey,
     slots: Object.freeze(slots),
   });

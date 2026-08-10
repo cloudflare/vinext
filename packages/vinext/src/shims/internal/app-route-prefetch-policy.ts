@@ -11,6 +11,7 @@
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
+import { normalizePathnameForRouteMatch } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
 declare global {
@@ -27,6 +28,41 @@ const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 const ENCODED_PATH_DELIMITER_RE = /%(?:2f|5c)/i;
+let partialPrerenderPathsPromise: Promise<ReadonlySet<string>> | undefined;
+
+async function loadPartialPrerenderPaths(): Promise<ReadonlySet<string>> {
+  partialPrerenderPathsPromise ??= fetch(`${__basePath}/__vinext/prefetch-policy`, {
+    credentials: "same-origin",
+  })
+    .then(async (response) => {
+      if (!response.ok) return new Set<string>();
+      const payload: unknown = await response.json();
+      if (
+        typeof payload !== "object" ||
+        payload === null ||
+        !("partialPrerenderPaths" in payload) ||
+        !Array.isArray(payload.partialPrerenderPaths)
+      ) {
+        return new Set<string>();
+      }
+      return new Set(
+        payload.partialPrerenderPaths.filter(
+          (pathname): pathname is string => typeof pathname === "string",
+        ),
+      );
+    })
+    .catch(() => new Set<string>());
+  return partialPrerenderPathsPromise;
+}
+
+export async function hasPartialPrerenderForRoute(href: string): Promise<boolean> {
+  const routeHref = toSameOriginRouteHref(href);
+  if (routeHref === null) return false;
+  const pathname = normalizePathnameForRouteMatch(
+    new URL(routeHref, "http://vinext.local").pathname,
+  );
+  return (await loadPartialPrerenderPaths()).has(pathname);
+}
 
 /**
  * How an App Router prefetch for a given href should behave: whether to issue

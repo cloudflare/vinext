@@ -898,6 +898,8 @@ export function buildAppPageElements<
   }
   const orderedTreePositions = Array.from(
     new Set<number>([
+      ...routeSegments.map((_, index) => index),
+      routeSegments.length,
       ...layoutEntries.map((entry) => entry.treePosition),
       ...templateEntries.map((entry) => entry.treePosition),
       ...loadingEntries.map((entry) => entry.treePosition),
@@ -951,6 +953,11 @@ export function buildAppPageElements<
   const includesPrefetchTreePosition = (treePosition: number): boolean =>
     prefetchCutoffTreePosition === null || treePosition <= prefetchCutoffTreePosition;
   const segmentPlan = createAppPageSegmentPlan({
+    includePrimarySegment(treePosition) {
+      if (String(process.env.__NEXT_CACHE_COMPONENTS) !== "true") return false;
+      if (isPrefetchEmpty) return false;
+      return !isPrefetchLoadingShell || includesPrefetchTreePosition(treePosition);
+    },
     includeSlot(ownerTreePosition, targetTreePosition) {
       if (isPrefetchEmpty) return false;
       if (!isPrefetchLoadingShell) return true;
@@ -1002,6 +1009,9 @@ export function buildAppPageElements<
     for (const segment of slotPlan.nestedBfcacheSegments) {
       elements[segment.id] = null;
     }
+  }
+  for (const segment of segmentPlan.primaryBfcacheSegments) {
+    elements[segment.id] = null;
   }
   // Surface static-sibling info on the wire so the client router can decide
   // whether a cached dynamic-route prefetch can be reused when navigating to a
@@ -1684,6 +1694,20 @@ export function buildAppPageElements<
         >
           {segmentChildren}
         </Slot>
+      );
+    }
+
+    const primaryBfcacheSegment = segmentPlan.primaryBfcacheSegments.find(
+      (segment) => segment.treePosition === treePosition,
+    );
+    if (primaryBfcacheSegment) {
+      segmentChildren = (
+        <BfcacheSegmentBoundary
+          id={primaryBfcacheSegment.id}
+          stateKey={primaryBfcacheSegment.stateKey}
+        >
+          {segmentChildren}
+        </BfcacheSegmentBoundary>
       );
     }
 
