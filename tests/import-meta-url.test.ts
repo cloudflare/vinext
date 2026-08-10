@@ -1,12 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { parseAst } from "vite";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   createImportMetaUrlPlugin,
-  rewriteBuildChunkCjsGlobals,
-  rewriteBundledDependencyCjsGlobals,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
@@ -16,12 +15,51 @@ function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
 }
 
+const EMITTED_CJS_GLOBAL_INITIALIZERS = {
+  __filename:
+    "(import.meta.filename ?? globalThis.decodeURIComponent(new globalThis.URL(import.meta.url).pathname))",
+  __dirname:
+    '(import.meta.dirname ?? (globalThis.decodeURIComponent(new globalThis.URL(".", import.meta.url).pathname).replace(/\\\/$/, "") || "/"))',
+} as const;
+
+function expectInjectedCjsGlobal(
+  code: string | undefined,
+  name: keyof typeof EMITTED_CJS_GLOBAL_INITIALIZERS,
+): void {
+  expect(code).toContain(`var ${name} = ${EMITTED_CJS_GLOBAL_INITIALIZERS[name]};`);
+}
+
+function expectBundledCjsGlobal(
+  code: string | undefined,
+  name: keyof typeof EMITTED_CJS_GLOBAL_INITIALIZERS,
+): void {
+  const marker = name === "__filename" ? "FILENAME" : "DIRNAME";
+  expect(code).toMatch(
+    new RegExp(`var ${name} = globalThis\\.__VINEXT_EMITTED_CJS_${marker}_[a-f0-9]{32}__;`),
+  );
+}
+
+function expectFinalizedCjsGlobal(
+  code: string | undefined,
+  name: keyof typeof EMITTED_CJS_GLOBAL_INITIALIZERS,
+): void {
+  const field = name === "__filename" ? "filename" : "dirname";
+  expect(code).toContain(`var ${name} = (import.meta.${field} ?? `);
+  expect(code).toContain("globalThis.process.cwd()");
+  expect(code).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
+}
+
+function transformOptimizedDependency(code: string, id: string) {
+  const capability = createImportMetaUrlPlugin({ getRoot: () => path.dirname(id) });
+  return unwrapHook(capability.optimizeDepsPlugin.transform).call({}, code, id);
+}
+
 describe("vinext:import-meta-url plugin", () => {
   let tmpDir: string;
   let realRoot: string;
   let linkedRoot: string;
   let pagePath: string;
-  let canonicalPagePath: string;
+  let localCjsPath: string;
   let cjsDependencyPath: string;
   let esmDependencyPath: string;
   let unpackagedDependencyPath: string;
@@ -31,9 +69,16 @@ describe("vinext:import-meta-url plugin", () => {
     realRoot = path.join(tmpDir, "real-app");
     linkedRoot = path.join(tmpDir, "linked-app");
     pagePath = path.join(realRoot, "pages", "index.tsx");
+    localCjsPath = path.join(realRoot, "lib", "identity.cjs");
 
-    await fsp.mkdir(path.dirname(pagePath), { recursive: true });
-    await fsp.writeFile(pagePath, `export const url = import.meta.url;\n`);
+    await Promise.all([
+      fsp.mkdir(path.dirname(pagePath), { recursive: true }),
+      fsp.mkdir(path.dirname(localCjsPath), { recursive: true }),
+    ]);
+    await Promise.all([
+      fsp.writeFile(pagePath, `export const url = import.meta.url;\n`),
+      fsp.writeFile(localCjsPath, `exports.paths = [__filename, __dirname];\n`),
+    ]);
     const cjsDependencyDir = path.join(realRoot, "node_modules", "cjs-source-identity");
     const esmDependencyDir = path.join(realRoot, "node_modules", "esm-source-identity");
     cjsDependencyPath = path.join(cjsDependencyDir, "index.js");
@@ -58,9 +103,6 @@ describe("vinext:import-meta-url plugin", () => {
       fsp.writeFile(path.join(typeModuleAppDir, "package.json"), '{"type":"module"}\n'),
       fsp.writeFile(unpackagedDependencyPath, "exports.path = __dirname;\n"),
     ]);
-    // The plugin emits canonical forward-slash paths, so expectations are
-    // built from the slash form (path.dirname preserves separators on win32).
-    canonicalPagePath = toSlash(await fsp.realpath(pagePath));
     await fsp.symlink(realRoot, linkedRoot, "junction");
   });
 
@@ -128,52 +170,42 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`"file:///ROOT/pages/index.tsx"`);
   });
 
-  it("injects server __filename and __dirname derived from the source URL", () => {
-    // Ported from Next.js:
-    // test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
+  it("injects portable server __filename and __dirname initializers", () => {
     const result = rewriteServerCjsGlobals(
       `console.log(__filename, __dirname);\n`,
       pagePath,
       linkedRoot,
     );
 
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
-    expect(result?.code).not.toContain("linked-app");
+    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expect(result?.code).not.toContain(realRoot);
     expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
 
-  it("injects source paths for a CommonJS dependency optimizer input", async () => {
-    const canonicalDependencyPath = toSlash(await fsp.realpath(cjsDependencyPath));
-    const result = rewriteBundledDependencyCjsGlobals(
+  it("injects emitted-module fallbacks for a CommonJS dependency optimizer input", () => {
+    const result = transformOptimizedDependency(
       `"use strict";\nexports.paths = [__filename, __dirname];\n`,
       `${cjsDependencyPath}?v=test`,
     );
 
     expect(result?.code).toContain(`"use strict";\nvar __filename`);
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalDependencyPath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(toSlash(path.dirname(canonicalDependencyPath)))};`,
-    );
+    expectBundledCjsGlobal(result?.code, "__filename");
+    expectBundledCjsGlobal(result?.code, "__dirname");
+    expect(result?.code).not.toContain(cjsDependencyPath);
   });
 
-  it("defaults an unpackaged node_modules dependency to CommonJS", async () => {
-    const canonicalDependencyPath = toSlash(await fsp.realpath(unpackagedDependencyPath));
-    const result = rewriteBundledDependencyCjsGlobals(
+  it("defaults an unpackaged node_modules dependency to CommonJS", () => {
+    const result = transformOptimizedDependency(
       `exports.path = __dirname;\n`,
       unpackagedDependencyPath,
     );
 
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(toSlash(path.dirname(canonicalDependencyPath)))};`,
-    );
+    expectBundledCjsGlobal(result?.code, "__dirname");
   });
 
   it("does not inject CommonJS globals into a dependency declared as ESM", () => {
-    const result = rewriteBundledDependencyCjsGlobals(
+    const result = transformOptimizedDependency(
       `export const paths = [__filename, __dirname];\n`,
       esmDependencyPath,
     );
@@ -182,7 +214,7 @@ describe("vinext:import-meta-url plugin", () => {
   });
 
   it("does not inject dependency globals mentioned only in comments and strings", () => {
-    const result = rewriteBundledDependencyCjsGlobals(
+    const result = transformOptimizedDependency(
       `// __filename\nexports.note = "__dirname";\n`,
       cjsDependencyPath,
     );
@@ -190,19 +222,101 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result).toBeNull();
   });
 
-  it("defines free CommonJS globals relative to an emitted ESM chunk", () => {
-    const result = rewriteBuildChunkCjsGlobals(
+  it("defines free CommonJS globals from portable emitted-module identity", () => {
+    const result = rewriteServerCjsGlobals(
       `"use strict";\nconst value = await Promise.resolve(__dirname + __filename);\n`,
+      pagePath,
+      linkedRoot,
+    );
+
+    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectInjectedCjsGlobal(result?.code, "__dirname");
+    expect(result?.code).not.toContain("process.cwd");
+    expect(result?.code).not.toContain("__VINEXT_EMITTED_CJS_");
+  });
+
+  it("does not rewrite marker-like user globals while finalizing optimized CJS", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      [
+        "exports.dirname = __dirname;",
+        "exports.userValue = globalThis.__VINEXT_EMITTED_CJS_FILENAME__;",
+      ].join("\n"),
+      cjsDependencyPath,
+    );
+    const result = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      transformed?.code ?? "",
+      { fileName: "entry.js" },
+      { format: "es" },
     );
 
     expect(result?.code).toContain(
-      `"use strict";\nvar __filename = import.meta.filename;var __dirname = import.meta.dirname;`,
+      "exports.userValue = globalThis.__VINEXT_EMITTED_CJS_FILENAME__;",
+    );
+    expect(result?.code).toContain(
+      "var __dirname = (import.meta.dirname ?? globalThis.process.cwd());",
     );
   });
 
-  it("does not redefine CommonJS globals already bound by an emitted chunk", () => {
-    const result = rewriteBuildChunkCjsGlobals(
+  it("removes private marker randomness from emitted output", () => {
+    const source = "exports.dirname = __dirname;";
+    const firstCapability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const secondCapability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const first = unwrapHook(firstCapability.optimizeDepsPlugin.transform).call(
+      {},
+      source,
+      cjsDependencyPath,
+    );
+    const second = unwrapHook(secondCapability.optimizeDepsPlugin.transform).call(
+      {},
+      source,
+      cjsDependencyPath,
+    );
+    expect(first?.code).not.toBe(second?.code);
+
+    const firstEmitted = unwrapHook(firstCapability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      first?.code ?? "",
+      { fileName: "entry.js" },
+      { format: "es" },
+    );
+    const secondEmitted = unwrapHook(secondCapability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      second?.code ?? "",
+      { fileName: "entry.js" },
+      { format: "es" },
+    );
+    expect(firstEmitted?.code).toBe(secondEmitted?.code);
+  });
+
+  it("finalizes private markers after a bundler renames their bindings", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      "exports.dirname = __dirname;",
+      cjsDependencyPath,
+    );
+    const renamed = transformed?.code
+      .replace("var __dirname =", "var e =")
+      .replace("exports.dirname = __dirname", "exports.dirname = e");
+    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      renamed ?? "",
+      { fileName: "entry.js" },
+      { format: "es" },
+    );
+
+    expect(emitted?.code).toContain("var e = (import.meta.dirname ?? globalThis.process.cwd());");
+    expect(emitted?.code).not.toMatch(/__VINEXT_EMITTED_CJS_DIRNAME_[a-f0-9]{32}__/);
+  });
+
+  it("does not redefine CommonJS globals already bound by a source module", () => {
+    const result = rewriteServerCjsGlobals(
       `const __dirname = import.meta.dirname;\nawait Promise.resolve(__dirname);\n`,
+      pagePath,
+      linkedRoot,
     );
 
     expect(result).toBeNull();
@@ -297,52 +411,70 @@ describe("vinext:import-meta-url plugin", () => {
     expect(capability.isBundledCommonJsDependencyId(currentEntry)).toBe(false);
   });
 
-  it("uses runtime-specific dependency globals only in server development", () => {
-    const nodeCapability = createImportMetaUrlPlugin({
-      getRoot: () => realRoot,
-      getServerRuntime: () => "node",
-    });
-    const nodeTransform = unwrapHook(nodeCapability.vitePlugin.transform);
+  it("uses source identity when unbundled and emitted identity when bundled", async () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transform = unwrapHook(capability.vitePlugin.transform);
     const source = "exports.path = __dirname;";
 
+    const devResult = transform.call(
+      { environment: { mode: "dev", config: { consumer: "server" } } },
+      source,
+      cjsDependencyPath,
+    );
+    expect(devResult?.code).toContain(
+      `var __dirname = ${JSON.stringify(toSlash(path.dirname(await fsp.realpath(cjsDependencyPath))))};`,
+    );
     expect(
-      nodeTransform.call(
-        { environment: { mode: "dev", config: { consumer: "server" } } },
-        source,
-        cjsDependencyPath,
-      )?.code,
-    ).toContain("var __dirname =");
-    expect(
-      nodeTransform.call(
+      transform.call(
         { environment: { mode: "dev", config: { consumer: "client" } } },
         source,
         cjsDependencyPath,
       ),
     ).toBeNull();
-    expect(
-      nodeTransform.call(
-        { environment: { mode: "build", config: { consumer: "server" } } },
-        source,
-        cjsDependencyPath,
-      ),
-    ).toBeNull();
-
-    const workerCapability = createImportMetaUrlPlugin({
-      getRoot: () => realRoot,
-      getServerRuntime: () => "worker",
-    });
-    expect(
-      unwrapHook(workerCapability.vitePlugin.transform).call(
-        { environment: { mode: "dev", config: { consumer: "server" } } },
-        source,
-        cjsDependencyPath,
-      )?.code,
-    ).toContain('var __dirname = "/";');
-
-    expect(rewriteBuildChunkCjsGlobals(source, "worker")?.code).toContain('var __dirname = "/";');
-    expect(rewriteBuildChunkCjsGlobals("exports.path = __filename;", "worker")?.code).toContain(
-      'var __filename = "/index.js";',
+    const buildResult = transform.call(
+      { environment: { mode: "build", config: { consumer: "server" } } },
+      source,
+      cjsDependencyPath,
     );
+    expectBundledCjsGlobal(buildResult?.code, "__dirname");
+    const emittedResult = unwrapHook(capability.vitePlugin.renderChunk).call(
+      { environment: { config: { consumer: "server" } } },
+      buildResult?.code ?? "",
+      { fileName: "worker/entry.js" },
+      { format: "es" },
+    );
+    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname");
+  });
+
+  it("keeps explicit project CommonJS parseable before lowering", async () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transform = unwrapHook(capability.vitePlugin.transform);
+    const source = `exports.paths = [__filename, __dirname];`;
+    const canonicalLocalCjsPath = toSlash(await fsp.realpath(localCjsPath));
+
+    const devResult = transform.call(
+      { environment: { name: "ssr", mode: "dev", config: { consumer: "server" } } },
+      source,
+      localCjsPath,
+    );
+    expect(devResult?.code).toContain(`var __filename = ${JSON.stringify(canonicalLocalCjsPath)};`);
+
+    const buildResult = transform.call(
+      { environment: { name: "ssr", mode: "build", config: { consumer: "server" } } },
+      source,
+      localCjsPath,
+    );
+    expectBundledCjsGlobal(buildResult?.code, "__filename");
+    expectBundledCjsGlobal(buildResult?.code, "__dirname");
+    expect(() => parseAst(buildResult?.code ?? "")).not.toThrow();
+    const emittedResult = unwrapHook(capability.vitePlugin.renderChunk).call(
+      { environment: { config: { consumer: "server" } } },
+      buildResult?.code ?? "",
+      { fileName: "server/entry.js" },
+      { format: "es" },
+    );
+    expectFinalizedCjsGlobal(emittedResult?.code, "__filename");
+    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname");
   });
 
   it("does not inject when __filename or __dirname are declared at top level", () => {
@@ -395,10 +527,8 @@ describe("vinext:import-meta-url plugin", () => {
     // __dirname has no top-level declaration (the for-loop let is nested),
     // so it is injected and correctly shadowed by the nested let.
     expect(result).not.toBeNull();
-    expect(result?.code).not.toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
+    expect(result?.code).not.toContain(`var __filename =`);
+    expectInjectedCjsGlobal(result?.code, "__dirname");
   });
 
   it.each([
@@ -466,10 +596,8 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).not.toBeNull();
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
+    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectInjectedCjsGlobal(result?.code, "__dirname");
     expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
 
@@ -484,10 +612,8 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).not.toBeNull();
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
+    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectInjectedCjsGlobal(result?.code, "__dirname");
     expect(result?.code).toContain(`__filename = "local-file";`);
     expect(result?.code).toContain(`__dirname++;`);
   });
@@ -510,10 +636,8 @@ describe("vinext:import-meta-url plugin", () => {
 
     // class expressions are not top-level declarations, so injection happens
     expect(result).not.toBeNull();
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
+    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectInjectedCjsGlobal(result?.code, "__dirname");
     // Inside the class body, `__filename` refers to the class name binding,
     // which shadows the injected var. This is correct JS semantics.
     expect(result?.code).toContain(`return __filename;`);
@@ -538,10 +662,8 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).not.toBeNull();
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
+    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectInjectedCjsGlobal(result?.code, "__dirname");
     // Original references preserved
     expect(result?.code).toContain(`file = __filename`);
     expect(result?.code).toContain(`[__dirname]: dir`);
@@ -559,10 +681,8 @@ describe("vinext:import-meta-url plugin", () => {
 
     // With binding injection, `{ __filename, __dirname }` naturally expands to
     // `{ __filename: <injected-value>, __dirname: <injected-value> }`
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
+    expectInjectedCjsGlobal(result?.code, "__filename");
+    expectInjectedCjsGlobal(result?.code, "__dirname");
     expect(result?.code).toContain(`{ __filename, __dirname }`);
   });
 
@@ -583,7 +703,7 @@ describe("vinext:import-meta-url plugin", () => {
     const result = rewriteServerCjsGlobals(`console.log(__filename);`, pagePath, linkedRoot);
 
     expect(result).not.toBeNull();
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expectInjectedCjsGlobal(result?.code, "__filename");
   });
 
   it("does not inject when destructuring declarations shadow the globals", () => {
@@ -781,7 +901,7 @@ describe("vinext:import-meta-url plugin", () => {
   it("injects for computed member reads (obj[__filename])", () => {
     const result = rewriteServerCjsGlobals(`console.log(obj[__filename]);\n`, pagePath, linkedRoot);
 
-    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expectInjectedCjsGlobal(result?.code, "__filename");
   });
 
   it("injects a name with a real read even when the other only appears as a member", () => {
@@ -793,9 +913,7 @@ describe("vinext:import-meta-url plugin", () => {
 
     // __dirname is read freely → injected; __filename only appears as a member
     // property → not injected.
-    expect(result?.code).toContain(
-      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
-    );
+    expectInjectedCjsGlobal(result?.code, "__dirname");
     expect(result?.code).not.toContain(`var __filename =`);
   });
 

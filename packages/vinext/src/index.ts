@@ -527,11 +527,14 @@ function isScriptModuleId(id: string): boolean {
 
 function skipCommonjsForLocalCjs(
   id: string,
+  transformProjectLocalCommonJs = false,
   transformBundledDependencies = false,
   isBundledCommonJsDependency: (id: string) => boolean = () => false,
 ): boolean | undefined {
   const cleanId = stripViteModuleQuery(id);
-  if (/\.c[jt]s$/i.test(cleanId) && !/[\\/]node_modules[\\/]/.test(cleanId)) return false;
+  if (/\.c[jt]s$/i.test(cleanId) && !/[\\/]node_modules[\\/]/.test(cleanId)) {
+    return transformProjectLocalCommonJs;
+  }
   return transformBundledDependencies && isBundledCommonJsDependency(cleanId) ? true : undefined;
 }
 
@@ -1432,10 +1435,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
     getRoot: () => root,
-    // Workers do not expose filesystem-backed module identity. The capability
-    // uses Next's Edge-compatible logical globals instead of Node import.meta
-    // path APIs or build-host paths when this reports a Worker target.
-    getServerRuntime: () => (hasCloudflarePlugin ? "worker" : "node"),
   });
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
@@ -1816,11 +1815,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // current Vite environment into that call without creating per-environment
   // plugin instances: environment plugins cannot run the configResolved hook
   // that vite-plugin-commonjs requires to initialize its resolver.
+  let transformProjectLocalCommonJs = false;
   let transformBundledCommonJsDependencies = false;
   const commonJsPlugin = commonjs({
     filter(id: string) {
       return skipCommonjsForLocalCjs(
         id,
+        transformProjectLocalCommonJs,
         transformBundledCommonJsDependencies,
         importMetaUrlCapability.isBundledCommonJsDependencyId,
       );
@@ -1838,18 +1839,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       ) {
         return null;
       }
-      if (!id.includes("/node_modules/") && !id.includes("\\node_modules\\")) {
-        return commonJsTransform.call(this, code, id, ...args);
-      }
+      const projectLocal = !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
+      const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;
+      transformProjectLocalCommonJs = projectLocal && this.environment.mode === "dev";
       transformBundledCommonJsDependencies =
-        this.environment.mode === "dev" && this.environment.config.consumer === "server";
+        !projectLocal &&
+        this.environment.mode === "dev" &&
+        this.environment.config.consumer === "server";
       try {
         // Do not await here: the filter is consulted synchronously while this
         // environment-scoped flag is set. The remaining async transform work
         // does not read it, so concurrent module transforms cannot cross-talk.
         return commonJsTransform.call(this, code, id, ...args);
       } finally {
+        transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
       }
     };
@@ -1871,15 +1875,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //
-    // Skip project-local `.cjs`/`.cts` files. `vinext init` renames CJS config
+    // Skip project-local `.cjs`/`.cts` files during builds. `vinext init` renames CJS config
     // files to `.cjs` (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when
     // it adds `"type": "module"`, and app code imports them extensionlessly
     // (`import cfg from "../tailwind.config"`). If `vite-plugin-commonjs`
     // rewrites their `module.exports` to ESM `export {}`, rolldown still infers
     // `moduleType: "cjs"` from the `.cjs`/`.cts` extension and re-parses the
     // rewritten output as CommonJS, failing with "Cannot use export statement
-    // outside a module". Returning `false` makes vite-plugin-commonjs skip these
-    // project-local files so rolldown's own CJS interop bundles them instead.
+    // outside a module". Returning `false` during builds makes vite-plugin-commonjs
+    // skip these project-local files so Rolldown's own CJS interop bundles them
+    // instead. Dev has no later CJS lowering pass, so transform them here.
     // For dependencies that Node identifies as CommonJS, return true so the
     // files actually loaded through a bundled SSR graph are converted on
     // demand instead of requiring Vite's environment-wide dependency crawl.

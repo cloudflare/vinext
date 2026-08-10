@@ -552,6 +552,21 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     }
   });
 
+  it("renders a static page backed by a bundled CommonJS dependency", () => {
+    const r = findRoute(results, "/cjs-dependency-globals-static");
+    expect(r).toMatchObject({
+      route: "/cjs-dependency-globals-static",
+      status: "rendered",
+      revalidate: false,
+    });
+    if (r?.status === "rendered") {
+      expect(r.outputFiles).toContain("cjs-dependency-globals-static.html");
+      const html = fs.readFileSync(path.join(outDir, "cjs-dependency-globals-static.html"), "utf8");
+      expect(html).toContain('<p id="identity-types">string:string</p>');
+      expect(html).toContain('<p id="identity-consistent">true</p>');
+    }
+  });
+
   it("renders 404 page", () => {
     const r = findRoute(results, "/404");
     expect(results.filter((result) => result.route === "/404")).toHaveLength(1);

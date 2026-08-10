@@ -1,7 +1,7 @@
-// Rewrites source-identity globals in user modules so module identity survives
-// bundling, matching Next.js:
+// Rewrites module-identity globals so they survive bundling, matching Next.js:
 //   - direct `import.meta.url` reads become source-module URLs
-//   - server-side free `__filename` / `__dirname` reads become source paths
+//   - server-side free `__filename` / `__dirname` reads become the emitted
+//     module path once bundled (or the native source path when unbundled)
 //
 // Two known limitations, both matching Vite's own `import.meta.url` handling:
 //   1. Destructured access — `const { url } = import.meta;` — is not detected
@@ -14,6 +14,7 @@
 import { parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
@@ -30,8 +31,12 @@ import {
 } from "./ast-utils.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
-
-type ServerRuntime = "node" | "worker";
+type ModuleIdentityTransformKind =
+  | "client"
+  | "server-dev"
+  | "server-build"
+  | "server-cjs-dev"
+  | "server-cjs-build";
 
 type RewriteResult = {
   code: string;
@@ -48,7 +53,7 @@ type ImportMetaUrlCacheEntry = {
   source: string;
   canonicalRoot: string;
   canonicalId: string;
-  results: Map<ImportMetaUrlEnvironment, { value: RewriteResult | null }>;
+  results: Map<ModuleIdentityTransformKind, { value: RewriteResult | null }>;
 };
 
 export type ImportMetaUrlCapability = {
@@ -75,7 +80,6 @@ const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
 ]);
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
-  getServerRuntime?: () => ServerRuntime;
 }): ImportMetaUrlCapability {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
@@ -88,7 +92,11 @@ export function createImportMetaUrlPlugin(options: {
   // retained across restarts. Cap the rare token-bearing dependency set to
   // avoid retaining arbitrary ids from long-running dev servers.
   const dependencyFormatCache = new Map<string, string | null>();
-
+  // Raw CommonJS cannot contain import.meta before Rolldown lowers it. Use two
+  // private per-capability placeholders that user source cannot predict, then
+  // replace them after lowering. This fixed-size provenance state stays valid
+  // for cached transforms and every output of the capability.
+  const emittedCjsGlobals = createEmittedCjsGlobals();
   function commonJsDependencyCanonicalId(id: string): string | null {
     const cleanId = cleanModuleId(id);
     if (dependencyFormatCache.has(cleanId)) {
@@ -103,12 +111,6 @@ export function createImportMetaUrlPlugin(options: {
       MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES,
     );
     return result;
-  }
-
-  function dependencyCjsGlobalInitializers(canonicalId: string): CjsGlobalInitializers {
-    return options.getServerRuntime?.() === "worker"
-      ? EDGE_CJS_GLOBAL_INITIALIZERS
-      : sourcePathCjsGlobalInitializers(canonicalId);
   }
 
   function getRootPaths(): RootPaths | undefined {
@@ -150,17 +152,17 @@ export function createImportMetaUrlPlugin(options: {
 
         const cleanId = cleanModuleId(id);
         if (isNodeModulesId(cleanId)) {
-          if (
-            !mayContainServerCjsGlobal(code) ||
-            this.environment?.mode !== "dev" ||
-            this.environment.config.consumer === "client"
-          ) {
+          if (!mayContainServerCjsGlobal(code) || this.environment.config.consumer === "client") {
             return null;
           }
           const canonicalId = commonJsDependencyCanonicalId(cleanId);
-          return canonicalId
-            ? rewriteCjsGlobals(code, dependencyCjsGlobalInitializers(canonicalId))
-            : null;
+          if (!canonicalId) return null;
+          return rewriteCjsGlobals(
+            code,
+            this.environment.mode === "dev"
+              ? sourcePathCjsGlobalInitializers(canonicalId)
+              : emittedCjsGlobals.initializers,
+          );
         }
 
         const paths = getRootPaths();
@@ -170,6 +172,17 @@ export function createImportMetaUrlPlugin(options: {
 
         const environment: ImportMetaUrlEnvironment =
           this.environment?.name === "client" ? "client" : "server";
+        const explicitCommonJs = [".cjs", ".cts"].includes(path.extname(canonicalId));
+        const transformKind: ModuleIdentityTransformKind =
+          environment === "client"
+            ? "client"
+            : explicitCommonJs
+              ? this.environment.mode === "dev"
+                ? "server-cjs-dev"
+                : "server-cjs-build"
+              : this.environment.mode === "dev"
+                ? "server-dev"
+                : "server-build";
         let entry = transformCache.get(id);
         if (
           !entry ||
@@ -186,7 +199,7 @@ export function createImportMetaUrlPlugin(options: {
           setBoundedCacheEntry(transformCache, id, entry, MAX_TRANSFORM_CACHE_ENTRIES);
         }
 
-        const cached = entry.results.get(environment);
+        const cached = entry.results.get(transformKind);
         if (cached) return cached.value;
 
         const value = rewriteCanonicalSourceIdentity(
@@ -194,26 +207,23 @@ export function createImportMetaUrlPlugin(options: {
           canonicalId,
           paths,
           environment,
-          options.getServerRuntime?.() === "worker" ? "worker" : "node",
+          this.environment.mode === "build" && mayContainServerCjsGlobal(code)
+            ? emittedCjsGlobals.initializers
+            : explicitCommonJs
+              ? sourcePathCjsGlobalInitializers(canonicalId)
+              : undefined,
         );
-        entry.results.set(environment, { value });
+        entry.results.set(transformKind, { value });
         return value;
       },
     },
     renderChunk: {
       order: "post",
-      handler(code, _chunk, outputOptions) {
-        if (
-          !mayContainServerCjsGlobal(code) ||
-          this.environment?.config.consumer !== "server" ||
-          outputOptions.format !== "es"
-        ) {
+      handler(code, chunk, outputOptions) {
+        if (this.environment?.config.consumer !== "server" || outputOptions.format !== "es") {
           return null;
         }
-        return rewriteBuildChunkCjsGlobals(
-          code,
-          options.getServerRuntime?.() === "worker" ? "worker" : "node",
-        );
+        return finalizeEmittedCjsGlobals(code, emittedCjsGlobals.replacements, chunk.fileName);
       },
     },
   };
@@ -231,9 +241,14 @@ export function createImportMetaUrlPlugin(options: {
       handler(code, id) {
         if (!mayContainServerCjsGlobal(code)) return null;
         const canonicalId = commonJsDependencyCanonicalId(id);
-        return canonicalId
-          ? rewriteCjsGlobals(code, dependencyCjsGlobalInitializers(canonicalId))
-          : null;
+        return canonicalId ? rewriteCjsGlobals(code, emittedCjsGlobals.initializers) : null;
+      },
+    },
+    renderChunk: {
+      order: "post",
+      handler(code, chunk, outputOptions) {
+        if (outputOptions.format !== "es") return null;
+        return finalizeEmittedCjsGlobals(code, emittedCjsGlobals.replacements, chunk.fileName);
       },
     },
   };
@@ -280,39 +295,12 @@ export function rewriteServerCjsGlobals(
   return rewriteCanonicalSourceIdentity(code, canonicalId, rootPaths, "server");
 }
 
-// Test-only entry point. The optimizer plugin delegates to this function so
-// parser and package-format checks are directly testable without a build.
-export function rewriteBundledDependencyCjsGlobals(code: string, id: string): RewriteResult | null {
-  if (!mayContainServerCjsGlobal(code)) return null;
-
-  const canonicalId = canonicalDependencyModuleId(id);
-  if (!canonicalId || !isCommonJsDependency(canonicalId)) return null;
-  return rewriteCanonicalCjsGlobals(code, canonicalId);
-}
-
-function rewriteCanonicalCjsGlobals(code: string, canonicalId: string): RewriteResult | null {
-  return rewriteCjsGlobals(code, sourcePathCjsGlobalInitializers(canonicalId));
-}
-
-// Test-only entry point. The build plugin delegates to this function so the
-// final-chunk free-global analysis is covered without a parallel implementation.
-export function rewriteBuildChunkCjsGlobals(
-  code: string,
-  runtime: ServerRuntime = "node",
-): RewriteResult | null {
-  if (!mayContainServerCjsGlobal(code)) return null;
-  return rewriteCjsGlobals(
-    code,
-    runtime === "worker" ? EDGE_CJS_GLOBAL_INITIALIZERS : NODE_CHUNK_CJS_GLOBAL_INITIALIZERS,
-  );
-}
-
 function rewriteCanonicalSourceIdentity(
   code: string,
   canonicalId: string,
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
-  runtime: ServerRuntime = "node",
+  cjsGlobalInitializers?: CjsGlobalInitializers,
 ): RewriteResult | null {
   return rewriteModuleIdentity(code, {
     importMetaUrlReplacement: mayContainImportMetaUrl(code)
@@ -320,29 +308,97 @@ function rewriteCanonicalSourceIdentity(
       : undefined,
     cjsGlobalInitializers:
       environment === "server" && mayContainServerCjsGlobal(code)
-        ? runtime === "worker"
-          ? EDGE_CJS_GLOBAL_INITIALIZERS
-          : sourcePathCjsGlobalInitializers(canonicalId)
+        ? (cjsGlobalInitializers ?? PORTABLE_ESM_CJS_GLOBAL_INITIALIZERS)
         : undefined,
   });
 }
 
 type CjsGlobalInitializers = Record<CjsGlobalName, string>;
 
-const NODE_CHUNK_CJS_GLOBAL_INITIALIZERS: CjsGlobalInitializers = {
-  __filename: "import.meta.filename",
-  __dirname: "import.meta.dirname",
+// Development modules use native ESM identity. Node exposes the direct fields;
+// Vite's workerd module runner supplies an absolute source URL for the fallback.
+const PORTABLE_ESM_CJS_GLOBAL_INITIALIZERS: CjsGlobalInitializers = {
+  __filename:
+    "(import.meta.filename ?? globalThis.decodeURIComponent(new globalThis.URL(import.meta.url).pathname))",
+  __dirname:
+    '(import.meta.dirname ?? (globalThis.decodeURIComponent(new globalThis.URL(".", import.meta.url).pathname).replace(/\\\/$/, "") || "/"))',
 };
 
-// Next's Edge webpack build has no filesystem module identity. Webpack mocks
-// these globals as `/index.js` and `/`; Next gives Rspack the same explicit
-// values. Keep Worker dev/optimizer/build behavior on that stable logical
-// identity instead of leaking build-host paths.
-// https://github.com/vercel/next.js/blob/d470d18941a46a6bdd655ec63179eb60e6b44577/packages/next/src/build/webpack-config.ts#L2314-L2325
-const EDGE_CJS_GLOBAL_INITIALIZERS: CjsGlobalInitializers = {
-  __filename: JSON.stringify("/index.js"),
-  __dirname: JSON.stringify("/"),
-};
+function createEmittedCjsGlobals(): {
+  initializers: CjsGlobalInitializers;
+  replacements: ReadonlyMap<string, CjsGlobalName>;
+} {
+  const nonce = randomUUID().replaceAll("-", "");
+  const filenameMarker = `__VINEXT_EMITTED_CJS_FILENAME_${nonce}__`;
+  const dirnameMarker = `__VINEXT_EMITTED_CJS_DIRNAME_${nonce}__`;
+  return {
+    initializers: {
+      __filename: `globalThis.${filenameMarker}`,
+      __dirname: `globalThis.${dirnameMarker}`,
+    },
+    replacements: new Map([
+      [filenameMarker, "__filename"],
+      [dirnameMarker, "__dirname"],
+    ]),
+  };
+}
+
+function emittedRuntimePathExpression(fileName: string): string {
+  const normalizedFileName = toSlash(fileName).replace(/^\.\//, "").replace(/^\/+/, "");
+  if (!normalizedFileName) return "globalThis.process.cwd()";
+  return `(globalThis.process.cwd().replace(/[\\\\/]$/, "") + ${JSON.stringify(`/${normalizedFileName}`)})`;
+}
+
+function finalizeEmittedCjsGlobals(
+  code: string,
+  emittedCjsGlobalNames: ReadonlyMap<string, CjsGlobalName>,
+  fileName: string,
+): RewriteResult | null {
+  if (!code.includes("__VINEXT_EMITTED_CJS_")) return null;
+  const emittedFileName = toSlash(fileName).replace(/^\.\//, "").replace(/^\/+/, "");
+  const emittedDirName = path.dirname(emittedFileName);
+  const replacements: Record<CjsGlobalName, string> = {
+    __filename: `(import.meta.filename ?? ${emittedRuntimePathExpression(emittedFileName)})`,
+    __dirname: `(import.meta.dirname ?? ${
+      emittedDirName === "."
+        ? "globalThis.process.cwd()"
+        : emittedRuntimePathExpression(emittedDirName)
+    })`,
+  };
+  let ast: unknown;
+  try {
+    ast = parseAst(code);
+  } catch {
+    return null;
+  }
+  const output = new MagicString(code);
+  let changed = false;
+  function visit(value: unknown): void {
+    if (!isAstRecord(value)) return;
+    if (
+      value.type === "MemberExpression" &&
+      hasRange(value) &&
+      !value.computed &&
+      isIdentifierNamed(value.object, "globalThis") &&
+      isAstRecord(value.property) &&
+      typeof value.property.name === "string"
+    ) {
+      const globalName = emittedCjsGlobalNames.get(value.property.name);
+      if (globalName) {
+        output.overwrite(value.start, value.end, replacements[globalName]);
+        changed = true;
+        return;
+      }
+    }
+    forEachAstChild(value, visit);
+  }
+  visit(ast);
+  if (!changed) return null;
+  return {
+    code: output.toString(),
+    map: output.generateMap({ hires: "boundary" }),
+  };
+}
 
 function rewriteCjsGlobals(
   code: string,

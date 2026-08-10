@@ -20,11 +20,15 @@ const NITRO_NODE_MODULES = path.resolve(
 );
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const NEXT_CJS_PATH_SPECIFIER = "next/dist/compiled/regenerator-runtime/path";
+const NEXT_CJS_PATH_FILE = path.join(
+  ROOT_NODE_MODULES,
+  "next/dist/compiled/regenerator-runtime/path.js",
+);
 
 async function createHybridFixture(
   prefix: string,
   nodeModules: string,
-  options: { dependencySpecifier?: string } = {},
+  options: { nextDependencySpecifier?: string } = {},
 ): Promise<{
   root: string;
   canonicalRoot: string;
@@ -32,11 +36,10 @@ async function createHybridFixture(
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const cjsPackageDir = path.join(root, "vendor/node_modules/cjs-path-identity");
-  const dependencySpecifier =
-    options.dependencySpecifier ?? "../vendor/node_modules/cjs-path-identity/index.js";
   await Promise.all([
     fs.mkdir(path.join(root, "app"), { recursive: true }),
     fs.mkdir(path.join(root, "pages"), { recursive: true }),
+    fs.mkdir(path.join(root, "lib"), { recursive: true }),
     fs.mkdir(cjsPackageDir, { recursive: true }),
     fs.symlink(nodeModules, path.join(root, "node_modules"), "junction"),
   ]);
@@ -54,16 +57,78 @@ async function createHybridFixture(
       `export default function Page() { return "app"; }\n`,
     ),
     fs.writeFile(
-      path.join(root, "pages/cjs-dependency-globals.tsx"),
+      path.join(root, "lib/identity.ts"),
       `import path from "node:path";
-import identity from ${JSON.stringify(dependencySpecifier)};
-const projectRuntimePath = path.join(__dirname, "project-runtime.js");
+import regeneratorRuntimePath from ${JSON.stringify(options.nextDependencySpecifier ?? NEXT_CJS_PATH_SPECIFIER)};
+import dependencyIdentity from "../vendor/node_modules/cjs-path-identity/index.js";
+import localIdentity from "./local-identity.cjs";
+
+export function readIdentity() {
+  return {
+    runtimePath: regeneratorRuntimePath.path,
+    projectRuntimePath: path.join(__dirname, "project-runtime.js"),
+    dependencyRuntimePath: path.join(dependencyIdentity.dirname, "dependency-runtime.js"),
+    nestedRuntimePath: path.join(dependencyIdentity.nested.dirname, "nested-runtime.js"),
+    localRuntimePath: path.join(localIdentity.dirname, "local-runtime.js"),
+    shadowedProcess: localIdentity.shadowedProcess,
+    userMarkerTypes: localIdentity.userMarkerTypes,
+    types: [
+      typeof __filename,
+      typeof __dirname,
+      dependencyIdentity.types,
+      dependencyIdentity.nested.types,
+      localIdentity.types,
+    ].join(","),
+    consistent:
+      path.dirname(__filename) === __dirname &&
+      dependencyIdentity.consistent &&
+      dependencyIdentity.nested.consistent &&
+      localIdentity.consistent,
+  };
+}
+`,
+    ),
+    fs.writeFile(
+      path.join(root, "lib/local-identity.cjs"),
+      `const path = require("node:path");
+const process = { marker: "local-process" };
+exports.dirname = __dirname;
+exports.types = typeof __filename + ":" + typeof __dirname;
+exports.consistent = path.dirname(__filename) === __dirname;
+exports.shadowedProcess = process.marker;
+exports.userMarkerTypes =
+  typeof globalThis.__VINEXT_EMITTED_CJS_FILENAME__ + ":" +
+  typeof globalThis.__VINEXT_EMITTED_CJS_DIRNAME__;
+`,
+    ),
+    fs.writeFile(
+      path.join(root, "pages/cjs-dependency-globals.tsx"),
+      `import { readIdentity } from "../lib/identity";
 export function getServerSideProps() {
-  return { props: { runtimePath: identity.path, projectRuntimePath } };
+  return { props: readIdentity() };
 }
-export default function Page(props: { runtimePath: string; projectRuntimePath: string }) {
-  return <><p id="runtime-path">{props.runtimePath}</p><p id="project-runtime-path">{props.projectRuntimePath}</p></>;
+export default function Page(props: ReturnType<typeof readIdentity>) {
+  return <>
+    <p id="runtime-path">{props.runtimePath}</p>
+    <p id="project-runtime-path">{props.projectRuntimePath}</p>
+    <p id="dependency-runtime-path">{props.dependencyRuntimePath}</p>
+    <p id="nested-runtime-path">{props.nestedRuntimePath}</p>
+    <p id="local-runtime-path">{props.localRuntimePath}</p>
+    <p id="identity-types">{props.types}</p>
+    <p id="identity-consistent">{String(props.consistent)}</p>
+    <p id="shadowed-process">{props.shadowedProcess}</p>
+    <p id="user-marker-types">{props.userMarkerTypes}</p>
+  </>;
 }
+`,
+    ),
+    fs.writeFile(
+      path.join(root, "pages/cjs-dependency-globals-static.tsx"),
+      `import { readIdentity } from "../lib/identity";
+export function getStaticProps() {
+  return { props: readIdentity() };
+}
+export { default } from "./cjs-dependency-globals";
 `,
     ),
     fs.writeFile(
@@ -72,7 +137,22 @@ export default function Page(props: { runtimePath: string; projectRuntimePath: s
     ),
     fs.writeFile(
       path.join(cjsPackageDir, "index.js"),
-      `exports.path = require("node:path").join(__dirname, "runtime.js");\n`,
+      `const path = require("node:path");
+exports.filename = __filename;
+exports.dirname = __dirname;
+exports.types = typeof __filename + ":" + typeof __dirname;
+exports.consistent = path.dirname(__filename) === __dirname;
+exports.nested = require("./nested.cjs");
+`,
+    ),
+    fs.writeFile(
+      path.join(cjsPackageDir, "nested.cjs"),
+      `const path = require("node:path");
+exports.filename = __filename;
+exports.dirname = __dirname;
+exports.types = typeof __filename + ":" + typeof __dirname;
+exports.consistent = path.dirname(__filename) === __dirname;
+`,
     ),
   ]);
   const canonicalRoot = await fs.realpath(root);
@@ -149,15 +229,43 @@ async function closeServer(server: Server | undefined): Promise<void> {
   });
 }
 
+async function loadCloudflarePlugin(root: string): Promise<Plugin> {
+  const cloudflareModule = (await import(
+    pathToFileURL(path.join(root, "node_modules/@cloudflare/vite-plugin/dist/index.mjs")).href
+  )) as {
+    cloudflare(options: { viteEnvironment: { name: string; childEnvironments: string[] } }): Plugin;
+  };
+  return cloudflareModule.cloudflare({
+    viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+  });
+}
+
 function expectPathAbsent(text: string, filePath: string): void {
   expect(text).not.toContain(filePath);
   expect(toSlash(text)).not.toContain(toSlash(filePath));
 }
 
+function htmlValue(html: string, id: string): string {
+  const value = html.match(new RegExp(`<p id="${id}">([^<]+)</p>`))?.[1];
+  if (value === undefined) throw new Error(`Missing #${id} in rendered fixture`);
+  return value;
+}
+
+function expectFunctionalIdentity(html: string): void {
+  expect(htmlValue(html, "identity-types")).toBe(
+    "string,string,string:string,string:string,string:string",
+  );
+  expect(htmlValue(html, "identity-consistent")).toBe("true");
+  expect(htmlValue(html, "shadowed-process")).toBe("local-process");
+  expect(htmlValue(html, "user-marker-types")).toBe("undefined:undefined");
+  expect(path.basename(htmlValue(html, "dependency-runtime-path"))).toBe("dependency-runtime.js");
+  expect(path.basename(htmlValue(html, "nested-runtime-path"))).toBe("nested-runtime.js");
+  expect(path.basename(htmlValue(html, "local-runtime-path"))).toBe("local-runtime.js");
+}
+
 describe("bundled CJS globals on the hybrid Node development runtime", () => {
   let root = "";
   let canonicalRoot = "";
-  let dependencyRuntimePath = "";
   let server: ViteDevServer | undefined;
   let baseUrl = "";
   let cacheDir = "";
@@ -166,12 +274,7 @@ describe("bundled CJS globals on the hybrid Node development runtime", () => {
     ({ root, canonicalRoot } = await createHybridFixture(
       "vinext-cjs-globals-node-dev-",
       ROOT_NODE_MODULES,
-      { dependencySpecifier: NEXT_CJS_PATH_SPECIFIER },
     ));
-    dependencyRuntimePath = path.join(
-      await fs.realpath(path.join(ROOT_NODE_MODULES, "next/dist/compiled/regenerator-runtime")),
-      "runtime.js",
-    );
     cacheDir = path.join(root, ".vite-cache");
     server = await createServer({
       root,
@@ -199,7 +302,7 @@ describe("bundled CJS globals on the hybrid Node development runtime", () => {
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("uses dependency source identity without losing project source identity", async () => {
+  it("uses optimizer output identity without losing unbundled project source identity", async () => {
     for (const environment of ["rsc", "ssr"] as const) {
       expect(
         server?.config.environments[environment]?.optimizeDeps?.rolldownOptions?.plugins,
@@ -212,12 +315,16 @@ describe("bundled CJS globals on the hybrid Node development runtime", () => {
     const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain(`<p id="runtime-path">${dependencyRuntimePath}</p>`);
     expect(html).toContain(
-      `<p id="project-runtime-path">${path.join(canonicalRoot, "pages/project-runtime.js")}</p>`,
+      `<p id="runtime-path">${path.join(cacheDir, "deps_ssr/runtime.js")}</p>`,
     );
+    expect(html).toContain(
+      `<p id="project-runtime-path">${path.join(canonicalRoot, "lib/project-runtime.js")}</p>`,
+    );
+    expectFunctionalIdentity(html);
     const optimizedBundle = await readJavaScriptTree(cacheDir);
-    expect(optimizedBundle).toContain(toSlash(path.dirname(dependencyRuntimePath)));
+    expect(optimizedBundle).toContain("import.meta.dirname");
+    expect(optimizedBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
     expect(optimizedBundle).not.toContain("var __dirname = void 0");
   });
 });
@@ -259,7 +366,7 @@ describe("bundled CJS globals on the hybrid Node production runtime", () => {
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("uses relocatable chunk identity without losing project source identity", async () => {
+  it("uses emitted chunk identity for dependency and project modules", async () => {
     const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
     expect(response.status).toBe(200);
     const html = await response.text();
@@ -269,9 +376,71 @@ describe("bundled CJS globals on the hybrid Node production runtime", () => {
     expect(runtimePath).toContain(path.join(canonicalRoot, "dist/server"));
     expect(runtimePath).not.toContain(cjsPackageDir);
     expect(html).toContain(
-      `<p id="project-runtime-path">${path.join(canonicalRoot, "pages/project-runtime.js")}</p>`,
+      `<p id="project-runtime-path">${path.join(canonicalRoot, "dist/server/ssr/project-runtime.js")}</p>`,
     );
+    expect(htmlValue(html, "dependency-runtime-path")).toContain(
+      path.join(canonicalRoot, "dist/server"),
+    );
+    expect(htmlValue(html, "nested-runtime-path")).toContain(
+      path.join(canonicalRoot, "dist/server"),
+    );
+    expectFunctionalIdentity(html);
     expectPathAbsent(serverBundle, cjsPackageDir);
+    expect(serverBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
+
+    const staticResponse = await fetch(`${baseUrl}/cjs-dependency-globals-static`);
+    expect(staticResponse.status).toBe(200);
+    expectFunctionalIdentity(await staticResponse.text());
+  });
+});
+
+describe("bundled CJS globals on the Cloudflare development runtime", () => {
+  let root = "";
+  let server: ViteDevServer | undefined;
+  let baseUrl = "";
+
+  beforeAll(async () => {
+    ({ root } = await createHybridFixture(
+      "vinext-cjs-globals-worker-dev-",
+      CLOUDFLARE_NODE_MODULES,
+      { nextDependencySpecifier: NEXT_CJS_PATH_FILE },
+    ));
+    await fs.writeFile(
+      path.join(root, "wrangler.jsonc"),
+      JSON.stringify({
+        name: "vinext-cjs-globals-worker-dev",
+        compatibility_date: "2026-04-01",
+        compatibility_flags: ["nodejs_compat"],
+        main: "vinext/server/fetch-handler",
+        assets: { not_found_handling: "none", binding: "ASSETS" },
+      }),
+    );
+    server = await createServer({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root }), await loadCloudflarePlugin(root)],
+      server: { host: "127.0.0.1", port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer?.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Cloudflare development server did not bind to a TCP port");
+    }
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  }, 120_000);
+
+  afterAll(async () => {
+    await server?.close();
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("executes the real CJS graph in workerd", async () => {
+    const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
+    const html = await response.text();
+    expect(response.status, html).toBe(200);
+    expectFunctionalIdentity(html);
+    expect(html).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
   });
 });
 
@@ -287,6 +456,7 @@ describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
     ({ root, canonicalRoot, cjsPackageDir } = await createHybridFixture(
       "vinext-cjs-globals-worker-",
       CLOUDFLARE_NODE_MODULES,
+      { nextDependencySpecifier: NEXT_CJS_PATH_FILE },
     ));
     await fs.writeFile(
       path.join(root, "wrangler.jsonc"),
@@ -298,22 +468,10 @@ describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),
     );
-    const cloudflareModule = (await import(
-      pathToFileURL(path.join(root, "node_modules/@cloudflare/vite-plugin/dist/index.mjs")).href
-    )) as {
-      cloudflare(options: {
-        viteEnvironment: { name: string; childEnvironments: string[] };
-      }): Plugin;
-    };
-    const cloudflare = (...args: Parameters<typeof cloudflareModule.cloudflare>) =>
-      cloudflareModule.cloudflare(...args);
     const builder = await createBuilder({
       root,
       configFile: false,
-      plugins: [
-        vinext({ appDir: root }),
-        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
-      ],
+      plugins: [vinext({ appDir: root }), await loadCloudflarePlugin(root)],
       logLevel: "silent",
     });
     await builder.buildApp();
@@ -351,14 +509,22 @@ describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("uses Next Edge-compatible logical identity without leaking host paths", async () => {
+  it("uses emitted workerd bundle identity without leaking host paths", async () => {
     const res = await fetch(`${baseUrl}/cjs-dependency-globals`);
-    expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('<p id="runtime-path">/runtime.js</p>');
-    expect(html).toContain('<p id="project-runtime-path">/project-runtime.js</p>');
+    expect(res.status, html).toBe(200);
+    expect(html).toContain('<p id="runtime-path">/bundle/runtime.js</p>');
+    expect(html).toContain('<p id="project-runtime-path">/bundle/project-runtime.js</p>');
+    expect(htmlValue(html, "dependency-runtime-path")).toBe("/bundle/dependency-runtime.js");
+    expect(htmlValue(html, "nested-runtime-path")).toBe("/bundle/nested-runtime.js");
+    expectFunctionalIdentity(html);
     expectPathAbsent(workerBundle, cjsPackageDir);
+    expect(workerBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
     expectPathAbsent(html, canonicalRoot);
+
+    const staticResponse = await fetch(`${baseUrl}/cjs-dependency-globals-static`);
+    expect(staticResponse.status).toBe(200);
+    expectFunctionalIdentity(await staticResponse.text());
   });
 });
 
@@ -374,6 +540,7 @@ describe("bundled CJS globals on the Nitro Node runtime", () => {
     ({ root, canonicalRoot, cjsPackageDir } = await createHybridFixture(
       "vinext-cjs-globals-nitro-",
       NITRO_NODE_MODULES,
+      { nextDependencySpecifier: NEXT_CJS_PATH_FILE },
     ));
     const nitroModule = (await import(
       pathToFileURL(path.join(root, "node_modules/nitro/dist/vite.mjs")).href
@@ -413,8 +580,16 @@ describe("bundled CJS globals on the Nitro Node runtime", () => {
     expect(path.basename(runtimePath!)).toBe("runtime.js");
     expect(runtimePath).toContain(path.join(canonicalRoot, ".output/server"));
     expect(html).toContain(
-      `<p id="project-runtime-path">${path.join(canonicalRoot, "pages/project-runtime.js")}</p>`,
+      `<p id="project-runtime-path">${path.join(canonicalRoot, ".output/server/_ssr/project-runtime.js")}</p>`,
     );
+    expect(htmlValue(html, "dependency-runtime-path")).toContain(
+      path.join(canonicalRoot, ".output/server"),
+    );
+    expect(htmlValue(html, "nested-runtime-path")).toContain(
+      path.join(canonicalRoot, ".output/server"),
+    );
+    expectFunctionalIdentity(html);
     expectPathAbsent(nitroBundle, cjsPackageDir);
+    expect(nitroBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
   });
 });
