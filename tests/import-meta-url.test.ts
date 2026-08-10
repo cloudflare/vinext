@@ -241,6 +241,18 @@ describe("vinext:import-meta-url plugin", () => {
     expectBundledCjsGlobal(result?.code, "__dirname");
   });
 
+  it.each(["const", "var"])(
+    "does not treat an ambient declare %s as a runtime CommonJS binding",
+    (kind) => {
+      const result = transformOptimizedDependency(
+        `declare ${kind} __dirname: string;\nexport = __dirname;\n`,
+        typedCjsDependencyPath,
+      );
+
+      expectBundledCjsGlobal(result?.code, "__dirname");
+    },
+  );
+
   it("defaults an unpackaged node_modules dependency to CommonJS", () => {
     const result = transformOptimizedDependency(
       `exports.path = __dirname;\n`,

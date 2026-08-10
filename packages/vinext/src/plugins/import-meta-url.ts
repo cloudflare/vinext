@@ -732,6 +732,7 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   // handled by the recursive walk below so nested blocks and loops use the
   // same rule.
   function recordDirectTopLevelBindings(statement: AstRecord): void {
+    if (statement.declare === true) return;
     const t = statement.type;
     switch (t) {
       case "ImportDeclaration":
@@ -774,7 +775,7 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         }
         return;
       case "VariableDeclaration":
-        if (node.kind !== "var") return;
+        if (node.kind !== "var" || node.declare === true) return;
         for (const declarator of nodeArray(node.declarations)) {
           if (!isAstRecord(declarator) || declarator.type !== "VariableDeclarator") continue;
           recordBinding(declarator.id);

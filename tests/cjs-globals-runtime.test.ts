@@ -171,14 +171,20 @@ exports.consistent = path.dirname(__filename) === __dirname;
     ),
     fs.writeFile(
       path.join(linkedCjsPackageDir, "package.json"),
-      JSON.stringify({ name: "linked-cjs-identity", type: "commonjs", main: "index.js" }),
+      JSON.stringify({ name: "linked-cjs-identity", type: "commonjs", main: "index.cjs" }),
     ),
     fs.writeFile(
-      path.join(linkedCjsPackageDir, "index.js"),
+      path.join(linkedCjsPackageDir, "index.cjs"),
       `const path = require("node:path");
 exports.dirname = __dirname;
 exports.types = typeof __filename + ":" + typeof __dirname;
 exports.consistent = path.dirname(__filename) === __dirname;
+`,
+    ),
+    fs.writeFile(
+      path.join(linkedCjsPackageDir, "client-safe.cjs"),
+      `// __dirname
+module.exports = { value: 1 };
 `,
     ),
   ]);
@@ -308,6 +314,14 @@ describe("bundled CJS globals on the hybrid Node development runtime", () => {
       "vinext-cjs-globals-node-dev-",
       ROOT_NODE_MODULES,
     ));
+    await fs.writeFile(
+      path.join(root, "pages/linked-cjs-client.tsx"),
+      `import linked from "../lib/node_modules/linked-cjs-identity/client-safe.cjs";
+export default function Page() {
+  return <p id="linked-client-value">{linked.value}</p>;
+}
+`,
+    );
     cacheDir = path.join(root, ".vite-cache");
     server = await createServer({
       root,
@@ -358,6 +372,13 @@ describe("bundled CJS globals on the hybrid Node development runtime", () => {
       path.join(path.dirname(canonicalRoot), "packages/linked-cjs-identity"),
     );
     expectFunctionalIdentity(html);
+    const linkedClientResponse = await fetch(`${baseUrl}/linked-cjs-client`);
+    expect(linkedClientResponse.status).toBe(200);
+    expect(await linkedClientResponse.text()).toContain('<p id="linked-client-value">1</p>');
+    const clientModule = await server?.environments.client.transformRequest(
+      "/lib/node_modules/linked-cjs-identity/client-safe.cjs",
+    );
+    expect(clientModule?.code).toContain("[vite-plugin-commonjs] export-runtime-S");
     const optimizedBundle = await readJavaScriptTree(cacheDir);
     expect(optimizedBundle).toContain("import.meta.dirname");
     expect(optimizedBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);

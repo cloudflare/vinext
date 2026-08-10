@@ -532,10 +532,11 @@ function skipCommonjsForLocalCjs(
   isBundledCommonJsDependency: (id: string) => boolean = () => false,
 ): boolean | undefined {
   const cleanId = stripViteModuleQuery(id);
+  if (transformBundledDependencies && isBundledCommonJsDependency(cleanId)) return true;
   if (/\.c[jt]s$/i.test(cleanId) && !/[\\/]node_modules[\\/]/.test(cleanId)) {
     return transformProjectLocalCommonJs;
   }
-  return transformBundledDependencies && isBundledCommonJsDependency(cleanId) ? true : undefined;
+  return undefined;
 }
 
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
@@ -1839,18 +1840,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       ) {
         return null;
       }
+      const isDev = this.environment.mode === "dev";
+      const isServer = this.environment.config.consumer === "server";
       const bundledDependency =
+        isDev &&
+        isServer &&
         (code.includes("__filename") || code.includes("__dirname")) &&
         importMetaUrlCapability.isBundledCommonJsDependencyId(id);
       const projectLocal =
         !bundledDependency && !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
       const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;
-      transformProjectLocalCommonJs = projectLocal && this.environment.mode === "dev";
-      transformBundledCommonJsDependencies =
-        bundledDependency &&
-        this.environment.mode === "dev" &&
-        this.environment.config.consumer === "server";
+      transformProjectLocalCommonJs = projectLocal && isDev;
+      transformBundledCommonJsDependencies = bundledDependency;
       try {
         // Do not await here: the filter is consulted synchronously while this
         // environment-scoped flag is set. The remaining async transform work
