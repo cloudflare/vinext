@@ -3,13 +3,14 @@ import {
   mergeViewport,
   postProcessMetadata,
   resolveModuleMetadata as _resolveModuleMetadata,
-  resolveModuleViewport,
+  resolveModuleViewport as _resolveModuleViewport,
   type Metadata,
   type MetadataMergeEntry,
   type ResolvedViewport,
   type Viewport,
 } from "vinext/shims/metadata";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { runWithPprFallbackShellMetadataResolution } from "vinext/shims/ppr-fallback-shell";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
@@ -32,10 +33,16 @@ async function resolveModuleMetadata(
   ...args: Parameters<typeof _resolveModuleMetadata>
 ): Promise<Metadata | null> {
   try {
-    return await _resolveModuleMetadata(...args);
+    return await runWithPprFallbackShellMetadataResolution(() => _resolveModuleMetadata(...args));
   } catch (error) {
     throw tagAppPageMetadataError(error);
   }
+}
+
+function resolveModuleViewport(
+  ...args: Parameters<typeof _resolveModuleViewport>
+): Promise<Viewport | null> {
+  return runWithPprFallbackShellMetadataResolution(() => _resolveModuleViewport(...args));
 }
 
 export type AppPageSearchParams = Record<string, string | string[]>;

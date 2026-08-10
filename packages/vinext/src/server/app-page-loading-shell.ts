@@ -1,4 +1,4 @@
-import { APP_PREFETCH_LOADING_SHELL_MARKER_KEY } from "./app-elements.js";
+import { AppElementsWire, APP_PREFETCH_LOADING_SHELL_MARKER_KEY } from "./app-elements.js";
 
 const PAGE_SUSPENSE_MARKER = "PageSuspense";
 const INVALID_PAGE_SHELL_MARKER = "NotSuspended";
@@ -148,9 +148,10 @@ export function hasCompletedPageSuspenseShell(bytes: Uint8Array): boolean {
   }
   if (suspenseTypeIds.size === 0) return false;
 
-  const selectedRoots = Object.entries(root).filter(
-    ([key]) => key.startsWith("page:") || key.startsWith("slot:children:"),
-  );
+  const selectedRoots = Object.entries(root).filter(([key]) => {
+    const parsed = AppElementsWire.parseElementKey(key);
+    return parsed?.kind === "page" || (parsed?.kind === "slot" && parsed.name === "children");
+  });
   if (
     selectedRoots.length === 0 ||
     selectedRoots.some(([, value]) => !isInspectableSelectedRoot(value, records))

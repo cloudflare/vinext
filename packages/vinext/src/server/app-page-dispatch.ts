@@ -364,6 +364,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   pprFallbackCacheShells?: readonly AppPagePprFallbackCacheShell[] | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    preserveDynamicMetadata?: boolean;
     routePattern: string;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
@@ -633,7 +634,11 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   const fallbackShell =
     options.pprFallbackShell ??
     (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-      ? { fallbackParamNames: [], routePattern: options.route.pattern }
+      ? {
+          fallbackParamNames: [],
+          preserveDynamicMetadata: true,
+          routePattern: options.route.pattern,
+        }
       : null);
   return fallbackShell ? await options.pprRuntime.run(fallbackShell, dispatch) : await dispatch();
 }
