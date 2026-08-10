@@ -1839,12 +1839,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       ) {
         return null;
       }
-      const projectLocal = !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
+      const bundledDependency =
+        (code.includes("__filename") || code.includes("__dirname")) &&
+        importMetaUrlCapability.isBundledCommonJsDependencyId(id);
+      const projectLocal =
+        !bundledDependency && !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
       const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;
       transformProjectLocalCommonJs = projectLocal && this.environment.mode === "dev";
       transformBundledCommonJsDependencies =
-        !projectLocal &&
+        bundledDependency &&
         this.environment.mode === "dev" &&
         this.environment.config.consumer === "server";
       try {
