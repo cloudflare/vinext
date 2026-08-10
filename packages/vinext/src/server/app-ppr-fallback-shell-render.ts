@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import {
+  beginPprFallbackShellCacheWarmup,
   isPprFallbackShellAbortError,
   preparePprFallbackShellFinalRender,
   waitForPprFallbackShellCacheReady,
@@ -28,6 +29,7 @@ export type WarmPprFallbackShellCachesOptions = {
 export async function warmPprFallbackShellCaches(
   options: WarmPprFallbackShellCachesOptions,
 ): Promise<void> {
+  beginPprFallbackShellCacheWarmup(options.state);
   let warmupError: unknown = null;
   const warmupStream = options.renderToReadableStream(options.element, {
     signal: options.state.abortController.signal,

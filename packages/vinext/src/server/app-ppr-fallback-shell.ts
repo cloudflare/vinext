@@ -45,6 +45,16 @@ export function stripAppPprDynamicFallbackShellMarker(html: string): string {
   return html.replace(PPR_DYNAMIC_FALLBACK_SHELL_MARKER, "");
 }
 
+export function hasAppPprPostponedReplayNodes(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "replayNodes" in value &&
+    Array.isArray(value.replayNodes) &&
+    value.replayNodes.length > 0
+  );
+}
+
 /**
  * Keep the reusable Fizz shell, but discard the build-time Flight bootstrap.
  * Resume embeds a fresh Flight stream for the concrete request; replaying the

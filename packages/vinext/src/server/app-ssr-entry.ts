@@ -58,6 +58,7 @@ import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import { hasAppPprPostponedReplayNodes } from "./app-ppr-fallback-shell.js";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
@@ -102,16 +103,6 @@ type ReactDomEdgeRenderer = {
   prerender: StaticPrerender;
   resume: SsrResume;
 };
-
-function hasReactPostponedReplayNodes(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "replayNodes" in value &&
-    Array.isArray(value.replayNodes) &&
-    value.replayNodes.length > 0
-  );
-}
 
 const VINEXT_SSR_POSTPONED_STATE_VERSION = 1;
 
@@ -456,7 +447,7 @@ export async function handleSsr(
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
     pprFallbackShellSignal?: AbortSignal;
-    /** Whether this fallback render observed reusable `use cache` work. */
+    /** Whether the cache warmup discovered reusable `use cache` work. */
     pprFallbackShellHasCacheTask?: boolean;
     /** Serialized React postponed state captured by a fallback-shell prerender. */
     postponed?: string;
@@ -739,7 +730,7 @@ export async function handleSsr(
           htmlStream = prerenderResult.prelude;
           if (
             options?.pprFallbackShellHasCacheTask === true &&
-            hasReactPostponedReplayNodes(prerenderResult.postponed)
+            hasAppPprPostponedReplayNodes(prerenderResult.postponed)
           ) {
             postponed = serializeSsrPostponedState(
               prerenderResult.postponed,

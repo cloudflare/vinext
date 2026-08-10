@@ -4,12 +4,18 @@ import {
   createAppPprFallbackShells,
   createAppPprPostponedStateMarker,
   extractAppPprPostponedState,
+  hasAppPprPostponedReplayNodes,
   isAppPprDynamicFallbackShellHtml,
   markAppPprDynamicFallbackShellHtml,
   rewriteAppPprFallbackShellHtmlNavigation,
 } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 
 describe("PPR postponed state transport", () => {
+  it("recognizes React postponed state with replayable Suspense nodes", () => {
+    expect(hasAppPprPostponedReplayNodes({ replayNodes: [["slug", "fallback"]] })).toBe(true);
+    expect(hasAppPprPostponedReplayNodes({ replayNodes: [] })).toBe(false);
+  });
+
   it("round trips React resume state without leaving it in the HTML artifact", () => {
     const postponed = JSON.stringify({ nextSegmentId: 3, replayNodes: [["slug", "✓"]] });
     const html = "<html><body>shell" + createAppPprPostponedStateMarker(postponed);

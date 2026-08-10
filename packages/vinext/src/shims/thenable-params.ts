@@ -222,7 +222,9 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     // diverge between the `get` and `getOwnPropertyDescriptor` traps).
     // Promise creation stays lazy so the dynamic-boundary side effects only
     // fire on first actual fallback-key access.
-    if (!fallbackParamNames || !fallbackShellState) return null;
+    if (!fallbackParamNames || !fallbackShellState || fallbackShellState.isCacheWarmupActive) {
+      return null;
+    }
     // `preparePprFallbackShellFinalRender` swaps in a fresh `AbortController`
     // on the warmup->final transition. Re-derive the hanging promise whenever
     // the live controller has changed so suspension always tracks the
@@ -280,7 +282,9 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   const handler: ProxyHandler<Promise<T>> = {
     get(target, prop, receiver) {
       if (isPromiseContinuation(prop)) {
-        if (fallbackParamNames) abortPprFallbackShellInputEncoding();
+        const shouldSuspendFallbackParams =
+          fallbackParamNames !== null && fallbackShellState?.isCacheWarmupActive !== true;
+        if (shouldSuspendFallbackParams) abortPprFallbackShellInputEncoding();
         // Cache Components fallback params match Next.js's `makeHangingParams`:
         // awaiting the params object itself must stay pending. Resolving first
         // and throwing a Suspense thenable from a later property read turns an
@@ -289,7 +293,7 @@ export function makeThenableParams<T extends Record<string, unknown>>(
         // abandoned prerender. Synchronous known-param reads still use the
         // resolved proxy below and remain available to the fallback shell.
         // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/params.ts
-        const continuationTarget = fallbackParamNames ? getFallbackShellPromise() : target;
+        const continuationTarget = shouldSuspendFallbackParams ? getFallbackShellPromise() : target;
         if (!continuationTarget) return undefined;
         const value = Reflect.get(continuationTarget, prop, continuationTarget);
         if (typeof value !== "function") return value;
@@ -301,7 +305,9 @@ export function makeThenableParams<T extends Record<string, unknown>>(
             observeAllParamKeys(observer, plain);
           }
           const result = Reflect.apply(value, continuationTarget, args);
-          return fallbackParamNames ? wrapFallbackContinuation(result as Promise<unknown>) : result;
+          return shouldSuspendFallbackParams
+            ? wrapFallbackContinuation(result as Promise<unknown>)
+            : result;
         };
       }
 

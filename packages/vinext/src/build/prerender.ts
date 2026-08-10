@@ -1550,11 +1550,11 @@ export async function prerenderApp({
         const extractedShell = isFallback
           ? extractAppPprPostponedState(htmlRender.html)
           : { html: htmlRender.html, postponed: undefined };
-        // A root-level suspension (no enclosing Suspense boundary), or a route
-        // with no reusable `use cache` work, cannot produce a useful fallback
-        // shell. The renderer deliberately omits postponed state for both;
-        // avoid writing an artifact that request-time dispatch could mistake
-        // for a complete static response.
+        // A root-level suspension without an enclosing Suspense boundary cannot
+        // produce a useful fallback shell. Avoid writing an artifact that
+        // request-time dispatch could mistake for a complete static response.
+        // Replay nodes are sufficient even when a hanging param prevents nested
+        // cache work from starting during the shell render.
         if (isFallback && !extractedShell.postponed) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }

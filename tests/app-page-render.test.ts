@@ -1355,6 +1355,31 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["an explicit ISR lifetime", 60],
+    ["speculative default-config capture", null],
+  ])("does not persist resumed fallback HTML with %s", async (_label, revalidateSeconds) => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      pprResume: {
+        fallbackParamNames: ["slug"],
+        html: "<html>fallback-shell",
+        postponed: "postponed-state",
+        resumeDataCache: [],
+      },
+      revalidateSeconds,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-nextjs-postponed")).toBe("1");
+    await expect(response.text()).resolves.toContain("fallback-shell");
+    expect(common.waitUntilPromises).toHaveLength(0);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("emits dynamic BFCache and completed runtime-prefetch stale times together", async () => {
     const common = createCommonOptions();
     const response = await renderAppPageLifecycle({

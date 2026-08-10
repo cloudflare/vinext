@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  beginPprFallbackShellCacheWarmup,
   createPprFallbackShellState,
   preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
   runWithPprFallbackShellInputEncodingAbort,
+  trackPprFallbackShellCacheTask,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
@@ -185,6 +187,28 @@ describe("makeThenableParams", () => {
     await rejected;
   });
 
+  it("resolves fallback params while warming cache work hidden behind them", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/blog/:slug",
+    });
+    beginPprFallbackShellCacheWarmup(state);
+    const controller = new AbortController();
+
+    const value = await runWithPprFallbackShellState(state, () =>
+      runWithPprFallbackShellInputEncodingAbort(controller, async () => {
+        const { slug } = await makeThenableParams({ slug: "[slug]" });
+        return trackPprFallbackShellCacheTask(async () => slug, "default");
+      }),
+    );
+
+    expect(value).toBe("[slug]");
+    expect(controller.signal.aborted).toBe(false);
+    expect(state.hasCacheTask).toBe(true);
+    expect(state.hasDynamicBoundary).toBe(false);
+    preparePprFallbackShellFinalRender(state);
+  });
+
   it("suspends only fallback params during cacheComponents fallback-shell prerendering", () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
@@ -356,7 +380,7 @@ describe("makeThenableParams", () => {
     state.abortController.abort();
   });
 
-  it("re-derives fallback suspension against the live controller after a phase transition", async () => {
+  it("starts fallback suspension only after cache warmup transitions to the final render", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
       routePattern: "/:locale/blog/:slug",
@@ -366,23 +390,15 @@ describe("makeThenableParams", () => {
       makeThenableParams({ locale: "en", slug: "[slug]" }),
     );
 
-    // Warmup access throws a hanging promise wired to the warmup controller.
-    let warmupPromise: Promise<unknown> | undefined;
-    try {
-      Reflect.get(params, "slug");
-    } catch (error) {
-      warmupPromise = error as Promise<unknown>;
-    }
-    expect(warmupPromise).toBeDefined();
+    beginPprFallbackShellCacheWarmup(state);
+    expect(Reflect.get(params, "slug")).toBe("[slug]");
     const warmupController = state.abortController;
 
     // Transition to the final render — this swaps in a fresh AbortController.
     preparePprFallbackShellFinalRender(state);
     expect(state.abortController).not.toBe(warmupController);
 
-    // Final-phase access must throw a *new* hanging promise wired to the live
-    // (final) controller, not the memoized warmup promise bound to the dead
-    // signal the lifecycle will never abort again.
+    // Final-phase access throws a hanging promise wired to the live controller.
     let finalPromise: Promise<unknown> | undefined;
     try {
       Reflect.get(params, "slug");
@@ -390,16 +406,13 @@ describe("makeThenableParams", () => {
       finalPromise = error as Promise<unknown>;
     }
     expect(finalPromise).toBeDefined();
-    expect(finalPromise).not.toBe(warmupPromise);
 
     // Aborting the live controller rejects the final-phase suspension.
     const rejectedAssertion = expect(finalPromise).rejects.toThrow();
     state.abortController.abort();
     await rejectedAssertion;
 
-    // Settle the warmup promise too so it does not leak as unhandled.
     warmupController.abort();
-    await (warmupPromise as Promise<unknown>).catch(() => {});
   });
 
   it("Object.keys(params) does not mark dynamic boundary before fallback param access", () => {

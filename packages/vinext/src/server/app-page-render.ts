@@ -1161,7 +1161,11 @@ export async function renderAppPageLifecycle(
   }
 
   // Eagerly read values that must be captured before the stream is consumed.
-  let dynamicUsedDuringRender = consumeRenderDynamicUsage();
+  // Completing a postponed fallback shell is inherently request-time work.
+  // Treat it as dynamic even when the resumed subtree does not call a dynamic
+  // request API, otherwise the completed HTML/RSC pair can be admitted to ISR
+  // and replay dynamic holes from the first concrete request.
+  let dynamicUsedDuringRender = options.pprResume !== undefined || consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
   const stopSpeculativeMetadataWaitOnDynamicUsage =
     options.isSpeculativePrerender === true && shouldReadRequestCacheLifeForPrerender

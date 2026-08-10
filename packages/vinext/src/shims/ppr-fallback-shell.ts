@@ -12,6 +12,7 @@ export type PprFallbackShellState = {
   fallbackParamNames: ReadonlySet<string>;
   hasCacheTask: boolean;
   hasDynamicBoundary: boolean;
+  isCacheWarmupActive: boolean;
   isFinalRenderStarted: boolean;
   isAbortScheduled: boolean;
   pendingAbortCleanup: (() => void) | null;
@@ -155,6 +156,7 @@ export function createPprFallbackShellState(
     fallbackParamNames: new Set(options.fallbackParamNames),
     hasCacheTask: false,
     hasDynamicBoundary: false,
+    isCacheWarmupActive: false,
     isFinalRenderStarted: false,
     isAbortScheduled: false,
     pendingAbortCleanup: null,
@@ -296,6 +298,12 @@ export function waitForPprFallbackShellCacheReady(state: PprFallbackShellState):
   });
 }
 
+export function beginPprFallbackShellCacheWarmup(state: PprFallbackShellState): void {
+  if (state.phase === "warmup") {
+    state.isCacheWarmupActive = true;
+  }
+}
+
 export function preparePprFallbackShellFinalRender(state: PprFallbackShellState): void {
   cancelPendingCacheReady(state);
   if (state.pendingAbortCleanup !== null) {
@@ -309,6 +317,7 @@ export function preparePprFallbackShellFinalRender(state: PprFallbackShellState)
   state.cacheEpoch++;
   state.cacheReadyResolvers.length = 0;
   state.hasDynamicBoundary = false;
+  state.isCacheWarmupActive = false;
   state.isFinalRenderStarted = false;
   state.isAbortScheduled = false;
   state.pendingCacheTasks = 0;
