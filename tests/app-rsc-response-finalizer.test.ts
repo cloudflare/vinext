@@ -4,6 +4,7 @@ import {
   finalizeAppRscResponse,
   markAppRscResponseConfigHeadersApplied,
 } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { VINEXT_RSC_PARTIAL_SHELL_HEADER } from "../packages/vinext/src/server/headers.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
@@ -52,6 +53,39 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-route-value")).toBe("target");
+  });
+
+  it("locks partial instant shells to no-store after middleware and config headers", async () => {
+    const response = new Response("partial flight", {
+      headers: {
+        [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+        "cache-control": "public, max-age=3600",
+        "cdn-cache-control": "max-age=3600",
+        "cloudflare-cdn-cache-control": "max-age=3600",
+        "cache-tag": "unsafe-partial-shell",
+      },
+    });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/instant"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/instant",
+          headers: [
+            { key: "cache-control", value: "public, s-maxage=86400" },
+            { key: "cdn-cache-control", value: "max-age=86400" },
+          ],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER)).toBe("1");
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-tag")).toBeNull();
   });
 
   it("adds the App Router RSC vary header when no config headers are configured", async () => {

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
+import { readFileSync } from "node:fs";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_LAYOUT_FLAGS_KEY,
@@ -48,6 +49,11 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  suspendInstantPrefetchConnection,
+  trackInstantPrefetchShellCacheTask,
+} from "../packages/vinext/src/shims/instant-prefetch-shell.js";
 
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
   if (!isAppElementsRecord(value)) {
@@ -408,6 +414,59 @@ describe("form state rendering", () => {
 });
 
 describe("app page render lifecycle", () => {
+  it("loads the instant-shell runtime only inside the instant render branch", () => {
+    const source = readFileSync(
+      new URL("../packages/vinext/src/server/app-page-render.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).not.toMatch(/from\s+["']vinext\/shims\/instant-prefetch-shell["']/);
+    expect(source).toContain('await import("vinext/shims/instant-prefetch-shell")');
+  });
+
+  it("waits for cold private cache tasks before aborting a runtime instant shell", async () => {
+    const common = createCommonOptions();
+    const cacheFill = createDeferred();
+    let renderCount = 0;
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      renderCount++;
+      if (renderCount === 1) {
+        void trackInstantPrefetchShellCacheTask(() => cacheFill.promise, "private");
+      }
+      void suspendInstantPrefetchConnection();
+
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => {
+          resolve({ prelude: createStream(["instant-shell"]) });
+        };
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      prerenderToReadableStream,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+    });
+    let responseSettled = false;
+    void responsePromise.then(() => {
+      responseSettled = true;
+    });
+
+    await vi.waitFor(() => expect(prerenderToReadableStream).toHaveBeenCalledTimes(1));
+    expect(renderCount).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(responseSettled).toBe(false);
+    cacheFill.resolve();
+
+    const response = await responsePromise;
+    expect(prerenderToReadableStream).toHaveBeenCalledTimes(1);
+    await expect(response.text()).resolves.toBe("instant-shell");
+  });
+
   it("returns pre-render special responses before starting the render stream", async () => {
     const common = createCommonOptions();
 

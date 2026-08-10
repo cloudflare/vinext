@@ -47,6 +47,8 @@ import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../server/headers.js";
 import { extractRscCompletionMetadata } from "../server/rsc-completion-metadata.js";
@@ -63,7 +65,10 @@ import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
-import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  type AppRscRenderMode,
+} from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
@@ -323,7 +328,7 @@ export type PrefetchOptions = {
   onInvalidate?: () => void;
 };
 
-export type PrefetchCacheKind = "loading-shell" | "navigation" | "route-tree";
+export type PrefetchCacheKind = "instant-shell" | "loading-shell" | "navigation" | "route-tree";
 
 export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
@@ -331,7 +336,9 @@ export type PrefetchCacheEntry = {
   invalidationTimer?: ReturnType<typeof setTimeout>;
   mountedSlotsHeader?: string | null;
   onInvalidateCallbacks?: Set<() => void>;
+  instantShell?: boolean;
   optimisticRouteShell?: boolean;
+  partialSuspenseShell?: boolean;
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
   cacheKeys?: Set<string>;
@@ -955,7 +962,12 @@ export function discardLearningOnlyPrefetchCacheEntry(
   // Map this loop is still iterating.
   const superseded: Array<[string, PrefetchCacheEntry]> = [];
   for (const [cacheKey, entry] of cache) {
-    if (entry.cacheForNavigation !== false || entry.prefetchKind !== "navigation") continue;
+    if (
+      entry.cacheForNavigation !== false ||
+      (entry.prefetchKind !== "navigation" && entry.prefetchKind !== "instant-shell")
+    ) {
+      continue;
+    }
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
@@ -1019,14 +1031,16 @@ function attachPrefetchInvalidationToEntry(
   }
 }
 
-function attachPrefetchInvalidationCallback(
+export function attachPrefetchInvalidationCallback(
   cacheKey: string,
   onInvalidate: (() => void) | undefined,
-): void {
-  if (onInvalidate === undefined) return;
+  expectedEntry?: PrefetchCacheEntry,
+): boolean {
+  if (onInvalidate === undefined) return false;
   const entry = getPrefetchCache().get(cacheKey);
-  if (!entry) return;
+  if (!entry || (expectedEntry !== undefined && entry !== expectedEntry)) return false;
   attachPrefetchInvalidationToEntry(cacheKey, entry, onInvalidate);
+  return true;
 }
 
 export function invalidatePrefetchCache(): void {
@@ -1319,6 +1333,7 @@ export function prefetchRscResponse(
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
     honorDynamicStaleTime?: boolean;
+    instantShell?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1337,12 +1352,17 @@ export function prefetchRscResponse(
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: behavior.cacheForNavigation ?? true,
     cacheKeys: new Set([cacheKey]),
+    instantShell: behavior.instantShell === true,
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
     prefetchKind:
       behavior.prefetchKind ??
-      (behavior.optimisticRouteShell === true ? "loading-shell" : "navigation"),
+      (behavior.instantShell === true
+        ? "instant-shell"
+        : behavior.optimisticRouteShell === true
+          ? "loading-shell"
+          : "navigation"),
     searchAgnosticShell: behavior.searchAgnosticShell === true,
     timestamp: now,
   };
@@ -1352,6 +1372,10 @@ export function prefetchRscResponse(
   entry.pending = fetchPromise
     .then(async (response) => {
       if (response.ok) {
+        if (response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER) === "1") {
+          entry.cacheForNavigation = false;
+          entry.partialSuspenseShell = true;
+        }
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
         const previousSize = getPrefetchCacheEntrySize(entry);
@@ -2710,9 +2734,12 @@ const _appRouter: AppRouterInstance = {
         await import("./internal/app-route-prefetch-policy.js");
       const policy =
         kind === "full"
-          ? resolveFullAppRoutePrefetch()
+          ? resolveFullAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref)
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
+      if (policy.prefetchInstantShell) {
+        headers.set(VINEXT_RSC_RENDER_MODE_HEADER, APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL);
+      }
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.
       if (reusable && kind === "full") {
@@ -2788,8 +2815,9 @@ const _appRouter: AppRouterInstance = {
             }
           : {
               cacheForNavigation: false,
-              optimisticRouteShell: true,
-              prefetchKind: "navigation",
+              instantShell: policy.prefetchInstantShell,
+              optimisticRouteShell: !policy.prefetchInstantShell,
+              prefetchKind: policy.prefetchInstantShell ? "instant-shell" : "navigation",
             },
       );
     })()

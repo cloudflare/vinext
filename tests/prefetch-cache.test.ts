@@ -19,6 +19,7 @@ import {
   VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 
@@ -394,6 +395,35 @@ describe("prefetch cache eviction", () => {
     expect(hasPrefetchCacheEntryForNavigation("/dashboard.rsc", null, null)).toBe(false);
     expect(consumePrefetchResponse("/dashboard.rsc", null, null)).toBeNull();
     expect(getPrefetchCache().has(routeTreeUrl)).toBe(true);
+  });
+
+  it("keeps instant partial shells for optimistic learning without direct reuse", async () => {
+    const rscUrl = "/instant-shell.rsc";
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("instant shell", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { instantShell: true },
+    );
+
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+
+    expect(getPrefetchCache().get(rscUrl)).toMatchObject({
+      cacheForNavigation: false,
+      instantShell: true,
+      partialSuspenseShell: true,
+      prefetchKind: "instant-shell",
+    });
+    expect(consumePrefetchResponse(rscUrl)).toBeNull();
   });
 
   it("derives the interception context from the current pathname", () => {

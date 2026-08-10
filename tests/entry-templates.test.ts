@@ -414,6 +414,19 @@ describe("App Router generated manifest construction", () => {
     ).toBe(false);
   });
 
+  it("advertises runtime instant routes to the browser prefetch policy", () => {
+    expect(
+      toLinkPrefetchRoute({
+        ...minimalAppRoutes[1],
+        hasRuntimeInstant: true,
+      }),
+    ).toMatchObject({
+      canPrefetchLoadingShell: false,
+      hasRuntimeInstant: true,
+      patternParts: ["about"],
+    });
+  });
+
   it("does not advertise an already-shared root loading boundary for nested static routes", () => {
     const route = {
       ...minimalAppRoutes[0],

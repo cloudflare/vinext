@@ -1,7 +1,7 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { VINEXT_RSC_PARTIAL_SHELL_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -29,6 +29,19 @@ type FinalizeAppRscResponseOptions = {
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
+
+function lockPartialShellCacheHeaders(response: Response, isPartialShell: boolean): void {
+  if (!isPartialShell) {
+    response.headers.delete(VINEXT_RSC_PARTIAL_SHELL_HEADER);
+    return;
+  }
+
+  response.headers.set(VINEXT_RSC_PARTIAL_SHELL_HEADER, "1");
+  applyCdnResponseHeaders(response.headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+  response.headers.delete("CDN-Cache-Control");
+  response.headers.delete("Cloudflare-CDN-Cache-Control");
+  response.headers.delete("Cache-Tag");
+}
 
 /** Mark a response whose final target pipeline has already applied config headers. */
 export function markAppRscResponseConfigHeadersApplied(response: Response): Response {
@@ -83,6 +96,7 @@ export async function finalizeAppRscResponse(
   if (response.status >= 300 && response.status < 400) {
     return response;
   }
+  const isPartialShell = response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER) === "1";
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
     const varyHeader = response.headers.get("Vary");
@@ -105,6 +119,7 @@ export async function finalizeAppRscResponse(
   }
 
   if (configHeadersAlreadyApplied.has(response)) {
+    lockPartialShellCacheHeaders(response, isPartialShell);
     return response;
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
@@ -115,6 +130,8 @@ export async function finalizeAppRscResponse(
   if (response.status === 405 && response.headers.get("Allow") === "GET, HEAD") {
     sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");
   }
+
+  lockPartialShellCacheHeaders(response, isPartialShell);
 
   return response;
 }

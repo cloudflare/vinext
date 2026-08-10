@@ -115,6 +115,7 @@ export function toLinkPrefetchRoute(
 ): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
+    ...(route.hasRuntimeInstant ? { hasRuntimeInstant: true } : {}),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),

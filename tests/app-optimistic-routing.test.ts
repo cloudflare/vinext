@@ -283,6 +283,58 @@ describe("App Router optimistic routing", () => {
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
   });
 
+  it("preserves completed instant-shell page content only for the exact href", () => {
+    const routeManifest = blogManifest();
+    const elements = createBlogElements();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc?_rsc=instant",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected instant route template");
+
+    expect(template.concreteHrefKey).toBe("/blog/post-1");
+    expect(template.pageElementIds).toEqual([]);
+    const templates = new Map([
+      [
+        getOptimisticRouteTemplateKey({
+          concreteHrefKey: template.concreteHrefKey,
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          routeId: template.routeId,
+        }),
+        template,
+      ],
+    ]);
+
+    const exact = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: "/blog/post-1",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+      templates,
+    });
+    expect(exact?.elements[AppElementsWire.encodePageId("/blog/post-1", null)]).toEqual(
+      elements[AppElementsWire.encodePageId("/blog/post-1", null)],
+    );
+    expect(
+      resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: "/blog/post-2",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      }),
+    ).toBeNull();
+  });
+
   it("includes active parallel slot params in optimistic navigation payloads", () => {
     // Mirrors the immediate pre-dynamic-render assertion in Next.js:
     // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts

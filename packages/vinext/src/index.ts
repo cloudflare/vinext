@@ -26,6 +26,7 @@ import {
   invalidateAppRouteCache,
   matchAppRoute,
 } from "./routing/app-router.js";
+import { isRuntimeInstantConfigDependency } from "./routing/app-route-graph.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import {
   buildViteResolveExtensions,
@@ -4405,14 +4406,20 @@ export const loadServerActionClient = ${
           }
         }
 
+        function invalidateAppBrowserEntry() {
+          for (const env of Object.values(server.environments)) {
+            const mod = env.moduleGraph.getModuleById(RESOLVED_APP_BROWSER_ENTRY);
+            if (mod) env.moduleGraph.invalidateModule(mod);
+          }
+        }
+
         function invalidateHybridClientEntries() {
           if (!hasAppDir || !hasPagesDir) return;
           for (const env of Object.values(server.environments)) {
-            for (const id of [RESOLVED_CLIENT_ENTRY, RESOLVED_APP_BROWSER_ENTRY]) {
-              const mod = env.moduleGraph.getModuleById(id);
-              if (mod) env.moduleGraph.invalidateModule(mod);
-            }
+            const mod = env.moduleGraph.getModuleById(RESOLVED_CLIENT_ENTRY);
+            if (mod) env.moduleGraph.invalidateModule(mod);
           }
+          invalidateAppBrowserEntry();
           server.ws.send({ type: "full-reload" });
         }
 
@@ -4637,6 +4644,19 @@ export const loadServerActionClient = ${
             (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
             invalidatePagesClientAssetsModule();
+          }
+          if (
+            hasAppDir &&
+            ((toSlash(filePath).startsWith(`${appDir}/`) &&
+              (fileMatcher.isPageFile(filePath) || SCRIPT_IMPORT_RE.test(filePath))) ||
+              isRuntimeInstantConfigDependency(filePath))
+          ) {
+            // Route metadata such as `unstable_instant` is content-derived and
+            // may also be supplied by a local re-export. Rebuild both route
+            // entries when any source module under app/ changes so dev
+            // prefetch policy cannot retain the old classification.
+            invalidateAppRoutingModules();
+            invalidateAppBrowserEntry();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {

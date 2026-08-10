@@ -3700,6 +3700,57 @@ describe("Virtual server entry generation", () => {
     }
   });
 
+  it("refreshes runtime instant route metadata after external config changes", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-instant-hmr-"));
+    const appDir = path.join(tmpDir, "app");
+    const pagePath = path.join(appDir, "page.tsx");
+    const configPath = path.join(tmpDir, "instant-config.ts");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(appDir, "layout.tsx"),
+      "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+    );
+    fs.writeFileSync(
+      pagePath,
+      'export { unstable_instant } from "../instant-config";\n' +
+        "export default function Page() { return null; }\n",
+    );
+    fs.writeFileSync(configPath, 'export const unstable_instant = { prefetch: "static" };\n');
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    try {
+      const resolved = await testServer.pluginContainer.resolveId(
+        "virtual:vinext-app-browser-entry",
+      );
+      expect(resolved).toBeTruthy();
+      const loadCode = async () => {
+        const loaded = await testServer.pluginContainer.load(resolved!.id);
+        return typeof loaded === "string" ? loaded : ((loaded as any)?.code ?? "");
+      };
+      expect(await loadCode()).not.toContain('"hasRuntimeInstant":true');
+
+      fs.writeFileSync(
+        configPath,
+        'export const unstable_instant = { prefetch: "runtime" };\n' +
+          'export const marker = "updated";\n',
+      );
+      testServer.watcher.emit("change", configPath);
+
+      expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("client entry uses Next.js bracket format for dynamic route keys", async () => {
     // The client entry generates a pageLoaders map keyed by route pattern.
     // These keys MUST match __NEXT_DATA__.page (which uses Next.js bracket

@@ -396,6 +396,35 @@ describe("Link App Router prefetch mode", () => {
       }
     }
   });
+
+  it("selects an optimistic instant shell for runtime unstable_instant routes", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: { href: "http://localhost/", origin: "http://localhost" },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        {
+          canPrefetchLoadingShell: false,
+          hasRuntimeInstant: true,
+          isDynamic: false,
+          patternParts: ["instant"],
+        },
+      ],
+    };
+
+    try {
+      expect(resolveAutoAppRoutePrefetch("/instant")).toEqual({
+        cacheForNavigation: false,
+        fallbackTtl: "dynamic",
+        honorDynamicStaleTime: true,
+        prefetchInstantShell: true,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+    } finally {
+      if (originalWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = originalWindow;
+    }
+  });
 });
 
 // ─── resolveHref (internal helper, tested via component output) ─────────

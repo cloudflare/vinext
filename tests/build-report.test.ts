@@ -10,8 +10,10 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import {
+  findNamedExternalReexport,
   hasExportedName,
   hasNamedExport,
+  hasNamedExportObjectStringProperty,
   extractExportConstString,
   extractExportConstNumber,
   extractGetStaticPropsRevalidate,
@@ -105,6 +107,62 @@ describe("hasNamedExport", () => {
 export function getServerSideProps() {}
 */`;
     expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
+  });
+});
+
+describe("hasNamedExportObjectStringProperty", () => {
+  it("recognizes direct and locally aliased runtime instant configs", () => {
+    expect(
+      hasNamedExportObjectStringProperty(
+        "export const unstable_instant = { prefetch: 'runtime', samples: [] };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
+    expect(
+      hasNamedExportObjectStringProperty(
+        "const config = { prefetch: 'runtime' }; export { config as unstable_instant };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
+    expect(
+      hasNamedExportObjectStringProperty(
+        "const base = { prefetch: 'runtime' }; const config = base; export { config as unstable_instant };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not classify static, false, or external runtime values", () => {
+    for (const source of [
+      "export const unstable_instant = { prefetch: 'static' };",
+      "export const unstable_instant = false;",
+      "export { config as unstable_instant } from './config';",
+    ]) {
+      expect(
+        hasNamedExportObjectStringProperty(source, "unstable_instant", "prefetch", "runtime"),
+      ).toBe(false);
+    }
+  });
+
+  it("describes external named re-exports without executing their modules", () => {
+    expect(
+      findNamedExternalReexport(
+        "export { config as unstable_instant } from './config';",
+        "unstable_instant",
+      ),
+    ).toEqual({ importedName: "config", source: "./config" });
+    expect(
+      findNamedExternalReexport(
+        "export { unstable_instant } from './config.js';",
+        "unstable_instant",
+      ),
+    ).toEqual({ importedName: "unstable_instant", source: "./config.js" });
   });
 });
 

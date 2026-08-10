@@ -120,6 +120,67 @@ async function createSemanticIdsFixture(appDir: string): Promise<void> {
 }
 
 describe("App Router route graph builder", () => {
+  it("propagates runtime unstable_instant from pages, layouts, and active slots", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(
+        appDir,
+        "page-instant/page.tsx",
+        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(
+        appDir,
+        "layout-instant/layout.tsx",
+        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_LAYOUT}`,
+      );
+      await writeAppFile(appDir, "layout-instant/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "slot-instant/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "slot-instant/default.tsx", EMPTY_PAGE);
+      await writeAppFile(
+        appDir,
+        "slot-instant/@team/page.tsx",
+        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(
+        appDir,
+        "static-instant/page.tsx",
+        `export const unstable_instant = { prefetch: "static" };\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(
+        appDir,
+        "reexported-instant/config.ts",
+        'export const config = { prefetch: "runtime" };\n',
+      );
+      await writeAppFile(
+        appDir,
+        "reexported-instant/page.tsx",
+        `export { config as unstable_instant } from "./config";\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(
+        appDir,
+        "indirect-instant/page.tsx",
+        `const base = { prefetch: "runtime" }; const config = base; export { config as unstable_instant };\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(
+        appDir,
+        "aliased-reexport-instant/page.tsx",
+        `export { unstable_instant } from "@/instant-config";\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(appDir, "plain/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      expect(findRoute(graph.routes, "/page-instant").hasRuntimeInstant).toBe(true);
+      expect(findRoute(graph.routes, "/layout-instant").hasRuntimeInstant).toBe(true);
+      expect(findRoute(graph.routes, "/slot-instant").hasRuntimeInstant).toBe(true);
+      expect(findRoute(graph.routes, "/reexported-instant").hasRuntimeInstant).toBe(true);
+      expect(findRoute(graph.routes, "/indirect-instant").hasRuntimeInstant).toBe(true);
+      expect(findRoute(graph.routes, "/aliased-reexport-instant").hasRuntimeInstant).toBe(true);
+      expect(findRoute(graph.routes, "/static-instant").hasRuntimeInstant).toBe(false);
+      expect(findRoute(graph.routes, "/plain").hasRuntimeInstant).toBe(false);
+    });
+  });
+
   it("materializes pages, handlers, layouts, and inherited parallel slots", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);

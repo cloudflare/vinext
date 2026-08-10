@@ -50,6 +50,7 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
+import { trackInstantPrefetchShellCacheTask } from "./instant-prefetch-shell.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 
@@ -451,6 +452,13 @@ export type RegisterCachedFunctionOptions = {
   decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
 };
 
+function trackCacheTaskForShells<T>(fn: () => Promise<T>, cacheVariant: string): Promise<T> {
+  return trackInstantPrefetchShellCacheTask(
+    () => trackPprFallbackShellCacheTask(fn, cacheVariant),
+    cacheVariant,
+  );
+}
+
 /**
  * Register a function as a cached function. This is called by the Vite
  * transform for each "use cache" function.
@@ -478,7 +486,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
   const cachedFn = (...args: TArgs): Promise<TResult> =>
-    trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+    trackCacheTaskForShells(async (): Promise<TResult> => {
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;

@@ -145,6 +145,95 @@ export function hasNamedExport(code: string, name: string): boolean {
   return hasNamedExportInProgram(program, name);
 }
 
+/**
+ * Returns whether a named export is statically known to use an object property
+ * with the requested string value. Local aliases are followed, while external
+ * re-exports remain unknown because evaluating user modules during route scans
+ * would run application code.
+ */
+export function hasNamedExportObjectStringProperty(
+  code: string,
+  name: string,
+  property: string,
+  expectedValue: string,
+): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+
+  const localName = findExportedLocalNameInProgram(program, name);
+  if (localName === null) return false;
+  const initializer =
+    findExportedConstInitializerInProgram(program, name) ??
+    findLocalConstInitializerInProgram(program, localName);
+  if (initializer === null) return false;
+
+  const expression = resolveLocalConstExpression(program, initializer, new Set());
+  if (expression.type !== "ObjectExpression") return false;
+  for (const candidate of expression.properties) {
+    if (
+      candidate.type !== "Property" ||
+      candidate.computed ||
+      propertyKeyName(candidate.key) !== property
+    ) {
+      continue;
+    }
+    const value = unwrapStaticExpression(candidate.value);
+    return value.type === "Literal" && value.value === expectedValue;
+  }
+  return false;
+}
+
+export type NamedExternalReexport = {
+  importedName: string;
+  source: string;
+};
+
+/** Returns the local module specifier that supplies a named re-export. */
+export function findNamedExternalReexport(
+  code: string,
+  name: string,
+): NamedExternalReexport | null {
+  const program = parseRouteModule(code);
+  if (!program) return null;
+
+  for (const node of program.body) {
+    if (
+      node.type !== "ExportNamedDeclaration" ||
+      node.exportKind === "type" ||
+      node.source === null ||
+      typeof node.source.value !== "string"
+    ) {
+      continue;
+    }
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind !== "type" && moduleExportNameValue(specifier.exported) === name) {
+        const importedName = moduleExportNameValue(specifier.local);
+        if (importedName !== null) {
+          return { importedName, source: node.source.value };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function findExportedLocalNameInProgram(program: Program, name: string): string | null {
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration" || node.exportKind === "type") continue;
+    if (declarationHasBindingName(node.declaration, name)) return name;
+
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.exported) === name) {
+        return moduleExportNameValue(specifier.local);
+      }
+    }
+  }
+
+  return null;
+}
+
 /** Returns true when Next.js' analyzer recognizes the requested export name. */
 export function hasExportedName(code: string, name: string): boolean {
   const program = parseRouteModule(code);
@@ -191,6 +280,20 @@ function unwrapStaticExpression(expression: Expression): Expression {
   return current;
 }
 
+function resolveLocalConstExpression(
+  program: Program,
+  expression: Expression,
+  visited: Set<string>,
+): Expression {
+  const unwrapped = unwrapStaticExpression(expression);
+  if (unwrapped.type !== "Identifier" || visited.has(unwrapped.name)) return unwrapped;
+
+  const initializer = findLocalConstInitializerInProgram(program, unwrapped.name);
+  if (initializer === null) return unwrapped;
+  visited.add(unwrapped.name);
+  return resolveLocalConstExpression(program, initializer, visited);
+}
+
 function findExportedConstInitializer(code: string, name: string): Expression | null {
   const program = parseRouteModule(code);
   if (!program) return null;
@@ -207,6 +310,17 @@ function findExportedConstInitializerInProgram(program: Program, name: string): 
       if (bindingName(declarator.id) === name) {
         return declarator.init;
       }
+    }
+  }
+
+  return null;
+}
+
+function findLocalConstInitializerInProgram(program: Program, name: string): Expression | null {
+  for (const node of program.body) {
+    if (node.type !== "VariableDeclaration" || node.kind !== "const") continue;
+    for (const declarator of node.declarations) {
+      if (bindingName(declarator.id) === name) return declarator.init;
     }
   }
 
