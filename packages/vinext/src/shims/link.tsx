@@ -540,10 +540,12 @@ function prefetchUrl(
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const requiresRouteTreePrefetch = autoPrefetch.requiresRouteTreePrefetch === true;
         const hasPartialPrerender =
           String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
           mode === "auto" &&
           autoPrefetch.cacheForNavigation &&
+          !requiresRouteTreePrefetch &&
           (await hasPartialPrerenderForRoute(prefetchPolicyHref));
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
@@ -573,7 +575,6 @@ function prefetchUrl(
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        const requiresRouteTreePrefetch = autoPrefetch.requiresRouteTreePrefetch === true;
         if (
           (__prefetchInlining || requiresRouteTreePrefetch) &&
           mode === "auto" &&
