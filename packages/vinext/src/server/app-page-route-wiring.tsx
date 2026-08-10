@@ -36,9 +36,10 @@ import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
 import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
-import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
+import type { ThenableParamsObserver, ThenableParamsOptions } from "vinext/shims/thenable-params";
 import {
   createAppRenderDependency,
+  isClientReferenceAppComponent,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
@@ -55,6 +56,7 @@ import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
@@ -248,7 +250,11 @@ type BuildAppPageRouteElementOptions<
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
 
-type MakeThenableParams = (params: AppPageParams, observer?: ThenableParamsObserver) => unknown;
+type MakeThenableParams = (
+  params: AppPageParams,
+  observer?: ThenableParamsObserver,
+  options?: ThenableParamsOptions,
+) => unknown;
 
 type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
@@ -813,6 +819,17 @@ export function buildAppPageElements<
   const interceptionContext =
     renderIdentity?.interceptionContext ?? options.interceptionContext ?? null;
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
+  const makeComponentParams = (
+    component: AppPageComponent,
+    params: AppPageParams,
+    observer?: ThenableParamsObserver,
+  ): unknown =>
+    options.makeThenableParams(params, observer, {
+      suspendStaticInstantShell: !(
+        renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL &&
+        isClientReferenceAppComponent(component)
+      ),
+    });
   const routeSegments = options.route.routeSegments ?? [];
   const routeId =
     renderIdentity?.routeId ??
@@ -1156,7 +1173,8 @@ export function buildAppPageElements<
     });
 
     const layoutProps: Record<string, unknown> = {
-      params: options.makeThenableParams(
+      params: makeComponentParams(
+        layoutComponent,
         layoutParams,
         options.layoutParamAccess?.createThenableParamsObserver(layoutEntry.id),
       ),
@@ -1270,7 +1288,7 @@ export function buildAppPageElements<
       )!;
       slotElement = <PrefetchSlotLoadingComponent />;
     } else {
-      const slotThenableParams = options.makeThenableParams(slotParams);
+      const slotThenableParams = makeComponentParams(slotComponent!, slotParams);
       const slotProps: Record<string, unknown> = {
         params: slotThenableParams,
       };
@@ -1413,7 +1431,7 @@ export function buildAppPageElements<
         const layoutEntry = layoutEntriesAtPosition[layoutIndex];
         const LayoutComponent = layoutEntry.component;
         slotElement = (
-          <LayoutComponent params={options.makeThenableParams(layoutEntry.params)}>
+          <LayoutComponent params={makeComponentParams(LayoutComponent, layoutEntry.params)}>
             {slotElement}
           </LayoutComponent>
         );

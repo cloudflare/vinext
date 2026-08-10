@@ -417,7 +417,7 @@ describe("Link App Router prefetch mode", () => {
         cacheForNavigation: false,
         fallbackTtl: "dynamic",
         honorDynamicStaleTime: true,
-        prefetchInstantShell: true,
+        prefetchInstantShell: "runtime",
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
@@ -446,7 +446,7 @@ describe("Link App Router prefetch mode", () => {
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
-        prefetchInstantShell: true,
+        prefetchInstantShell: "static",
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });

@@ -4259,6 +4259,23 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("suspends draftMode() in static instant shells", async () => {
+    const { draftMode, headersContextFromRequest, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createInstantPrefetchShellState, runWithInstantPrefetchShellState } =
+      await import("../packages/vinext/src/shims/instant-prefetch-shell.js");
+    const context = headersContextFromRequest(new Request("https://example.test/draft"));
+    const shellState = createInstantPrefetchShellState("/draft", "static");
+
+    const pending = runWithHeadersContext(context, () =>
+      runWithInstantPrefetchShellState(shellState, () => draftMode()),
+    );
+    expect(shellState.hasDynamicBoundary).toBe(true);
+    const settled = expect(pending).rejects.toThrow();
+    shellState.dynamicAbortController.abort();
+    await settled;
+  });
+
   it("cookies().toString() URL-encodes request cookie values", async () => {
     const { setHeadersContext, cookies } = await import("../packages/vinext/src/shims/headers.js");
     setHeadersContext({
@@ -6734,6 +6751,82 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("does not deadlock a static instant shell when a public cache reads draftMode()", async () => {
+    // Regression coverage for Next.js:
+    // test/e2e/app-dir/prefetch-true-instant/prefetch-true-instant.test.ts
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { draftMode, headersContextFromRequest, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createInstantPrefetchShellState, runWithInstantPrefetchShellState } =
+      await import("../packages/vinext/src/shims/instant-prefetch-shell.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async () => (await draftMode()).isEnabled,
+      "test:instant-static-draft-cache",
+    );
+    const context = headersContextFromRequest(new Request("https://example.test/draft"));
+    const shellState = createInstantPrefetchShellState("/draft", "static");
+    const pending = runWithHeadersContext(context, () =>
+      runWithInstantPrefetchShellState(shellState, () => cached()),
+    );
+
+    try {
+      await expect(
+        Promise.race([
+          pending,
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
+        ]),
+      ).resolves.toBe(false);
+      expect(shellState.pendingCacheTasks).toBe(0);
+      expect(shellState.hasDynamicBoundary).toBe(false);
+    } finally {
+      shellState.dynamicAbortController.abort();
+      await pending.catch(() => {});
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("keeps params readable while keying and executing a public cache in a static instant shell", async () => {
+    // Params are an admitted cache argument. Reading their thenable properties
+    // for the key and inside the cache body must not create a staged hole.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createInstantPrefetchShellState, runWithInstantPrefetchShellState } =
+      await import("../packages/vinext/src/shims/instant-prefetch-shell.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (params: { slug: string }) => params.slug,
+      "test:instant-static-params-cache",
+    );
+    const shellState = createInstantPrefetchShellState("/blog/:slug", "static");
+    const pending = runWithInstantPrefetchShellState(shellState, () =>
+      cached(makeThenableParams({ slug: "post" })),
+    );
+
+    try {
+      await expect(
+        Promise.race([
+          pending,
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
+        ]),
+      ).resolves.toBe("post");
+      expect(shellState.pendingCacheTasks).toBe(0);
+      expect(shellState.hasDynamicBoundary).toBe(false);
+    } finally {
+      shellState.dynamicAbortController.abort();
+      await pending.catch(() => {});
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("scopes shared cache entries by build ID", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -7100,6 +7193,44 @@ describe('"use cache" runtime', () => {
     // Should re-execute
     const r3 = await cached();
     expect(r3).toEqual({ count: 2 });
+  });
+
+  it("defers cold and warm private caches before tracking static instant-shell tasks", async () => {
+    const { registerCachedFunction, runWithPrivateCache } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { createInstantPrefetchShellState, runWithInstantPrefetchShellState } =
+      await import("../packages/vinext/src/shims/instant-prefetch-shell.js");
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async () => {
+        callCount++;
+        return callCount;
+      },
+      "test:instant-static-private-cache",
+      "private",
+    );
+
+    await runWithPrivateCache(async () => {
+      const coldState = createInstantPrefetchShellState("/private", "static");
+      const cold = runWithInstantPrefetchShellState(coldState, () => cached());
+      expect(coldState.hasDynamicBoundary).toBe(true);
+      expect(coldState.pendingCacheTasks).toBe(0);
+      expect(callCount).toBe(0);
+      coldState.dynamicAbortController.abort();
+      await expect(cold).rejects.toThrow();
+
+      expect(await cached()).toBe(1);
+
+      const warmState = createInstantPrefetchShellState("/private", "static");
+      const warm = runWithInstantPrefetchShellState(warmState, () => cached());
+      expect(warmState.hasDynamicBoundary).toBe(true);
+      expect(warmState.pendingCacheTasks).toBe(0);
+      expect(callCount).toBe(1);
+      warmState.dynamicAbortController.abort();
+      await expect(warm).rejects.toThrow();
+      expect(callCount).toBe(1);
+    });
   });
 
   it("private variant marks prerender output dynamic", async () => {

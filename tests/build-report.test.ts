@@ -186,6 +186,8 @@ describe("analyzeNamedExportObjectStringProperty", () => {
     ).toMatchObject({
       hasExport: true,
       hasUseClientDirective: true,
+      hasStaticValue: true,
+      staticValue: false,
       propertyValue: null,
       reexport: null,
     });
@@ -197,8 +199,45 @@ describe("analyzeNamedExportObjectStringProperty", () => {
       ),
     ).toMatchObject({
       hasExport: true,
+      hasStaticValue: false,
       propertyValue: null,
       reexport: { importedName: "config", source: "./config" },
+    });
+  });
+
+  it("extracts complete static object values through local const aliases", () => {
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        `const mode = "runtime";
+         const samples = [{ params: { slug: ["one", "two"] } }];
+         const config = { prefetch: mode, samples };
+         export { config as unstable_instant };`,
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      hasStaticValue: true,
+      staticValue: {
+        prefetch: "runtime",
+        samples: [{ params: { slug: ["one", "two"] } }],
+      },
+      propertyValue: "runtime",
+    });
+  });
+
+  it("rejects cyclic local const values without overflowing", () => {
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        `const config = { prefetch: "runtime", samples: [config] };
+         export { config as unstable_instant };`,
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      hasStaticValue: false,
+      propertyValue: "runtime",
     });
   });
 });

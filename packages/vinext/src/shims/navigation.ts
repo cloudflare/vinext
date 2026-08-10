@@ -67,6 +67,7 @@ import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
   type AppRscRenderMode,
 } from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
@@ -2738,7 +2739,12 @@ const _appRouter: AppRouterInstance = {
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
       if (policy.prefetchInstantShell) {
-        headers.set(VINEXT_RSC_RENDER_MODE_HEADER, APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL);
+        headers.set(
+          VINEXT_RSC_RENDER_MODE_HEADER,
+          policy.prefetchInstantShell === "static"
+            ? APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
+            : APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+        );
       }
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.
@@ -2815,7 +2821,7 @@ const _appRouter: AppRouterInstance = {
             }
           : {
               cacheForNavigation: false,
-              instantShell: policy.prefetchInstantShell,
+              instantShell: policy.prefetchInstantShell !== undefined,
               optimisticRouteShell: !policy.prefetchInstantShell,
               prefetchKind: policy.prefetchInstantShell ? "instant-shell" : "navigation",
             },

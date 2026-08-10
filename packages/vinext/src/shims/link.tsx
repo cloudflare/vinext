@@ -424,6 +424,7 @@ function prefetchUrl(
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
           },
           headersModule,
           hybridRouteOwner,
@@ -504,7 +505,9 @@ function prefetchUrl(
           fetchPriority: priority,
           prefetchKind: mode === "full" ? "full" : "auto",
           renderMode: isInstantShellPrefetch
-            ? APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL
+            ? autoPrefetch.prefetchInstantShell === "static"
+              ? APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
+              : APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL
             : isOptimisticRouteShellPrefetch
               ? hasSearchAgnosticShell
                 ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
@@ -763,7 +766,7 @@ function prefetchUrl(
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
                 : PREFETCH_CACHE_TTL,
             honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
-            instantShell: isInstantShellPrefetch,
+            instantShell: isInstantShellPrefetch !== undefined,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isInstantShellPrefetch
               ? "instant-shell"

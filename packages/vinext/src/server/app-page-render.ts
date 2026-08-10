@@ -40,6 +40,7 @@ import {
 } from "./app-page-stream.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
@@ -743,7 +744,8 @@ export async function renderAppPageLifecycle(
   let instantPrefetchShellWasAborted = false;
   let rscStream = await runWithFetchDedupe(async () => {
     if (
-      options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL &&
+      (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL ||
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL) &&
       options.prerenderToReadableStream
     ) {
       const {
@@ -753,11 +755,17 @@ export async function renderAppPageLifecycle(
         runWithInstantPrefetchShellState,
         wasInstantPrefetchShellAborted,
       } = await import("vinext/shims/instant-prefetch-shell");
-      const shellState = createInstantPrefetchShellState(options.cleanPathname);
-      // Runtime instant shells stay open until every Cache Component already
+      const shellState = createInstantPrefetchShellState(
+        options.cleanPathname,
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
+          ? "static"
+          : "runtime",
+      );
+      // Instant shells stay open until every Cache Component already
       // started by this render settles. The shared fallback-shell tracker then
       // aborts only after completed branches have flushed, preserving cold
-      // cache fills without allowing `connection()` content into the payload.
+      // cache fills without allowing request-time content beyond the selected
+      // static/runtime stage into the payload.
       const pendingResult = runWithInstantPrefetchShellState(shellState, () =>
         options.prerenderToReadableStream!(outgoingElement, {
           onError: rscErrorTracker.onRenderError,

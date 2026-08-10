@@ -9,11 +9,39 @@ export type InstantPrefetchShellState = {
   pendingCacheTasks: number;
   reactAbortController: AbortController;
   route: string;
+  stage: "runtime" | "static";
 };
 
 const instantPrefetchShellAls = getOrCreateAls<InstantPrefetchShellState>(
   "vinext.instantPrefetchShell.als",
 );
+
+const useCacheAlsKey = Symbol.for("vinext.cacheRuntime.contextAls");
+const unstableCacheAlsKey = Symbol.for("vinext.unstableCache.als");
+
+type CacheScopeStorage = {
+  getStore: () => unknown;
+};
+
+function getCacheScopeStore(key: symbol): unknown {
+  const storage = Reflect.get(globalThis, key);
+  if (!storage || typeof storage !== "object") return undefined;
+  const getStore = Reflect.get(storage, "getStore");
+  if (typeof getStore !== "function") return undefined;
+  return getStore.call(storage as CacheScopeStorage);
+}
+
+function isInsideStaticRequestDataCacheScope(): boolean {
+  const useCacheStore = getCacheScopeStore(useCacheAlsKey);
+  if (
+    useCacheStore &&
+    typeof useCacheStore === "object" &&
+    Reflect.get(useCacheStore, "variant") !== "private"
+  ) {
+    return true;
+  }
+  return getCacheScopeStore(unstableCacheAlsKey) === true;
+}
 
 function scheduleAfterTask(callback: () => void): () => void {
   let firstTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
@@ -63,7 +91,10 @@ function scheduleAbortIfReady(state: InstantPrefetchShellState): void {
   });
 }
 
-export function createInstantPrefetchShellState(route: string): InstantPrefetchShellState {
+export function createInstantPrefetchShellState(
+  route: string,
+  stage: "runtime" | "static" = "runtime",
+): InstantPrefetchShellState {
   return {
     dynamicAbortController: new AbortController(),
     hasDynamicBoundary: false,
@@ -72,6 +103,7 @@ export function createInstantPrefetchShellState(route: string): InstantPrefetchS
     pendingCacheTasks: 0,
     reactAbortController: new AbortController(),
     route,
+    stage,
   };
 }
 
@@ -124,4 +156,38 @@ export function suspendInstantPrefetchConnection(): Promise<never> | null {
   state.hasDynamicBoundary = true;
   scheduleAbortIfReady(state);
   return makeHangingPromise(state.dynamicAbortController.signal, state.route, "connection()");
+}
+
+/**
+ * Static instant shells stop before request-time data. Runtime instant shells
+ * intentionally include headers/cookies and stop only at `connection()`.
+ */
+export function suspendStaticInstantPrefetchRequestData(expression: string): Promise<never> | null {
+  const state = instantPrefetchShellAls.getStore();
+  if (!state || state.stage !== "static") return null;
+  // Public cache scopes own the request data they admitted into their key.
+  // Suspending those reads would leave the tracked cache task waiting for the
+  // static-stage abort while the abort itself waits for that task to settle.
+  // Next.js similarly exposes cache-scope providers instead of the staged
+  // request-data promise from inside `cache` / `unstable-cache` work units.
+  if (isInsideStaticRequestDataCacheScope()) return null;
+  state.hasDynamicBoundary = true;
+  scheduleAbortIfReady(state);
+  return makeHangingPromise(state.dynamicAbortController.signal, state.route, expression);
+}
+
+/**
+ * A private cache is request-stage work. Stop before both lookup and execution
+ * so even a warm per-request hit becomes a hole in a static instant shell.
+ */
+export function suspendStaticInstantPrefetchPrivateCache(): Promise<never> | null {
+  const state = instantPrefetchShellAls.getStore();
+  if (!state || state.stage !== "static") return null;
+  state.hasDynamicBoundary = true;
+  scheduleAbortIfReady(state);
+  return makeHangingPromise(
+    state.dynamicAbortController.signal,
+    state.route,
+    '"use cache: private"',
+  );
 }

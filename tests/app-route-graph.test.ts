@@ -127,12 +127,12 @@ describe("App Router route graph builder", () => {
       await writeAppFile(
         appDir,
         "page-instant/page.tsx",
-        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_PAGE}`,
+        `export const unstable_instant = { prefetch: "runtime", samples: [{}] };\n${EMPTY_PAGE}`,
       );
       await writeAppFile(
         appDir,
         "layout-instant/layout.tsx",
-        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_LAYOUT}`,
+        `export const unstable_instant = { prefetch: "runtime", samples: [{}] };\n${EMPTY_LAYOUT}`,
       );
       await writeAppFile(appDir, "layout-instant/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "slot-instant/page.tsx", EMPTY_PAGE);
@@ -140,7 +140,7 @@ describe("App Router route graph builder", () => {
       await writeAppFile(
         appDir,
         "slot-instant/@team/page.tsx",
-        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_PAGE}`,
+        `export const unstable_instant = { prefetch: "runtime", samples: [{}] };\n${EMPTY_PAGE}`,
       );
       await writeAppFile(
         appDir,
@@ -155,12 +155,12 @@ describe("App Router route graph builder", () => {
       await writeAppFile(
         appDir,
         "client-instant/page.tsx",
-        `"use client";\nexport const unstable_instant = { prefetch: "runtime" };\n${EMPTY_PAGE}`,
+        `"use client";\nexport const unstable_instant = { prefetch: "runtime", samples: [{}] };\n${EMPTY_PAGE}`,
       );
       await writeAppFile(
         appDir,
         "reexported-instant/config.ts",
-        'export const config = { prefetch: "runtime" };\n',
+        'export const config = { prefetch: "runtime", samples: [{}] };\n',
       );
       await writeAppFile(
         appDir,
@@ -170,7 +170,7 @@ describe("App Router route graph builder", () => {
       await writeAppFile(
         appDir,
         "indirect-instant/page.tsx",
-        `const base = { prefetch: "runtime" }; const config = base; export { config as unstable_instant };\n${EMPTY_PAGE}`,
+        `const base = { prefetch: "runtime", samples: [{}] }; const config = base; export { config as unstable_instant };\n${EMPTY_PAGE}`,
       );
       await writeAppFile(
         appDir,
@@ -197,6 +197,116 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("validates the complete unstable_instant schema", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+
+      for (const config of [
+        "true",
+        "null",
+        "undefined",
+        "{}",
+        '{ prefetch: "other" }',
+        '{ prefetch: "runtime" }',
+        '{ prefetch: "runtime", samples: [] }',
+        '{ prefetch: "static", samples: [] }',
+        '{ prefetch: "static", extra: true }',
+        '{ prefetch: "static", samples: [{ extra: true }] }',
+        '{ prefetch: "runtime", samples: [{ cookies: [{ name: "id" }] }] }',
+        '{ prefetch: "runtime", samples: [{ cookies: [{ name: "id", value: null, extra: true }] }] }',
+        '{ prefetch: "runtime", samples: [{ headers: [["x-only-one"]] }] }',
+        '{ prefetch: "runtime", samples: [{ headers: [["x", false]] }] }',
+        '{ prefetch: "runtime", samples: [{ params: { id: 1 } }] }',
+        '{ prefetch: "runtime", samples: [{ searchParams: { q: false } }] }',
+        '{ prefetch: "static", from: [1] }',
+        '{ prefetch: "static", unstable_disableValidation: false }',
+      ]) {
+        await writeAppFile(
+          appDir,
+          "page.tsx",
+          `export const unstable_instant = ${config};\n${EMPTY_PAGE}`,
+        );
+        await expect(buildAppRouteGraph(appDir, createValidFileMatcher())).rejects.toThrow(
+          /Invalid unstable_instant value/,
+        );
+      }
+
+      await writeAppFile(
+        appDir,
+        "instant-config.ts",
+        'export const config = { prefetch: "runtime", samples: [] };\n',
+      );
+      await writeAppFile(
+        appDir,
+        "page.tsx",
+        `export { config as unstable_instant } from "./instant-config";\n${EMPTY_PAGE}`,
+      );
+      await expect(buildAppRouteGraph(appDir, createValidFileMatcher())).rejects.toThrow(
+        /Invalid unstable_instant value/,
+      );
+
+      await writeAppFile(
+        appDir,
+        "page.tsx",
+        `const prefetch = process.env.INSTANT_MODE;
+         export const unstable_instant = { prefetch };
+         ${EMPTY_PAGE}`,
+      );
+      await expect(buildAppRouteGraph(appDir, createValidFileMatcher())).rejects.toThrow(
+        /must be statically analyzable/,
+      );
+
+      await writeAppFile(
+        appDir,
+        "page.tsx",
+        `const config = { prefetch: "runtime", samples: [config] };
+         export { config as unstable_instant };
+         ${EMPTY_PAGE}`,
+      );
+      await expect(buildAppRouteGraph(appDir, createValidFileMatcher())).rejects.toThrow(
+        /must be statically analyzable/,
+      );
+
+      for (const config of [
+        "false",
+        '{ prefetch: "static" }',
+        '{ prefetch: "static", samples: [{}] }',
+        '{ prefetch: "runtime", samples: [{}] }',
+        `{ prefetch: "runtime", samples: [{
+          cookies: [{ name: "id", value: null }],
+          headers: [["x-test", "value"]],
+          params: { slug: ["one", "two"] },
+          searchParams: { q: null }
+        }], from: [], unstable_disableValidation: true,
+          unstable_disableDevValidation: true, unstable_disableBuildValidation: true }`,
+      ]) {
+        await writeAppFile(
+          appDir,
+          "page.tsx",
+          `export const unstable_instant = ${config};\n${EMPTY_PAGE}`,
+        );
+        await expect(buildAppRouteGraph(appDir, createValidFileMatcher())).resolves.toBeDefined();
+      }
+    });
+  });
+
+  it("rejects unstable_instant with unstable_dynamicStaleTime in one segment", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(
+        appDir,
+        "page.tsx",
+        `export const unstable_instant = { prefetch: "static" };
+         export const unstable_dynamicStaleTime = 30;
+         ${EMPTY_PAGE}`,
+      );
+
+      await expect(buildAppRouteGraph(appDir, createValidFileMatcher())).rejects.toThrow(
+        /cannot use both `export const unstable_dynamicStaleTime` and `export const unstable_instant`/,
+      );
+    });
+  });
+
   it("replaces runtime instant config dependencies on each graph rebuild", async () => {
     await withTempApp(async (appDir) => {
       const configPath = path.join(appDir, "instant-config.ts");
@@ -209,7 +319,7 @@ describe("App Router route graph builder", () => {
       await writeAppFile(
         appDir,
         "instant-config.ts",
-        'export const unstable_instant = { prefetch: "runtime" };\n',
+        'export const unstable_instant = { prefetch: "runtime", samples: [{}] };\n',
       );
 
       let graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
@@ -246,7 +356,7 @@ describe("App Router route graph builder", () => {
       await writeAppFile(
         appDir,
         "layout.tsx",
-        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_LAYOUT}`,
+        `export const unstable_instant = { prefetch: "runtime", samples: [{}] };\n${EMPTY_LAYOUT}`,
       );
       await writeAppFile(appDir, "one/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "two/page.tsx", EMPTY_PAGE);

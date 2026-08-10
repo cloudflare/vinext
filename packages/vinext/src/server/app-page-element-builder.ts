@@ -33,7 +33,11 @@ import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
@@ -46,6 +50,7 @@ import {
   createAppPageRenderDependency,
   invokeAppComponent,
   isAppRenderSuspension,
+  isClientReferenceAppComponent,
   isReactOwnedAppComponent,
   renderAfterAppDependencies,
   type AppPageRenderDependency,
@@ -489,7 +494,16 @@ export async function buildPageElements<
       : null;
   void streamingMetadataOutlet?.catch(() => null);
 
-  const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
+  const makeComponentParams = (component: AppPageComponent, params: AppPageParams): unknown =>
+    makeThenableParams(params, undefined, {
+      suspendStaticInstantShell: !(
+        renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL &&
+        isClientReferenceAppComponent(component)
+      ),
+    });
+  const pageProps: Record<string, unknown> = EffectivePageComponent
+    ? { params: makeComponentParams(EffectivePageComponent, effectiveParams) }
+    : {};
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
   const hasPageLoadingBoundary =
@@ -515,11 +529,18 @@ export async function buildPageElements<
     if (isReactOwnedAppComponent(PageComponent)) {
       const invocationProps = { ...props };
       if (searchParams) {
-        invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
-              markDynamic: hasRequestSearchParams,
+        const isStaticInstantClientReference =
+          renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL &&
+          isClientReferenceAppComponent(PageComponent);
+        invocationProps.searchParams = isStaticInstantClientReference
+          ? makeThenableParams(pageSearchParams, undefined, {
+              suspendStaticInstantShell: false,
             })
-          : makeThenableParams(pageSearchParams);
+          : observePageSearchParamsAccess
+            ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+                markDynamic: hasRequestSearchParams,
+              })
+            : makeThenableParams(pageSearchParams);
       }
       return createElement(PageComponent, invocationProps);
     }
@@ -638,7 +659,7 @@ export async function buildPageElements<
         );
         siblingInterceptElement = createElement(
           LayoutComponent,
-          { params: makeThenableParams(interceptLayoutParams) },
+          { params: makeComponentParams(LayoutComponent, interceptLayoutParams) },
           siblingInterceptElement,
         );
       }

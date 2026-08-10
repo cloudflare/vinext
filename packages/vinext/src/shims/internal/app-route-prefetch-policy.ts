@@ -43,8 +43,8 @@ export type AppRoutePrefetchPolicy = {
    * between `auto` and `full` in `getPrefetchEntryCacheStatus`.
    */
   honorDynamicStaleTime: boolean;
-  /** Render a runtime `unstable_instant` shell that preserves completed Suspense branches. */
-  prefetchInstantShell?: true;
+  /** Render the configured `unstable_instant` shell stage. */
+  prefetchInstantShell?: "runtime" | "static";
   prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 };
@@ -90,7 +90,7 @@ function runtimeInstantPolicy(): AppRoutePrefetchPolicy {
     cacheForNavigation: false,
     fallbackTtl: "dynamic",
     honorDynamicStaleTime: true,
-    prefetchInstantShell: true,
+    prefetchInstantShell: "runtime",
     prefetchShellFirst: false,
     shouldPrefetch: true,
   };
@@ -104,7 +104,7 @@ function staticInstantPolicy(): AppRoutePrefetchPolicy {
     cacheForNavigation: false,
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
-    prefetchInstantShell: true,
+    prefetchInstantShell: "static",
     prefetchShellFirst: false,
     shouldPrefetch: true,
   };

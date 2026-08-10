@@ -191,6 +191,8 @@ export type NamedExternalReexport = {
 export type NamedExportObjectStringPropertyAnalysis = {
   hasExport: boolean;
   hasUseClientDirective: boolean;
+  hasStaticValue: boolean;
+  staticValue: unknown;
   propertyValue: string | null;
   reexport: NamedExternalReexport | null;
 };
@@ -206,6 +208,8 @@ export function analyzeNamedExportObjectStringProperty(
     return {
       hasExport: false,
       hasUseClientDirective: false,
+      hasStaticValue: false,
+      staticValue: undefined,
       propertyValue: null,
       reexport: null,
     };
@@ -213,6 +217,8 @@ export function analyzeNamedExportObjectStringProperty(
 
   const reexport = findNamedExternalReexportInProgram(program, name);
   const localName = findExportedLocalNameInProgram(program, name);
+  let hasStaticValue = false;
+  let staticValue: unknown;
   let propertyValue: string | null = null;
   if (localName !== null) {
     const initializer =
@@ -220,6 +226,13 @@ export function analyzeNamedExportObjectStringProperty(
       findLocalConstInitializerInProgram(program, localName);
     if (initializer !== null) {
       const expression = resolveLocalConstExpression(program, initializer, new Set());
+      const extractedValue = extractStaticJsonValue(expression, (candidate) =>
+        resolveLocalConstExpression(program, candidate, new Set()),
+      );
+      if (extractedValue !== UNSUPPORTED_STATIC_VALUE) {
+        hasStaticValue = true;
+        staticValue = extractedValue;
+      }
       if (expression.type === "ObjectExpression") {
         for (const candidate of expression.properties) {
           if (
@@ -244,6 +257,8 @@ export function analyzeNamedExportObjectStringProperty(
     hasUseClientDirective: program.body.some(
       (node) => node.type === "ExpressionStatement" && node.directive === "use client",
     ),
+    hasStaticValue,
+    staticValue,
     propertyValue,
     reexport,
   };
@@ -472,8 +487,12 @@ function propertyKeyName(key: PropertyKey): string | null {
   return null;
 }
 
-function extractStaticJsonValue(expression: Expression): unknown {
-  const value = unwrapStaticExpression(expression);
+function extractStaticJsonValue(
+  expression: Expression,
+  resolveExpression: (expression: Expression) => Expression = unwrapStaticExpression,
+  visiting: Set<Expression> = new Set(),
+): unknown {
+  const value = resolveExpression(expression);
 
   if (value.type === "Literal") {
     if (
@@ -491,28 +510,48 @@ function extractStaticJsonValue(expression: Expression): unknown {
     return value.quasis[0]?.value.cooked ?? value.quasis[0]?.value.raw ?? "";
   }
 
+  if (value.type === "Identifier" && value.name === "undefined") {
+    return undefined;
+  }
+
   if (value.type === "ArrayExpression") {
+    if (visiting.has(value)) return UNSUPPORTED_STATIC_VALUE;
+    visiting.add(value);
     const items: unknown[] = [];
-    for (const element of value.elements) {
-      if (!element || element.type === "SpreadElement") return UNSUPPORTED_STATIC_VALUE;
-      const item = extractStaticJsonValue(element);
-      if (item === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
-      items.push(item);
+    try {
+      for (const element of value.elements) {
+        if (!element) {
+          items.push(undefined);
+          continue;
+        }
+        if (element.type === "SpreadElement") return UNSUPPORTED_STATIC_VALUE;
+        const item = extractStaticJsonValue(element, resolveExpression, visiting);
+        if (item === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+        items.push(item);
+      }
+      return items;
+    } finally {
+      visiting.delete(value);
     }
-    return items;
   }
 
   if (value.type === "ObjectExpression") {
+    if (visiting.has(value)) return UNSUPPORTED_STATIC_VALUE;
+    visiting.add(value);
     const object: Record<string, unknown> = {};
-    for (const property of value.properties) {
-      if (property.type !== "Property" || property.computed) return UNSUPPORTED_STATIC_VALUE;
-      const key = propertyKeyName(property.key);
-      if (!key) return UNSUPPORTED_STATIC_VALUE;
-      const propertyValue = extractStaticJsonValue(property.value);
-      if (propertyValue === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
-      object[key] = propertyValue;
+    try {
+      for (const property of value.properties) {
+        if (property.type !== "Property" || property.computed) return UNSUPPORTED_STATIC_VALUE;
+        const key = propertyKeyName(property.key);
+        if (!key) return UNSUPPORTED_STATIC_VALUE;
+        const propertyValue = extractStaticJsonValue(property.value, resolveExpression, visiting);
+        if (propertyValue === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+        object[key] = propertyValue;
+      }
+      return object;
+    } finally {
+      visiting.delete(value);
     }
-    return object;
   }
 
   return UNSUPPORTED_STATIC_VALUE;

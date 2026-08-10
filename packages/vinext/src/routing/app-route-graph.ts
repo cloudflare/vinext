@@ -11,6 +11,7 @@ import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
 import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
+import { isUnknownRecord as isRecord } from "../utils/record.js";
 import {
   analyzeNamedExportObjectStringProperty,
   type NamedExportObjectStringPropertyAnalysis,
@@ -293,7 +294,120 @@ function resolveLocalRouteConfigModule(candidates: readonly string[]): string | 
 }
 
 type InstantPrefetchMode = "runtime" | "static";
-type InstantModuleAnalysisCache = Map<string, NamedExportObjectStringPropertyAnalysis | null>;
+type InstantModuleAnalysisCache = {
+  analyses: Map<string, NamedExportObjectStringPropertyAnalysis | null>;
+  sources: Map<string, string | null>;
+};
+
+const INSTANT_CONFIG_KEYS = new Set([
+  "prefetch",
+  "samples",
+  "from",
+  "unstable_disableValidation",
+  "unstable_disableDevValidation",
+  "unstable_disableBuildValidation",
+]);
+const INSTANT_SAMPLE_KEYS = new Set(["cookies", "headers", "params", "searchParams"]);
+const INSTANT_COOKIE_KEYS = new Set(["name", "value"]);
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function isStringOrStringArray(value: unknown): boolean {
+  return (
+    typeof value === "string" ||
+    (Array.isArray(value) && value.every((item) => typeof item === "string"))
+  );
+}
+
+function isInstantSample(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, INSTANT_SAMPLE_KEYS)) return false;
+
+  if (
+    value.cookies !== undefined &&
+    (!Array.isArray(value.cookies) ||
+      !value.cookies.every(
+        (cookie) =>
+          isRecord(cookie) &&
+          hasOnlyKeys(cookie, INSTANT_COOKIE_KEYS) &&
+          typeof cookie.name === "string" &&
+          (typeof cookie.value === "string" || cookie.value === null),
+      ))
+  ) {
+    return false;
+  }
+
+  if (
+    value.headers !== undefined &&
+    (!Array.isArray(value.headers) ||
+      !value.headers.every(
+        (header) =>
+          Array.isArray(header) &&
+          header.length === 2 &&
+          typeof header[0] === "string" &&
+          (typeof header[1] === "string" || header[1] === null),
+      ))
+  ) {
+    return false;
+  }
+
+  if (
+    value.params !== undefined &&
+    (!isRecord(value.params) || !Object.values(value.params).every(isStringOrStringArray))
+  ) {
+    return false;
+  }
+
+  if (
+    value.searchParams !== undefined &&
+    (!isRecord(value.searchParams) ||
+      !Object.values(value.searchParams).every(
+        (entry) => entry === null || isStringOrStringArray(entry),
+      ))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function isValidInstantConfig(value: unknown): boolean {
+  if (value === false) return true;
+  if (!isRecord(value) || !hasOnlyKeys(value, INSTANT_CONFIG_KEYS)) return false;
+  if (value.prefetch !== "static" && value.prefetch !== "runtime") return false;
+
+  if (
+    value.samples !== undefined &&
+    (!Array.isArray(value.samples) ||
+      value.samples.length === 0 ||
+      !value.samples.every(isInstantSample))
+  ) {
+    return false;
+  }
+  if (value.prefetch === "runtime" && value.samples === undefined) return false;
+  if (
+    value.from !== undefined &&
+    (!Array.isArray(value.from) || !value.from.every((item) => typeof item === "string"))
+  ) {
+    return false;
+  }
+  for (const key of [
+    "unstable_disableValidation",
+    "unstable_disableDevValidation",
+    "unstable_disableBuildValidation",
+  ]) {
+    if (value[key] !== undefined && value[key] !== true) return false;
+  }
+  return true;
+}
+
+function assertValidInstantConfig(value: unknown, routePattern: string): void {
+  if (isValidInstantConfig(value)) return;
+  throw new Error(
+    `Invalid unstable_instant value ${JSON.stringify(value)} on "${routePattern}", must be an object with \`prefetch: "static"\` or \`prefetch: "runtime"\`, or \`false\`. Read more at https://nextjs.org/docs/messages/invalid-instant-configuration`,
+  );
+}
 
 function readInstantModuleAnalysis(
   filePath: string,
@@ -301,19 +415,29 @@ function readInstantModuleAnalysis(
   cache: InstantModuleAnalysisCache,
 ): NamedExportObjectStringPropertyAnalysis | null {
   const key = `${filePath}\0${exportName}`;
-  const cached = cache.get(key);
+  const cached = cache.analyses.get(key);
   if (cached !== undefined) return cached;
 
+  let source = cache.sources.get(filePath);
+  if (source === undefined) {
+    try {
+      source = fs.readFileSync(filePath, "utf8");
+    } catch {
+      source = null;
+    }
+    cache.sources.set(filePath, source);
+  }
+  if (source === null) {
+    cache.analyses.set(key, null);
+    return null;
+  }
+
   try {
-    const analysis = analyzeNamedExportObjectStringProperty(
-      fs.readFileSync(filePath, "utf8"),
-      exportName,
-      "prefetch",
-    );
-    cache.set(key, analysis);
+    const analysis = analyzeNamedExportObjectStringProperty(source, exportName, "prefetch");
+    cache.analyses.set(key, analysis);
     return analysis;
   } catch {
-    cache.set(key, null);
+    cache.analyses.set(key, null);
     return null;
   }
 }
@@ -321,6 +445,7 @@ function readInstantModuleAnalysis(
 function routeModuleExportInstantPrefetchMode(
   filePath: string,
   exportName: string,
+  routePattern: string,
   visited: Set<string>,
   dependencies: Set<string>,
   analysisCache: InstantModuleAnalysisCache,
@@ -332,6 +457,12 @@ function routeModuleExportInstantPrefetchMode(
   const analysis = readInstantModuleAnalysis(filePath, exportName, analysisCache);
   if (analysis === null) return null;
   if (analysis.hasExport) dependencies.add(toSlash(filePath));
+  if (analysis.hasExport && !analysis.hasStaticValue && analysis.reexport === null) {
+    throw new Error(
+      `Invalid unstable_instant value on "${routePattern}": the exported configuration must be statically analyzable. Read more at https://nextjs.org/docs/messages/invalid-instant-configuration`,
+    );
+  }
+  if (analysis.hasStaticValue) assertValidInstantConfig(analysis.staticValue, routePattern);
   if (analysis.propertyValue === "runtime" || analysis.propertyValue === "static") {
     return analysis.propertyValue;
   }
@@ -351,6 +482,7 @@ function routeModuleExportInstantPrefetchMode(
   return routeModuleExportInstantPrefetchMode(
     reexportPath,
     reexport.importedName,
+    routePattern,
     visited,
     dependencies,
     analysisCache,
@@ -359,6 +491,7 @@ function routeModuleExportInstantPrefetchMode(
 
 function routeModuleInstantPrefetchMode(
   filePath: string | null,
+  routePattern: string,
   dependencies: Set<string>,
   analysisCache: InstantModuleAnalysisCache,
 ): InstantPrefetchMode | null {
@@ -367,6 +500,7 @@ function routeModuleInstantPrefetchMode(
     : routeModuleExportInstantPrefetchMode(
         filePath,
         "unstable_instant",
+        routePattern,
         new Set(),
         dependencies,
         analysisCache,
@@ -398,10 +532,25 @@ function routeInstantConfigMetadata(
     if (modulePath === null) continue;
     const analysis = readInstantModuleAnalysis(modulePath, "unstable_instant", analysisCache);
     if (analysis?.hasExport) {
+      const dynamicStaleTimeAnalysis = readInstantModuleAnalysis(
+        modulePath,
+        "unstable_dynamicStaleTime",
+        analysisCache,
+      );
+      if (dynamicStaleTimeAnalysis?.hasExport) {
+        throw new Error(
+          `Page "${route.pattern}" cannot use both \`export const unstable_dynamicStaleTime\` and \`export const unstable_instant\`.`,
+        );
+      }
       hasConfig = true;
       if (analysis.hasUseClientDirective) hasConfigInClientModule = true;
     }
-    const moduleMode = routeModuleInstantPrefetchMode(modulePath, dependencies, analysisCache);
+    const moduleMode = routeModuleInstantPrefetchMode(
+      modulePath,
+      route.pattern,
+      dependencies,
+      analysisCache,
+    );
     if (moduleMode === "runtime") mode = "runtime";
     else if (moduleMode === "static" && mode === null) mode = "static";
   }
@@ -1119,7 +1268,10 @@ export async function buildAppRouteGraph(
   instantConfigDependencies: Set<string>;
 }> {
   const instantConfigDependencies = new Set<string>();
-  const instantModuleAnalysisCache: InstantModuleAnalysisCache = new Map();
+  const instantModuleAnalysisCache: InstantModuleAnalysisCache = {
+    analyses: new Map(),
+    sources: new Map(),
+  };
 
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)

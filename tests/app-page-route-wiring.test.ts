@@ -28,6 +28,7 @@ import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server
 import {
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
@@ -680,6 +681,44 @@ describe("app page route wiring helpers", () => {
       { category: "books" },
       { category: "books", id: "hello-world" },
     ]);
+  });
+
+  it("marks client layout params as transport data in static instant shells", () => {
+    // Ported from Next.js Cache Components behavior:
+    // packages/next/src/server/app-render/create-component-tree.tsx
+    const ClientLayout = Object.assign(({ children }: { children?: ReactNode }) => children, {
+      $$typeof: Symbol.for("react.client.reference"),
+    });
+    const suspendStaticInstantShellOptions: Array<boolean | undefined> = [];
+
+    buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params, _observer, options) {
+        suspendStaticInstantShellOptions.push(options?.suspendStaticInstantShell);
+        return Promise.resolve(params);
+      },
+      matchedParams: { slug: "hello" },
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [1],
+        layouts: [{ default: ClientLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["[slug]"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/hello",
+      rootNotFoundModule: null,
+    });
+
+    expect(suspendStaticInstantShellOptions).toEqual([false]);
   });
 
   it("encodes the active app source page from route segments", () => {

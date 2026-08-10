@@ -64,6 +64,7 @@ import {
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
 import {
+  analyzeNamedExportObjectStringProperty,
   extractMiddlewareMatcherConfig,
   extractMiddlewareMatcherConfigValue,
   hasExportedName,
@@ -1435,6 +1436,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // this plugin instance's App Router graph. Kept per plugin so concurrent
   // Vite servers cannot clear or overwrite each other's HMR dependencies.
   let instantConfigDependencies = new Set<string>();
+  let instantRouteMetadataSignature: string | null = null;
+  const readInstantRouteMetadataSignature = (
+    graph: Awaited<ReturnType<typeof appRouteGraph>>,
+  ): string =>
+    JSON.stringify(
+      graph.routes.map((route) => [
+        route.pattern,
+        route.hasInstant === true,
+        route.hasRuntimeInstant === true,
+        route.hasInstantConfig === true,
+        route.hasInstantConfigInClientModule === true,
+      ]),
+    );
+  const captureInstantRouteMetadata = (graph: Awaited<ReturnType<typeof appRouteGraph>>): void => {
+    instantConfigDependencies = graph.instantConfigDependencies;
+    instantRouteMetadataSignature = readInstantRouteMetadataSignature(graph);
+  };
   let publicDirConflictOptions: Parameters<typeof assertNoPublicDirAssetConflict>[0] | null = null;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
@@ -1525,7 +1543,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     let appPrefetchRoutes: ReturnType<typeof toLinkPrefetchRoutes> = [];
     if (hasAppDir) {
       const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
-      instantConfigDependencies = graph.instantConfigDependencies;
+      captureInstantRouteMetadata(graph);
       appPrefetchRoutes = toLinkPrefetchRoutes(graph.routes, nextConfig.cacheComponents);
     }
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
@@ -3868,7 +3886,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
             const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
-            instantConfigDependencies = graph.instantConfigDependencies;
+            captureInstantRouteMetadata(graph);
             // In a hybrid build, the App browser entry also exposes the Pages
             // route manifest so a user who lands on an App page can still
             // see Pages ownership from a `<Link>` click.
@@ -4628,10 +4646,36 @@ export const loadServerActionClient = ${
             return false;
           }
           try {
-            return hasExportedName(fs.readFileSync(filePath, "utf8"), "unstable_instant");
+            return analyzeNamedExportObjectStringProperty(
+              fs.readFileSync(filePath, "utf8"),
+              "unstable_instant",
+              "prefetch",
+            ).hasExport;
           } catch {
             return false;
           }
+        };
+        let instantMetadataRefresh: Promise<void> = Promise.resolve();
+        const refreshInstantMetadataAfterChange = (): void => {
+          instantMetadataRefresh = instantMetadataRefresh
+            .catch(() => {})
+            .then(async () => {
+              const previousSignature = instantRouteMetadataSignature;
+              invalidateAppRouteCache();
+              const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+              const nextSignature = readInstantRouteMetadataSignature(graph);
+              captureInstantRouteMetadata(graph);
+              if (previousSignature !== nextSignature) {
+                invalidateAppRoutingModules();
+              }
+            })
+            .catch((error: unknown) => {
+              const err = error instanceof Error ? error : new Error(String(error));
+              server.ws.send({
+                type: "error",
+                err: { message: err.message, stack: err.stack ?? err.message },
+              });
+            });
         };
 
         server.watcher.on("add", (filePath: string) => {
@@ -4684,11 +4728,11 @@ export const loadServerActionClient = ${
               routeModuleNowExportsInstantConfig(filePath))
           ) {
             // Route metadata such as `unstable_instant` is content-derived and
-            // may also be supplied by a local re-export. Rebuild both route
-            // entries when a config-bearing route module or a followed config
-            // dependency changes so dev prefetch policy cannot retain the old
-            // classification.
-            invalidateAppRoutingModules();
+            // may also be supplied by a local re-export. Re-scan it first so
+            // ordinary component edits keep their normal fine-grained HMR;
+            // rebuild the virtual route entries only when the derived metadata
+            // actually changed.
+            refreshInstantMetadataAfterChange();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {

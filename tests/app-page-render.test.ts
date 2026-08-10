@@ -36,7 +36,10 @@ import {
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import type {
+  CachedAppPageValue,
+  IncrementalCacheValue,
+} from "../packages/vinext/src/shims/cache.js";
 import type { IsrWritePolicy } from "../packages/vinext/src/server/isr-cache.js";
 import type { InitialNavigationCacheMetadata } from "../packages/vinext/src/server/app-ssr-stream.js";
 import {
@@ -49,9 +52,13 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   suspendInstantPrefetchConnection,
+  suspendStaticInstantPrefetchRequestData,
   trackInstantPrefetchShellCacheTask,
 } from "../packages/vinext/src/shims/instant-prefetch-shell.js";
 
@@ -465,6 +472,162 @@ describe("app page render lifecycle", () => {
     const response = await responsePromise;
     expect(prerenderToReadableStream).toHaveBeenCalledTimes(1);
     await expect(response.text()).resolves.toBe("instant-shell");
+  });
+
+  it("waits for a cold unstable_cache fill before aborting an instant shell", async () => {
+    // Regression coverage for Next.js:
+    // test/e2e/app-dir/prefetch-true-instant/prefetch-true-instant.test.ts
+    const { MemoryCacheHandler, setCacheHandler, unstable_cache } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const cacheFill = createDeferred();
+    setCacheHandler(new MemoryCacheHandler());
+    const cached = unstable_cache(async () => {
+      await cacheFill.promise;
+      return "filled";
+    }, ["test:instant-shell-unstable-cache"]);
+    let cacheTask: Promise<string> | null = null;
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      cacheTask = cached();
+      void suspendInstantPrefetchConnection();
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => resolve({ prelude: createStream(["unstable-cache-shell"]) });
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    try {
+      const responsePromise = renderAppPageLifecycle({
+        ...common.options,
+        isRscRequest: true,
+        prerenderToReadableStream,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+      });
+      let responseSettled = false;
+      void responsePromise.then(() => {
+        responseSettled = true;
+      });
+
+      await vi.waitFor(() => expect(cacheTask).not.toBeNull());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(responseSettled).toBe(false);
+      cacheFill.resolve();
+
+      await expect(cacheTask).resolves.toBe("filled");
+      const response = await responsePromise;
+      await expect(response.text()).resolves.toBe("unstable-cache-shell");
+    } finally {
+      cacheFill.resolve();
+      await (cacheTask as Promise<string> | null)?.catch(() => {});
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("waits for a cold cached fetch before aborting an instant shell", async () => {
+    // Regression coverage for Next.js:
+    // test/e2e/app-dir/prefetch-true-instant/prefetch-true-instant.test.ts
+    const { MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { runWithFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const cacheWrite = createDeferred();
+    class SlowWriteCacheHandler extends MemoryCacheHandler {
+      override async set(
+        key: string,
+        data: IncrementalCacheValue | null,
+        ctx?: Record<string, unknown>,
+      ) {
+        await cacheWrite.promise;
+        return super.set(key, data, ctx);
+      }
+    }
+    setCacheHandler(new SlowWriteCacheHandler());
+    let fetchTask: Promise<Response> | null = null;
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      fetchTask = fetch("data:text/plain,cold-fetch", { cache: "force-cache" });
+      void suspendInstantPrefetchConnection();
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => resolve({ prelude: createStream(["cached-fetch-shell"]) });
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    try {
+      const responsePromise = runWithFetchCache(() =>
+        renderAppPageLifecycle({
+          ...common.options,
+          isRscRequest: true,
+          prerenderToReadableStream,
+          renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+        }),
+      );
+      let responseSettled = false;
+      void responsePromise.then(() => {
+        responseSettled = true;
+      });
+
+      await vi.waitFor(() => expect(fetchTask).not.toBeNull());
+      await expect(fetchTask).resolves.toBeInstanceOf(Response);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(responseSettled).toBe(false);
+      cacheWrite.resolve();
+
+      const response = await responsePromise;
+      await expect(response.text()).resolves.toBe("cached-fetch-shell");
+    } finally {
+      cacheWrite.resolve();
+      await (fetchTask as Promise<Response> | null)?.catch(() => {});
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("stops static instant shells before request-time data", async () => {
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      expect(suspendStaticInstantPrefetchRequestData("headers()")).toBeTruthy();
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => resolve({ prelude: createStream(["static-instant-shell"]) });
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      prerenderToReadableStream,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("static-instant-shell");
+  });
+
+  it("allows request-time data in runtime instant shells", async () => {
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn(() => {
+      expect(suspendStaticInstantPrefetchRequestData("cookies()")).toBeNull();
+      return Promise.resolve({ prelude: createStream(["runtime-instant-shell"]) });
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      prerenderToReadableStream,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+    });
+
+    await expect(response.text()).resolves.toBe("runtime-instant-shell");
   });
 
   it("returns pre-render special responses before starting the render stream", async () => {

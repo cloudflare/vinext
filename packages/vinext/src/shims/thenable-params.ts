@@ -2,6 +2,7 @@ import {
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
 } from "./ppr-fallback-shell.js";
+import { suspendStaticInstantPrefetchRequestData } from "./instant-prefetch-shell.js";
 
 function hasParamProperty<T extends Record<string, unknown>>(obj: T, prop: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(obj, prop);
@@ -72,6 +73,11 @@ export type ThenableParamsObserver = Readonly<{
   observeReactPromiseStatus?: boolean;
 }>;
 
+export type ThenableParamsOptions = Readonly<{
+  /** Client-reference props are transport data, not a server request-data read. */
+  suspendStaticInstantShell?: boolean;
+}>;
+
 function observeParamKeys(
   observer: ThenableParamsObserver | undefined,
   keys: readonly string[],
@@ -114,6 +120,7 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
   fallbackParamNames: ReadonlySet<string> | null,
   observer: ThenableParamsObserver | undefined,
   getFallbackShellPromise: () => Promise<T> | null,
+  getStaticInstantShellPromise: () => Promise<never> | null,
 ): T {
   if (!fallbackParamNames || fallbackParamNames.size === 0) {
     return plain;
@@ -128,6 +135,8 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         if (isFallbackParam(prop)) {
@@ -143,6 +152,8 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         if (isFallbackParam(prop)) {
@@ -170,6 +181,8 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
 
       return (
         Reflect.has(plain, prop) || (!isWellKnownProperty(prop) && hasParamProperty(plain, prop))
@@ -177,6 +190,8 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
     },
     ownKeys() {
       observeReadableParamKeys(observer, plain);
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
   };
@@ -199,6 +214,7 @@ function createThenableParamsProxy<T extends Record<string, unknown>>(
 export function makeThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer?: ThenableParamsObserver,
+  options?: ThenableParamsOptions,
 ): ThenableParams<T> {
   const plain = { ...obj };
   const fallbackShellState = getPprFallbackShellState();
@@ -242,11 +258,17 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     return fallbackShellPromise;
   }
 
+  function getStaticInstantShellPromise(): Promise<never> | null {
+    if (options?.suspendStaticInstantShell === false) return null;
+    return suspendStaticInstantPrefetchRequestData("params");
+  }
+
   const resolvedParams = createResolvedParamsProxy(
     plain,
     fallbackParamNames,
     observer,
     getFallbackShellPromise,
+    getStaticInstantShellPromise,
   );
 
   const promise = Promise.resolve(resolvedParams);
@@ -267,6 +289,11 @@ export function makeThenableParams<T extends Record<string, unknown>>(
           if (!fallbackParamNames) {
             observeAllParamKeys(observer, plain);
           }
+          const instantShellPromise = getStaticInstantShellPromise();
+          if (instantShellPromise) {
+            const continuation = Reflect.get(instantShellPromise, prop);
+            return Reflect.apply(continuation, instantShellPromise, args);
+          }
           return Reflect.apply(value, target, args);
         };
       }
@@ -278,6 +305,8 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         if (isFallbackParam(prop)) {
@@ -294,6 +323,8 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         if (isFallbackParam(prop)) {
@@ -321,6 +352,8 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
       }
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
 
       return (
         Reflect.has(target, prop) || (!isWellKnownProperty(prop) && hasParamProperty(plain, prop))
@@ -328,6 +361,8 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     },
     ownKeys() {
       observeReadableParamKeys(observer, plain);
+      const instantShellPromise = getStaticInstantShellPromise();
+      if (instantShellPromise) throw instantShellPromise;
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
   };

@@ -30,7 +30,14 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  createInstantPrefetchShellState,
+  runWithInstantPrefetchShellState,
+} from "../packages/vinext/src/shims/instant-prefetch-shell.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -984,6 +991,60 @@ describe("buildPageElements", () => {
 
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
+  it("keeps client page params as transport data in static instant shells", async () => {
+    // Next.js omits server-provided params for client pages/segments when
+    // Cache Components are enabled. Vinext still transports the concrete
+    // values, but serializing those props must not count as a server request
+    // data read and cut the client boundary out of the static shell.
+    // Ported from Next.js:
+    // packages/next/src/server/app-render/create-component-tree.tsx
+    const ClientPage = Object.assign(() => null, {
+      $$typeof: Symbol.for("react.client.reference"),
+    });
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(ClientPage),
+      layouts: [],
+      routeSegments: ["[slug]"],
+      pattern: "/[slug]",
+    });
+    const shellState = createInstantPrefetchShellState("/hello", "static");
+
+    try {
+      await runWithInstantPrefetchShellState(shellState, async () => {
+        const base = createBaseOptions({
+          params: { slug: "hello" },
+          route,
+          routePath: "/hello",
+          searchParams: new URLSearchParams("view=grid"),
+        });
+        const result = await buildPageElements({
+          ...base,
+          pageRequest: {
+            ...base.pageRequest,
+            renderMode: APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+          },
+        });
+        const record = result as Record<string, React.ReactNode>;
+        const pageElement = record["page:/hello"];
+        if (
+          !React.isValidElement<{
+            params: Promise<AppPageParams>;
+            searchParams: Promise<Record<string, unknown>>;
+          }>(pageElement)
+        ) {
+          throw new Error("Expected client page element");
+        }
+
+        await expect(pageElement.props.params).resolves.toEqual({ slug: "hello" });
+        await expect(pageElement.props.searchParams).resolves.toEqual({ view: "grid" });
+      });
+
+      expect(shellState.hasDynamicBoundary).toBe(false);
+    } finally {
+      shellState.dynamicAbortController.abort();
+    }
   });
 
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {

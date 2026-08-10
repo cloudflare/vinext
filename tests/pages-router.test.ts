@@ -3751,6 +3751,7 @@ describe("Virtual server entry generation", () => {
           id === pagesClientResolved!.id ? pagesClientModule : originalGetModuleById(id),
         );
       const invalidateClientModule = vi.spyOn(clientModuleGraph, "invalidateModule");
+      const rscHotSend = vi.spyOn(testServer.environments.rsc.hot, "send");
       const loadCode = async () => {
         const loaded = await testServer.pluginContainer.load(resolved!.id);
         return typeof loaded === "string" ? loaded : ((loaded as any)?.code ?? "");
@@ -3759,23 +3760,65 @@ describe("Virtual server entry generation", () => {
 
       fs.writeFileSync(
         configPath,
-        'export const unstable_instant = { prefetch: "runtime" };\n' +
+        'export const unstable_instant = { prefetch: "runtime", samples: [{}] };\n' +
           'export const marker = "updated";\n',
       );
       testServer.watcher.emit("change", configPath);
 
-      expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+      await vi.waitFor(async () => {
+        expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+      });
       expect(getClientModuleById).toHaveBeenCalledWith(pagesClientResolved!.id);
       expect(invalidateClientModule).toHaveBeenCalledWith(pagesClientModule);
 
       fs.rmSync(configPath);
       testServer.watcher.emit("unlink", configPath);
       // Missing relative re-exports are conservatively runtime instant.
-      expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+      await vi.waitFor(async () => {
+        expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+      });
 
       fs.writeFileSync(configPath, 'export const unstable_instant = { prefetch: "static" };\n');
       testServer.watcher.emit("add", configPath);
-      expect(await loadCode()).not.toContain('"hasRuntimeInstant":true');
+      await vi.waitFor(async () => {
+        expect(await loadCode()).not.toContain('"hasRuntimeInstant":true');
+      });
+
+      // Once the graph no longer tracks this page as an instant-config
+      // dependency, adding a locally aliased export must still invalidate the
+      // browser entry. The exported name, not the local binding name, is the
+      // route-config contract.
+      fs.writeFileSync(pagePath, "export default function Page() { return null; }\n");
+      testServer.watcher.emit("change", pagePath);
+      await vi.waitFor(async () => {
+        expect(await loadCode()).not.toContain('"hasInstant":true');
+      });
+
+      fs.writeFileSync(
+        pagePath,
+        'const config = { prefetch: "runtime", samples: [{}] };\n' +
+          "export { config as unstable_instant };\n" +
+          "export default function Page() { return null; }\n",
+      );
+      testServer.watcher.emit("change", pagePath);
+      await vi.waitFor(async () => {
+        expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+      });
+
+      const countFullReloads = () =>
+        rscHotSend.mock.calls.filter(
+          ([event]) => (event as unknown as { type?: string }).type === "full-reload",
+        ).length;
+      const fullReloadCount = countFullReloads();
+      fs.writeFileSync(
+        pagePath,
+        'const config = { prefetch: "runtime", samples: [{}] };\n' +
+          "export { config as unstable_instant };\n" +
+          "export default function Page() { return <p>ordinary edit</p>; }\n",
+      );
+      testServer.watcher.emit("change", pagePath);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(countFullReloads()).toBe(fullReloadCount);
     } finally {
       await testServer.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

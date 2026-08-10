@@ -12,6 +12,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
@@ -2277,7 +2278,7 @@ describe("Link prefetch scheduling", () => {
       const headers = fetchInit?.headers as Headers | undefined;
       expect(headers?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBeNull();
       expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
-        APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+        APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
       );
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
       expect([...getPrefetchCache().values()][0]).toMatchObject({
