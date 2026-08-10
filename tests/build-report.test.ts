@@ -21,12 +21,27 @@ import {
   buildReportRows,
   formatBuildReport,
   printBuildReport,
+  resolveClientMiddlewareMatcherConfig,
 } from "../packages/vinext/src/build/report.js";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
 
 const FIXTURES_PAGES = path.resolve("tests/fixtures/pages-basic/pages");
 const FIXTURES_APP = path.resolve("tests/fixtures/app-basic/app");
+
+describe("resolveClientMiddlewareMatcherConfig", () => {
+  it("distinguishes no middleware from middleware without an explicit matcher", async () => {
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-middleware-matcher-"));
+    const middlewarePath = path.join(tmpRoot, "proxy.ts");
+    try {
+      await fs.writeFile(middlewarePath, "export default function proxy() {}\n");
+      expect(resolveClientMiddlewareMatcherConfig(undefined)).toBeUndefined();
+      expect(resolveClientMiddlewareMatcherConfig(middlewarePath)).toEqual(["/:path*"]);
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 // ─── hasNamedExport ───────────────────────────────────────────────────────────
 

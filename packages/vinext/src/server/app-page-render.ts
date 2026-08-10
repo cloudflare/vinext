@@ -757,7 +757,9 @@ export async function renderAppPageLifecycle(
 
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
-    pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+    const bytes = new Uint8Array(await readAppPageBinaryStream(rscStream));
+    const { invalidateIncompletePageSuspenseShell } = await import("./app-page-loading-shell.js");
+    pprFallbackShellRsc = invalidateIncompletePageSuspenseShell(bytes);
   }
 
   let revalidateSeconds = options.revalidateSeconds;
@@ -786,7 +788,10 @@ export async function renderAppPageLifecycle(
     });
   const rscCapture = pprFallbackShellRsc
     ? {
-        ssrStream: createBufferedRscStream(false),
+        // HTML SSR keeps this open until the embed transform appends its done
+        // frame. A direct RSC loading-shell response has no downstream writer,
+        // so its buffered prerender prelude must close here.
+        ssrStream: createBufferedRscStream(options.isRscRequest),
         ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);

@@ -1,13 +1,16 @@
-import { createElement, isValidElement, Suspense } from "react";
+import { cloneElement, createElement, isValidElement, Suspense, type ReactNode } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
+import { isPromiseLike } from "../utils/promise.js";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_MARKER_VALUE,
+  APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
@@ -27,7 +30,9 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
+  loadingShell: boolean;
   mountedSlotsHeader: string | null;
+  pageLoadingShell: boolean;
   pageElementIds: readonly string[];
   routeId: string;
 };
@@ -300,6 +305,39 @@ function OptimisticRouteSegment(): null {
   throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
 }
 
+function replaceUnresolvedPageShellSegments(value: unknown, depth = 0): unknown {
+  if (depth > 100) return value;
+  if (Array.isArray(value)) {
+    return value.map((entry) => replaceUnresolvedPageShellSegments(entry, depth + 1));
+  }
+  if (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    Reflect.get(value, "$$typeof") === Symbol.for("react.lazy")
+  ) {
+    const init = Reflect.get(value, "_init");
+    if (typeof init !== "function") return value;
+    try {
+      return replaceUnresolvedPageShellSegments(
+        Reflect.apply(init, undefined, [Reflect.get(value, "_payload")]),
+        depth + 1,
+      );
+    } catch (error) {
+      // A PageSuspense payload is a completed prerender prelude. Lazy Flight
+      // chunks that are still unresolved therefore represent the postponed
+      // dynamic holes selected by React, not data that can arrive later.
+      return isPromiseLike(error) ? createElement(OptimisticRouteSegment) : value;
+    }
+  }
+  if (!isValidElement<{ children?: unknown }>(value)) return value;
+
+  const children = value.props.children;
+  const nextChildren = replaceUnresolvedPageShellSegments(children, depth + 1);
+  return nextChildren === children
+    ? value
+    : cloneElement(value, undefined, nextChildren as ReactNode);
+}
+
 export function createOptimisticRouteTemplate(options: {
   allowLoadingShell?: boolean;
   basePath: string;
@@ -314,11 +352,17 @@ export function createOptimisticRouteTemplate(options: {
     href: options.href,
     routeManifest: options.routeManifest,
   });
-  if (match === null || (!options.allowLoadingShell && !match.route.isDynamic)) return null;
-  if (options.interceptionContext !== null) return null;
+  if (match === null || (!options.allowLoadingShell && !match.route.isDynamic)) {
+    return null;
+  }
+  if (options.interceptionContext !== null) {
+    return null;
+  }
 
   const metadata = AppElementsWire.readMetadata(options.elements);
-  if (metadata.interception !== null || metadata.interceptionContext !== null) return null;
+  if (metadata.interception !== null || metadata.interceptionContext !== null) {
+    return null;
+  }
 
   const routeElement = options.elements[metadata.routeId];
   // Full-prefetch learning is intentionally heuristic: legacy full prefetches
@@ -326,23 +370,39 @@ export function createOptimisticRouteTemplate(options: {
   // Suspense fallback. Authoritative loading-shell prefetches use the marker
   // check below instead.
   if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
+  const loadingShellMarker = options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY];
   if (
     options.allowLoadingShell &&
-    options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary"
+    loadingShellMarker !== APP_PREFETCH_LOADING_SHELL_MARKER_VALUE &&
+    loadingShellMarker !== APP_PREFETCH_PAGE_SHELL_MARKER_VALUE
   ) {
     return null;
   }
   // Shell prefetches must include the eagerly-rendered loading component. A
   // null route element means the server had no route loading boundary.
-  if (options.allowLoadingShell && (routeElement === undefined || routeElement === null))
+  if (options.allowLoadingShell && (routeElement === undefined || routeElement === null)) {
     return null;
+  }
 
   const pageElementIds = getPageElementIds(options.elements, match.route);
-  if (pageElementIds.length === 0) return null;
+  if (pageElementIds.length === 0) {
+    return null;
+  }
+  if (
+    options.allowLoadingShell &&
+    loadingShellMarker === APP_PREFETCH_PAGE_SHELL_MARKER_VALUE &&
+    !pageElementIds.some((pageElementId) =>
+      elementHasSuspenseFallback(options.elements[pageElementId]),
+    )
+  ) {
+    return null;
+  }
 
   return {
     elements: options.elements,
+    loadingShell: options.allowLoadingShell === true,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    pageLoadingShell: loadingShellMarker === APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
     pageElementIds,
     routeId: match.route.id,
   };
@@ -351,7 +411,11 @@ export function createOptimisticRouteTemplate(options: {
 export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
   for (const pageElementId of template.pageElementIds) {
-    elements[pageElementId] = createElement(OptimisticRouteSegment);
+    elements[pageElementId] = template.pageLoadingShell
+      ? (replaceUnresolvedPageShellSegments(elements[pageElementId]) as AppElementValue)
+      : template.loadingShell
+        ? elements[pageElementId]
+        : createElement(OptimisticRouteSegment);
   }
   return elements;
 }

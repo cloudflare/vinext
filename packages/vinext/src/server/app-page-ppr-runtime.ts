@@ -119,7 +119,7 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
   },
   async warm(options) {
     const { warmPprFallbackShellCaches } = await import("./app-ppr-fallback-shell-render.js");
-    await warmPprFallbackShellCaches(options);
+    return warmPprFallbackShellCaches(options);
   },
 };
 

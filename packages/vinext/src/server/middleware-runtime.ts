@@ -83,6 +83,12 @@ type ExecuteMiddlewareOptions = {
   module: MiddlewareModule;
   normalizedPathname?: string;
   /**
+   * Unmodified request used only for matcher has/missing evaluation. App
+   * Router strips Flight headers before invoking user middleware, but Next.js
+   * evaluates matcher conditions before that strip.
+   */
+  matcherRequest?: Request;
+  /**
    * The caller already created an isolated body branch for middleware. This
    * lets App Router normalize that branch's URL and headers without adding a
    * second tee whose preserved side would never be consumed.
@@ -429,7 +435,7 @@ export async function executeMiddleware(
     matchesMiddleware(
       encodedMatchPathname,
       matcher,
-      options.request,
+      options.matcherRequest ?? options.request,
       options.i18nConfig,
       localeContext,
     );
@@ -440,7 +446,7 @@ export async function executeMiddleware(
     matchesMiddleware(
       decodedMatchPathname,
       matcher,
-      options.request,
+      options.matcherRequest ?? options.request,
       options.i18nConfig,
       localeContext,
     );

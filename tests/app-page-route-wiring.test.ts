@@ -5,6 +5,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   AppElementsWire,
@@ -1528,7 +1529,7 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+  it("keeps the page entry for loading-shell prefetches without a route loading boundary", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -1554,11 +1555,15 @@ describe("app page route wiring helpers", () => {
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    expect(elements["page:/dashboard"]).toBeNull();
-    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
+    // The dispatch layer renders this entry through the two-pass PPR path so
+    // React preserves static siblings and selects only active Suspense fallbacks.
+    expect(elements["page:/dashboard"]).toBeDefined();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe(
+      APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
+    );
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
-    expect(html).not.toContain("Page");
+    expect(html).toContain("Page");
   });
 
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {

@@ -249,6 +249,13 @@ export function extractMiddlewareMatcherConfig(
   return isStaticMiddlewareMatcher(value) ? value : undefined;
 }
 
+export function resolveClientMiddlewareMatcherConfig(
+  filePath: string | null | undefined,
+): StaticMiddlewareMatcher | undefined {
+  if (!filePath) return undefined;
+  return extractMiddlewareMatcherConfig(filePath) ?? ["/:path*"];
+}
+
 /**
  * Extract the statically analyzable `config.matcher` value without first
  * narrowing it to vinext's runtime matcher type. Build validation needs the

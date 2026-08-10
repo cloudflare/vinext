@@ -34,7 +34,12 @@ import {
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
-import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
+import {
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  AppElementsWire,
+  isAppElementsRecord,
+  type AppOutgoingElements,
+} from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
 import {
@@ -76,6 +81,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -112,6 +118,15 @@ type AppPageBackgroundRegenerator = (
   renderFn: () => Promise<void>,
   errorContext?: AppPageBackgroundRegenerationErrorContext,
 ) => void;
+
+function removePrefetchLoadingShellMarker<TElement>(element: TElement | null): TElement | null {
+  if (!isAppElementsRecord(element) || !(APP_PREFETCH_LOADING_SHELL_MARKER_KEY in element)) {
+    return element;
+  }
+  const next: Record<string, unknown> = { ...element };
+  delete next[APP_PREFETCH_LOADING_SHELL_MARKER_KEY];
+  return next as TElement;
+}
 
 type AppPageDispatchIntercept<TPage = unknown> = {
   interceptionGraphId?: string | null;
@@ -262,7 +277,7 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isForceStatic: boolean,
     isForceDynamic: boolean,
   ): Promise<Response | null>;
-  warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
+  warm(options: WarmPprFallbackShellCachesOptions): Promise<boolean>;
 };
 
 export type AppPagePprState = PprFallbackShellState;
@@ -611,11 +626,16 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
-  if (!options.pprFallbackShell || !options.pprRuntime) {
+  if (!options.pprRuntime) {
     return await dispatch();
   }
 
-  return await options.pprRuntime.run(options.pprFallbackShell, dispatch);
+  const fallbackShell =
+    options.pprFallbackShell ??
+    (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+      ? { fallbackParamNames: [], routePattern: options.route.pattern }
+      : null);
+  return fallbackShell ? await options.pprRuntime.run(fallbackShell, dispatch) : await dispatch();
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -1043,12 +1063,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
 
   const fallbackShellState = options.pprRuntime?.getState() ?? null;
-  if (fallbackShellState && process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) {
+  const isPageLocalPrefetchShell =
+    options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
+    options.isRscRequest &&
+    !hasActiveLoadingBoundary;
+  let pageLocalPrefetchHasDynamicBoundary = false;
+  if (
+    fallbackShellState &&
+    ((process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) || isPageLocalPrefetchShell)
+  ) {
     const warmupBuildResult = await buildCurrentPageElement();
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
-    await options.pprRuntime!.warm({
+    pageLocalPrefetchHasDynamicBoundary = await options.pprRuntime!.warm({
       element: warmupBuildResult.element,
       onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
       renderToReadableStream: options.renderToReadableStream,
@@ -1060,6 +1088,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const pageBuildResult = await buildCurrentPageElement();
   if (pageBuildResult.response) {
     return pageBuildResult.response;
+  }
+  if (isPageLocalPrefetchShell && !pageLocalPrefetchHasDynamicBoundary) {
+    pageBuildResult.element = removePrefetchLoadingShellMarker(pageBuildResult.element);
   }
 
   const navigationParams = resolveAppPageNavigationParams(
