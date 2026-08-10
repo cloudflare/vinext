@@ -70,6 +70,11 @@ import {
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
 import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
+import {
+  createLinkSegmentPrefetchScheduler,
+  type LinkSegmentPrefetchFetchStrategy,
+  type LinkSegmentPrefetchPhaseRequest,
+} from "./internal/link-segment-prefetch-scheduler.js";
 
 type NavigateEvent = {
   url: URL;
@@ -145,7 +150,7 @@ export type LinkProps<_RouteInferType = unknown> = {
   children?: React.ReactNode;
 } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
 
-type LinkPrefetchMode = "disabled" | "auto" | "full" | "full-after-shell";
+type LinkPrefetchMode = "disabled" | LinkSegmentPrefetchFetchStrategy;
 
 declare global {
   // Window is an ambient interface from lib.dom; interface merging is required
@@ -364,7 +369,11 @@ function prefetchUrl(
   priority: "low" | "high" = "low",
   pagesRouteHref?: string,
   locale?: string | false,
-): void {
+  options: {
+    forceSegmentCacheFetch?: boolean;
+    segmentCachePhase?: LinkSegmentPrefetchPhaseRequest["phase"];
+  } = {},
+): Promise<void> | undefined {
   if (typeof window === "undefined") return;
   const navigationEpoch = linkPrefetchNavigationEpoch;
 
@@ -412,7 +421,7 @@ function prefetchUrl(
   }
 
   const runPrefetch = () => {
-    void (async () => {
+    const promise = (async () => {
       if (hasAppNavigationRuntime()) {
         if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
 
@@ -477,15 +486,24 @@ function prefetchUrl(
           ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
           : null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
-        const autoPrefetch =
+        const basePrefetchPolicy =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
             : resolveFullAppRoutePrefetch();
+        const autoPrefetch =
+          options.segmentCachePhase === "route-tree"
+            ? {
+                ...basePrefetchPolicy,
+                cacheForNavigation: false,
+                prefetchShellFirst: false,
+              }
+            : basePrefetchPolicy;
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const isOptimisticRouteShellPrefetch =
+          options.segmentCachePhase === undefined && !autoPrefetch.cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
@@ -511,8 +529,18 @@ function prefetchUrl(
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
-        const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        if (__prefetchInlining && mode === "auto" && autoPrefetch.cacheForNavigation) {
+        const shouldSendSegmentPrefetchHeaders =
+          isOptimisticRouteShellPrefetch ||
+          mode === "auto" ||
+          options.segmentCachePhase !== undefined;
+        if (options.segmentCachePhase === "route-tree") {
+          headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+          headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+        } else if (
+          __prefetchInlining &&
+          (mode === "auto" || options.segmentCachePhase === "segment") &&
+          autoPrefetch.cacheForNavigation
+        ) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
@@ -533,6 +561,11 @@ function prefetchUrl(
         }
         if (prefetched.has(cacheKey)) {
           if (!autoPrefetch.cacheForNavigation) {
+            if (options.segmentCachePhase === "route-tree") {
+              await getPrefetchCache()
+                .get(cacheKey)
+                ?.pending?.catch(() => {});
+            }
             return;
           }
         }
@@ -626,7 +659,13 @@ function prefetchUrl(
         // A single freshness-aware gate covers both an exact prior prefetch and
         // an equivalent `_rsc` variant; the helper also deletes any stale exact
         // entry, so a stale `prefetched` member is harmlessly re-added below.
-        if (hasNavigationCacheEntry) {
+        // A viewport task revealed immediately after user interaction still
+        // needs its own segment request: an alias left by the preceding task
+        // can otherwise suppress the scheduler's reserved-bandwidth fetch.
+        if (
+          hasNavigationCacheEntry &&
+          !(options.segmentCachePhase === "segment" && options.forceSegmentCacheFetch === true)
+        ) {
           if (
             !hasExactNavigationCacheEntry &&
             !prefetched.has(cacheKey) &&
@@ -648,13 +687,20 @@ function prefetchUrl(
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
-          __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
+          options.segmentCachePhase === undefined &&
+          __prefetchInlining &&
+          mode === "auto" &&
+          autoPrefetch.prefetchShellFirst;
         const gateViaExplicitSearchShell =
           mode === "full" &&
           hasSearchParams &&
           autoPrefetch.prefetchShellFirst &&
           mountedSlotsHeader === null;
         const gateViaLoadingShell =
+          // A scheduled task already completed its route-tree/static-shell
+          // phase. Repeating the legacy loading-shell request here would turn
+          // dynamic-on-hover into route tree + loading shell + full payload.
+          options.segmentCachePhase === undefined &&
           (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
           autoPrefetch.prefetchShellFirst;
         const fetchPromise =
@@ -759,13 +805,22 @@ function prefetchUrl(
                 : PREFETCH_CACHE_TTL,
             honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
-            prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
+            prefetchKind:
+              options.segmentCachePhase === "route-tree"
+                ? "route-tree"
+                : isOptimisticRouteShellPrefetch
+                  ? "loading-shell"
+                  : "navigation",
             prepareSnapshot: autoPrefetch.cacheForNavigation
               ? prepareNavigationPrefetchSnapshot
               : undefined,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
           },
         );
+        if (options.segmentCachePhase !== undefined) {
+          const scheduledEntry = getPrefetchCache().get(cacheKey);
+          await scheduledEntry?.pending?.catch(() => {});
+        }
       } else if (HAS_PAGES_ROUTER && window.__NEXT_DATA__) {
         // Pages Router prefetch. When a code-split loader is registered for
         // the target route (prod builds expose them on window via the
@@ -806,15 +861,17 @@ function prefetchUrl(
     })().catch((error) => {
       console.error("[vinext] RSC prefetch setup error:", error);
     });
+    return promise;
   };
 
-  if (priority === "high" || hasAppNavigationRuntime()) {
-    runPrefetch();
-    return;
+  if (priority === "high" || options.segmentCachePhase !== undefined || hasAppNavigationRuntime()) {
+    return runPrefetch();
   }
 
   const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
-  schedule(runPrefetch);
+  schedule(() => {
+    void runPrefetch();
+  });
 }
 
 async function promotePrefetchEntriesForNavigation(href: string): Promise<void> {
@@ -857,10 +914,10 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
  */
 let sharedObserver: IntersectionObserver | null = null;
 type LinkPrefetchInstance = {
+  fetchStrategy: LinkSegmentPrefetchFetchStrategy;
   href: string;
   isVisible: boolean;
   locale?: string | false;
-  mode: LinkPrefetchMode;
   pagesRouteHref?: string;
   queuedViewportPrefetch: boolean;
   routerMode: LinkPrefetchRouterMode;
@@ -879,7 +936,7 @@ function drainVisibleAppPrefetchQueue(): void {
     if (!instance) return;
     instance.queuedViewportPrefetch = false;
     if (!instance.isVisible || instance.routerMode !== "app") continue;
-    prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref);
+    void prefetchUrl(instance.href, instance.fetchStrategy, "low", instance.pagesRouteHref);
   }
 }
 
@@ -892,19 +949,71 @@ function scheduleVisibleAppPrefetch(instance: LinkPrefetchInstance): void {
   queueMicrotask(drainVisibleAppPrefetchQueue);
 }
 
-function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boolean): void {
+async function runSegmentCachePrefetchPhase({
+  fetchStrategy,
+  forceSegmentCacheFetch,
+  href,
+  locale,
+  pagesRouteHref,
+  phase,
+  priority,
+}: LinkSegmentPrefetchPhaseRequest): Promise<void> {
+  await prefetchUrl(
+    href,
+    fetchStrategy,
+    priority === "intent" ? "high" : "low",
+    pagesRouteHref,
+    locale,
+    {
+      forceSegmentCacheFetch,
+      segmentCachePhase: phase,
+    },
+  );
+}
+
+const CACHE_COMPONENTS_ENABLED =
+  process.env.__NEXT_CACHE_COMPONENTS === "true" ||
+  (process.env.__NEXT_CACHE_COMPONENTS as unknown) === true;
+const segmentCacheLinkPrefetchScheduler = CACHE_COMPONENTS_ENABLED
+  ? createLinkSegmentPrefetchScheduler({ runPhase: runSegmentCachePrefetchPhase })
+  : null;
+
+function usesSegmentCachePrefetchScheduler(instance: LinkPrefetchInstance): boolean {
+  return instance.routerMode === "app" && segmentCacheLinkPrefetchScheduler !== null;
+}
+
+function setVisibleLinkPrefetch(
+  instance: LinkPrefetchInstance,
+  isVisible: boolean,
+  batchId?: number,
+): void {
   instance.isVisible = isVisible;
   if (isVisible) {
     visibleLinkPrefetches.add(instance);
     if (instance.routerMode === "pages" && instance.viewportPrefetched) return;
-    if (instance.routerMode === "app") {
+    if (usesSegmentCachePrefetchScheduler(instance) && segmentCacheLinkPrefetchScheduler) {
+      segmentCacheLinkPrefetchScheduler.schedule(
+        instance,
+        "default",
+        batchId ?? segmentCacheLinkPrefetchScheduler.createBatch(),
+      );
+    } else if (instance.routerMode === "app") {
       scheduleVisibleAppPrefetch(instance);
     } else {
-      prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref, instance.locale);
+      void prefetchUrl(
+        instance.href,
+        instance.fetchStrategy,
+        "low",
+        instance.pagesRouteHref,
+        instance.locale,
+      );
     }
     instance.viewportPrefetched = true;
   } else {
     visibleLinkPrefetches.delete(instance);
+    if (usesSegmentCachePrefetchScheduler(instance) && segmentCacheLinkPrefetchScheduler) {
+      segmentCacheLinkPrefetchScheduler.cancel(instance);
+    }
   }
 }
 
@@ -916,7 +1025,11 @@ function registerVisibleLinkPing(): void {
 function pingVisibleLinkPrefetches(): void {
   for (const instance of visibleLinkPrefetches) {
     if (instance.isVisible && instance.routerMode === "app") {
-      scheduleVisibleAppPrefetch(instance);
+      if (usesSegmentCachePrefetchScheduler(instance) && segmentCacheLinkPrefetchScheduler) {
+        segmentCacheLinkPrefetchScheduler.schedule(instance, "default");
+      } else {
+        scheduleVisibleAppPrefetch(instance);
+      }
     }
   }
 }
@@ -925,12 +1038,21 @@ function getSharedObserver(): IntersectionObserver | null {
   if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return null;
   if (sharedObserver) return sharedObserver;
 
+  if (segmentCacheLinkPrefetchScheduler) {
+    segmentCacheLinkPrefetchScheduler.registerUserInteractionListeners();
+  }
+
   sharedObserver = new IntersectionObserver(
     (entries) => {
+      const batchId = segmentCacheLinkPrefetchScheduler?.createBatch();
       for (const entry of entries) {
         const instance = observedLinkPrefetches.get(entry.target);
         if (!instance) continue;
-        setVisibleLinkPrefetch(instance, entry.isIntersecting || entry.intersectionRatio > 0);
+        setVisibleLinkPrefetch(
+          instance,
+          entry.isIntersecting || entry.intersectionRatio > 0,
+          batchId,
+        );
       }
     },
     {
@@ -1255,16 +1377,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       currentOrigin: window.location.origin,
     });
     if (hrefToPrefetch == null) return;
+    if (prefetchMode === "disabled") return;
 
     const observer = getSharedObserver();
     if (!observer) return;
 
     registerVisibleLinkPing();
     const instance: LinkPrefetchInstance = {
+      fetchStrategy: prefetchMode,
       href: hrefToPrefetch,
       isVisible: false,
       locale,
-      mode: prefetchMode,
       pagesRouteHref:
         normalizedRouteHref === normalizedHref
           ? undefined
@@ -1282,6 +1405,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     return () => {
       observer.unobserve(node);
+      segmentCacheLinkPrefetchScheduler?.cancel(instance);
       observedLinkPrefetches.delete(node);
       visibleLinkPrefetches.delete(instance);
       instance.isVisible = false;
@@ -1299,15 +1423,31 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     ) {
       return;
     }
+    const observedInstance = internalRef.current
+      ? observedLinkPrefetches.get(internalRef.current)
+      : undefined;
+    if (
+      observedInstance &&
+      usesSegmentCachePrefetchScheduler(observedInstance) &&
+      !observedInstance.isVisible
+    ) {
+      return;
+    }
     const intentMode = unstable_dynamicOnHover ? "full-after-shell" : prefetchMode;
-    if (unstable_dynamicOnHover && internalRef.current) {
-      const instance = observedLinkPrefetches.get(internalRef.current);
-      if (instance) {
-        instance.mode = "full-after-shell";
-      }
+    if (unstable_dynamicOnHover) {
+      if (observedInstance) observedInstance.fetchStrategy = "full-after-shell";
       void promotePrefetchEntriesForNavigation(normalizedHref);
     }
-    prefetchUrl(
+    if (
+      observedInstance &&
+      observedInstance.isVisible &&
+      usesSegmentCachePrefetchScheduler(observedInstance) &&
+      segmentCacheLinkPrefetchScheduler
+    ) {
+      segmentCacheLinkPrefetchScheduler.schedule(observedInstance, "intent");
+      return;
+    }
+    void prefetchUrl(
       normalizedHref,
       intentMode,
       "high",

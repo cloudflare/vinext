@@ -1548,6 +1548,33 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("does not install Cache Components interaction listeners when the feature is disabled", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
+    stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      const interactionEventTypes = new Set([
+        "change",
+        "click",
+        "input",
+        "keydown",
+        "mousedown",
+        "pointerdown",
+      ]);
+      const addEventListener = vi.mocked(window.addEventListener);
+      const interactionListeners = addEventListener.mock.calls.filter(
+        ([type, , options]) => interactionEventTypes.has(type) && options === true,
+      );
+      expect(interactionListeners).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches visible links in production with low priority", async () => {
     const observer = stubIntersectionObserver();
 
@@ -2660,6 +2687,112 @@ describe("Link prefetch scheduling", () => {
       expect(fullHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
       expect(fullHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(fullHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
+    } finally {
+      await flushPrefetchTasks();
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("schedules prefetch=true links through route-tree and segment phases", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+
+    try {
+      let releaseRouteTree: ((response: Response) => void) | undefined;
+      const routeTreeResponse = new Promise<Response>((resolve) => {
+        releaseRouteTree = resolve;
+      });
+      result.fetch
+        .mockImplementationOnce(() => routeTreeResponse)
+        .mockImplementation(() => Promise.resolve(new Response("")));
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const routeTreeInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const routeTreeHeaders = routeTreeInit?.headers as Headers | undefined;
+      expect(routeTreeInit?.priority).toBe("low");
+      expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
+
+      releaseRouteTree?.(new Response(""));
+      await waitForFetchCalls(result.fetch, 2);
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+
+      const segmentInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
+      const segmentHeaders = segmentInit?.headers as Headers | undefined;
+      expect(segmentInit?.priority).toBe("low");
+      expect(segmentHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(segmentHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
+    } finally {
+      await flushPrefetchTasks();
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not let intent bypass the scheduler before IntersectionObserver visibility", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      const routeTreeHeaders = result.fetch.mock.calls[0]?.[1]?.headers as Headers | undefined;
+      expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
+    } finally {
+      await flushPrefetchTasks();
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps dynamic-on-hover upgrades behind their route tree with intent bandwidth", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+
+    try {
+      let releaseRouteTree: ((response: Response) => void) | undefined;
+      const routeTreeResponse = new Promise<Response>((resolve) => {
+        releaseRouteTree = resolve;
+      });
+      result.fetch
+        .mockImplementationOnce(() => routeTreeResponse)
+        .mockImplementation(() => Promise.resolve(new Response("")));
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      releaseRouteTree?.(new Response(""));
+      await waitForFetchCalls(result.fetch, 2);
+
+      const segmentInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
+      const segmentHeaders = segmentInit?.headers as Headers | undefined;
+      expect(segmentInit?.priority).toBe("high");
+      expect(segmentHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(segmentHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
     } finally {
       await flushPrefetchTasks();
       result.restoreNodeEnv();
