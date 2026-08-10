@@ -8,7 +8,8 @@ import {
 import {
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
-  fillSkippedLayoutsFromElementSources,
+  fillRetainedPrefetchLayoutsFromElementSources,
+  getMissingRetainedPrefetchLayoutIds,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
@@ -179,6 +180,7 @@ describe("App Router optimistic routing", () => {
         routeId,
       }),
       [AppElementsWire.keys.skippedLayoutIds]: [sharedLayoutId],
+      [AppElementsWire.keys.retainedOnlySkippedLayoutIds]: [sharedLayoutId],
       [routeId]: createElement("main", null, "Page two"),
     };
     const retainedLayout = createElement("section", null, "Shared layout");
@@ -192,10 +194,103 @@ describe("App Router optimistic routing", () => {
       [sharedLayoutId]: retainedLayout,
     };
 
-    const filled = fillSkippedLayoutsFromElementSources(target, [source]);
+    const filled = fillRetainedPrefetchLayoutsFromElementSources(target, [source]);
 
     expect(filled[sharedLayoutId]).toBe(retainedLayout);
     expect(AppElementsWire.readMetadata(filled).skippedLayoutIds).toEqual([]);
+    expect(AppElementsWire.readMetadata(filled).retainedOnlySkippedLayoutIds).toEqual([]);
+  });
+
+  it("does not fill standard-reuse omissions from a retained-layout provider", () => {
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const standardLayoutId = AppElementsWire.encodeLayoutId("/");
+    const retainedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const target: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [standardLayoutId, retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [standardLayoutId, retainedLayoutId],
+      [AppElementsWire.keys.retainedOnlySkippedLayoutIds]: [retainedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+    const retainedLayout = createElement("section", null, "Shared layout");
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [standardLayoutId, retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/shared/one", null),
+      }),
+      [standardLayoutId]: createElement("html", null, "Stale root layout"),
+      [retainedLayoutId]: retainedLayout,
+    };
+
+    const filled = fillRetainedPrefetchLayoutsFromElementSources(target, [source]);
+
+    expect(Object.hasOwn(filled, standardLayoutId)).toBe(false);
+    expect(filled[retainedLayoutId]).toBe(retainedLayout);
+    expect(AppElementsWire.readMetadata(filled).skippedLayoutIds).toEqual([standardLayoutId]);
+    expect(AppElementsWire.readMetadata(filled).retainedOnlySkippedLayoutIds).toEqual([]);
+  });
+
+  it("does not require providers for standard-reuse-only skipped layouts", () => {
+    const retainedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const visibleLayoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [visibleLayoutId, retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [visibleLayoutId, retainedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+
+    expect(getMissingRetainedPrefetchLayoutIds(elements)).toEqual([]);
+  });
+
+  it("throws when a retained-only skipped layout has no provider", () => {
+    const retainedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [retainedLayoutId],
+      [AppElementsWire.keys.retainedOnlySkippedLayoutIds]: [retainedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+
+    expect(getMissingRetainedPrefetchLayoutIds(elements)).toEqual([retainedLayoutId]);
+    expect(() => fillRetainedPrefetchLayoutsFromElementSources(elements, [])).toThrow(
+      "Retained prefetch layout provider is no longer available",
+    );
+  });
+
+  it("does not require a provider for standard-and-retained overlap", () => {
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [sharedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+
+    expect(getMissingRetainedPrefetchLayoutIds(elements)).toEqual([]);
+    expect(fillRetainedPrefetchLayoutsFromElementSources(elements, [])).toBe(elements);
   });
 
   it("matches dynamic route params while keeping static siblings authoritative", () => {

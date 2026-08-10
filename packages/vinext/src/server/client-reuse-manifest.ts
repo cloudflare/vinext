@@ -159,6 +159,7 @@ export type ClientReuseManifestSkipDisposition =
       code: "SKIP_RETAINED_PREFETCH_LAYOUTS";
       enabled: true;
       mode: "skipRetainedPrefetchLayouts";
+      retainedOnlySkippedEntryIds: readonly string[];
       skippedEntryIds: readonly string[];
     }>;
 

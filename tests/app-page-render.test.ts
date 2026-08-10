@@ -2054,8 +2054,35 @@ describe("layoutFlags injection into RSC payload", () => {
 
     expect(Object.hasOwn(getCapturedElement(), sharedLayoutId)).toBe(false);
     expect(getCapturedElement()[AppElementsWire.keys.skippedLayoutIds]).toEqual([sharedLayoutId]);
+    expect(getCapturedElement()[AppElementsWire.keys.retainedOnlySkippedLayoutIds]).toEqual([
+      sharedLayoutId,
+    ]);
     expect(response.headers.get(VINEXT_RSC_LAYOUT_IDS_HEADER)).toBe("layout:/");
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+  });
+
+  it("does not require a retained provider when standard reuse also authorizes the omission", async () => {
+    const sharedLayoutId = "layout:/shared";
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        "layout:/": "root-layout",
+        [sharedLayoutId]: "shared-layout",
+        "page:/shared/two": "page-two",
+      },
+      retainedPrefetchLayoutIds: [sharedLayoutId],
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: [sharedLayoutId],
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+
+    expect(getCapturedElement()[AppElementsWire.keys.skippedLayoutIds]).toEqual([sharedLayoutId]);
+    expect(getCapturedElement()[AppElementsWire.keys.retainedOnlySkippedLayoutIds]).toBeUndefined();
   });
 
   it("injects empty __layoutFlags when classification is not provided (backward compat)", async () => {

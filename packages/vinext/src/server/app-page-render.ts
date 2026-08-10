@@ -587,6 +587,7 @@ function createRetainedPrefetchLayoutSkipDisposition(input: {
     code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
     enabled: true,
     mode: "skipRetainedPrefetchLayouts",
+    retainedOnlySkippedEntryIds: skippedEntryIds,
     skippedEntryIds,
   };
 }
@@ -605,10 +606,40 @@ function mergeSkipDispositions(
     seen.add(id);
     skippedEntryIds.push(id);
   }
+
+  const standardReuseIds = new Set<string>();
+  for (const disposition of [first, second]) {
+    if (disposition.code !== "SKIP_STATIC_LAYOUT_VERIFIED") continue;
+    for (const id of disposition.skippedEntryIds) standardReuseIds.add(id);
+  }
+
+  const retainedOnlySkippedEntryIds: string[] = [];
+  const seenRetainedOnly = new Set<string>();
+  for (const disposition of [first, second]) {
+    if (disposition.code !== "SKIP_RETAINED_PREFETCH_LAYOUTS") continue;
+    for (const id of disposition.retainedOnlySkippedEntryIds) {
+      if (standardReuseIds.has(id) || seenRetainedOnly.has(id)) continue;
+      seenRetainedOnly.add(id);
+      retainedOnlySkippedEntryIds.push(id);
+    }
+  }
+
+  if (
+    first.code !== "SKIP_RETAINED_PREFETCH_LAYOUTS" &&
+    second.code !== "SKIP_RETAINED_PREFETCH_LAYOUTS"
+  ) {
+    return {
+      code: "SKIP_STATIC_LAYOUT_VERIFIED",
+      enabled: true,
+      mode: "skipStaticLayout",
+      skippedEntryIds,
+    };
+  }
   return {
     code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
     enabled: true,
     mode: "skipRetainedPrefetchLayouts",
+    retainedOnlySkippedEntryIds,
     skippedEntryIds,
   };
 }

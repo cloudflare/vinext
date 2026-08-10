@@ -181,7 +181,8 @@ import {
 } from "./app-browser-prefetch-response.js";
 import {
   createOptimisticRouteTemplate,
-  fillSkippedLayoutsFromElementSources,
+  fillRetainedPrefetchLayoutsFromElementSources,
+  getMissingRetainedPrefetchLayoutIds,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
@@ -1051,11 +1052,7 @@ async function fillSkippedLayoutsFromPrefetchCache(
   retainedLayoutClaims: readonly RetainedPrefetchLayoutClaim[] | undefined,
 ): Promise<AppElements> {
   const elements = await payload;
-  const missing = new Set(
-    AppElementsWire.readMetadata(elements).skippedLayoutIds.filter(
-      (layoutId) => !Object.hasOwn(elements, layoutId),
-    ),
-  );
+  const missing = new Set(getMissingRetainedPrefetchLayoutIds(elements));
   if (missing.size === 0) return elements;
 
   const sources: AppElements[] = [];
@@ -1065,10 +1062,7 @@ async function fillSkippedLayoutsFromPrefetchCache(
     sources.push(sourceElements);
     if (Object.hasOwn(sourceElements, claim.layoutId)) missing.delete(claim.layoutId);
   }
-  if (missing.size > 0) {
-    throw new Error("Retained prefetch layout provider is no longer available");
-  }
-  return fillSkippedLayoutsFromElementSources(elements, sources);
+  return fillRetainedPrefetchLayoutsFromElementSources(elements, sources);
 }
 
 function BrowserRoot({

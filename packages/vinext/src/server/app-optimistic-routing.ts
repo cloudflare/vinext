@@ -425,12 +425,12 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
   return elements;
 }
 
-export function fillSkippedLayoutsFromElementSources(
+export function fillRetainedPrefetchLayoutsFromElementSources(
   elements: AppElements,
   sources: Iterable<AppElements | null | undefined>,
 ): AppElements {
   const metadata = AppElementsWire.readMetadata(elements);
-  const missingLayoutIds = metadata.skippedLayoutIds.filter(
+  const missingLayoutIds = metadata.retainedOnlySkippedLayoutIds.filter(
     (layoutId) => !Object.hasOwn(elements, layoutId),
   );
   if (missingLayoutIds.length === 0) return elements;
@@ -447,16 +447,26 @@ export function fillSkippedLayoutsFromElementSources(
     }
   }
 
-  if (missing.size === missingLayoutIds.length) return elements;
-  const remainingSkippedLayoutIds = metadata.skippedLayoutIds.filter((layoutId) =>
-    missing.has(layoutId),
+  if (missing.size > 0) {
+    throw new Error("Retained prefetch layout provider is no longer available");
+  }
+  const retainedOnlySkippedLayoutIds = new Set(metadata.retainedOnlySkippedLayoutIds);
+  const remainingSkippedLayoutIds = metadata.skippedLayoutIds.filter(
+    (layoutId) => !retainedOnlySkippedLayoutIds.has(layoutId),
   );
   if (remainingSkippedLayoutIds.length > 0) {
     merged[AppElementsWire.keys.skippedLayoutIds] = remainingSkippedLayoutIds;
   } else {
     delete merged[AppElementsWire.keys.skippedLayoutIds];
   }
+  delete merged[AppElementsWire.keys.retainedOnlySkippedLayoutIds];
   return merged as AppElements;
+}
+
+export function getMissingRetainedPrefetchLayoutIds(elements: AppElements): readonly string[] {
+  return AppElementsWire.readMetadata(elements).retainedOnlySkippedLayoutIds.filter(
+    (layoutId) => !Object.hasOwn(elements, layoutId),
+  );
 }
 
 export function resolveOptimisticNavigationPayload(options: {

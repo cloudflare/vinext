@@ -35,7 +35,7 @@ type NavigationRuntimePrefetchRouterState = {
   routeId: string;
 };
 
-export type NavigationRuntimeRetainedLayoutClaim = Readonly<{
+type NavigationRuntimeRetainedLayoutClaim = Readonly<{
   layoutId: string;
   provider: unknown;
 }>;

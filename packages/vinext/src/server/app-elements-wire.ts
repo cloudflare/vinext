@@ -29,6 +29,7 @@ export const APP_LAYOUT_IDS_KEY = "__layoutIds";
 export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
+export const APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY = "__retainedOnlySkippedLayoutIds";
 export const APP_SKIPPED_LAYOUT_IDS_KEY = "__skippedLayoutIds";
 export const APP_SOURCE_PAGE_SEGMENTS_KEY = "__srcPage";
 export const APP_SLOT_BINDINGS_KEY = "__slotBindings";
@@ -207,6 +208,7 @@ type AppElementsMetadata = {
   routeId: string;
   rootLayoutTreePath: string | null;
   bfcacheSegmentIdentities: AppElementsBfcacheSegmentIdentities;
+  retainedOnlySkippedLayoutIds: readonly string[];
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
   sourcePage: string | null;
@@ -275,6 +277,7 @@ type AppElementsWireKeys = {
   readonly rootLayout: typeof APP_ROOT_LAYOUT_KEY;
   readonly route: typeof APP_ROUTE_KEY;
   readonly bfcacheSegmentIdentities: typeof APP_BFCACHE_SEGMENT_IDENTITIES_KEY;
+  readonly retainedOnlySkippedLayoutIds: typeof APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY;
   readonly skippedLayoutIds: typeof APP_SKIPPED_LAYOUT_IDS_KEY;
   readonly slotBindings: typeof APP_SLOT_BINDINGS_KEY;
   readonly sourcePageSegments: typeof APP_SOURCE_PAGE_SEGMENTS_KEY;
@@ -530,6 +533,10 @@ function parseSkippedLayoutIds(value: unknown): readonly string[] {
   return parseLayoutIdList(value, APP_SKIPPED_LAYOUT_IDS_KEY);
 }
 
+function parseRetainedOnlySkippedLayoutIds(value: unknown): readonly string[] {
+  return parseLayoutIdList(value, APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY);
+}
+
 function isSlotBindingState(value: unknown): value is AppElementsSlotBindingState {
   return value === "active" || value === "default" || value === "unmatched";
 }
@@ -692,6 +699,7 @@ export function buildOutgoingAppPayload(input: {
     return input.element;
   }
   const skippedLayoutIds = createSkippedLayoutIds(input.skipDisposition);
+  const retainedOnlySkippedLayoutIds = createRetainedOnlySkippedLayoutIds(input.skipDisposition);
   const payload: Record<
     string,
     | ReactNode
@@ -714,6 +722,9 @@ export function buildOutgoingAppPayload(input: {
   payload[APP_LAYOUT_FLAGS_KEY] = input.layoutFlags;
   if (skippedLayoutIds.size > 0) {
     payload[APP_SKIPPED_LAYOUT_IDS_KEY] = [...skippedLayoutIds];
+  }
+  if (retainedOnlySkippedLayoutIds.size > 0) {
+    payload[APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY] = [...retainedOnlySkippedLayoutIds];
   }
   payload[APP_ARTIFACT_COMPATIBILITY_KEY] =
     input.artifactCompatibility ?? createArtifactCompatibilityEnvelope();
@@ -738,6 +749,25 @@ function createSkippedLayoutIds(
     }
   }
   return skippedLayoutIds;
+}
+
+function createRetainedOnlySkippedLayoutIds(
+  skipDisposition: ClientReuseManifestSkipDisposition | undefined,
+): ReadonlySet<string> {
+  if (
+    skipDisposition?.enabled !== true ||
+    skipDisposition.code !== "SKIP_RETAINED_PREFETCH_LAYOUTS"
+  ) {
+    return EMPTY_SKIPPED_LAYOUT_IDS;
+  }
+
+  const retainedOnlySkippedLayoutIds = new Set<string>();
+  for (const id of skipDisposition.retainedOnlySkippedEntryIds) {
+    if (parseAppElementsWireElementKey(id)?.kind === "layout") {
+      retainedOnlySkippedLayoutIds.add(id);
+    }
+  }
+  return retainedOnlySkippedLayoutIds;
 }
 
 function readArtifactCompatibilityMetadata(value: unknown): ArtifactCompatibilityEnvelope {
@@ -878,6 +908,15 @@ export function readAppElementsMetadata(
   const layoutFlags = parseLayoutFlags(elements[APP_LAYOUT_FLAGS_KEY]);
   const layoutIds = parseLayoutIds(elements[APP_LAYOUT_IDS_KEY]);
   const skippedLayoutIds = parseSkippedLayoutIds(elements[APP_SKIPPED_LAYOUT_IDS_KEY]);
+  const retainedOnlySkippedLayoutIds = parseRetainedOnlySkippedLayoutIds(
+    elements[APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY],
+  );
+  const skippedLayoutIdSet = new Set(skippedLayoutIds);
+  if (retainedOnlySkippedLayoutIds.some((layoutId) => !skippedLayoutIdSet.has(layoutId))) {
+    throw new Error(
+      "[vinext] Invalid __retainedOnlySkippedLayoutIds in App Router payload: expected subset of __skippedLayoutIds",
+    );
+  }
   const slotBindings = parseSlotBindings(elements[APP_SLOT_BINDINGS_KEY], { layoutIds });
   const interception = parseInterceptionMetadata(elements[APP_INTERCEPTION_KEY]);
   const artifactCompatibility = readArtifactCompatibilityMetadata(
@@ -914,6 +953,7 @@ export function readAppElementsMetadata(
     routeId,
     rootLayoutTreePath,
     bfcacheSegmentIdentities,
+    retainedOnlySkippedLayoutIds,
     skippedLayoutIds,
     slotBindings,
     sourcePage,
@@ -934,6 +974,7 @@ export const AppElementsWire: AppElementsWireCodec = {
     rootLayout: APP_ROOT_LAYOUT_KEY,
     route: APP_ROUTE_KEY,
     bfcacheSegmentIdentities: APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
+    retainedOnlySkippedLayoutIds: APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY,
     skippedLayoutIds: APP_SKIPPED_LAYOUT_IDS_KEY,
     slotBindings: APP_SLOT_BINDINGS_KEY,
     sourcePageSegments: APP_SOURCE_PAGE_SEGMENTS_KEY,
