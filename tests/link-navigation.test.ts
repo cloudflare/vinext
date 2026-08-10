@@ -2784,6 +2784,9 @@ describe("Link prefetch scheduling", () => {
   });
 
   it("does not fetch dynamic-on-hover data when the prerequisite shell fails", async () => {
+    // Next's Segment Cache blocks the Full task on its route tree, and a
+    // rejected route entry completes without issuing the dynamic request:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/segment-cache/scheduler.ts
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
       href: "/dynamic",
@@ -2808,6 +2811,44 @@ describe("Link prefetch scheduling", () => {
           APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         );
       }
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("refetches an expired prerequisite shell before dynamic-on-hover data", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/dynamic",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const shellEntry = Array.from(getPrefetchCache().values()).find(
+        (entry) => entry.cacheForNavigation === false,
+      );
+      expect(shellEntry?.outcome).toBe("cache-seeded");
+      if (!shellEntry) throw new Error("Expected prerequisite shell entry");
+      shellEntry.expiresAt = Date.now() - 1;
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 3);
+
+      expect(result.fetch).toHaveBeenCalledTimes(3);
+      const modes = result.fetch.mock.calls.map(([, init]) =>
+        (init?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
+      );
+      expect(modes).toEqual([
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+      ]);
     } finally {
       result.restoreNodeEnv();
     }

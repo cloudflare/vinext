@@ -950,6 +950,11 @@ export function buildAppPageElements<
           )
         : null))
     : null;
+  // Under Cache Components, Next renders a route prefetch as deeply as
+  // possible and lets dynamic access suspend at the nearest user boundary.
+  // With no loading.tsx or protected slot there is therefore no artificial
+  // cutoff: fully static page content belongs in the shell, while a page-level
+  // Suspense boundary contributes its fallback.
   const includesPrefetchTreePosition = (treePosition: number): boolean =>
     prefetchCutoffTreePosition === null || treePosition <= prefetchCutoffTreePosition;
   const segmentPlan = createAppPageSegmentPlan({

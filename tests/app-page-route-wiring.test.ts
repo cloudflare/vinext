@@ -1556,6 +1556,45 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
+  it("includes static page content in loading-shell prefetches without loading.tsx", async () => {
+    // Cache Components route prefetches render as deeply as possible. A fully
+    // static leaf is part of the reusable shell rather than an eager dynamic
+    // render:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+    function StaticPage() {
+      return createElement("main", null, "Fully static page content");
+    }
+    const elements = buildAppPageElements({
+      element: createElement(StaticPage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["static"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/static",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    expect(elements["page:/static"]).not.toBeNull();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
+    const html = await renderRouteEntry(elements, "route:/static");
+    expect(html).toContain("Fully static page content");
+  });
+
   it("renders a page Suspense fallback in loading-shell prefetches without loading.tsx", async () => {
     function StaticLayout({ children }: { children?: ReactNode }) {
       return createElement("section", null, "Static content in layout of dynamic page", children);

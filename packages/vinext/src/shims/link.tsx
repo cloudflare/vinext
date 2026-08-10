@@ -455,6 +455,7 @@ function prefetchUrl(
           peekPrefetchResponseForNavigation,
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
+          deletePrefetchResponseSnapshot,
           DYNAMIC_NAVIGATION_CACHE_TTL,
           restoreRscResponse,
           PREFETCH_CACHE_TTL,
@@ -584,6 +585,20 @@ function prefetchUrl(
           const shellCacheKey = AppElementsWire.encodeCacheKey(shellRscUrl, interceptionContext);
           const shellCache = getPrefetchCache();
           let shellEntry = shellCache.get(shellCacheKey);
+          if (
+            shellEntry !== undefined &&
+            shellEntry.pending === undefined &&
+            shellEntry.snapshot !== undefined &&
+            shellEntry.expiresAt !== undefined &&
+            shellEntry.expiresAt <= Date.now()
+          ) {
+            // Next's Segment Cache refetches an expired route tree before a
+            // Full hover upgrade. Drop our equivalent prerequisite shell so
+            // the branch below does the same instead of abandoning the
+            // dynamic request because an expired entry still occupies the key.
+            deletePrefetchResponseSnapshot(shellRscUrl, shellEntry.snapshot, interceptionContext);
+            shellEntry = undefined;
+          }
           if (shellEntry === undefined) {
             getPrefetchedUrls().add(shellCacheKey);
             prefetchRscResponse(
@@ -707,20 +722,20 @@ function prefetchUrl(
         const gateViaLoadingShell =
           (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
           autoPrefetch.prefetchShellFirst;
-        let dynamicAfterShellElements: AppElements | null = null;
+        let prerequisiteShellElements: AppElements | null = null;
         const fetchPromise =
           autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
                 if (gateViaLoadingShell) {
-                  dynamicAfterShellElements = await fetchLoadingShellForReuse(
+                  prerequisiteShellElements = await fetchLoadingShellForReuse(
                     mode === "full-after-shell",
                   );
-                  if (dynamicAfterShellElements) {
+                  if (prerequisiteShellElements) {
                     const { createClientReuseManifestHeaderFromVisibleAppState } =
                       await import("../server/app-browser-client-reuse-manifest.js");
                     const clientReuseManifestHeader =
                       createClientReuseManifestHeaderFromVisibleAppState({
-                        elements: dynamicAfterShellElements,
+                        elements: prerequisiteShellElements,
                         visibleCommitVersion: 0,
                       });
                     if (clientReuseManifestHeader) {
@@ -828,10 +843,10 @@ function prefetchUrl(
             prepareSnapshot: autoPrefetch.cacheForNavigation
               ? async (snapshot) => {
                   const dynamicElements = await prepareNavigationPrefetchSnapshot(snapshot);
-                  if (!dynamicAfterShellElements) return dynamicElements;
+                  if (!prerequisiteShellElements) return dynamicElements;
                   const { mergeDynamicPrefetchWithShell } =
                     await import("../server/app-prefetch-shell-merge.js");
-                  return mergeDynamicPrefetchWithShell(dynamicAfterShellElements, dynamicElements);
+                  return mergeDynamicPrefetchWithShell(prerequisiteShellElements, dynamicElements);
                 }
               : undefined,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
