@@ -572,42 +572,49 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
   const requestMemoKey = (): void => {};
 
-  const cachedFn = (...args: TArgs): Promise<TResult> =>
-    trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
-      // Establish private-cache semantics before doing any work that can fail
-      // while deriving the cache key. A non-serializable argument must not
-      // bypass either the public-parent guard or prerender dynamic tracking.
-      if (cacheVariant === "private") {
-        const parentCtx = cacheContextStorage.getStore();
-        if (parentCtx && parentCtx.variant !== "private") {
-          throwPrivateUseCacheInsidePublicUseCacheError();
-        }
-
-        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
-          // Next.js treats "use cache: private" as dynamic during prerendering:
-          // it is excluded from the static artifact and resolved per request.
-          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
-          if (isInsideUnifiedScope()) {
-            getRequestContext().prerenderDataCacheState.privateCacheUsed = true;
-          }
-          markDynamicUsage();
-        }
+  const invokeCachedFn = async (releaseSetupTask: () => void, ...args: TArgs): Promise<TResult> => {
+    const fallbackShellState = getPprFallbackShellState();
+    const fallbackShellAbortSignal = fallbackShellState?.abortController.signal;
+    // Establish private-cache semantics before doing any work that can fail
+    // while deriving the cache key. A non-serializable argument must not
+    // bypass either the public-parent guard or prerender dynamic tracking.
+    if (cacheVariant === "private") {
+      const parentCtx = cacheContextStorage.getStore();
+      if (parentCtx && parentCtx.variant !== "private") {
+        throwPrivateUseCacheInsidePublicUseCacheError();
       }
 
-      const rsc = await getRscModule();
-      const keySeed = getUseCacheKeySeed();
-      const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
-      const hasCaptureEnvelope = captures !== undefined;
-      const admittedArgs =
-        options.argumentCount === undefined
-          ? args
-          : hasCaptureEnvelope
-            ? [args[0], ...args.slice(1, 1 + options.argumentCount)]
-            : args.slice(0, options.argumentCount);
-      const executionArgs = hasCaptureEnvelope
-        ? [captures, ...admittedArgs.slice(1)]
-        : admittedArgs;
-      const callArgs = executionArgs as TArgs;
+      if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
+        // Next.js treats "use cache: private" as dynamic during prerendering:
+        // it is excluded from the static artifact and resolved per request.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+        if (isInsideUnifiedScope()) {
+          getRequestContext().prerenderDataCacheState.privateCacheUsed = true;
+        }
+        markDynamicUsage();
+      }
+    }
+    const rsc = await getRscModule();
+    throwIfPprFallbackShellCacheTaskStale();
+    fallbackShellAbortSignal?.throwIfAborted();
+    const keySeed = getUseCacheKeySeed();
+    const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
+    throwIfPprFallbackShellCacheTaskStale();
+    fallbackShellAbortSignal?.throwIfAborted();
+    // Next.js does not begin the main cache read until after the cache key has
+    // been encoded. Tasky arguments may never finish encoding, so only module
+    // loading and capture decryption belong to the synchronous reservation.
+    releaseSetupTask();
+    const hasCaptureEnvelope = captures !== undefined;
+    const admittedArgs =
+      options.argumentCount === undefined
+        ? args
+        : hasCaptureEnvelope
+          ? [args[0], ...args.slice(1, 1 + options.argumentCount)]
+          : args.slice(0, options.argumentCount);
+    const executionArgs = hasCaptureEnvelope ? [captures, ...admittedArgs.slice(1)] : admittedArgs;
+    const appLayoutInvocation = resolveAppLayoutCacheInvocation(executionArgs);
+    const directCallArgs = (appLayoutInvocation?.directArgs ?? executionArgs) as TArgs;
 
     // Cached layouts/templates serialize their slots as React temporary
     // references. The stored RSC payload therefore contains holes which are
@@ -680,15 +687,50 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         if (inputEncodingAbortController?.signal.aborted) {
           return createPprFallbackShellSuspensePromise<TResult>('dynamic "use cache"')!;
         }
-      } catch {
-        // Non-serializable arguments — run without caching, but retain the
-        // cache scope so nested directives and cache-life propagation keep the
-        // same semantics as serializable calls.
-        return executeWithContext(fn, callArgs, cacheVariant);
+        if (appLayoutInvocation) {
+          appLayoutClientTemporaryReferences = tempRefs;
+          encodedAppLayoutArgs = encoded;
+        }
+        const encodedKey = await replyToCacheKey(encoded);
+        throwIfPprFallbackShellCacheTaskStale();
+        fallbackShellAbortSignal?.throwIfAborted();
+        cacheKey = buildUseCacheKey(id, keySeed, encodedKey);
+      } else {
+        const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
+        cacheKey = buildUseCacheKey(id, keySeed, argsKey);
+      }
+    } catch {
+      throwIfPprFallbackShellCacheTaskStale();
+      fallbackShellAbortSignal?.throwIfAborted();
+      if (inputEncodingAbortController?.signal.aborted) {
+        return createPprFallbackShellSuspensePromise<TResult>('dynamic "use cache"')!;
+      }
+      // Non-serializable arguments — run without caching, but retain the cache
+      // scope so nested directives and cache-life propagation keep the same
+      // semantics as serializable calls.
+      return executeWithContext(fn, directCallArgs, cacheVariant);
+    }
+
+    throwIfPprFallbackShellCacheTaskStale();
+    fallbackShellAbortSignal?.throwIfAborted();
+
+    return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+      // The JSON fallback cannot represent layout slot holes. Unit-test and
+      // non-RSC environments execute cached layouts directly rather than
+      // risking a cache entry that captures one route's children.
+      if (appLayoutInvocation && !rsc) {
+        return executeWithContext(fn, directCallArgs, cacheVariant);
       }
 
       // "use cache: private" uses per-request in-memory cache
       if (cacheVariant === "private") {
+        // The private cache stores live values rather than RSC payloads, so it
+        // has no representation for a layout slot hole. Keep the invocation
+        // correct if a private cache directive is used on a layout/template.
+        if (appLayoutInvocation) {
+          return executeWithContext(fn, directCallArgs, cacheVariant);
+        }
+
         const privateCache = _getPrivateState()._privateCache!;
         const privateHit = privateCache.get(cacheKey);
         if (privateHit !== undefined) {

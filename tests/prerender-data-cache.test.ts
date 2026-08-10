@@ -10,7 +10,11 @@ import {
   type CachedFetchValue,
 } from "../packages/vinext/src/shims/cache-handler.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
-import { consumeDynamicUsage } from "../packages/vinext/src/shims/headers.js";
+import {
+  consumeDynamicUsage,
+  headersContextFromRequest,
+  runWithHeadersContext,
+} from "../packages/vinext/src/shims/headers.js";
 import {
   closeAfterResponse,
   closeAfterResponseWithBody,
@@ -19,10 +23,6 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { unstable_cache } from "../packages/vinext/src/shims/cache.js";
-import {
-  headersContextFromRequest,
-  runWithHeadersContext,
-} from "../packages/vinext/src/shims/headers.js";
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import {
   PRERENDER_DATA_CACHE_DIR,
@@ -132,6 +132,245 @@ describe("prerender data cache", () => {
     });
     expect(resumed?.cacheControl).toEqual({ expire: 3600, revalidate: 900 });
   });
+
+  it("keeps fallback-shell cache entries out of the prerender filesystem", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "use-cache:test:speculative";
+
+    setCacheHandler(buildHandler);
+    const { result, state } = runAsFallbackShell(async () => {
+      const handler = getCacheHandler();
+      expect(await handler.get(key, { cacheKind: "use-cache", kind: "FETCH" })).toBeNull();
+      await handler.set(key, fetchValue(key, "fallback-value"), {
+        cacheKind: "use-cache",
+        cacheControl: { revalidate: 900 },
+        fetchCache: true,
+      });
+    });
+    await result;
+    expect(readPrerenderDataCacheEntries(prerenderDir)).toEqual([]);
+    expect(fs.readdirSync(path.join(prerenderDir, PRERENDER_DATA_CACHE_DIR))).toEqual([]);
+    expect([...state.resumeDataCache.values()]).toMatchObject([
+      { context: { cacheKind: "use-cache" }, key },
+    ]);
+    await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(0);
+    await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toBeNull();
+  });
+
+  it("does not pass fallback-shell cache entries to custom handlers", async () => {
+    const key = "use-cache:test:custom-speculative";
+    const get = vi.fn(async () => null);
+    const set = vi.fn(async () => {});
+    const customHandler: CacheHandler = {
+      get,
+      set,
+      revalidateTag: vi.fn(async () => {}),
+    };
+    setCacheHandler(customHandler);
+    const { result, state } = runAsFallbackShell(async () => {
+      const handler = getCacheHandler();
+      expect(await handler.get(key, { cacheKind: "use-cache", kind: "FETCH" })).toBeNull();
+      await handler.set(key, fetchValue(key, "fallback-value"), {
+        cacheKind: "use-cache",
+        fetchCache: true,
+      });
+    });
+    await result;
+    expect(get).toHaveBeenCalledOnce();
+    expect(set).not.toHaveBeenCalled();
+    expect([...state.resumeDataCache.values()]).toMatchObject([{ key }]);
+  });
+
+  it("does not publish cache entries from a discarded speculative render", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "use-cache:test:static-probe";
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        await runAsSpeculativePrerender(() =>
+          buildHandler.set(key, fetchValue(key, "discarded-value"), { fetchCache: true }),
+        );
+        requestContext.prerenderDataCacheState.commit = false;
+        await closeAfterResponse(requestContext);
+      });
+
+      expect(readPrerenderDataCacheEntries(prerenderDir)).toEqual([]);
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(0);
+      await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toBeNull();
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("publishes cache entries from a successful speculative render", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "use-cache:test:successful-static-probe";
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        await runAsSpeculativePrerender(() =>
+          buildHandler.set(key, fetchValue(key, "committed-value"), { fetchCache: true }),
+        );
+        requestContext.prerenderDataCacheState.commit = true;
+        await closeAfterResponse(requestContext);
+      });
+
+      const [persisted] = readPrerenderDataCacheEntries(prerenderDir);
+      expect(persisted).toMatchObject({
+        key,
+        value: { data: { body: "committed-value" } },
+      });
+      expect(persisted?.context?.speculative).toBeUndefined();
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+        value: { data: { body: "committed-value" } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("does not add speculative request tags to a normal cache entry", async () => {
+    const prerenderDir = createTempDir();
+    const handler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "use-cache:test:speculative-read-tags";
+    await handler.set(
+      key,
+      { ...fetchValue(key, "normal"), tags: ["normal-value-tag"] },
+      { fetchCache: true, tags: ["normal-context-tag"] },
+    );
+
+    await expect(
+      runAsSpeculativePrerender(() =>
+        handler.get(key, { kind: "FETCH", tags: ["speculative-read-tag"] }),
+      ),
+    ).resolves.toMatchObject({
+      value: { tags: ["normal-value-tag"] },
+    });
+    expect(readPrerenderDataCacheEntries(prerenderDir)).toMatchObject([
+      {
+        context: { tags: ["normal-context-tag"] },
+        value: { tags: ["normal-value-tag"] },
+      },
+    ]);
+  });
+
+  it.each(["normal-first", "speculative-first"] as const)(
+    "does not merge speculative tags into a normal same-key %s persisted winner",
+    async (order) => {
+      const prerenderDir = createTempDir();
+      const normalHandler = new PrerenderDataCacheHandler(prerenderDir);
+      const speculativeHandler = new PrerenderDataCacheHandler(prerenderDir);
+      const key = `use-cache:test:speculative-collision-${order}`;
+      const writeNormal = () =>
+        normalHandler.set(
+          key,
+          { ...fetchValue(key, "normal"), tags: ["normal-value-tag"] },
+          { fetchCache: true, tags: ["normal-context-tag"] },
+        );
+      const writeSpeculative = () =>
+        runAsSpeculativePrerender(() =>
+          speculativeHandler.set(
+            key,
+            { ...fetchValue(key, "speculative"), tags: ["speculative-value-tag"] },
+            { fetchCache: true, tags: ["speculative-context-tag"] },
+          ),
+        );
+
+      if (order === "normal-first") {
+        await writeNormal();
+        await writeSpeculative();
+      } else {
+        await writeSpeculative();
+        await writeNormal();
+      }
+
+      const [persisted] = readPrerenderDataCacheEntries(prerenderDir);
+      expect(persisted).toMatchObject({
+        context: { tags: ["normal-context-tag"] },
+        value: {
+          data: { body: "normal" },
+          tags: ["normal-value-tag"],
+        },
+      });
+      expect(persisted?.context?.speculative).not.toBe(true);
+    },
+  );
+
+  it("keeps a normal same-key value visible after a fallback-shell write in one worker", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "use-cache:test:mixed-memory";
+    await buildHandler.set(key, fetchValue(key, "normal-value"), { fetchCache: true });
+    setCacheHandler(buildHandler);
+    const { result } = runAsFallbackShell(() =>
+      getCacheHandler().set(key, fetchValue(key, "fallback-value"), {
+        cacheKind: "use-cache",
+        fetchCache: true,
+      }),
+    );
+    await result;
+
+    await expect(buildHandler.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+      value: { kind: "FETCH", data: { body: "normal-value" } },
+    });
+  });
+
+  it.each(["normal-first", "fallback-first"] as const)(
+    "retains the normal persisted value across a %s same-key collision",
+    async (order) => {
+      const prerenderDir = createTempDir();
+      const normalWorker = new PrerenderDataCacheHandler(prerenderDir);
+      const fallbackWorker = new PrerenderDataCacheHandler(prerenderDir);
+      const key = `use-cache:test:mixed-${order}`;
+      const writeNormal = () =>
+        normalWorker.set(key, fetchValue(key, "normal-value"), { fetchCache: true });
+      const writeFallback = async () => {
+        setCacheHandler(fallbackWorker);
+        const { result } = runAsFallbackShell(() =>
+          getCacheHandler().set(key, fetchValue(key, "fallback-value"), {
+            cacheKind: "use-cache",
+            fetchCache: true,
+          }),
+        );
+        await result;
+      };
+
+      if (order === "normal-first") {
+        await writeNormal();
+        await writeFallback();
+      } else {
+        await writeFallback();
+        await writeNormal();
+      }
+
+      expect(readPrerenderDataCacheEntries(prerenderDir)).toMatchObject([
+        {
+          key,
+          value: { data: { body: "normal-value" } },
+        },
+      ]);
+      const runtimeHandler = new MemoryCacheHandler();
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        value: { data: { body: "normal-value" } },
+      });
+    },
+  );
 
   // Ported from Next.js: test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
