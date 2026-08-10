@@ -188,6 +188,11 @@ type RscModule = {
   decodeReply: (body: string | FormData, options?: unknown) => Promise<unknown[]>;
 };
 
+type SerializedCacheResult = {
+  body: string;
+  headers: Record<string, string>;
+};
+
 function getUseCacheDeploymentIdDefine(): string | undefined {
   try {
     // Keep this direct reference so Vite's define transform can inline it for
@@ -289,6 +294,30 @@ function uint8ToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+async function serializeCacheResult(
+  result: unknown,
+  rsc: RscModule | null,
+): Promise<SerializedCacheResult | null> {
+  try {
+    if (rsc) {
+      // Draining the stream is part of cache entry generation: lazy Server
+      // Components may execute here and contribute tags, cache life, or root
+      // param dependencies to the active cache scope.
+      const stream = rsc.renderToReadableStream(result);
+      const bytes = await collectStream(stream);
+      return {
+        body: uint8ToBase64(bytes),
+        headers: { [VINEXT_RSC_MARKER_HEADER]: "1" },
+      };
+    }
+
+    const body = JSON.stringify(result);
+    return body === undefined ? null : { body, headers: {} };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -704,10 +733,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
 
       // Cache miss (or stale) — execute with context
-      const { result, ctx, effectiveLife } = await runCachedFunctionWithContext(
+      const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
         fn,
         callArgs,
         cacheVariant,
+        (value) => serializeCacheResult(value, rsc),
       );
 
       const rootParamNames =
@@ -724,77 +754,63 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const revalidateSeconds =
         effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
 
-      // Store in cache — use RSC stream serialization when available (handles
-      // React elements, client refs, Promises, etc.), JSON otherwise.
-      try {
-        let body: string;
-        const headers: Record<string, string> = {};
-
-        if (rsc) {
-          // RSC serialization: result → stream → bytes → base64.
-          // No temporaryReferences — cached values must be self-contained
-          // since they're persisted across requests.
-          const stream = rsc.renderToReadableStream(result);
-          const bytes = await collectStream(stream);
-          body = uint8ToBase64(bytes);
-          headers[VINEXT_RSC_MARKER_HEADER] = "1";
-        } else {
-          // JSON fallback
-          body = JSON.stringify(result);
-          if (body === undefined) return result;
-        }
-
-        const cacheValue = {
-          kind: "FETCH",
-          data: {
-            headers,
-            body,
-            url: cacheKey,
-          },
-          tags: ctx.tags,
-          revalidate: revalidateSeconds,
-        } satisfies CachedFetchValue;
-        const cacheContext = {
-          fetchCache: true,
-          tags: ctx.tags,
-          cacheControl: {
-            revalidate: revalidateSeconds,
-            expire: effectiveLife.expire,
-            // Persisted so a later hit re-registers the same claim; otherwise
-            // the enclosing render's minimum depends on cache temperature.
-            stale: effectiveLife.stale,
-          },
-        };
-
-        if (rootParamNames && rootParamNames.size > 0 && rootParams) {
-          const specificCacheKey =
-            coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
-          cacheValue.data.url = specificCacheKey;
-          await handler.set(specificCacheKey, cacheValue, cacheContext);
-
-          const redirectTags = [
-            ...ctx.tags,
-            ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
-          ];
-          await handler.set(
-            coarseCacheKey,
-            {
-              kind: "FETCH",
-              data: {
-                headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
-                body: "",
-                url: coarseCacheKey,
-              },
-              tags: redirectTags,
-              revalidate: revalidateSeconds,
+      // Serialization ran while the cache ALS was active so lazy Server
+      // Component work is reflected in `ctx` before selecting the final key.
+      if (collectedResult) {
+        try {
+          const cacheValue = {
+            kind: "FETCH",
+            data: {
+              headers: collectedResult.headers,
+              body: collectedResult.body,
+              url: cacheKey,
             },
-            { ...cacheContext, tags: redirectTags },
-          );
-        } else {
-          await handler.set(cacheKey, cacheValue, cacheContext);
+            tags: ctx.tags,
+            revalidate: revalidateSeconds,
+          } satisfies CachedFetchValue;
+          const cacheContext = {
+            fetchCache: true,
+            tags: ctx.tags,
+            cacheControl: {
+              revalidate: revalidateSeconds,
+              expire: effectiveLife.expire,
+              // Persisted so a later hit re-registers the same claim; otherwise
+              // the enclosing render's minimum depends on cache temperature.
+              stale: effectiveLife.stale,
+            },
+          };
+
+          if (rootParamNames && rootParamNames.size > 0 && rootParams) {
+            const specificCacheKey =
+              coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
+            const redirectTags = [
+              ...ctx.tags,
+              ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
+            ];
+            await handler.set(
+              coarseCacheKey,
+              {
+                kind: "FETCH",
+                data: {
+                  headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
+                  body: "",
+                  url: coarseCacheKey,
+                },
+                tags: redirectTags,
+                revalidate: revalidateSeconds,
+              },
+              { ...cacheContext, tags: redirectTags },
+            );
+            // Write the useful entry last. A bounded LRU that can retain only
+            // one of the pair must keep the specific value, not the redirect.
+            cacheValue.data.url = specificCacheKey;
+            await handler.set(specificCacheKey, cacheValue, cacheContext);
+          } else {
+            await handler.set(cacheKey, cacheValue, cacheContext);
+          }
+        } catch {
+          // A handler failure skips caching but must not fail the render.
         }
-      } catch {
-        // Result not serializable — skip caching, still return the result
       }
 
       return result;
@@ -957,19 +973,24 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  * inner-vs-outer recording does not affect correctness — the final request
  * stale/revalidate/expire is the min across all caches encountered.
  */
-type CachedFunctionResult<T> = {
+type CachedFunctionResult<T, TCollected> = {
   result: T;
   ctx: CacheContext;
   effectiveLife: CacheLifeConfig;
+  collectedResult: TCollected | undefined;
 };
 
-// oxlint-disable-next-line @typescript-eslint/no-explicit-any
-async function runCachedFunctionWithContext<T extends (...args: any[]) => Promise<any>>(
+async function runCachedFunctionWithContext<
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  T extends (...args: any[]) => Promise<any>,
+  TCollected = never,
+>(
   fn: T,
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-): Promise<CachedFunctionResult<Awaited<ReturnType<T>>>> {
+  collectResult?: (result: Awaited<ReturnType<T>>, context: CacheContext) => Promise<TCollected>,
+): Promise<CachedFunctionResult<Awaited<ReturnType<T>>, TCollected>> {
   const parentCtx = cacheContextStorage.getStore();
 
   // Eagerly capture an error at the call site if we're inside a public cache.
@@ -1009,7 +1030,14 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
     invalidDynamicUsageError: undefined,
   };
 
-  const result = await cacheContextStorage.run(ctx, () => fn(...args));
+  let collectedResult: TCollected | undefined;
+  const result = await cacheContextStorage.run(ctx, async () => {
+    const value = await fn(...args);
+    if (collectResult) {
+      collectedResult = await collectResult(value, ctx);
+    }
+    return value;
+  });
 
   if (ctx.invalidDynamicUsageError) {
     throw ctx.invalidDynamicUsageError;
@@ -1155,7 +1183,7 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
     }
   }
 
-  return { result, ctx, effectiveLife };
+  return { result, ctx, effectiveLife, collectedResult };
 }
 
 // ---------------------------------------------------------------------------
