@@ -18,6 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "pathslash";
 import { fileURLToPath } from "node:url";
+import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_ENTRY = path.join(__dirname, "prerender-server-entry.js");
@@ -144,6 +145,7 @@ export async function startPrerenderServerPool(
         env: {
           ...process.env,
           VINEXT_PRERENDER: "1",
+          NEXT_PHASE: PHASE_PRODUCTION_BUILD,
           VINEXT_PRERENDER_OUTDIR: outDir,
         },
         // Inherit stdout/stderr so server-side errors surface; keep IPC.

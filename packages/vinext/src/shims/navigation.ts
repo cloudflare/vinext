@@ -510,7 +510,13 @@ function resolvePrefetchedRscResponseExpiresAt(
   // Next's runtime-prefetch stale time comes from the completed cacheLife
   // claim. `staleTimes.dynamic` independently bounds visited/BFCache reuse and
   // is only the prefetch fallback when the render made no cacheLife claim.
-  const serverSeconds = serverStaleTimeSeconds(cached.serverStaleTime);
+  // A full prefetch uses the static window while a provisional cacheLife claim
+  // is unresolved. If the render completes with a real cacheLife or dynamic
+  // bound, completion metadata replaces the provisional marker below.
+  const serverSeconds =
+    cached.serverStaleTime?.kind === "pending" && !honorDynamicStaleTime
+      ? undefined
+      : serverStaleTimeSeconds(cached.serverStaleTime);
   if (serverSeconds !== undefined) {
     return timestamp + serverSeconds * 1000;
   }
@@ -525,12 +531,15 @@ function resolvePrefetchedRscResponseExpiresAt(
   // An automatic prefetch takes a dynamic render's bound verbatim, including
   // below the 30s floor: Next's `computeDynamicStaleAt` never floors it, so a
   // `0` must expire the entry now rather than license 30s of credentialed
-  // reuse. `prefetch={true}` is an explicit opt-in to caching dynamic content,
-  // and Next reuses a `full` prefetch for the floored static window, so it
-  // keeps the floor.
+  // reuse. `prefetch={true}` uses Next's Full fetch strategy, so a config
+  // dynamic bound of zero selects STATIC_STALETIME_MS. Nonzero completed
+  // dynamic bounds keep their existing per-page expiry.
   return honorDynamicStaleTime
     ? timestamp + seconds * 1000
-    : timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
+    : timestamp +
+        (seconds === 0
+          ? Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS)
+          : Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS));
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
@@ -679,6 +688,29 @@ export function hasPrefetchCacheEntryForNavigation(
     match.entry,
     options.notifyInvalidation ?? true,
   );
+  return false;
+}
+
+/**
+ * Return whether the exact learning-only Link prefetch is still usable.
+ * Pending entries dedupe concurrent Links; settled entries only suppress a
+ * remount while their response-derived freshness window remains active.
+ */
+export function hasFreshLearningOnlyPrefetchCacheEntry(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+): boolean {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry?.cacheForNavigation !== false) return false;
+
+  if (entry.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) {
+    touchPrefetchCacheEntry(cache, cacheKey, entry);
+    return true;
+  }
+
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
   return false;
 }
 
@@ -2842,7 +2874,7 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
-      } else if (prefetched.has(cacheKey)) {
+      } else if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
         attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
         return;
       }
