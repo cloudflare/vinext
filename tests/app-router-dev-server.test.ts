@@ -2031,8 +2031,13 @@ describe("App Router integration", () => {
     //
     // Client: react, react-dom, and react-dom/client are framework deps
     // used for hydration that aren't in user source files.
+    const rscInclude = server.config.environments.rsc?.optimizeDeps?.include;
     const ssrInclude = server.config.environments.ssr?.optimizeDeps?.include;
     const clientInclude = server.config.environments.client?.optimizeDeps?.include;
+
+    expect(rscInclude).toContain("@vitejs/plugin-rsc/vendor/react-server-dom/server.edge");
+    expect(rscInclude).toContain("@vitejs/plugin-rsc/vendor/react-server-dom/static.edge");
+    expect(rscInclude).toContain("@vitejs/plugin-rsc/vendor/react-server-dom/client.edge");
 
     // react-dom/server.edge should be present (added by @vitejs/plugin-rsc)
     expect(ssrInclude).toContain("react-dom/server.edge");

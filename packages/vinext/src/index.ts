@@ -292,6 +292,12 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector",
 ]);
 
+const RSC_VENDOR_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
+  "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge",
+  "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge",
+  "@vitejs/plugin-rsc/vendor/react-server-dom/client.edge",
+]);
+
 const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
   /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
 const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
@@ -3192,11 +3198,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               optimizeDeps: {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
-                // plugin-rsc pre-includes server.edge, but not its vendored
-                // static.edge import, which it rewrites to this package specifier.
-                // Prebundle both so they share the large development renderer
-                // instead of transforming its raw CJS source on the first request.
-                include: [...new Set([...incomingInclude, "react-server-dom-webpack/static.edge"])],
+                // plugin-rsc pre-includes the react-server-dom package entries,
+                // but its runtime imports them through vendored specifiers that
+                // are aliased back to the installed package. Prebundle those
+                // exact import sources so the first RSC request cannot discover
+                // a second optimizer entry and invalidate an in-flight response.
+                include: [
+                  ...new Set([
+                    ...incomingInclude,
+                    "react-server-dom-webpack/static.edge",
+                    ...RSC_VENDOR_OPTIMIZE_DEPS_INCLUDE,
+                  ]),
+                ],
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
