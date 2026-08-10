@@ -408,7 +408,6 @@ function clientMatcherConditionMatches(
       return conditionValueMatches(hostname, condition.value);
     }
     case "header": {
-      if (condition.key?.toLowerCase() === "next-router-prefetch") return false;
       return "unknown";
     }
     case "cookie": {
@@ -501,11 +500,26 @@ function middlewareMayAffectNavigation(target: URL, matcher: unknown): boolean {
           : null;
     if (normalized === null) return true;
     const sourceMayMatch = pathnames.some((candidatePathname) => {
-      const candidate =
-        normalized.locale === false
-          ? candidatePathname
-          : stripLocaleForMiddlewareMatcher(candidatePathname);
-      return clientMiddlewareSourceMatches(candidate, normalized.source) !== false;
+      if (normalized.locale !== false) {
+        return (
+          clientMiddlewareSourceMatches(
+            stripLocaleForMiddlewareMatcher(candidatePathname),
+            normalized.source,
+          ) !== false
+        );
+      }
+
+      const candidates = [candidatePathname];
+      const defaultLocale = window.__VINEXT_DEFAULT_LOCALE__;
+      if (
+        defaultLocale &&
+        stripLocaleForMiddlewareMatcher(candidatePathname) === candidatePathname
+      ) {
+        candidates.push(`/${defaultLocale}${candidatePathname === "/" ? "" : candidatePathname}`);
+      }
+      return candidates.some(
+        (candidate) => clientMiddlewareSourceMatches(candidate, normalized.source) !== false,
+      );
     });
     if (!sourceMayMatch) continue;
     if (middlewareMatcherConditionsMayMatchNavigation(normalized, target)) return true;

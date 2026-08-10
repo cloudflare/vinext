@@ -42,17 +42,86 @@ function isNonNullFallback(value: unknown): boolean {
 function isInspectableSelectedRoot(
   value: unknown,
   records: FlightRecords,
+  suspenseTypeIds: ReadonlySet<string>,
+  insideSuspense = false,
   visitedIds = new Set<string>(),
+  depth = 0,
 ): boolean {
-  if (typeof value !== "string") return true;
-  const reference = LAZY_REFERENCE_PATTERN.exec(value) ?? ASYNC_REFERENCE_PATTERN.exec(value);
-  if (!reference) return true;
-  const id = reference[1].toLowerCase();
-  if (records.terminalIds.has(id)) return true;
-  const model = records.models.get(id);
-  if (model === undefined || visitedIds.has(id)) return false;
-  visitedIds.add(id);
-  return isInspectableSelectedRoot(model, records, visitedIds);
+  if (depth > 100) return false;
+  if (typeof value === "string") {
+    const reference = LAZY_REFERENCE_PATTERN.exec(value) ?? ASYNC_REFERENCE_PATTERN.exec(value);
+    if (!reference) return true;
+    const id = reference[1].toLowerCase();
+    if (records.terminalIds.has(id)) return true;
+    const model = records.models.get(id);
+    if (model === undefined) return insideSuspense;
+    if (visitedIds.has(id)) return false;
+    visitedIds.add(id);
+    const inspectable = isInspectableSelectedRoot(
+      model,
+      records,
+      suspenseTypeIds,
+      insideSuspense,
+      visitedIds,
+      depth + 1,
+    );
+    visitedIds.delete(id);
+    return inspectable;
+  }
+  if (Array.isArray(value)) {
+    if (value[0] === "$" && typeof value[1] === "string") {
+      const typeReference = /^\$([0-9a-f]+)$/i.exec(value[1]);
+      const props = value[3];
+      if (
+        typeReference &&
+        suspenseTypeIds.has(typeReference[1].toLowerCase()) &&
+        props &&
+        typeof props === "object" &&
+        !Array.isArray(props) &&
+        isNonNullFallback(Reflect.get(props, "fallback"))
+      ) {
+        return (
+          isInspectableSelectedRoot(
+            Reflect.get(props, "fallback"),
+            records,
+            suspenseTypeIds,
+            insideSuspense,
+            visitedIds,
+            depth + 1,
+          ) &&
+          isInspectableSelectedRoot(
+            Reflect.get(props, "children"),
+            records,
+            suspenseTypeIds,
+            true,
+            visitedIds,
+            depth + 1,
+          )
+        );
+      }
+    }
+    return value.every((entry) =>
+      isInspectableSelectedRoot(
+        entry,
+        records,
+        suspenseTypeIds,
+        insideSuspense,
+        visitedIds,
+        depth + 1,
+      ),
+    );
+  }
+  if (!value || typeof value !== "object") return true;
+  return Object.values(value).every((entry) =>
+    isInspectableSelectedRoot(
+      entry,
+      records,
+      suspenseTypeIds,
+      insideSuspense,
+      visitedIds,
+      depth + 1,
+    ),
+  );
 }
 
 function hasPostponedValueWithinSuspense(
@@ -154,7 +223,7 @@ export function hasCompletedPageSuspenseShell(bytes: Uint8Array): boolean {
   });
   if (
     selectedRoots.length === 0 ||
-    selectedRoots.some(([, value]) => !isInspectableSelectedRoot(value, records))
+    selectedRoots.some(([, value]) => !isInspectableSelectedRoot(value, records, suspenseTypeIds))
   ) {
     return false;
   }

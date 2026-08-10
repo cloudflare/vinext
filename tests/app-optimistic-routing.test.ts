@@ -661,6 +661,17 @@ describe("App Router optimistic routing", () => {
     );
     expect(hasCompletedPageSuspenseShell(mixedShell)).toBe(true);
     expect(invalidateIncompletePageSuspenseShell(mixedShell)).toBe(mixedShell);
+    const mixedBoundedAndUnboundedShell = encodeFlight(
+      '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1"}',
+      '2:"$Sreact.suspense"',
+      '1:[["$","div",null,{"children":"$Lb"}],["$","$2",null,{"fallback":"Loading","children":"$La"}]]',
+    );
+    expect(hasCompletedPageSuspenseShell(mixedBoundedAndUnboundedShell)).toBe(false);
+    expect(
+      new TextDecoder().decode(
+        invalidateIncompletePageSuspenseShell(mixedBoundedAndUnboundedShell),
+      ),
+    ).toContain('"__prefetchLoadingShell":"NotSuspended"');
     const missingModalRoot = encodeFlight(
       '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1","slot:children:/modal":"$Lc"}',
       '2:"$Sreact.suspense"',

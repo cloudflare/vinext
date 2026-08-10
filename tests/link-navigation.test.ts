@@ -1940,6 +1940,15 @@ describe("Link prefetch scheduling", () => {
       },
     },
     {
+      name: "prefetch-only present header matcher",
+      href: "/viewport-prefetch-target?mismatch-rewrite=./other",
+      locales: undefined,
+      matcher: {
+        source: "/:path*",
+        has: [{ type: "header", key: "Next-Router-Prefetch" }],
+      },
+    },
+    {
       name: "queryless navigation",
       href: "/viewport-prefetch-target",
       locales: undefined,
@@ -1980,6 +1989,12 @@ describe("Link prefetch scheduling", () => {
       href: "/EN/viewport-prefetch-target",
       locales: ["en"],
       matcher: { source: "/viewport-prefetch-target" },
+    },
+    {
+      name: "locale-false default-locale prefix",
+      href: "/viewport-prefetch-target",
+      locales: ["en"],
+      matcher: { locale: false, source: "/en/viewport-prefetch-target" },
     },
     {
       name: "duplicate empty query presence",
