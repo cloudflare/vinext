@@ -569,6 +569,12 @@ export function mergeElements(
     ]);
     const preservedParentIds = new Set(preservedIdentityIds);
     for (const parentId of preservedParentIds) {
+      // Only named parallel-slot payloads preserve their flattened nested
+      // segment identities with the parent entry. Primary children-spine
+      // boundaries use layout ids as their synthetic parent, but a preserved
+      // layout element must still accept the destination child identity so its
+      // Activity boundary can switch branches and retain the source subtree.
+      if (!AppElementsWire.isSlotId(parentId)) continue;
       for (const identityId of identityIds) {
         if (isNestedBfcacheSlotSegmentIdFor(identityId, parentId)) {
           preservedIdentityIds.add(identityId);

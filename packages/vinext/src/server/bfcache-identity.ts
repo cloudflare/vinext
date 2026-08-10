@@ -84,6 +84,11 @@ export type BfcacheSegmentDescriptor =
       boundSegmentKey: string;
     }
   | {
+      kind: "segment";
+      ownerLayoutGraphId: string;
+      boundSegmentKey: string;
+    }
+  | {
       kind: "sibling-interception";
       interceptionGraphId: string;
       sourceRouteGraphId: string;
@@ -125,6 +130,8 @@ export function deriveBfcacheSegmentIdentity(descriptor: BfcacheSegmentDescripto
         descriptor.interceptionTargetRouteGraphId,
         descriptor.boundSegmentKey,
       ]);
+    case "segment":
+      return JSON.stringify(["segment", descriptor.ownerLayoutGraphId, descriptor.boundSegmentKey]);
     case "sibling-interception":
       return JSON.stringify([
         "sibling-interception",

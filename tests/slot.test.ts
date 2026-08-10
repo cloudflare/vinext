@@ -339,6 +339,41 @@ describe("slot primitives", () => {
     expect(merged["layout:/dashboard"]).toBe(previousLayout);
   });
 
+  it("mergeElements updates a preserved layout's primary child identity", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+    const { createNestedBfcacheSlotSegmentId } =
+      await import("../packages/vinext/src/server/bfcache-identity.js");
+    const layoutId = "layout:/dashboard";
+    const primaryChildId = createNestedBfcacheSlotSegmentId(layoutId, 1);
+    const previousLayout = React.createElement("div", null, "layout");
+
+    const merged = mergeElements(
+      {
+        [layoutId]: previousLayout,
+        [primaryChildId]: null,
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: {
+          [layoutId]: "layout-identity",
+          [primaryChildId]: "page-child-identity",
+        },
+      },
+      {
+        [layoutId]: React.createElement("div", null, "rerendered layout"),
+        [primaryChildId]: null,
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: {
+          [layoutId]: "layout-identity",
+          [primaryChildId]: "nested-route-child-identity",
+        },
+      },
+      { preserveElementIds: [layoutId] },
+    );
+
+    expect(merged[layoutId]).toBe(previousLayout);
+    expect(merged[APP_BFCACHE_SEGMENT_IDENTITIES_KEY]).toMatchObject({
+      [layoutId]: "layout-identity",
+      [primaryChildId]: "nested-route-child-identity",
+    });
+  });
+
   it("mergeElements drops absent non-slot elements without approved persistence", async () => {
     const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
 

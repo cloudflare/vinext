@@ -130,6 +130,7 @@ import {
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  hasVisitedResponseCacheIdentity,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -191,6 +192,7 @@ import {
 } from "./headers.js";
 import { stripRscCompletionMetadataResponse } from "./rsc-completion-metadata.js";
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
+import { shouldPingVisibleLinksAfterMountedSlotsChange } from "./app-browser-visible-link-prefetch.js";
 import {
   navigationPlanner,
   type NavigationReuseFacts,
@@ -731,6 +733,28 @@ function readVisitedResponseCacheCandidate(
   };
 }
 
+function hasVisitedResponseForPrefetch(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  priority: "low" | "high",
+): boolean {
+  return hasVisitedResponseCacheIdentity(
+    visitedResponseCache,
+    rscUrl,
+    interceptionContext,
+    mountedSlotsHeader,
+    Date.now(),
+    // A pointer-intent prefetch can be dispatched by the browser while a
+    // history traversal is restoring the Link under the pointer, before the
+    // popstate handler has a chance to cancel it. Preserve any response that
+    // is still valid for BFCache traversal in that narrow high-priority path.
+    // A normal click still classifies the entry as a regular navigation and
+    // fetches fresh data when its configured dynamic stale time has elapsed.
+    priority === "high" ? "traverse" : "navigate",
+  );
+}
+
 function applyVisitedResponseCacheCandidateDecision(
   candidate: VisitedResponseCacheCandidate,
   decision: ReturnType<typeof navigationPlanner.classifyVisitedResponseCacheCandidate>,
@@ -1112,7 +1136,13 @@ function BrowserRoot({
     const nextMountedSlotsHeader = getMountedSlotIdsHeader(stateRef.current.elements);
     setMountedSlotsHeader(nextMountedSlotsHeader);
     removeStylesheetLinksCoveredByInlineCss();
-    if (previousMountedSlotsHeader === nextMountedSlotsHeader) {
+    if (
+      !shouldPingVisibleLinksAfterMountedSlotsChange({
+        nextMountedSlotsHeader,
+        operationLane: treeState.activeOperation?.lane ?? null,
+        previousMountedSlotsHeader,
+      })
+    ) {
       return;
     }
     const pingTimer = window.setTimeout(() => {
@@ -1121,7 +1151,7 @@ function BrowserRoot({
     return () => {
       window.clearTimeout(pingTimer);
     };
-  }, [treeState.elements]);
+  }, [treeState.activeOperation?.lane, treeState.elements]);
 
   useLayoutEffect(() => {
     if (treeState.renderId !== 0) {
@@ -2276,6 +2306,47 @@ function bootstrapHydration(
           if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
           const metadata = AppElementsWire.readMetadata(renderedElements);
           if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
+          const state = committedState;
+          const committedElements = {
+            ...state.elements,
+            [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
+            [AppElementsWire.keys.layoutIds]: state.layoutIds,
+            [AppElementsWire.keys.skippedLayoutIds]: [],
+            [AppElementsWire.keys.slotBindings]: state.slotBindings,
+          } satisfies AppElements;
+          const committedMountedSlotsHeader = getMountedSlotIdsHeader(renderedElements);
+          const interceptionContext = resolveVisitedResponseInterceptionContext(
+            requestInterceptionContext,
+            metadata.interceptionContext,
+          );
+          // The visible tree is already sufficient for BFCache traversal. Do
+          // not leave an immediate back/forward navigation waiting on the
+          // response tee's completion-metadata tail; publish an elements-only
+          // visited entry now and replace it with the buffered snapshot below.
+          if (consumedPrefetchSnapshot === undefined) {
+            const provisionalResponse = createCachedRscResponseSnapshot(
+              navResponse,
+              new ArrayBuffer(0),
+              navResponseUrl,
+            );
+            storeVisitedResponseSnapshot(
+              rscUrl,
+              interceptionContext,
+              {
+                ...provisionalResponse,
+                ...(provisionalResponse.dynamicStaleTimeSeconds === undefined &&
+                metadata.dynamicStaleTimeSeconds !== undefined
+                  ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
+                  : {}),
+                mountedSlotsHeader: committedMountedSlotsHeader,
+              },
+              navParams,
+              DYNAMIC_NAVIGATION_CACHE_TTL,
+              mountedSlotsHeader,
+              committedElements,
+              false,
+            );
+          }
           // A consumed prefetch was fully buffered before navigation could take
           // ownership of it. Reuse that snapshot instead of waiting for the
           // redundant cache tee to drain: otherwise an immediate back
@@ -2303,16 +2374,12 @@ function bootstrapHydration(
                     ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
                     : {}),
                 }),
-            mountedSlotsHeader: getMountedSlotIdsHeader(renderedElements),
+            mountedSlotsHeader: committedMountedSlotsHeader,
           };
           // The prefetch retains the absolute deadline calculated when its
           // response settled. The visited/BFCache snapshot must not inherit
           // that deadline: it independently applies staleTimes.dynamic.
           const prefetchSnapshot = preserveCommittedPrefetchExpiry(snapshot, navResponseExpiresAt);
-          const interceptionContext = resolveVisitedResponseInterceptionContext(
-            requestInterceptionContext,
-            metadata.interceptionContext,
-          );
           if (cacheRestorable) {
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
@@ -2327,14 +2394,6 @@ function bootstrapHydration(
               prefetchSnapshot,
             );
           } else {
-            const state = committedState;
-            const committedElements = {
-              ...state.elements,
-              [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
-              [AppElementsWire.keys.layoutIds]: state.layoutIds,
-              [AppElementsWire.keys.skippedLayoutIds]: [],
-              [AppElementsWire.keys.slotBindings]: state.slotBindings,
-            } satisfies AppElements;
             // The committed router state is the post-merge tree, including named
             // parallel-slot state. Rebuild a complete payload so skip-pruned wire
             // responses remain replayable after their visible commit.
@@ -2417,6 +2476,7 @@ function bootstrapHydration(
         routeId: state.routeId,
       };
     },
+    hasVisitedResponseForPrefetch,
     navigate: navigateRsc,
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),

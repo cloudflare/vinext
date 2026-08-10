@@ -22,6 +22,7 @@ import {
   closeAfterResponse,
   createRequestContext,
   runWithRequestContext,
+  runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import {
   ensureFetchPatch,
@@ -60,10 +61,7 @@ import {
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
 import { renderAppPageLifecycle } from "./app-page-render.js";
-import {
-  consumeAppPageRenderObservationState,
-  discardAppPageRenderState,
-} from "./app-page-render-observation.js";
+import { consumeAppPageRenderObservationState } from "./app-page-render-observation.js";
 import {
   mergeMiddlewareResponseHeaders,
   type AppPageMiddlewareContext,
@@ -349,6 +347,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   pprFallbackCacheShells?: readonly AppPagePprFallbackCacheShell[] | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    kind: "cache-components-prerender" | "fallback-shell";
     routePattern: string;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
@@ -636,7 +635,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // shells keep request-time placement until metadata staticness can be tracked
   // independently from the route's staticness.
   const placeGeneratedMetadataInBody =
-    (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
+    (!isPrerender || options.pprFallbackShell?.kind === "fallback-shell") && serveStreamingMetadata;
   const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
@@ -1048,13 +1047,25 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
-    await options.pprRuntime!.warm({
-      element: warmupBuildResult.element,
-      onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
-      renderToReadableStream: options.renderToReadableStream,
-      state: fallbackShellState,
-    });
-    discardAppPageRenderState();
+    await runWithUnifiedStateMutation(
+      (ctx) => {
+        ctx.cacheableFetchUrls = new Set();
+        ctx.currentRequestTags = [];
+        ctx.dynamicFetchUrls = new Set();
+        ctx.dynamicUsageDetected = false;
+        ctx.invalidDynamicUsageError = null;
+        ctx.renderRequestApiUsage = new Set();
+        ctx.requestScopedCacheLife = null;
+        ctx.unstableCacheObservations = new Map();
+      },
+      () =>
+        options.pprRuntime!.warm({
+          element: warmupBuildResult.element,
+          onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
+          renderToReadableStream: options.renderToReadableStream,
+          state: fallbackShellState,
+        }),
+    );
   }
 
   const pageBuildResult = await buildCurrentPageElement();

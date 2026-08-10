@@ -1,5 +1,12 @@
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import type { CacheLifeConfig } from "./cache-request-state.js";
+
+export type PprFallbackShellCacheResult = Readonly<{
+  cacheLife: CacheLifeConfig;
+  tags: readonly string[];
+  value: unknown;
+}>;
 
 export type PprFallbackShellState = {
   abortController: AbortController;
@@ -18,6 +25,7 @@ export type PprFallbackShellState = {
   pendingCacheTasks: number;
   phase: "warmup" | "final";
   routePattern: string;
+  warmupCacheResults: Map<string, PprFallbackShellCacheResult>;
 };
 
 type CreatePprFallbackShellStateOptions = {
@@ -156,6 +164,7 @@ export function createPprFallbackShellState(
     pendingCacheTasks: 0,
     phase: "warmup",
     routePattern: options.routePattern,
+    warmupCacheResults: new Map(),
   };
 }
 
@@ -165,6 +174,27 @@ export function runWithPprFallbackShellState<T>(state: PprFallbackShellState, fn
 
 export function getPprFallbackShellState(): PprFallbackShellState | null {
   return pprFallbackShellAls.getStore() ?? null;
+}
+
+export function rememberPprFallbackShellWarmupCacheResult(
+  state: PprFallbackShellState,
+  cacheKey: string,
+  result: PprFallbackShellCacheResult,
+): void {
+  if (state.phase !== "warmup") return;
+  state.warmupCacheResults.set(cacheKey, {
+    cacheLife: { ...result.cacheLife },
+    tags: [...result.tags],
+    value: result.value,
+  });
+}
+
+export function readPprFallbackShellWarmupCacheResult(
+  state: PprFallbackShellState,
+  cacheKey: string,
+): PprFallbackShellCacheResult | null {
+  if (state.phase !== "final") return null;
+  return state.warmupCacheResults.get(cacheKey) ?? null;
 }
 
 export function trackPprFallbackShellCacheTask<T>(

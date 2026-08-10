@@ -375,7 +375,10 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
       // deliberate, documented design change rather than an incidental one.
       if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
       if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
-      _setRequestScopedCacheLife(resolvedConfig);
+      // The cached-function wrapper publishes the resolved minimum to the
+      // request only after the value is retained. Publishing eagerly here
+      // would let a Cache Components prerender hole constrain the enclosing
+      // page even though that short-lived value was omitted from its output.
       return;
     }
   } catch {

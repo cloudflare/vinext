@@ -4,6 +4,7 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
@@ -730,6 +731,15 @@ export async function renderAppPageLifecycle(
   const compileEnd = options.isProduction ? undefined : performance.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
+  const onRscRenderError = (error: unknown, requestInfo: unknown, errorContext: unknown) => {
+    if (
+      options.pprFallbackShellSignal &&
+      (options.pprFallbackShellSignal.aborted || isPprFallbackShellAbortError(error))
+    ) {
+      return undefined;
+    }
+    return rscErrorTracker.onRenderError(error, requestInfo, errorContext);
+  };
   // Defensive wrap for standalone callers. In the normal dispatch path this is
   // a no-op since dispatchAppPage already activated dedupe. Note that
   // renderToReadableStream returns synchronously — the actual fetch calls
@@ -741,7 +751,7 @@ export async function renderAppPageLifecycle(
     if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
       const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
-        onError: rscErrorTracker.onRenderError,
+        onError: onRscRenderError,
         signal: reactSignal,
       });
       if (options.abortPprFallbackShell) {
@@ -751,7 +761,7 @@ export async function renderAppPageLifecycle(
     }
 
     return options.renderToReadableStream(outgoingElement, {
-      onError: rscErrorTracker.onRenderError,
+      onError: onRscRenderError,
     });
   });
 

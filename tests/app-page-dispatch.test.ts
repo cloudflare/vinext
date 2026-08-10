@@ -631,6 +631,7 @@ describe("app page dispatch", () => {
       buildPageElement,
       pprFallbackShell: {
         fallbackParamNames: ["slug"],
+        kind: "fallback-shell",
         routePattern: "/posts/[slug]",
       },
     });
@@ -640,6 +641,28 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(200);
     expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
       serveStreamingMetadata: true,
+    });
+  });
+
+  it("keeps static metadata placement for ordinary Cache Components prerenders", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: [],
+        kind: "cache-components-prerender",
+        routePattern: "/posts",
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      serveStreamingMetadata: false,
     });
   });
 

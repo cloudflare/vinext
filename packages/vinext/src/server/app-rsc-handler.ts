@@ -224,6 +224,7 @@ type DispatchMatchedPageOptions<TRoute> = {
     | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    kind: "cache-components-prerender" | "fallback-shell";
     routePattern: string;
   };
   renderedConcreteUrlPaths?: ReadonlySet<string>;
@@ -1535,9 +1536,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     pprFallbackShell: isPrerenderFallbackShell
       ? {
           fallbackParamNames: prerenderRouteParamsMatch.fallbackParamNames,
+          kind: "fallback-shell",
           routePattern: route.pattern,
         }
-      : undefined,
+      : process.env.VINEXT_PRERENDER === "1" &&
+          options.createPprFallbackShells !== undefined &&
+          request.method === "GET" &&
+          !isRscRequest
+        ? {
+            fallbackParamNames: [],
+            kind: "cache-components-prerender",
+            routePattern: route.pattern,
+          }
+        : undefined,
     renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
     skipStaticParamsValidation: isPrerenderFallbackShell,
     staticParamsValidationParams:

@@ -29,8 +29,13 @@ import { isDangerousScheme, reportBlockedDangerousNavigation } from "./url-safet
 import {
   canLinkIntentPrefetch,
   canLinkPrefetch,
+  beginLinkIntentPrefetch,
+  endLinkIntentPrefetch,
   getLinkPrefetchHref,
+  syncLinkViewportPrefetchIdentity,
   type LinkPrefetchRouterMode,
+  type LinkIntentPrefetchState,
+  type LinkViewportPrefetchState,
 } from "./link-prefetch.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -69,7 +74,10 @@ import {
   type PendingLinkSetter,
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
-import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
+import {
+  cancelAppPrefetchFetch,
+  scheduleAppPrefetchFetch,
+} from "./internal/app-prefetch-fetch-queue.js";
 
 type NavigateEvent = {
   url: URL;
@@ -176,6 +184,26 @@ export function useLinkStatus(): LinkStatusContextValue {
 }
 
 let linkPrefetchNavigationEpoch = 0;
+const pendingLinkPrefetchFetches = new Set<Promise<Response>>();
+
+function scheduleLinkPrefetchFetch(
+  fetcher: (signal: AbortSignal) => Promise<Response>,
+  priority: "low" | "high",
+): Promise<Response> {
+  let promise!: Promise<Response>;
+  promise = scheduleAppPrefetchFetch(fetcher, priority, () => {
+    pendingLinkPrefetchFetches.delete(promise);
+  });
+  pendingLinkPrefetchFetches.add(promise);
+  return promise;
+}
+
+function cancelLinkPrefetchSetups(): void {
+  linkPrefetchNavigationEpoch += 1;
+  for (const promise of pendingLinkPrefetchFetches) {
+    cancelAppPrefetchFetch(promise);
+  }
+}
 
 function notifyLinkNavigationStartAndCancelPrefetchSetup(): void {
   linkPrefetchNavigationEpoch += 1;
@@ -189,6 +217,21 @@ function notifyLinkNavigationStartAndCancelPrefetchSetup(): void {
 // navigation. The registry itself lives in internal/link-status-registry.ts so
 // it can be unit-tested without rendering a <Link>.
 if (typeof window !== "undefined") {
+  const browserNavigation: unknown = Reflect.get(window, "navigation");
+  if (typeof browserNavigation === "object" && browserNavigation !== null) {
+    const addNavigationEventListener = Reflect.get(browserNavigation, "addEventListener");
+    if (typeof addNavigationEventListener === "function") {
+      Reflect.apply(addNavigationEventListener, browserNavigation, [
+        "navigate",
+        (event: Event) => {
+          if (Reflect.get(event, "navigationType") === "traverse") {
+            cancelLinkPrefetchSetups();
+          }
+        },
+      ]);
+    }
+  }
+  window.addEventListener("popstate", cancelLinkPrefetchSetups);
   registerNavigationRuntimeFunctions({
     notifyLinkNavigationStart: notifyLinkNavigationStartAndCancelPrefetchSetup,
   });
@@ -390,11 +433,15 @@ function prefetchUrl(
     __basePath,
   );
   const target = new URL(fullHref, window.location.href);
-  if (
-    target.origin === window.location.origin &&
-    target.pathname === window.location.pathname &&
-    target.search === window.location.search
-  ) {
+  const destinationIsCurrent = () => {
+    const latestTarget = new URL(fullHref, window.location.href);
+    return (
+      latestTarget.origin === window.location.origin &&
+      latestTarget.pathname === window.location.pathname &&
+      latestTarget.search === window.location.search
+    );
+  };
+  if (destinationIsCurrent()) {
     return;
   }
   if (
@@ -438,6 +485,12 @@ function prefetchUrl(
         // same event turn. If navigation won the module-loading race, do not
         // begin a second request after it consumes an equivalent cached route.
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
+        // The destination can also become current while the lazy prefetch
+        // modules are loading. Re-check it here so an expired visited response
+        // does not make that superseded setup fetch the page we just reached.
+        if (destinationIsCurrent()) {
+          return;
+        }
         const {
           getPrefetchInterceptionContext,
           getPrefetchCache,
@@ -522,6 +575,16 @@ function prefetchUrl(
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const rscUrl = await createRscRequestUrl(fullHref, headers);
+        if (
+          getNavigationRuntime()?.functions.hasVisitedResponseForPrefetch?.(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+            priority,
+          ) === true
+        ) {
+          return;
+        }
         const additionalRscUrls =
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]
@@ -536,20 +599,31 @@ function prefetchUrl(
             return;
           }
         }
+        const prefetchWasSuperseded = () =>
+          navigationEpoch !== linkPrefetchNavigationEpoch || destinationIsCurrent();
+        const rejectSupersededPrefetch = (): Promise<Response> =>
+          Promise.reject(new DOMException("Link prefetch superseded by navigation", "AbortError"));
+        const scheduleGuardedLinkPrefetchFetch = async (
+          fetcher: (signal: AbortSignal) => Promise<Response>,
+        ): Promise<Response> => {
+          if (prefetchWasSuperseded()) {
+            return rejectSupersededPrefetch();
+          }
+          return scheduleLinkPrefetchFetch(fetcher, priority);
+        };
         const fetchFullRscPayload = () =>
-          scheduleAppPrefetchFetch(
-            (signal) =>
-              fetch(rscUrl, {
-                headers,
-                credentials: "include",
-                priority,
-                signal,
-                // @ts-expect-error — purpose is a valid fetch option in some browsers
-                purpose: "prefetch",
-              }),
-            priority,
+          scheduleGuardedLinkPrefetchFetch((signal) =>
+            fetch(rscUrl, {
+              headers,
+              credentials: "include",
+              priority,
+              signal,
+              // @ts-expect-error — purpose is a valid fetch option in some browsers
+              purpose: "prefetch",
+            }),
           );
         const fetchLoadingShellForReuse = async (): Promise<void> => {
+          if (prefetchWasSuperseded()) return;
           const shellHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
@@ -561,6 +635,7 @@ function prefetchUrl(
             shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
           }
           const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
+          if (prefetchWasSuperseded()) return;
           const shellCacheKey = AppElementsWire.encodeCacheKey(shellRscUrl, interceptionContext);
           const shellCache = getPrefetchCache();
           let shellEntry = shellCache.get(shellCacheKey);
@@ -568,17 +643,15 @@ function prefetchUrl(
             getPrefetchedUrls().add(shellCacheKey);
             prefetchRscResponse(
               shellRscUrl,
-              scheduleAppPrefetchFetch(
-                (signal) =>
-                  fetch(shellRscUrl, {
-                    headers: shellHeaders,
-                    credentials: "include",
-                    priority,
-                    signal,
-                    // @ts-expect-error — purpose is a valid fetch option in some browsers
-                    purpose: "prefetch",
-                  }),
-                priority,
+              scheduleGuardedLinkPrefetchFetch((signal) =>
+                fetch(shellRscUrl, {
+                  headers: shellHeaders,
+                  credentials: "include",
+                  priority,
+                  signal,
+                  // @ts-expect-error — purpose is a valid fetch option in some browsers
+                  purpose: "prefetch",
+                }),
               ),
               interceptionContext,
               mountedSlotsHeader,
@@ -641,6 +714,13 @@ function prefetchUrl(
           }
           return;
         }
+        // Hashing the RSC URL and probing cache aliases are asynchronous. A
+        // popstate traversal can start while either is pending, after the
+        // earlier epoch/current-URL checks have already passed. Re-check at
+        // the final no-await boundary before publishing or starting a fetch.
+        if (navigationEpoch !== linkPrefetchNavigationEpoch || destinationIsCurrent()) {
+          return;
+        }
         prefetched.add(cacheKey);
         // Next's `prefetchInlining` Segment Cache path fetches a route tree
         // and then one inlined segment payload. Vinext still caches the unified
@@ -685,17 +765,15 @@ function prefetchUrl(
                   getPrefetchedUrls().add(shellCacheKey);
                   prefetchRscResponse(
                     shellRscUrl,
-                    scheduleAppPrefetchFetch(
-                      (signal) =>
-                        fetch(shellRscUrl, {
-                          headers: shellHeaders,
-                          credentials: "include",
-                          priority,
-                          signal,
-                          // @ts-expect-error — purpose is a valid fetch option in some browsers
-                          purpose: "prefetch",
-                        }),
-                      priority,
+                    scheduleGuardedLinkPrefetchFetch((signal) =>
+                      fetch(shellRscUrl, {
+                        headers: shellHeaders,
+                        credentials: "include",
+                        priority,
+                        signal,
+                        // @ts-expect-error — purpose is a valid fetch option in some browsers
+                        purpose: "prefetch",
+                      }),
                     ),
                     interceptionContext,
                     mountedSlotsHeader,
@@ -721,18 +799,7 @@ function prefetchUrl(
                     return restoreRscResponse(cachedRenderedResponse);
                   }
                 }
-                return scheduleAppPrefetchFetch(
-                  (signal) =>
-                    fetch(rscUrl, {
-                      headers,
-                      credentials: "include",
-                      priority,
-                      signal,
-                      // @ts-expect-error — purpose is a valid fetch option in some browsers
-                      purpose: "prefetch",
-                    }),
-                  priority,
-                );
+                return fetchFullRscPayload();
               })()
             : fetchFullRscPayload();
         if (
@@ -863,8 +930,10 @@ type LinkPrefetchInstance = {
   mode: LinkPrefetchMode;
   pagesRouteHref?: string;
   queuedViewportPrefetch: boolean;
+  queuedViewportPrefetchEpoch: number | null;
   routerMode: LinkPrefetchRouterMode;
   viewportPrefetched: boolean;
+  viewportPrefetchedState: LinkViewportPrefetchState;
 };
 
 const observedLinkPrefetches = new WeakMap<Element, LinkPrefetchInstance>();
@@ -878,7 +947,10 @@ function drainVisibleAppPrefetchQueue(): void {
     const instance = visibleAppPrefetchQueue.pop();
     if (!instance) return;
     instance.queuedViewportPrefetch = false;
+    const queuedEpoch = instance.queuedViewportPrefetchEpoch;
+    instance.queuedViewportPrefetchEpoch = null;
     if (!instance.isVisible || instance.routerMode !== "app") continue;
+    if (queuedEpoch !== linkPrefetchNavigationEpoch) continue;
     prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref);
   }
 }
@@ -886,6 +958,7 @@ function drainVisibleAppPrefetchQueue(): void {
 function scheduleVisibleAppPrefetch(instance: LinkPrefetchInstance): void {
   if (instance.queuedViewportPrefetch) return;
   instance.queuedViewportPrefetch = true;
+  instance.queuedViewportPrefetchEpoch = linkPrefetchNavigationEpoch;
   visibleAppPrefetchQueue.push(instance);
   if (visibleAppPrefetchDrainScheduled) return;
   visibleAppPrefetchDrainScheduled = true;
@@ -896,13 +969,14 @@ function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boole
   instance.isVisible = isVisible;
   if (isVisible) {
     visibleLinkPrefetches.add(instance);
-    if (instance.routerMode === "pages" && instance.viewportPrefetched) return;
+    if (instance.viewportPrefetched) return;
     if (instance.routerMode === "app") {
       scheduleVisibleAppPrefetch(instance);
     } else {
       prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref, instance.locale);
     }
     instance.viewportPrefetched = true;
+    instance.viewportPrefetchedState.prefetched = true;
   } else {
     visibleLinkPrefetches.delete(instance);
   }
@@ -1077,6 +1151,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     children: childrenProp,
     onClick,
     onMouseEnter,
+    onMouseLeave,
     onTouchStart,
     onNavigate,
     unstable_dynamicOnHover = false,
@@ -1227,6 +1302,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // In App Router, null/undefined/"auto" is automatic prefetch and true opts
   // into a full RSC prefetch, matching Next.js's public prefetch contract.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
+  // React Activity tears down effects while a BFCache entry is hidden but
+  // preserves component state and refs. Keep the one-shot viewport-prefetch
+  // bit here so restoring the entry does not treat the same Link as new.
+  const viewportPrefetchedStateRef = useRef<LinkViewportPrefetchState>({
+    identity: null,
+    prefetched: false,
+  });
+  const intentPrefetchedStateRef = useRef<LinkIntentPrefetchState>({
+    active: false,
+    identity: null,
+  });
   const prefetchMode = resolveLinkPrefetchMode(prefetchProp, isDangerous);
   const shouldViewportPrefetch = canLinkPrefetch({
     nodeEnv: process.env.NODE_ENV,
@@ -1260,6 +1346,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (!observer) return;
 
     registerVisibleLinkPing();
+    const viewportPrefetchIdentity = JSON.stringify([
+      hrefToPrefetch,
+      normalizedRouteHref,
+      locale ?? null,
+      prefetchMode,
+      getLinkPrefetchRouterMode(),
+    ]);
+    const viewportPrefetchedState = viewportPrefetchedStateRef.current;
     const instance: LinkPrefetchInstance = {
       href: hrefToPrefetch,
       isVisible: false,
@@ -1274,8 +1368,13 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               currentOrigin: window.location.origin,
             }) ?? undefined),
       queuedViewportPrefetch: false,
+      queuedViewportPrefetchEpoch: null,
       routerMode: getLinkPrefetchRouterMode(),
-      viewportPrefetched: false,
+      viewportPrefetched: syncLinkViewportPrefetchIdentity(
+        viewportPrefetchedState,
+        viewportPrefetchIdentity,
+      ),
+      viewportPrefetchedState,
     };
     observedLinkPrefetches.set(node, instance);
     observer.observe(node);
@@ -1327,9 +1426,19 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const handleMouseEnter = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {
       onMouseEnter?.(e);
-      prefetchOnIntent();
+      if (beginLinkIntentPrefetch(intentPrefetchedStateRef.current, normalizedHref)) {
+        prefetchOnIntent();
+      }
     },
-    [onMouseEnter, prefetchOnIntent],
+    [normalizedHref, onMouseEnter, prefetchOnIntent],
+  );
+
+  const handleMouseLeave = useCallback(
+    (e: MouseEvent<HTMLAnchorElement>) => {
+      onMouseLeave?.(e);
+      endLinkIntentPrefetch(intentPrefetchedStateRef.current);
+    },
+    [onMouseLeave],
   );
 
   const handleTouchStart = useCallback(
@@ -1572,6 +1681,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           ref={setRefs}
           onClick={handleDangerousClick}
           onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
           onTouchStart={handleTouchStart}
           {...anchorProps}
         >
@@ -1594,6 +1704,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       ref?: React.Ref<HTMLAnchorElement>;
       onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
       onMouseEnter?: (event: MouseEvent<HTMLAnchorElement>) => void;
+      onMouseLeave?: (event: MouseEvent<HTMLAnchorElement>) => void;
       onTouchStart?: (event: TouchEvent<HTMLAnchorElement>) => void;
     }>;
     if (process.env.NODE_ENV !== "production") {
@@ -1618,6 +1729,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const shouldForwardHref = passHref || (child.type === "a" && !childHasOwnHref);
     const childOnClick = childPropsExisting.onClick;
     const childOnMouseEnter = childPropsExisting.onMouseEnter;
+    const childOnMouseLeave = childPropsExisting.onMouseLeave;
     const childOnTouchStart = childPropsExisting.onTouchStart;
     // Mirror Next.js: in legacy mode, the ref source is the child's own
     // ref (e.g. `<a ref={myRef}>`), not Link's `forwardedRef`. In React 19
@@ -1644,7 +1756,13 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       },
       onMouseEnter: (event: MouseEvent<HTMLAnchorElement>) => {
         if (childOnMouseEnter) childOnMouseEnter(event);
-        prefetchOnIntent();
+        if (beginLinkIntentPrefetch(intentPrefetchedStateRef.current, normalizedHref)) {
+          prefetchOnIntent();
+        }
+      },
+      onMouseLeave: (event: MouseEvent<HTMLAnchorElement>) => {
+        if (childOnMouseLeave) childOnMouseLeave(event);
+        endLinkIntentPrefetch(intentPrefetchedStateRef.current);
       },
       onTouchStart: (event: TouchEvent<HTMLAnchorElement>) => {
         if (childOnTouchStart) childOnTouchStart(event);
@@ -1668,6 +1786,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         href={fullHref}
         onClick={handleClick as React.MouseEventHandler<HTMLAnchorElement>}
         onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         onTouchStart={handleTouchStart}
         {...anchorProps}
       >

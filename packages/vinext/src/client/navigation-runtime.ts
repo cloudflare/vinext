@@ -66,6 +66,12 @@ export type NavigationRuntimeFunctions = {
   ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
   getPrefetchRouterState?: () => NavigationRuntimePrefetchRouterState | null;
+  hasVisitedResponseForPrefetch?: (
+    rscUrl: string,
+    interceptionContext: string | null,
+    mountedSlotsHeader: string | null,
+    priority: "low" | "high",
+  ) => boolean;
   /**
    * Called at the start of every App Router navigation so the <Link> shim can
    * reset any link that is still showing a `useLinkStatus()` pending state but
