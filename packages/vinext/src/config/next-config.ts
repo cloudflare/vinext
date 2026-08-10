@@ -1737,6 +1737,8 @@ export async function resolveNextConfig(
   const inlineCss = experimental?.inlineCss === true;
   const globalNotFound = experimental?.globalNotFound === true;
   const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
+  const cacheComponents = config.cacheComponents ?? false;
+  const cachedNavigations = cacheComponents && experimental?.cachedNavigations !== false;
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
@@ -1746,7 +1748,7 @@ export async function resolveNextConfig(
   const appShells = experimental?.appShells === true;
   if (appShells) {
     const missingCoFlags: string[] = [];
-    if (!config.cacheComponents) {
+    if (!cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
     if (!prefetchInlining) {
@@ -1758,7 +1760,7 @@ export async function resolveNextConfig(
     if (experimental?.optimisticRouting !== true) {
       missingCoFlags.push("experimental.optimisticRouting");
     }
-    if (experimental?.cachedNavigations !== true) {
+    if (!cachedNavigations) {
       missingCoFlags.push("experimental.cachedNavigations");
     }
     if (missingCoFlags.length > 0) {
@@ -1927,8 +1929,8 @@ export async function resolveNextConfig(
           (x): x is string => typeof x === "string",
         )
       : [],
-    cacheComponents: config.cacheComponents ?? false,
-    cachedNavigations: config.cacheComponents === true && experimental?.cachedNavigations !== false,
+    cacheComponents,
+    cachedNavigations,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,

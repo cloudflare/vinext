@@ -488,7 +488,6 @@ describe("ppr fallback shell render lifecycle", () => {
       // Isolate the delayed-abort race after private-cache discovery has
       // already been proven, dynamic discovery has completed, and all cache
       // work has settled.
-      state.hasRuntimeCacheTask = true;
       state.hasDynamicBoundary = true;
       beginPprFallbackShellFinalRender(state);
       expect(state.isAbortScheduled).toBe(true);

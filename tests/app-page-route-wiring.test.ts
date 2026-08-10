@@ -3188,7 +3188,6 @@ describe("app page route wiring helpers", () => {
       expect(slotLayoutRan).toBe(false);
       expect(interceptLayoutRan).toBe(false);
       expect(state.hasRuntimeEligibleComponent).toBe(true);
-      expect(state.hasRuntimeCacheTask).toBe(false);
       await expect(htmlPromise).resolves.toContain("runtime override");
       expect(state.pendingRuntimeDiscoveryScopes).toBe(0);
       expect(state.pendingCacheTasks).toBe(0);

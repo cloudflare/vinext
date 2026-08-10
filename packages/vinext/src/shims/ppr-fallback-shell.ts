@@ -20,7 +20,6 @@ export type PprFallbackShellState = {
   cacheReadyResolvers: Array<() => void>;
   fallbackParamNames: ReadonlySet<string>;
   hasDynamicBoundary: boolean;
-  hasRuntimeCacheTask: boolean;
   hasRuntimeEligibleComponent: boolean;
   isFinalRenderStarted: boolean;
   isAbortScheduled: boolean;
@@ -266,7 +265,6 @@ export function createPprFallbackShellState(
     cacheReadyResolvers: [],
     fallbackParamNames: new Set(options.fallbackParamNames),
     hasDynamicBoundary: false,
-    hasRuntimeCacheTask: false,
     hasRuntimeEligibleComponent: false,
     isFinalRenderStarted: false,
     isAbortScheduled: false,
@@ -411,9 +409,6 @@ export function trackPprFallbackShellCacheTask<T>(
   const startTrackedTask = (): Promise<T> => {
     cancelPendingCacheReady(state);
     cancelPendingCachedNavigationRuntimeReady(state);
-    if (state.cachedNavigationStage === "runtime" && cacheVariant === "private") {
-      state.hasRuntimeCacheTask = true;
-    }
     state.pendingCacheTasks++;
     const task: PprFallbackShellCacheTask = {
       epoch: state.cacheEpoch,
@@ -584,7 +579,6 @@ export function preparePprFallbackShellFinalRender(state: PprFallbackShellState)
   state.cacheEpoch++;
   state.cacheReadyResolvers.length = 0;
   state.hasDynamicBoundary = false;
-  state.hasRuntimeCacheTask = false;
   state.hasRuntimeEligibleComponent = false;
   state.isFinalRenderStarted = false;
   state.isAbortScheduled = false;

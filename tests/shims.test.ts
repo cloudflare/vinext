@@ -5582,6 +5582,28 @@ describe("next/server shim", () => {
     expect(ranAfterConnection).toBe(false);
   });
 
+  it("connection() interrupts speculative probes inside fallback-shell renders", async () => {
+    const { runWithConnectionProbe } = await import("../packages/vinext/src/shims/headers.js");
+    const { connection } = await import("../packages/vinext/src/shims/server.js");
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      requestApiStage: "static",
+      routePattern: "/probe",
+    });
+
+    try {
+      const outcome = await runWithPprFallbackShellState(state, () =>
+        runWithConnectionProbe(() => connection()),
+      );
+
+      expect(outcome).toEqual({ completed: false });
+    } finally {
+      state.abortController.abort();
+    }
+  });
+
   it("connection probes do not suspend sibling request work", async () => {
     const { runWithConnectionProbe } = await import("../packages/vinext/src/shims/headers.js");
     const { connection } = await import("../packages/vinext/src/shims/server.js");

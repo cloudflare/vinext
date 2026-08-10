@@ -2827,10 +2827,10 @@ describe("resolveNextConfig appShells", () => {
         prefetchInlining: true,
         varyParams: true,
         optimisticRouting: true,
-        cachedNavigations: true,
       },
     });
     expect(resolved.appShells).toBe(true);
+    expect(resolved.cachedNavigations).toBe(true);
     // The warning should NOT contain the appShells co-flags message
     const appShellsWarnings = warnSpy.mock.calls.filter(
       (call) =>
