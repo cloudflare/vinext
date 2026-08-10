@@ -15,6 +15,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
+  NEXT_ROUTER_STALE_TIME_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
@@ -2260,6 +2261,49 @@ describe("Link prefetch scheduling", () => {
         prefetchKind: "instant-shell",
         retainedLayoutProvider: true,
       });
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("re-prefetches a promoted runtime instant shell after its cacheLife expires", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/instant-target",
+      nodeEnv: "production",
+    });
+    result.fetch.mockResolvedValueOnce(
+      new Response("", {
+        headers: {
+          [NEXT_ROUTER_STALE_TIME_HEADER]: "120",
+          [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "30",
+        },
+      }),
+    );
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = [...getPrefetchCache().values()][0];
+      await entry?.pending;
+      expect(entry).toMatchObject({
+        cacheForNavigation: true,
+        expiresAt: 1_120_000,
+        instantShell: true,
+      });
+
+      vi.spyOn(Date, "now").mockReturnValue(1_119_999);
+      pingVisibleLinksFromRuntime();
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      vi.spyOn(Date, "now").mockReturnValue(1_120_001);
+      pingVisibleLinksFromRuntime();
+      await waitForFetchCalls(result.fetch, 2);
+      expect(result.fetch).toHaveBeenCalledTimes(2);
     } finally {
       result.restoreNodeEnv();
     }

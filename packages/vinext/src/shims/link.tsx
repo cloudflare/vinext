@@ -552,7 +552,18 @@ function prefetchUrl(
         }
         if (prefetched.has(cacheKey)) {
           if (!autoPrefetch.cacheForNavigation) {
-            return;
+            const entry = getPrefetchCache().get(cacheKey);
+            // Runtime instant shells start as learning-only entries, but a
+            // complete response is promoted for navigation reuse. Once
+            // promoted, apply the same freshness-aware gate as a regular
+            // reusable prefetch so an expired shell does not remain pinned by
+            // the learning-only `prefetched` marker forever.
+            if (
+              entry?.cacheForNavigation !== true ||
+              hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+            ) {
+              return;
+            }
           }
         }
         const fetchFullRscPayload = () =>
