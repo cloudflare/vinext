@@ -4,7 +4,7 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
-import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import { shouldIgnorePprFallbackShellRenderError } from "vinext/shims/ppr-fallback-shell";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
@@ -732,10 +732,7 @@ export async function renderAppPageLifecycle(
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
   const onRscRenderError = (error: unknown, requestInfo: unknown, errorContext: unknown) => {
-    if (
-      options.pprFallbackShellSignal &&
-      (options.pprFallbackShellSignal.aborted || isPprFallbackShellAbortError(error))
-    ) {
+    if (shouldIgnorePprFallbackShellRenderError(options.pprFallbackShellSignal, error)) {
       return undefined;
     }
     return rscErrorTracker.onRenderError(error, requestInfo, errorContext);

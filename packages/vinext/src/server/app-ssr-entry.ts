@@ -52,7 +52,7 @@ import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/s
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
-import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import { shouldIgnorePprFallbackShellRenderError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
@@ -587,10 +587,7 @@ export async function handleSsr(
             : undefined,
           maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
           onError(error: unknown) {
-            if (
-              pprFallbackShellSignal &&
-              (pprFallbackShellSignal.aborted || isPprFallbackShellAbortError(error))
-            ) {
+            if (shouldIgnorePprFallbackShellRenderError(pprFallbackShellSignal, error)) {
               return undefined;
             }
             errorMetaRenderer.capture(error);

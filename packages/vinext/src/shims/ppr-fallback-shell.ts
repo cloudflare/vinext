@@ -319,3 +319,10 @@ export function isPprFallbackShellAbortError(error: unknown): boolean {
   }
   return error instanceof Error && error.name === "HangingPromiseRejectionError";
 }
+
+export function shouldIgnorePprFallbackShellRenderError(
+  signal: AbortSignal | undefined,
+  error: unknown,
+): boolean {
+  return signal !== undefined && (signal.aborted || isPprFallbackShellAbortError(error));
+}

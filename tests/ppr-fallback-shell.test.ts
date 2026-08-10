@@ -5,7 +5,10 @@ import {
   createPprFallbackShellSuspensePromise,
   isPprFallbackShellAbortError,
   preparePprFallbackShellFinalRender,
+  readPprFallbackShellWarmupCacheResult,
+  rememberPprFallbackShellWarmupCacheResult,
   runWithPprFallbackShellState,
+  shouldIgnorePprFallbackShellRenderError,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheReady,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
@@ -25,6 +28,39 @@ async function waitForCondition(predicate: () => boolean, message: string): Prom
 }
 
 describe("ppr fallback shell cache task tracking", () => {
+  it("reuses cloned warmup cache results only during the final render", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    const cacheLife = { stale: 30, revalidate: 60, expire: 90 };
+    const tags = ["post:1"];
+
+    rememberPprFallbackShellWarmupCacheResult(state, "cache-key", {
+      cacheLife,
+      tags,
+      value: "warm result",
+    });
+    expect(readPprFallbackShellWarmupCacheResult(state, "cache-key")).toBeNull();
+
+    cacheLife.stale = 300;
+    tags.push("post:2");
+    preparePprFallbackShellFinalRender(state);
+
+    expect(readPprFallbackShellWarmupCacheResult(state, "cache-key")).toEqual({
+      cacheLife: { stale: 30, revalidate: 60, expire: 90 },
+      tags: ["post:1"],
+      value: "warm result",
+    });
+
+    rememberPprFallbackShellWarmupCacheResult(state, "cache-key", {
+      cacheLife: { stale: 1, revalidate: 1, expire: 1 },
+      tags: ["replacement"],
+      value: "replacement",
+    });
+    expect(readPprFallbackShellWarmupCacheResult(state, "cache-key")?.value).toBe("warm result");
+  });
+
   it("waits for public cache work before marking warmup cache-ready", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
@@ -241,6 +277,19 @@ describe("ppr fallback shell render lifecycle", () => {
     expect(isPprFallbackShellAbortError(new Error("something else"))).toBe(false);
     expect(isPprFallbackShellAbortError("string error")).toBe(false);
     expect(isPprFallbackShellAbortError(null)).toBe(false);
+  });
+
+  it("ignores render errors only after an intentional fallback-shell abort", () => {
+    const controller = new AbortController();
+    const regularError = new Error("render failed");
+    const abortError = new DOMException("aborted", "AbortError");
+
+    expect(shouldIgnorePprFallbackShellRenderError(undefined, abortError)).toBe(false);
+    expect(shouldIgnorePprFallbackShellRenderError(controller.signal, regularError)).toBe(false);
+    expect(shouldIgnorePprFallbackShellRenderError(controller.signal, abortError)).toBe(true);
+
+    controller.abort();
+    expect(shouldIgnorePprFallbackShellRenderError(controller.signal, regularError)).toBe(true);
   });
 
   it("re-schedules warmup cache-ready when a dynamic boundary has no in-scope cache task", () => {
