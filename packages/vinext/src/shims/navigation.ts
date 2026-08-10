@@ -623,7 +623,13 @@ function resolvePrefetchedRscResponseExpiresAt(
   if (honorDynamicStaleTime && dynamicSeconds !== undefined) {
     return timestamp + dynamicSeconds * 1000;
   }
-  const serverSeconds = serverStaleTimeSeconds(cached.serverStaleTime);
+  // A full prefetch uses the static window while a provisional cacheLife claim
+  // is unresolved. If the render completes with a real cacheLife or dynamic
+  // bound, completion metadata replaces the provisional marker below.
+  const serverSeconds =
+    cached.serverStaleTime?.kind === "pending" && !honorDynamicStaleTime
+      ? undefined
+      : serverStaleTimeSeconds(cached.serverStaleTime);
   if (serverSeconds !== undefined) {
     return timestamp + serverSeconds * 1000;
   }
@@ -635,10 +641,15 @@ function resolvePrefetchedRscResponseExpiresAt(
   // An automatic prefetch takes a dynamic render's bound verbatim, including
   // below the 30s floor: Next's `computeDynamicStaleAt` never floors it, so a
   // `0` must expire the entry now rather than license 30s of credentialed
-  // reuse. `prefetch={true}` is an explicit opt-in to caching dynamic content,
-  // and Next reuses a `full` prefetch for the floored static window, so it
-  // keeps the floor.
-  return timestamp + Math.max(dynamicSeconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
+  // reuse. `prefetch={true}` uses Next's Full fetch strategy, so a config
+  // dynamic bound of zero selects STATIC_STALETIME_MS. Nonzero completed
+  // dynamic bounds keep their existing per-page expiry.
+  return (
+    timestamp +
+    (dynamicSeconds === 0
+      ? Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS)
+      : Math.max(dynamicSeconds * 1000, MIN_PREFETCH_STALE_TIME_MS))
+  );
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {

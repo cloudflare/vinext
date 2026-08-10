@@ -1385,7 +1385,7 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
   });
 
-  it("keeps the prefetch floor for an explicit full prefetch of dynamic content", async () => {
+  it("keeps the configured static window for an explicit full prefetch of dynamic content", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
     // "Because the link is prefetched with prefetch={true}, we should be able
@@ -1396,24 +1396,50 @@ describe("prefetch cache eviction", () => {
     vi.spyOn(Date, "now").mockReturnValue(now);
     const rscUrl = "/full-prefetch-dynamic.rsc";
 
+    const staticStaleTimeMs = 180_000;
     prefetchRscResponse(
       rscUrl,
       Promise.resolve(
         new Response("flight", {
           headers: {
             "content-type": "text/x-component",
-            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+            [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
           },
         }),
       ),
       null,
       null,
       undefined,
-      { fallbackTtlMs: PREFETCH_CACHE_TTL, honorDynamicStaleTime: false },
+      { fallbackTtlMs: staticStaleTimeMs, honorDynamicStaleTime: false },
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 
-    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + staticStaleTimeMs);
+  });
+
+  it("keeps a nonzero completed dynamic bound for an explicit full prefetch", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/full-prefetch-dynamic-override.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "60",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: 300_000, honorDynamicStaleTime: false },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 60_000);
   });
 
   it("keeps the automatic prefetch expiry within the dynamic BFCache bound", async () => {
