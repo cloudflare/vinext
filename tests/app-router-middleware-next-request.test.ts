@@ -135,6 +135,29 @@ describe("App Router middleware with NextRequest", () => {
     });
   });
 
+  it("does not translate an unlisted middleware request header value", async () => {
+    // Next.js skips override translation without x-middleware-override-headers,
+    // then copies the unconsumed protocol header to the request literally.
+    // Confirmed against Next.js 16.2.7 and resolve-routes.ts:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const res = await fetch(`${baseUrl}/api/header-override-stray`, {
+      headers: {
+        authorization: "Bearer secret",
+        "x-added": "original",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-request-x-added")).toBe("forged-by-middleware");
+    expect(await res.json()).toEqual({
+      authorization: "Bearer secret",
+      logical: "original",
+      logicalFromHeadersApi: "original",
+      raw: "forged-by-middleware",
+      rawFromHeadersApi: "forged-by-middleware",
+    });
+  });
+
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/pages-header-override-delete", {
       headers: {

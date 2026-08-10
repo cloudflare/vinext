@@ -14,13 +14,9 @@
  * `entries/pages-client-entry.ts`). Hybrid builds expose both globals; a
  * single-router build only sets its own.
  */
-import {
-  isExternalUrl,
-  matchRewrite,
-  parseCookies,
-  type RequestContext,
-} from "../../config/config-matchers.js";
-import type { NextRewrite } from "../../config/next-config.js";
+import { parseCookies, type RequestContext } from "../../config/config-matchers.js";
+import { matchClientRewrite } from "../../client/client-rewrite-matcher.js";
+import type { ClientRewrite } from "../../client/client-rewrites.js";
 import { mergeRewriteQuery } from "../../utils/query.js";
 import {
   matchDirectHybridClientRoutes,
@@ -34,7 +30,7 @@ export type { HybridClientOwner } from "./hybrid-client-route-owner-direct.js";
 function resolveClientRewrite(
   href: string,
   basePath: string,
-  rewrites: readonly NextRewrite[],
+  rewrites: readonly ClientRewrite[],
   continueAfterMatch = false,
 ): { kind: "document" } | { href: string; kind: "rewrite" } | null {
   const initialUrl = new URL(href, window.location.href);
@@ -58,10 +54,10 @@ function resolveClientRewrite(
       host: url.hostname,
       query: url.searchParams,
     };
-    const rewritten = matchRewrite(pathname, [rewrite], context, basePathState);
-    if (rewritten === null) continue;
-    if (isExternalUrl(rewritten)) return { kind: "document" };
-    currentHref = mergeRewriteQuery(currentHref, rewritten);
+    const result = matchClientRewrite(pathname, rewrite, context, basePathState);
+    if (result === null) continue;
+    if (result.kind === "server") return { kind: "document" };
+    currentHref = mergeRewriteQuery(currentHref, result.destination);
     matched = true;
     if (!continueAfterMatch) break;
   }

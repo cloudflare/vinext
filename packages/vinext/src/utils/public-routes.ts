@@ -1,8 +1,15 @@
 import fs from "node:fs";
 import path from "pathslash";
+import { publicFilePathVariants } from "./public-file-path.js";
 
-export function scanPublicFileRoutes(root: string): string[] {
-  const publicDir = path.join(root, "public");
+export function scanPublicFileRoutes(
+  root: string,
+  configuredPublicDir: string | false = "public",
+): string[] {
+  // Vite normalizes `publicDir: false` to an empty string in resolved config.
+  // Treat both representations as disabled rather than scanning the project root.
+  if (configuredPublicDir === false || configuredPublicDir === "") return [];
+  const publicDir = path.resolve(root, configuredPublicDir);
   const routes: string[] = [];
   const visitedDirs = new Set<string>();
 
@@ -39,7 +46,7 @@ export function scanPublicFileRoutes(root: string): string[] {
         continue;
       }
       const relativePath = path.relative(publicDir, fullPath);
-      routes.push("/" + relativePath);
+      routes.push(...publicFilePathVariants("/" + relativePath));
     }
   }
 
@@ -51,6 +58,5 @@ export function scanPublicFileRoutes(root: string): string[] {
     }
   }
 
-  routes.sort();
-  return routes;
+  return [...new Set(routes)].sort();
 }

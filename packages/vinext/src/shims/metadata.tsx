@@ -319,30 +319,24 @@ type SocialImageDescriptor = {
 
 type IconDescriptor = {
   url: string | URL;
-  sizes?: string;
   type?: string;
+  sizes?: string;
+  color?: string;
+  rel?: string;
   media?: string;
-};
-
-type AppleIconDescriptor = {
-  url: string | URL;
-  sizes?: string;
-  type?: string;
+  fetchPriority?: "high" | "low" | "auto";
 };
 
 type IconInput = string | URL | IconDescriptor;
-type AppleIconInput = string | URL | AppleIconDescriptor;
-
-type OtherIconDescriptor = { rel: string; url: string | URL; sizes?: string; type?: string };
 
 type IconsMap = {
   icon?: IconInput | IconInput[];
-  shortcut?: string | URL | Array<string | URL>;
-  apple?: AppleIconInput | AppleIconInput[];
+  shortcut?: IconInput | IconInput[];
+  apple?: IconInput | IconInput[];
   // Next.js accepts a single descriptor or an array (see resolveIcons in
   // .nextjs-ref/packages/next/src/lib/metadata/resolvers/resolve-icons.ts —
   // values pass through resolveAsArrayOrUndefined before iteration).
-  other?: OtherIconDescriptor | OtherIconDescriptor[];
+  other?: IconDescriptor | IconDescriptor[];
 };
 
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
@@ -852,6 +846,7 @@ type MetadataHeadProps = {
   metadata: Metadata;
   pathname?: string;
   trailingSlash?: boolean;
+  streamedIconKey?: string;
 };
 
 function escapeHtmlText(value: string): string {
@@ -900,12 +895,15 @@ function renderMetadataElementToHtml(node: unknown): string {
       return `<meta${renderMetadataAttributes(props, ["name", "property", "content"])}>`;
     case "link":
       return `<link${renderMetadataAttributes(props, [
+        "data-vinext-streamed-icon",
         "rel",
         "href",
         "hrefLang",
-        "media",
         "type",
         "sizes",
+        "color",
+        "media",
+        "fetchPriority",
       ])}>`;
     default:
       return "";
@@ -915,14 +913,24 @@ function renderMetadataElementToHtml(node: unknown): string {
 export function renderMetadataToHtml(
   metadata: Metadata,
   pathname = "/",
-  options?: { trailingSlash?: boolean },
+  options?: { trailingSlash?: boolean; streamedIconKey?: string },
 ): string {
   return renderMetadataElementToHtml(
-    MetadataHead({ metadata, pathname, trailingSlash: options?.trailingSlash }),
+    MetadataHead({
+      metadata,
+      pathname,
+      trailingSlash: options?.trailingSlash,
+      streamedIconKey: options?.streamedIconKey,
+    }),
   );
 }
 
-export function MetadataHead({ metadata, pathname = "/", trailingSlash }: MetadataHeadProps) {
+export function MetadataHead({
+  metadata,
+  pathname = "/",
+  trailingSlash,
+  streamedIconKey,
+}: MetadataHeadProps) {
   const elements: React.ReactElement[] = [];
   let key = 0;
 
@@ -1219,64 +1227,52 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
       ? normalizeUrlDescriptorEntries(metadata.icons.icon, (url): IconDescriptor => ({ url }))
       : normalizeUrlDescriptorEntries(metadata.icons, (url): IconDescriptor => ({ url }));
 
+    let streamedIconOrder = 0;
+    const appendIcons = (entries: IconDescriptor[], defaultRel: string) => {
+      for (const { url, rel, type, sizes, color, media, fetchPriority } of entries) {
+        elements.push(
+          <link
+            key={key++}
+            data-vinext-streamed-icon={
+              streamedIconKey ? `${streamedIconKey}:${streamedIconOrder++}` : undefined
+            }
+            rel={rel || defaultRel}
+            href={stringifyUrl(url)}
+            type={type}
+            sizes={sizes}
+            color={color}
+            media={media}
+            fetchPriority={fetchPriority}
+          />,
+        );
+      }
+    };
+
     // Shortcut icon
     if (isIconsMap(metadata.icons) && metadata.icons.shortcut) {
-      const shortcuts = Array.isArray(metadata.icons.shortcut)
-        ? metadata.icons.shortcut
-        : [metadata.icons.shortcut];
-      for (const s of shortcuts) {
-        elements.push(<link key={key++} rel="shortcut icon" href={stringifyUrl(s)} />);
-      }
+      appendIcons(
+        normalizeUrlDescriptorEntries(metadata.icons.shortcut, (url): IconDescriptor => ({ url })),
+        "shortcut icon",
+      );
     }
     // Icon
     if (iconEntries.length > 0) {
-      for (const i of iconEntries) {
-        elements.push(
-          <link
-            key={key++}
-            rel="icon"
-            href={stringifyUrl(i.url)}
-            {...(i.sizes ? { sizes: i.sizes } : {})}
-            {...(i.type ? { type: i.type } : {})}
-            {...(i.media ? { media: i.media } : {})}
-          />,
-        );
-      }
+      appendIcons(iconEntries, "icon");
     }
     // Apple touch icon
     if (isIconsMap(metadata.icons) && metadata.icons.apple) {
-      for (const a of normalizeUrlDescriptorEntries(
-        metadata.icons.apple,
-        (url): AppleIconDescriptor => ({ url }),
-      )) {
-        elements.push(
-          <link
-            key={key++}
-            rel="apple-touch-icon"
-            href={stringifyUrl(a.url)}
-            {...(a.sizes ? { sizes: a.sizes } : {})}
-            {...(a.type ? { type: a.type } : {})}
-          />,
-        );
-      }
+      appendIcons(
+        normalizeUrlDescriptorEntries(metadata.icons.apple, (url): IconDescriptor => ({ url })),
+        "apple-touch-icon",
+      );
     }
     // Other custom icon relations. Next.js accepts a single descriptor or an
     // array; normalize before iterating.
     if (isIconsMap(metadata.icons) && metadata.icons.other) {
-      const others = Array.isArray(metadata.icons.other)
-        ? metadata.icons.other
-        : [metadata.icons.other];
-      for (const o of others) {
-        elements.push(
-          <link
-            key={key++}
-            rel={o.rel}
-            href={stringifyUrl(o.url)}
-            {...(o.sizes ? { sizes: o.sizes } : {})}
-            {...(o.type ? { type: o.type } : {})}
-          />,
-        );
-      }
+      appendIcons(
+        normalizeUrlDescriptorEntries(metadata.icons.other, (url): IconDescriptor => ({ url })),
+        "icon",
+      );
     }
   }
 

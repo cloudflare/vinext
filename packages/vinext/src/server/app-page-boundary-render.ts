@@ -58,7 +58,7 @@ import {
   createAppPageSourcePage,
   type AppPageRouteWiringRoute,
 } from "./app-page-route-wiring.js";
-import { NEVER_CACHE_CONTROL } from "./cache-control.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
@@ -837,10 +837,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       status: errorBoundary.isGlobalError ? 500 : 200,
     });
     if (errorBoundary.isGlobalError) {
-      response.headers.set("Cache-Control", NEVER_CACHE_CONTROL);
-      response.headers.delete("CDN-Cache-Control");
-      response.headers.delete("Cloudflare-CDN-Cache-Control");
-      response.headers.delete("Cache-Tag");
+      applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
     }
     return response;
   };

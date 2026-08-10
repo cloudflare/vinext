@@ -1,6 +1,6 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
-import type { ISRCacheEntry } from "./isr-cache.js";
+import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -140,13 +140,12 @@ export async function readAppRouteHandlerCacheResponse(
             options.getCollectedFetchTags(),
           );
           const routeCacheValue = await buildAppRouteCacheValue(response);
-          await options.isrSet(
-            routeKey,
-            routeCacheValue,
-            options.revalidateSeconds,
-            routeTags,
-            options.expireSeconds,
-          );
+          await options.isrSet(routeKey, routeCacheValue, {
+            cacheControl: isrCacheControl(options.revalidateSeconds, {
+              expireSeconds: options.expireSeconds,
+            }),
+            tags: routeTags,
+          });
           options.isrDebug?.("route regen complete", routeKey);
         });
       });

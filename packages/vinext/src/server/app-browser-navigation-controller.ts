@@ -23,6 +23,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
+  createPendingNavigationCommitFromElements,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
@@ -100,7 +101,7 @@ type BrowserNavigationPayloadOptions = {
   navigationInitiationState: AppRouterState;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   navId: number;
-  nextElements: Promise<AppElements>;
+  nextElements: Promise<AppElements> | AppElements;
   onCommittedState?: (state: AppRouterState) => void;
   operationLane: OperationLane;
   params: Record<string, string | string[]>;
@@ -581,9 +582,13 @@ export function createAppBrowserNavigationController(
     };
 
     if (pendingRouterState) {
-      // The programmatic navigation is already running inside React.startTransition
-      // (from router.push/replace/refresh/Link), so resolving the deferred promise
-      // is sufficient.
+      // Programmatic navigation already runs inside React.startTransition, so
+      // resolving the deferred promise is normally sufficient. A same-path
+      // search+hash response whose visible tree is unchanged can be retained by
+      // React without mounting the new NavigationCommitSignal, though. In that
+      // narrow synchronous mode, publish the resolved state directly as well;
+      // the signal's layout effect remains the authority for URL and scroll
+      // effects, including when the response suspends or changes the tree.
       if (pendingRouterState.settled) return;
       const committedState = captureCandidateState(
         applyApprovedVisibleCommit(getBrowserRouterState(), commit),
@@ -593,15 +598,14 @@ export function createAppBrowserNavigationController(
       if (activePendingBrowserRouterState === pendingRouterState) {
         activePendingBrowserRouterState = null;
       }
+      if (visibleCommitMode === "synchronous") {
+        flushSync(() => {
+          setter(committedState);
+        });
+      }
       return;
     }
 
-    // `synchronous` mode assumes a null `pendingRouterState`: its only caller
-    // (gesture push) navigates with `programmaticTransition = false`, so the
-    // early return above never wins. A future caller combining `synchronous`
-    // with a programmatic transition would have its synchronous commit
-    // silently dropped in favor of the deferred resolve above.
-    //
     // This is intentionally distinct from dispatchSynchronousVisibleCommit
     // below: that path's callers (HMR, history traversal) already run inside a
     // synchronous event-handler/effect context where React flushes the plain
@@ -715,6 +719,30 @@ export function createAppBrowserNavigationController(
     lifecycleOptions?.onDiscardedRevalidation?.();
   }
 
+  function isSamePathSearchHashCommit(targetHref: string): boolean {
+    if (typeof window === "undefined") return false;
+
+    try {
+      const currentUrl = new URL(window.location.href);
+      const targetUrl = new URL(targetHref, currentUrl.href);
+      return (
+        targetUrl.origin === currentUrl.origin &&
+        targetUrl.pathname === currentUrl.pathname &&
+        targetUrl.search !== currentUrl.search &&
+        targetUrl.hash !== ""
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function shouldForceSynchronousCommit(options: BrowserNavigationPayloadOptions): boolean {
+    if (options.actionType === "traverse") return false;
+    if (options.historyUpdateMode === undefined) return false;
+    if (options.scrollIntent?.hash == null) return false;
+    return isSamePathSearchHashCommit(options.targetHref);
+  }
+
   async function renderNavigationPayload(
     options: BrowserNavigationPayloadOptions,
   ): Promise<NavigationPayloadOutcome> {
@@ -742,11 +770,10 @@ export function createAppBrowserNavigationController(
       // Preparation is historical: identities and the started commit version
       // come from the initiating state. Approval below intentionally stays live
       // so superseding navigations and unrelated visible commits still reject.
-      const pending = await createPendingNavigationCommit({
+      const pendingOptions = {
         currentState: options.navigationInitiationState,
         navigationCommitKind: options.navigationCommitKind,
         navigationId: options.navId,
-        nextElements: options.nextElements,
         navigationSnapshot: options.navigationSnapshot,
         operationLane: options.operationLane,
         payloadOrigin: options.payloadOrigin,
@@ -755,7 +782,17 @@ export function createAppBrowserNavigationController(
         restoredBfcacheIds: options.restoredBfcacheIds,
         reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
         type: options.actionType,
-      });
+      };
+      const pending =
+        options.nextElements instanceof Promise
+          ? await createPendingNavigationCommit({
+              ...pendingOptions,
+              nextElements: options.nextElements,
+            })
+          : createPendingNavigationCommitFromElements({
+              ...pendingOptions,
+              nextElements: options.nextElements,
+            });
 
       const approval = approvePendingNavigationCommit({
         activeNavigationId,
@@ -816,7 +853,9 @@ export function createAppBrowserNavigationController(
         renderId,
         approvedCommit,
         options.pendingRouterState,
-        options.visibleCommitMode ?? "transition",
+        shouldForceSynchronousCommit(options)
+          ? "synchronous"
+          : (options.visibleCommitMode ?? "transition"),
       );
     } catch (error) {
       pendingNavigationFailureTargets.delete(renderId);

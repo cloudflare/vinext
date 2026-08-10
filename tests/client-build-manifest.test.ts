@@ -14,6 +14,7 @@ import {
   buildNextClientSsgManifestContent,
   emitNextClientRuntimeManifests,
 } from "../packages/vinext/src/build/next-client-runtime-manifests.js";
+import type { ClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import {
   findClientEntryFileFromVinextManifest,
   findPagesClientEntryFileFromVinextManifest,
@@ -21,6 +22,7 @@ import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
 } from "../packages/vinext/src/utils/client-entry-manifest.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
+import type { HasCondition } from "../packages/vinext/src/config/next-config.js";
 
 describe("client build manifest helpers", () => {
   let tmpDir: string;
@@ -187,7 +189,22 @@ describe("client build manifest helpers", () => {
       clientDir,
       assetsSubdir: "base/_next/static",
       buildId: "build-123",
-      rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
+      rewrites: {
+        beforeFiles: [
+          {
+            source: "/header",
+            destination: "/emitted-header-target-canary",
+            has: [{ type: "header", key: "x-origin-auth", value: "emitted-header-secret-canary" }],
+          },
+        ],
+        afterFiles: [
+          {
+            source: "/external",
+            destination: "//example.com/emitted-protocol-relative-canary",
+          },
+        ],
+        fallback: [],
+      },
     });
 
     const buildManifest = await fsp.readFile(
@@ -196,6 +213,10 @@ describe("client build manifest helpers", () => {
     );
     expect(buildManifest).toContain("self.__BUILD_MANIFEST = ");
     expect(buildManifest).toContain("__BUILD_MANIFEST_CB");
+    expect(buildManifest).toContain('"requiresServerEvaluation":true');
+    expect(buildManifest).not.toContain("emitted-header-target-canary");
+    expect(buildManifest).not.toContain("emitted-header-secret-canary");
+    expect(buildManifest).not.toContain("emitted-protocol-relative-canary");
 
     const ssgManifest = await fsp.readFile(
       path.join(clientDir, "base", "_next", "static", "build-123", "_ssgManifest.js"),
@@ -204,19 +225,45 @@ describe("client build manifest helpers", () => {
     expect(ssgManifest).toBe(buildNextClientSsgManifestContent());
   });
 
-  it("normalizes rewrites in the Next.js runtime build manifest", () => {
+  it("publishes only client-safe rewrites in the Next.js runtime build manifest", () => {
     const content = buildNextClientBuildManifestContent({
       beforeFiles: [
         {
-          source: "/internal/:path*",
+          source: "/query/:path*",
           destination: "/rewritten/:path*",
-          has: [{ type: "header", key: "x-test", value: "1" }],
+          has: [{ type: "query", key: "preview", value: "1" }],
+        },
+        {
+          source: "/header",
+          destination: "/header-target-canary",
+          has: [{ type: "header", key: "x-origin-auth", value: "header-secret-canary" }],
+        },
+        {
+          source: "/host",
+          destination: "/host-target",
+          has: [{ type: "host", key: "host", value: "example.com" }],
         },
       ],
       afterFiles: [
         {
+          source: "/cookie",
+          destination: "/cookie-target-canary",
+          has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
+        },
+        {
           source: "/external",
-          destination: "https://example.com/external",
+          destination: "//example.com/protocol-relative-destination-canary",
+        },
+        {
+          source: "/future-condition",
+          destination: "/future-target-canary",
+          has: [
+            {
+              type: "future-condition",
+              key: "future-key",
+              value: "future-secret-canary",
+            } as unknown as HasCondition,
+          ],
         },
       ],
       fallback: [
@@ -228,11 +275,46 @@ describe("client build manifest helpers", () => {
       ],
     });
 
-    expect(content).toContain('"source":"/internal/:path*"');
-    expect(content).toContain('"destination":"/rewritten/:path*"');
-    expect(content).toContain('"source":"/external"');
-    expect(content).not.toContain("https://example.com/external");
-    expect(content).toContain('"sortedPages":[]');
+    const serializedManifest = content.slice(
+      "self.__BUILD_MANIFEST = ".length,
+      content.indexOf(";self.__BUILD_MANIFEST_CB"),
+    );
+    const manifest = JSON.parse(serializedManifest) as {
+      __rewrites: ClientRewrites;
+      sortedPages: string[];
+    };
+
+    expect(manifest).toEqual({
+      __rewrites: {
+        beforeFiles: [
+          {
+            source: "/query/:path*",
+            destination: "/rewritten/:path*",
+            has: [{ type: "query", key: "preview", value: "1" }],
+          },
+          { source: "/header", requiresServerEvaluation: true },
+          {
+            source: "/host",
+            destination: "/host-target",
+            has: [{ type: "host", key: "host", value: "example.com" }],
+          },
+        ],
+        afterFiles: [
+          { source: "/cookie", requiresServerEvaluation: true },
+          { source: "/external", requiresServerEvaluation: true },
+          { source: "/future-condition", requiresServerEvaluation: true },
+        ],
+        fallback: [{ source: "/only-without-cookie", requiresServerEvaluation: true }],
+      },
+      sortedPages: [],
+    });
+    expect(content).not.toContain("header-target-canary");
+    expect(content).not.toContain("header-secret-canary");
+    expect(content).not.toContain("cookie-target-canary");
+    expect(content).not.toContain("cookie-secret-canary");
+    expect(content).not.toContain("protocol-relative-destination-canary");
+    expect(content).not.toContain("future-target-canary");
+    expect(content).not.toContain("future-secret-canary");
     expect(content).not.toContain('"missing"');
   });
 

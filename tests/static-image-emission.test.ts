@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import type { Server } from "node:http";
+import { request, type IncomingHttpHeaders, type Server } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build, createBuilder } from "vite";
@@ -24,6 +24,27 @@ const cloudflarePluginPath = path.resolve(
 const workerEntryPath = path
   .resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts")
   .replaceAll("\\", "/");
+
+async function rawHttpRequest(
+  url: string,
+  headers: Record<string, string>,
+): Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        resolve({
+          statusCode: res.statusCode ?? 0,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 type CloudflarePluginFactory = (options?: {
   viteEnvironment?: { name: string; childEnvironments?: string[] };
@@ -386,13 +407,16 @@ async function assertStaticImageProductionParity(
   expect(etag).toMatch(/^W\/"[0-9a-f]{8}"$/);
   expect(Buffer.from(await assetResponse.arrayBuffer())).toEqual(PNG_1X1);
 
-  const conditionalResponse = await fetch(
+  // Node's fetch adds Cache-Control: no-cache to requests with explicit
+  // validators. Use the lower-level client so this exercises a plain
+  // If-None-Match request; no-cache revalidation is covered separately.
+  const conditionalResponse = await rawHttpRequest(
     `http://127.0.0.1:${address.port}${effectiveAssetPrefix}/_next/static/media/${emittedImage}`,
-    { headers: { "if-none-match": etag! } },
+    { "if-none-match": etag! },
   );
-  expect(conditionalResponse.status).toBe(304);
-  expect(conditionalResponse.headers.get("etag")).toBe(etag);
-  expect(await conditionalResponse.text()).toBe("");
+  expect(conditionalResponse.statusCode).toBe(304);
+  expect(conditionalResponse.headers.etag).toBe(etag);
+  expect(conditionalResponse.body).toHaveLength(0);
 }
 
 describe("static image import production emission", () => {

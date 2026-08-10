@@ -22,7 +22,10 @@ import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../packages/vinext/src/client/vinext-next-data.js";
-import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
+import {
+  toClientRewrites,
+  type ClientRewrites,
+} from "../packages/vinext/src/client/client-rewrites.js";
 import {
   resolveHybridClientRewriteHref,
   resolveHybridClientRouteOwner,
@@ -33,11 +36,7 @@ const APP_BASE = "http://localhost/";
 type WindowState = {
   app: VinextLinkPrefetchRoute[];
   pages: VinextPagesLinkPrefetchRoute[];
-  rewrites?: {
-    afterFiles: NextRewrite[];
-    beforeFiles: NextRewrite[];
-    fallback: NextRewrite[];
-  };
+  rewrites?: ClientRewrites;
 };
 
 function installWindow({ app, pages, rewrites }: WindowState): void {
@@ -209,6 +208,58 @@ describe("resolveHybridClientRouteOwner", () => {
 
     expect(resolveHybridClientRouteOwner("/source", "")).toBeNull();
     expect(resolveHybridClientRouteOwner("/source?preview=1", "")).toBe("app");
+  });
+
+  it("hands rewrites with browser-invisible conditions back to the document request", () => {
+    installWindow({
+      app: [appRoute(["app-destination"], false)],
+      pages: [],
+      rewrites: toClientRewrites({
+        afterFiles: [],
+        beforeFiles: [
+          {
+            source: "/cookie-source",
+            destination: "/app-destination",
+            has: [{ type: "cookie", key: "internal-access", value: "cookie-secret" }],
+          },
+          {
+            source: "/header-source",
+            destination: "/app-destination",
+            has: [{ type: "header", key: "x-origin-auth", value: "header-secret" }],
+          },
+        ],
+        fallback: [],
+      }),
+    });
+
+    expect(resolveHybridClientRewriteHref("/cookie-source", "")).toBeNull();
+    expect(resolveHybridClientRouteOwner("/cookie-source", "")).toBe("document");
+    expect(resolveHybridClientRewriteHref("/header-source", "")).toBeNull();
+    expect(resolveHybridClientRouteOwner("/header-source", "")).toBe("document");
+  });
+
+  it("uses browser-authoritative conditions as a server handoff prefilter", () => {
+    installWindow({
+      app: [appRoute(["app-destination"], false)],
+      pages: [],
+      rewrites: toClientRewrites({
+        afterFiles: [],
+        beforeFiles: [
+          {
+            source: "/source",
+            destination: "/app-destination",
+            has: [
+              { type: "query", key: "preview", value: "1" },
+              { type: "cookie", key: "internal-access", value: "cookie-secret" },
+            ],
+          },
+        ],
+        fallback: [],
+      }),
+    });
+
+    expect(resolveHybridClientRouteOwner("/source", "")).toBeNull();
+    expect(resolveHybridClientRouteOwner("/source?preview=1", "")).toBe("document");
   });
 
   it("applies every beforeFiles rewrite before choosing ownership", () => {

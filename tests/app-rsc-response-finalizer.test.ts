@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import {
+  finalizeAppRscResponse,
+  markAppRscResponseConfigHeadersApplied,
+} from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
@@ -29,6 +32,26 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-added")).toBe("config");
+  });
+
+  it("does not reapply source config headers to an internally dispatched target response", async () => {
+    const response = markAppRscResponseConfigHeadersApplied(
+      new Response("target flight", { headers: { "x-route-value": "target" } }),
+    );
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/action-source"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/action-source",
+          headers: [{ key: "x-route-value", value: "source" }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("x-route-value")).toBe("target");
   });
 
   it("adds the App Router RSC vary header when no config headers are configured", async () => {
@@ -80,6 +103,42 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-added")).toBeNull();
+  });
+
+  it("re-sanitizes static-file 405 headers after applying config headers", async () => {
+    const response = new Response("Method Not Allowed", {
+      status: 405,
+      headers: { Allow: "GET, HEAD", "Content-Type": "text/plain; charset=utf-8" },
+    });
+    const request = new Request("http://example.com/file.txt", { method: "POST" });
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/file.txt",
+          headers: [
+            { key: "content-encoding", value: "gzip" },
+            { key: "content-length", value: "999" },
+            { key: "content-range", value: "bytes 0-998/999" },
+            { key: "content-type", value: "application/octet-stream" },
+            { key: "transfer-encoding", value: "chunked" },
+            { key: "allow", value: "POST" },
+            { key: "x-config-header", value: "keep" },
+          ],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("allow")).toBe("GET, HEAD");
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("content-range")).toBeNull();
+    expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(response.headers.get("transfer-encoding")).toBeNull();
+    expect(response.headers.get("x-config-header")).toBe("keep");
   });
 });
 

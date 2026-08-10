@@ -11,7 +11,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["@cloudflare/workers-types"]
+    "types": ["vinext/types", "@cloudflare/workers-types"]
   },
   "include": ["app", "worker"]
 }

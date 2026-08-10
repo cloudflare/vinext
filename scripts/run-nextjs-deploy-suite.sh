@@ -92,6 +92,10 @@ fi
 export VINEXT_DIR="${VINEXT_DIR:-${REPO_DIR}}"
 export ADAPTER_DIR="${ADAPTER_DIR:-${REPO_DIR}}"
 export NEXT_TEST_MODE="${NEXT_TEST_MODE:-deploy}"
+# The custom deploy path does not receive next-deploy's Vercel-only
+# NEXT_PRIVATE_TEST_MODE build variable. Match the dev/start harnesses so
+# test-only client instrumentation is compiled into targeted deploy builds.
+export __NEXT_TEST_MODE="${__NEXT_TEST_MODE:-e2e}"
 export NEXT_E2E_TEST_TIMEOUT="${NEXT_E2E_TEST_TIMEOUT:-240000}"
 export NEXT_EXTERNAL_TESTS_FILTERS="${NEXT_EXTERNAL_TESTS_FILTERS:-test/deploy-tests-manifest.json}"
 export NEXT_TEST_JOB="${NEXT_TEST_JOB:-1}"

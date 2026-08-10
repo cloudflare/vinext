@@ -97,6 +97,39 @@ function stringValue(node: AstRecord): string | null {
   return null;
 }
 
+function stringFromCharCodeValue(value: unknown, scope: Scope): string | null {
+  const node = unwrapExpression(value);
+  if (node?.type !== "CallExpression") return null;
+  const callee = unwrapExpression(node.callee);
+  const object = callee?.type === "MemberExpression" ? unwrapExpression(callee.object) : null;
+  const property = callee?.type === "MemberExpression" ? unwrapExpression(callee.property) : null;
+  if (
+    callee?.type !== "MemberExpression" ||
+    callee.computed === true ||
+    !isIdentifierNamed(object, "String") ||
+    hasAstBinding(scope, "String") ||
+    !isIdentifierNamed(property, "fromCharCode")
+  ) {
+    return null;
+  }
+
+  let resolved = "";
+  for (const argument of nodeArray(node.arguments)) {
+    const argumentNode = unwrapExpression(argument);
+    if (
+      argumentNode?.type !== "Literal" ||
+      typeof argumentNode.value !== "number" ||
+      !Number.isInteger(argumentNode.value) ||
+      argumentNode.value < 0 ||
+      argumentNode.value > 0xffff
+    ) {
+      return null;
+    }
+    resolved += String.fromCharCode(argumentNode.value);
+  }
+  return resolved;
+}
+
 function isUnboundNumericGlobal(node: AstRecord, scope: Scope): boolean {
   return (
     node.type === "Identifier" &&
@@ -848,12 +881,25 @@ function transformVeryDynamicRequests(code: string, id: string) {
         !hasAstBinding(scope, "require") &&
         argumentsList.length === 1 &&
         astNode(argumentsList[0])?.type !== "SpreadElement" &&
-        !hasDynamicRequestIgnoreDirective(code, node, argumentsList[0] as AstRecord) &&
-        !requestHasStaticPart(argumentsList[0], scope)
+        !hasDynamicRequestIgnoreDirective(code, node, argumentsList[0] as AstRecord)
       ) {
-        output.overwrite(node.start, node.end, dynamicRequireReplacement());
-        changed = true;
-        return;
+        const resolvedRequest = stringFromCharCodeValue(argumentsList[0], scope);
+        const argument = astNode(argumentsList[0]);
+        if (
+          resolvedRequest !== null &&
+          resolvedRequest.replaceAll("\\", "/") !== "/" &&
+          argument &&
+          hasRange(argument)
+        ) {
+          output.overwrite(argument.start, argument.end, JSON.stringify(resolvedRequest));
+          changed = true;
+          return;
+        }
+        if (!requestHasStaticPart(argumentsList[0], scope)) {
+          output.overwrite(node.start, node.end, dynamicRequireReplacement());
+          changed = true;
+          return;
+        }
       }
     }
 

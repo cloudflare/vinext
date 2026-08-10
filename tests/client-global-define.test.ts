@@ -21,11 +21,13 @@ import os from "node:os";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
 
 type VinextPlugin = {
   name: string;
-  config?: (config: unknown, env: { command: string }) => unknown;
+  config?: (config: unknown, env: { command: string; mode?: string }) => unknown;
   configEnvironment?: (
     name: string,
     config: unknown,
@@ -107,6 +109,125 @@ describe("client `global` define (config)", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("excludes .env.local from NEXT_PUBLIC defines in test mode", async () => {
+    const previousFromTest = process.env.NEXT_PUBLIC_FROM_TEST_MODE;
+    const previousLocalOnly = process.env.NEXT_PUBLIC_LOCAL_ONLY;
+    const previousFallback = process.env.NEXT_PUBLIC_WITH_FALLBACK;
+    delete process.env.NEXT_PUBLIC_FROM_TEST_MODE;
+    delete process.env.NEXT_PUBLIC_LOCAL_ONLY;
+    delete process.env.NEXT_PUBLIC_WITH_FALLBACK;
+
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (p) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      await fsp.writeFile(path.join(tmpDir, ".env.local"), "NEXT_PUBLIC_LOCAL_ONLY=from-local\n");
+      await fsp.writeFile(
+        path.join(tmpDir, ".env.test"),
+        "NEXT_PUBLIC_FROM_TEST_MODE=from-test\n" +
+          "NEXT_PUBLIC_WITH_FALLBACK=${MISSING_VALUE:-fallback}\n",
+      );
+
+      const configResult = (await mainPlugin!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build", mode: "test" },
+      )) as { define?: Record<string, string> };
+
+      expect(configResult.define?.["process.env.NEXT_PUBLIC_FROM_TEST_MODE"]).toBe(
+        JSON.stringify("from-test"),
+      );
+      expect(Object.hasOwn(configResult.define ?? {}, "process.env.NEXT_PUBLIC_LOCAL_ONLY")).toBe(
+        false,
+      );
+      expect(configResult.define?.["process.env.NEXT_PUBLIC_WITH_FALLBACK"]).toBe(
+        JSON.stringify("fallback"),
+      );
+      expect(process.env.NEXT_PUBLIC_FROM_TEST_MODE).toBe("from-test");
+      expect(process.env.NEXT_PUBLIC_LOCAL_ONLY).toBeUndefined();
+      expect(process.env.NEXT_PUBLIC_WITH_FALLBACK).toBe("fallback");
+    } finally {
+      if (previousFromTest === undefined) {
+        delete process.env.NEXT_PUBLIC_FROM_TEST_MODE;
+      } else {
+        process.env.NEXT_PUBLIC_FROM_TEST_MODE = previousFromTest;
+      }
+      if (previousLocalOnly === undefined) {
+        delete process.env.NEXT_PUBLIC_LOCAL_ONLY;
+      } else {
+        process.env.NEXT_PUBLIC_LOCAL_ONLY = previousLocalOnly;
+      }
+      if (previousFallback === undefined) {
+        delete process.env.NEXT_PUBLIC_WITH_FALLBACK;
+      } else {
+        process.env.NEXT_PUBLIC_WITH_FALLBACK = previousFallback;
+      }
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("defaults config NODE_ENV to production without overriding caller values", async () => {
+    const tmpDir = await setupTmpProject(`export default {};`);
+    const vinextEntryUrl = pathToFileURL(
+      path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
+    ).href;
+    const cliPath = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
+    const viteConfigNodeEnvLog = path.join(tmpDir, "vite-config-node-env.log");
+    const nextConfigNodeEnvLog = path.join(tmpDir, "next-config-node-env.log");
+
+    try {
+      await fsp.writeFile(path.join(tmpDir, ".env.test"), "NODE_ENV=test\n");
+      await fsp.writeFile(
+        path.join(tmpDir, "next.config.mjs"),
+        `
+          import { appendFileSync } from "node:fs";
+          appendFileSync(${JSON.stringify(nextConfigNodeEnvLog)}, \`\${process.env.NODE_ENV}\n\`);
+          export default {};
+        `,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "vite.config.mjs"),
+        `
+          import { appendFileSync } from "node:fs";
+          import vinext from ${JSON.stringify(vinextEntryUrl)};
+          export default ({ mode }) => {
+            if (mode !== "test") throw new Error(\`vite.config saw mode=\${mode}\`);
+            appendFileSync(${JSON.stringify(viteConfigNodeEnvLog)}, \`\${process.env.NODE_ENV}\n\`);
+            return { plugins: [vinext()] };
+          };
+        `,
+      );
+
+      const childEnv = { ...process.env };
+      Reflect.deleteProperty(childEnv, "NODE_ENV");
+      const build = () =>
+        execFileSync(process.execPath, [cliPath, "build", "--mode", "test"], {
+          cwd: tmpDir,
+          env: childEnv,
+          stdio: "pipe",
+          timeout: 30000,
+        });
+
+      expect(build).not.toThrow();
+      expect((await fsp.readFile(viteConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("production");
+      expect((await fsp.readFile(nextConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("production");
+
+      await Promise.all([
+        fsp.rm(viteConfigNodeEnvLog, { force: true }),
+        fsp.rm(nextConfigNodeEnvLog, { force: true }),
+      ]);
+      childEnv.NODE_ENV = "test";
+      expect(build).not.toThrow();
+      expect((await fsp.readFile(viteConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("test");
+      expect((await fsp.readFile(nextConfigNodeEnvLog, "utf-8")).split("\n")[0]).toBe("test");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30000);
 });
 
 describe("client `global` define (dev server behavior)", () => {

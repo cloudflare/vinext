@@ -19,6 +19,19 @@ test.describe("interception-dynamic-segment-middleware", () => {
     await expect(page.locator("#modal")).toContainText("intercepted");
   });
 
+  test("preserves source client state when middleware rewrites the matched pathname", async ({
+    page,
+  }) => {
+    await page.goto(HOME);
+    await waitForAppRouterHydration(page);
+    await page.locator("#interception-mw-source-increment").click();
+    await expect(page.locator("#interception-mw-source-count")).toHaveText("1");
+
+    await page.click("#link-foo-p-1");
+    await expect(page.locator("#modal")).toContainText("intercepted");
+    await expect(page.locator("#interception-mw-source-count")).toHaveText("1");
+  });
+
   test("refresh after interception shows non-intercepted page", async ({ page }) => {
     await page.goto(HOME);
     await waitForAppRouterHydration(page);

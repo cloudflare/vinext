@@ -130,9 +130,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-7"
+          oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
+          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-8"
+          variant: "high"
           permissions: write
           opencode_dev: false
+          opencode_version: 1.15.13
           agent: nextjs-tracker
           prompt: ${{ steps.build_prompt.outputs.prompt }}
 

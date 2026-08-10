@@ -7,7 +7,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": []
+    "types": ["vinext/types"]
   },
   "include": ["app", "worker"]
 }

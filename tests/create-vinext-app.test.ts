@@ -1,8 +1,13 @@
+import { createServer, type ViteDevServer } from "vite-plus";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createVinextApp, runCreateVinextAppCli } from "../packages/create-vinext-app/src/index.js";
+import vinext from "../packages/vinext/src/index.js";
 import type { ResolvedInitOptions } from "../packages/vinext/src/init-platform.js";
 
 let tmpDir: string;
@@ -22,6 +27,44 @@ function readPkg(dir: string): {
   packageManager?: string;
 } {
   return JSON.parse(readFile(dir, "package.json"));
+}
+
+function linkInstalledPackage(root: string, packageName: string): void {
+  const vinextRequire = createRequire(new URL("../packages/vinext/package.json", import.meta.url));
+  let packageRoot =
+    packageName === "vinext" || packageName === "@vinext/types"
+      ? fileURLToPath(
+          new URL(
+            packageName === "vinext" ? "../packages/vinext" : "../packages/types",
+            import.meta.url,
+          ),
+        )
+      : packageName === "@vitejs/plugin-react"
+        ? path.dirname(vinextRequire.resolve(packageName))
+        : path.dirname(fileURLToPath(import.meta.resolve(`${packageName}/package.json`)));
+  while (!fs.existsSync(path.join(packageRoot, "package.json"))) {
+    const parent = path.dirname(packageRoot);
+    if (parent === packageRoot) throw new Error(`Could not find package root for ${packageName}`);
+    packageRoot = parent;
+  }
+  const linkPath = path.join(root, "node_modules", packageName);
+  fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+  fs.symlinkSync(packageRoot, linkPath, process.platform === "win32" ? "junction" : "dir");
+}
+
+async function eventually(run: () => Promise<void>, timeoutMs = 3_000): Promise<void> {
+  const start = Date.now();
+  let lastError: unknown;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await run();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw lastError;
 }
 
 const cloudflareInitOptions: ResolvedInitOptions = {
@@ -92,6 +135,13 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
     expect(readFile(appPath, "wrangler.jsonc")).toContain('"main": "vinext/server/fetch-handler"');
     expect(readFile(appPath, ".gitignore")).toContain(".wrangler/");
+    expect(readFile(appPath, ".gitignore")).toContain("next-env.d.ts");
+    expect(fs.existsSync(path.join(appPath, "next-env.d.ts"))).toBe(false);
+
+    const tsconfig = JSON.parse(readFile(appPath, "tsconfig.json")) as {
+      compilerOptions: { types: string[] };
+    };
+    expect(tsconfig.compilerOptions.types).toEqual(["vinext/types", "node"]);
 
     const pkg = readPkg(appPath);
     expect(pkg.scripts).toEqual({
@@ -108,8 +158,6 @@ describe("createVinextApp", () => {
       "@vinext/cloudflare": "latest",
     });
     expect(pkg.dependencies).not.toHaveProperty("next");
-    expect(readFile(appPath, "next-env.d.ts")).toContain('import "vinext/types";');
-    expect(readFile(appPath, "next-env.d.ts")).toContain('import "./.next/types/routes.d.ts";');
     expect(readFile(appPath, "tsconfig.json")).not.toContain('"name": "next"');
     expect(pkg.scripts).not.toHaveProperty("postinstall");
     expect(pkg.devDependencies).toMatchObject({
@@ -142,7 +190,7 @@ describe("createVinextApp", () => {
     expect(pkg.scripts?.deploy).toBe("vinext-cloudflare deploy --config dist/server/wrangler.json");
   });
 
-  it("uses the selected package manager through the shared init install path", async () => {
+  it("uses the selected package manager without installing Next.js", async () => {
     const appPath = path.join(tmpDir, "install-app");
     const calls: string[] = [];
 
@@ -164,52 +212,86 @@ describe("createVinextApp", () => {
     expect(calls).toContain(
       "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
     );
-    expect(calls).toContain("pnpm exec vinext typegen");
+    expect(calls.some((command) => command.split(/\s+/).includes("next"))).toBe(false);
+    expect(calls.some((command) => command.includes("typegen"))).toBe(false);
   });
 
-  it.each([
-    ["npm", "npm exec -- vinext typegen"],
-    ["pnpm", "pnpm exec vinext typegen"],
-    ["yarn", "yarn exec vinext typegen"],
-    ["bun", "bun run vinext typegen"],
-  ] as const)("runs typegen through the %s binary runner", async (packageManager, expected) => {
-    const appPath = path.join(tmpDir, `${packageManager}-app`);
-    const calls: string[] = [];
+  it("type-checks a Next-less generated app before vinext first runs", async () => {
+    const appPath = path.join(tmpDir, "typecheck-app");
 
     await withQuietConsole(() =>
       createVinextApp({
         appPath,
-        packageManager,
-        install: true,
+        packageManager: "npm",
+        install: false,
         git: false,
         initOptions: nodeInitOptions,
-        _exec: (cmd) => {
-          calls.push(cmd);
-        },
       }),
     );
 
-    expect(calls).toContain(expected);
+    expect(fs.existsSync(path.join(appPath, "next-env.d.ts"))).toBe(false);
+    for (const packageName of [
+      "vinext",
+      "@vinext/types",
+      "@types/node",
+      "@types/react",
+      "@types/react-dom",
+      "@vitejs/plugin-react",
+      "@vitejs/plugin-rsc",
+      "react",
+      "react-dom",
+      "vite",
+    ]) {
+      linkInstalledPackage(appPath, packageName);
+    }
+
+    const tscPath = fileURLToPath(
+      new URL("bin/tsc", import.meta.resolve("typescript/package.json")),
+    );
+    const result = spawnSync(process.execPath, [tscPath, "--project", "tsconfig.json"], {
+      cwd: appPath,
+      encoding: "utf-8",
+    });
+    if (result.error) throw result.error;
+
+    expect(`${result.stdout ?? ""}${result.stderr ?? ""}`).toBe("");
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(appPath, "node_modules/next"))).toBe(false);
+    expect(fs.existsSync(path.join(appPath, "next-env.d.ts"))).toBe(false);
   });
 
-  it("falls back to separator-free exec for an unknown package manager", async () => {
-    const appPath = path.join(tmpDir, "future-pm-app");
-    const calls: string[] = [];
+  // Next.js regenerates next-env.d.ts when the dev server starts:
+  // test/development/typescript-app-type-declarations/typescript-app-type-declarations.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/development/typescript-app-type-declarations/typescript-app-type-declarations.test.ts
+  it("generates next-env.d.ts when vinext starts", async () => {
+    const appPath = path.join(tmpDir, "dev-app");
+    let server: ViteDevServer | null = null;
 
     await withQuietConsole(() =>
       createVinextApp({
         appPath,
-        packageManager: "future-pm" as never,
-        install: true,
+        packageManager: "npm",
+        install: false,
         git: false,
         initOptions: nodeInitOptions,
-        _exec: (cmd) => {
-          calls.push(cmd);
-        },
       }),
     );
+    expect(fs.existsSync(path.join(appPath, "next-env.d.ts"))).toBe(false);
 
-    expect(calls).toContain("future-pm exec vinext typegen");
+    try {
+      server = await createServer({
+        root: appPath,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext({ appDir: appPath, rsc: false })],
+      });
+      await eventually(async () => {
+        expect(readFile(appPath, "next-env.d.ts")).toContain('import "vinext/types";');
+      });
+      expect(readFile(appPath, "next-env.d.ts")).toContain('import "./.next/types/routes.d.ts";');
+    } finally {
+      await server?.close();
+    }
   });
 
   it("does not include Cloudflare Workers copy for the Node target", async () => {
