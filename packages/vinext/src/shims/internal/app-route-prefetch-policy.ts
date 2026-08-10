@@ -90,7 +90,8 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
   const route = match.route;
-  const requiresRouteTreePrefetch = route.requiresRouteTreePrefetch === true;
+  const requiresRouteTreePrefetch =
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
   const hasSearchParams = new URL(routeHref, "http://vinext.local").search !== "";

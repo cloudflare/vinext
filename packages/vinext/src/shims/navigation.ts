@@ -2713,6 +2713,7 @@ const _appRouter: AppRouterInstance = {
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
+      const requiresRouteTreePrefetch = policy.requiresRouteTreePrefetch === true;
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.
       if (reusable && kind === "full") {
@@ -2720,7 +2721,10 @@ const _appRouter: AppRouterInstance = {
       }
       if (reusable && kind === "auto") {
         headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, __prefetchInlining ? "/__PAGE__" : "1");
+        headers.set(
+          NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+          __prefetchInlining || requiresRouteTreePrefetch ? "/__PAGE__" : "1",
+        );
       }
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
@@ -2759,8 +2763,7 @@ const _appRouter: AppRouterInstance = {
         return;
       }
       prefetched.add(cacheKey);
-      prefetchRscResponse(
-        rscUrl,
+      const fetchFullRscPayload = () =>
         scheduleAppPrefetchFetch(
           (signal) =>
             fetch(rscUrl, {
@@ -2770,7 +2773,52 @@ const _appRouter: AppRouterInstance = {
               signal,
             }),
           "low",
-        ),
+        );
+      const fetchPromise =
+        reusable && kind === "auto" && requiresRouteTreePrefetch
+          ? (async () => {
+              const routeTreeHeaders = new Headers(headers);
+              routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+              routeTreeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+              const routeTreeRscUrl = await createRscRequestUrl(fullHref, routeTreeHeaders);
+              const routeTreeCacheKey = AppElementsWire.encodeCacheKey(
+                routeTreeRscUrl,
+                interceptionContext,
+              );
+              const cache = getPrefetchCache();
+              let routeTreeEntry = cache.get(routeTreeCacheKey);
+              if (routeTreeEntry === undefined) {
+                prefetched.add(routeTreeCacheKey);
+                prefetchRscResponse(
+                  routeTreeRscUrl,
+                  scheduleAppPrefetchFetch(
+                    (signal) =>
+                      fetch(routeTreeRscUrl, {
+                        headers: routeTreeHeaders,
+                        credentials: "include",
+                        priority: "low" as RequestInit["priority"],
+                        signal,
+                      }),
+                    "low",
+                  ),
+                  interceptionContext,
+                  mountedSlotsHeader,
+                  undefined,
+                  {
+                    cacheForNavigation: false,
+                    optimisticRouteShell: false,
+                    prefetchKind: "route-tree",
+                  },
+                );
+                routeTreeEntry = cache.get(routeTreeCacheKey);
+              }
+              await routeTreeEntry?.pending?.catch(() => {});
+              return fetchFullRscPayload();
+            })()
+          : fetchFullRscPayload();
+      prefetchRscResponse(
+        rscUrl,
+        fetchPromise,
         interceptionContext,
         mountedSlotsHeader,
         options,

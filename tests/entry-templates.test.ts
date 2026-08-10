@@ -478,7 +478,7 @@ describe("App Router generated manifest construction", () => {
     expect(toLinkPrefetchRoute(route)).toEqual(
       expect.objectContaining({
         canPrefetchLoadingShell: true,
-        requiresRouteTreePrefetch: true,
+        hasRootParams: true,
       }),
     );
   });

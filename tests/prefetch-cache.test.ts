@@ -85,6 +85,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   delete (globalThis as any).window;
   delete (globalThis as any).fetch;
 });
@@ -660,13 +661,70 @@ describe("prefetch cache eviction", () => {
     // A second programmatic prefetch while the entry is fresh must not issue
     // another request.
     appRouterInstance.prefetch("/dashboard");
-    await waitForPrefetchSetup();
+    await settlePrefetchSetup();
     expect(fetch).toHaveBeenCalledTimes(1);
 
     const consumed = consumePrefetchResponse(fetchedUrl, null, null);
     expect(consumed).not.toBeNull();
     if (consumed === null) return;
     await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
+  });
+
+  it("gates Cache Components root-param router.prefetch behind the route tree", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        patternParts: [":rootParam"],
+        isDynamic: true,
+        hasRootParams: true,
+      },
+    ];
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+    expect(resolveAutoAppRoutePrefetch("/aaa").requiresRouteTreePrefetch).toBe(true);
+    const routeTree = createDeferredResponse();
+    const fetch = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockImplementationOnce(() => routeTree.promise)
+      .mockImplementation(() =>
+        Promise.resolve(
+          new Response("concrete root-param page", {
+            headers: { "content-type": "text/x-component" },
+          }),
+        ),
+      );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/aaa");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    const routeTreeHeaders = fetch.mock.calls[0]?.[1]?.headers as Headers | undefined;
+    expect(routeTreeHeaders?.get("Next-Router-Prefetch")).toBe("1");
+    expect(routeTreeHeaders?.get("Next-Router-Segment-Prefetch")).toBe("/_tree");
+
+    routeTree.resolve(new Response("tree", { headers: { "content-type": "text/x-component" } }));
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+
+    const pageUrl = toRscUrlString(fetch.mock.calls[1]![0]);
+    const pageHeaders = fetch.mock.calls[1]?.[1]?.headers as Headers | undefined;
+    expect(pageHeaders?.get("Next-Router-Prefetch")).toBe("1");
+    expect(pageHeaders?.get("Next-Router-Segment-Prefetch")).toBe("/__PAGE__");
+    expect(pageUrl).not.toContain("%5BrootParam%5D");
+
+    const pageCacheKey = AppElementsWire.encodeCacheKey(pageUrl, null);
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(pageCacheKey)?.outcome === "cache-seeded",
+    );
+
+    const navigationEntry = Array.from(getPrefetchCache().values()).find(
+      (entry) => entry.prefetchKind === "navigation",
+    );
+    expect(navigationEntry?.cacheForNavigation).toBe(true);
+    await settlePrefetchSetup();
   });
 
   it("shares an in-flight router.prefetch with navigation instead of refetching (#2707)", async () => {

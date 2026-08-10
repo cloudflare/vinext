@@ -2670,6 +2670,7 @@ describe("Link prefetch scheduling", () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
       href: "/root-param/aaa",
@@ -2680,7 +2681,7 @@ describe("Link prefetch scheduling", () => {
             canPrefetchLoadingShell: true,
             patternParts: ["root-param", ":value"],
             isDynamic: true,
-            requiresRouteTreePrefetch: true,
+            hasRootParams: true,
           },
         ],
       },

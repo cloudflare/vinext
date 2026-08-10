@@ -229,7 +229,7 @@ test("root-param Link prefetches use concrete segment request keys", async ({ pa
     expect(prefetchRoutes).toContainEqual(
       expect.objectContaining({
         patternParts: [":rootParam"],
-        requiresRouteTreePrefetch: true,
+        hasRootParams: true,
       }),
     );
 
