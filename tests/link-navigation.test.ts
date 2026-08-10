@@ -65,8 +65,15 @@ const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
   {
     canPrefetchLoadingShell: false,
+    hasInstant: true,
     hasRuntimeInstant: true,
     patternParts: ["instant-target"],
+    isDynamic: false,
+  },
+  {
+    canPrefetchLoadingShell: false,
+    hasInstant: true,
+    patternParts: ["static-instant-target"],
     isDynamic: false,
   },
   {
@@ -2229,6 +2236,35 @@ describe("Link prefetch scheduling", () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
       href: "/instant-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers as Headers | undefined;
+      expect(headers?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBeNull();
+      expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      expect([...getPrefetchCache().values()][0]).toMatchObject({
+        cacheForNavigation: false,
+        instantShell: true,
+        prefetchKind: "instant-shell",
+      });
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("renders cache-aware instant shells for static instant prefetches", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/static-instant-target",
       nodeEnv: "production",
       props: { prefetch: true },
     });

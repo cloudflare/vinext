@@ -4421,12 +4421,16 @@ export const loadServerActionClient = ${
           }
         }
 
-        function invalidateHybridClientEntries() {
-          if (!hasAppDir || !hasPagesDir) return;
+        function invalidatePagesClientEntry() {
           for (const env of Object.values(server.environments)) {
             const mod = env.moduleGraph.getModuleById(RESOLVED_CLIENT_ENTRY);
             if (mod) env.moduleGraph.invalidateModule(mod);
           }
+        }
+
+        function invalidateHybridClientEntries() {
+          if (!hasAppDir || !hasPagesDir) return;
+          invalidatePagesClientEntry();
           invalidateAppBrowserEntry();
           server.ws.send({ type: "full-reload" });
         }
@@ -4453,6 +4457,7 @@ export const loadServerActionClient = ${
           invalidateRscEntryModule();
           invalidateRootParamsModule();
           invalidateAppBrowserEntry();
+          if (hasPagesDir) invalidatePagesClientEntry();
         }
 
         let hybridRouteValidation: Promise<void> = Promise.resolve();

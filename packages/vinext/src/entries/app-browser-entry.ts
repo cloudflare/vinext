@@ -24,7 +24,7 @@ export function generateBrowserEntry(
     beforeFiles: [],
     fallback: [],
   },
-  cacheComponents = true,
+  cacheComponents = false,
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
@@ -127,10 +127,16 @@ export function toLinkPrefetchRoute(
 /** Project App routes together so sibling-intercept loading is applied to its target route. */
 export function toLinkPrefetchRoutes(
   routes: readonly AppRoute[],
-  cacheComponents = true,
+  cacheComponents = false,
 ): VinextLinkPrefetchRoute[] {
+  const clientInstantRoute = routes.find((route) => route.hasInstantConfigInClientModule);
+  if (clientInstantRoute) {
+    throw new Error(
+      `Page "${clientInstantRoute.pattern}" cannot export "unstable_instant" from a Client Component module. To use this API, convert this module to a Server Component by removing the "use client" directive.`,
+    );
+  }
   if (!cacheComponents) {
-    const instantRoute = routes.find((route) => route.hasInstant);
+    const instantRoute = routes.find((route) => route.hasInstantConfig);
     if (instantRoute) {
       throw new Error(
         `Page "${instantRoute.pattern}" cannot use \`export const unstable_instant = ...\` without enabling \`cacheComponents\`.`,

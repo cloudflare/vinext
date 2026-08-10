@@ -12,9 +12,8 @@ import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./f
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
 import {
-  findNamedExternalReexport,
-  hasExportedName,
-  hasNamedExportObjectStringProperty,
+  analyzeNamedExportObjectStringProperty,
+  type NamedExportObjectStringPropertyAnalysis,
 } from "../build/report.js";
 
 type InterceptingRoute = {
@@ -240,6 +239,10 @@ export type AppRoute = {
   hasRuntimeInstant?: boolean;
   /** Whether the page or an active ancestor/slot layout enables any instant prefetch mode. */
   hasInstant?: boolean;
+  /** Whether any active page/layout module exports unstable_instant, including false/invalid values. */
+  hasInstantConfig?: boolean;
+  /** Whether unstable_instant is exported from an active Client Component module. */
+  hasInstantConfigInClientModule?: boolean;
   /** Parameter names for dynamic segments */
   params: string[];
   /** Dynamic parameter names captured by the route's root layout. */
@@ -290,63 +293,95 @@ function resolveLocalRouteConfigModule(candidates: readonly string[]): string | 
 }
 
 type InstantPrefetchMode = "runtime" | "static";
+type InstantModuleAnalysisCache = Map<string, NamedExportObjectStringPropertyAnalysis | null>;
+
+function readInstantModuleAnalysis(
+  filePath: string,
+  exportName: string,
+  cache: InstantModuleAnalysisCache,
+): NamedExportObjectStringPropertyAnalysis | null {
+  const key = `${filePath}\0${exportName}`;
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+
+  try {
+    const analysis = analyzeNamedExportObjectStringProperty(
+      fs.readFileSync(filePath, "utf8"),
+      exportName,
+      "prefetch",
+    );
+    cache.set(key, analysis);
+    return analysis;
+  } catch {
+    cache.set(key, null);
+    return null;
+  }
+}
 
 function routeModuleExportInstantPrefetchMode(
   filePath: string,
   exportName: string,
   visited: Set<string>,
   dependencies: Set<string>,
+  analysisCache: InstantModuleAnalysisCache,
 ): InstantPrefetchMode | null {
   const visitKey = `${filePath}\0${exportName}`;
   if (visited.has(visitKey)) return null;
   visited.add(visitKey);
 
-  try {
-    const source = fs.readFileSync(filePath, "utf8");
-    if (hasExportedName(source, exportName)) dependencies.add(toSlash(filePath));
-    if (hasNamedExportObjectStringProperty(source, exportName, "prefetch", "runtime")) {
-      return "runtime";
-    }
-    if (hasNamedExportObjectStringProperty(source, exportName, "prefetch", "static")) {
-      return "static";
-    }
-
-    const reexport = findNamedExternalReexport(source, exportName);
-    if (reexport === null) return null;
-    const candidates = localRouteConfigModuleCandidates(filePath, reexport.source);
-    for (const candidate of candidates) dependencies.add(toSlash(candidate));
-    const reexportPath = resolveLocalRouteConfigModule(candidates);
-    if (reexportPath === null) {
-      // Vite aliases and package exports require the configured resolver, which
-      // is not available to this synchronous graph scan. Conservatively treat
-      // unresolved named re-exports as runtime instant so a dynamic response is
-      // never promoted into the reusable full-prefetch cache.
-      return "runtime";
-    }
-    return routeModuleExportInstantPrefetchMode(
-      reexportPath,
-      reexport.importedName,
-      visited,
-      dependencies,
-    );
-  } catch {
-    return null;
+  const analysis = readInstantModuleAnalysis(filePath, exportName, analysisCache);
+  if (analysis === null) return null;
+  if (analysis.hasExport) dependencies.add(toSlash(filePath));
+  if (analysis.propertyValue === "runtime" || analysis.propertyValue === "static") {
+    return analysis.propertyValue;
   }
+
+  const reexport = analysis.reexport;
+  if (reexport === null) return null;
+  const candidates = localRouteConfigModuleCandidates(filePath, reexport.source);
+  for (const candidate of candidates) dependencies.add(toSlash(candidate));
+  const reexportPath = resolveLocalRouteConfigModule(candidates);
+  if (reexportPath === null) {
+    // Vite aliases and package exports require the configured resolver, which
+    // is not available to this synchronous graph scan. Conservatively treat
+    // unresolved named re-exports as runtime instant so a dynamic response is
+    // never promoted into the reusable full-prefetch cache.
+    return "runtime";
+  }
+  return routeModuleExportInstantPrefetchMode(
+    reexportPath,
+    reexport.importedName,
+    visited,
+    dependencies,
+    analysisCache,
+  );
 }
 
 function routeModuleInstantPrefetchMode(
   filePath: string | null,
   dependencies: Set<string>,
+  analysisCache: InstantModuleAnalysisCache,
 ): InstantPrefetchMode | null {
   return filePath === null
     ? null
-    : routeModuleExportInstantPrefetchMode(filePath, "unstable_instant", new Set(), dependencies);
+    : routeModuleExportInstantPrefetchMode(
+        filePath,
+        "unstable_instant",
+        new Set(),
+        dependencies,
+        analysisCache,
+      );
 }
 
-function routeInstantPrefetchMode(
+function routeInstantConfigMetadata(
   route: AppRoute,
   dependencies: Set<string>,
-): InstantPrefetchMode | null {
+  analysisCache: InstantModuleAnalysisCache,
+): {
+  hasConfig: boolean;
+  hasConfigInClientModule: boolean;
+  mode: InstantPrefetchMode | null;
+} {
   const modulePaths = [
     route.pagePath,
     ...route.layouts,
@@ -357,12 +392,20 @@ function routeInstantPrefetchMode(
     ]),
   ];
   let mode: InstantPrefetchMode | null = null;
+  let hasConfig = false;
+  let hasConfigInClientModule = false;
   for (const modulePath of modulePaths) {
-    const moduleMode = routeModuleInstantPrefetchMode(modulePath, dependencies);
-    if (moduleMode === "runtime") return "runtime";
-    if (moduleMode === "static") mode = "static";
+    if (modulePath === null) continue;
+    const analysis = readInstantModuleAnalysis(modulePath, "unstable_instant", analysisCache);
+    if (analysis?.hasExport) {
+      hasConfig = true;
+      if (analysis.hasUseClientDirective) hasConfigInClientModule = true;
+    }
+    const moduleMode = routeModuleInstantPrefetchMode(modulePath, dependencies, analysisCache);
+    if (moduleMode === "runtime") mode = "runtime";
+    else if (moduleMode === "static" && mode === null) mode = "static";
   }
-  return mode;
+  return { hasConfig, hasConfigInClientModule, mode };
 }
 
 export type AppRouteSemanticIds = {
@@ -1076,6 +1119,7 @@ export async function buildAppRouteGraph(
   instantConfigDependencies: Set<string>;
 }> {
   const instantConfigDependencies = new Set<string>();
+  const instantModuleAnalysisCache: InstantModuleAnalysisCache = new Map();
 
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
@@ -1210,9 +1254,15 @@ export async function buildAppRouteGraph(
   // inherited layout and active parallel-slot configs propagate to every
   // concrete route advertised to the browser prefetch policy.
   for (const route of routes) {
-    const instantMode = routeInstantPrefetchMode(route, instantConfigDependencies);
-    route.hasInstant = instantMode !== null;
-    route.hasRuntimeInstant = instantMode === "runtime";
+    const instant = routeInstantConfigMetadata(
+      route,
+      instantConfigDependencies,
+      instantModuleAnalysisCache,
+    );
+    route.hasInstant = instant.mode !== null;
+    route.hasRuntimeInstant = instant.mode === "runtime";
+    route.hasInstantConfig = instant.hasConfig;
+    route.hasInstantConfigInClientModule = instant.hasConfigInClientModule;
   }
 
   // Sort: static routes first, then dynamic, then catch-all

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vite-plus/test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
@@ -148,6 +149,16 @@ describe("App Router route graph builder", () => {
       );
       await writeAppFile(
         appDir,
+        "false-instant/page.tsx",
+        `export const unstable_instant = false;\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(
+        appDir,
+        "client-instant/page.tsx",
+        `"use client";\nexport const unstable_instant = { prefetch: "runtime" };\n${EMPTY_PAGE}`,
+      );
+      await writeAppFile(
+        appDir,
         "reexported-instant/config.ts",
         'export const config = { prefetch: "runtime" };\n',
       );
@@ -178,6 +189,9 @@ describe("App Router route graph builder", () => {
       expect(findRoute(graph.routes, "/aliased-reexport-instant").hasRuntimeInstant).toBe(true);
       expect(findRoute(graph.routes, "/static-instant").hasInstant).toBe(true);
       expect(findRoute(graph.routes, "/static-instant").hasRuntimeInstant).toBe(false);
+      expect(findRoute(graph.routes, "/false-instant").hasInstantConfig).toBe(true);
+      expect(findRoute(graph.routes, "/false-instant").hasInstant).toBe(false);
+      expect(findRoute(graph.routes, "/client-instant").hasInstantConfigInClientModule).toBe(true);
       expect(findRoute(graph.routes, "/plain").hasInstant).toBe(false);
       expect(findRoute(graph.routes, "/plain").hasRuntimeInstant).toBe(false);
     });
@@ -223,6 +237,32 @@ describe("App Router route graph builder", () => {
         true,
       );
       expect(findRoute(graph.routes, "/").hasRuntimeInstant).toBe(true);
+    });
+  });
+
+  it("analyzes shared instant layouts once per graph build", async () => {
+    await withTempApp(async (appDir) => {
+      const layoutPath = canonical(appDir, "layout.tsx");
+      await writeAppFile(
+        appDir,
+        "layout.tsx",
+        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_LAYOUT}`,
+      );
+      await writeAppFile(appDir, "one/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "two/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "three/page.tsx", EMPTY_PAGE);
+      const readFileSync = vi.spyOn(nodeFs, "readFileSync");
+
+      try {
+        await buildAppRouteGraph(appDir, createValidFileMatcher());
+        expect(
+          readFileSync.mock.calls.filter(
+            ([filePath]) => canonical(String(filePath)) === layoutPath,
+          ),
+        ).toHaveLength(1);
+      } finally {
+        readFileSync.mockRestore();
+      }
     });
   });
 

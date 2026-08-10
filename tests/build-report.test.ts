@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import {
+  analyzeNamedExportObjectStringProperty,
   findNamedExternalReexport,
   hasExportedName,
   hasNamedExport,
@@ -171,6 +172,34 @@ describe("hasNamedExportObjectStringProperty", () => {
         "unstable_instant",
       ),
     ).toEqual({ importedName: "unstable_instant", source: "./config.js" });
+  });
+});
+
+describe("analyzeNamedExportObjectStringProperty", () => {
+  it("reports export presence, client directives, values, and re-exports in one analysis", () => {
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        '"use client"; export const unstable_instant = false;',
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      hasUseClientDirective: true,
+      propertyValue: null,
+      reexport: null,
+    });
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        'export { config as unstable_instant } from "./config";',
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      propertyValue: null,
+      reexport: { importedName: "config", source: "./config" },
+    });
   });
 });
 

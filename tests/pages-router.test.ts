@@ -3706,6 +3706,11 @@ describe("Virtual server entry generation", () => {
     const pagePath = path.join(appDir, "page.tsx");
     const configPath = path.join(tmpDir, "instant-config.ts");
     fs.mkdirSync(appDir, { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      "export default function Page() { return null; }\n",
+    );
     fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
     fs.writeFileSync(
       path.join(appDir, "layout.tsx"),
@@ -3731,6 +3736,21 @@ describe("Virtual server entry generation", () => {
         "virtual:vinext-app-browser-entry",
       );
       expect(resolved).toBeTruthy();
+      const pagesClientResolved = await testServer.pluginContainer.resolveId(
+        "virtual:vinext-client-entry",
+      );
+      expect(pagesClientResolved).toBeTruthy();
+      const pagesClientModule = testServer.environments.client.moduleGraph.createFileOnlyEntry(
+        pagesClientResolved!.id,
+      );
+      const clientModuleGraph = testServer.environments.client.moduleGraph;
+      const originalGetModuleById = clientModuleGraph.getModuleById.bind(clientModuleGraph);
+      const getClientModuleById = vi
+        .spyOn(clientModuleGraph, "getModuleById")
+        .mockImplementation((id) =>
+          id === pagesClientResolved!.id ? pagesClientModule : originalGetModuleById(id),
+        );
+      const invalidateClientModule = vi.spyOn(clientModuleGraph, "invalidateModule");
       const loadCode = async () => {
         const loaded = await testServer.pluginContainer.load(resolved!.id);
         return typeof loaded === "string" ? loaded : ((loaded as any)?.code ?? "");
@@ -3745,6 +3765,8 @@ describe("Virtual server entry generation", () => {
       testServer.watcher.emit("change", configPath);
 
       expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+      expect(getClientModuleById).toHaveBeenCalledWith(pagesClientResolved!.id);
+      expect(invalidateClientModule).toHaveBeenCalledWith(pagesClientModule);
 
       fs.rmSync(configPath);
       testServer.watcher.emit("unlink", configPath);

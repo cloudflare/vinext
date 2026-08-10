@@ -188,6 +188,67 @@ export type NamedExternalReexport = {
   source: string;
 };
 
+export type NamedExportObjectStringPropertyAnalysis = {
+  hasExport: boolean;
+  hasUseClientDirective: boolean;
+  propertyValue: string | null;
+  reexport: NamedExternalReexport | null;
+};
+
+/** Analyze an object-valued named export with one AST parse. */
+export function analyzeNamedExportObjectStringProperty(
+  code: string,
+  name: string,
+  property: string,
+): NamedExportObjectStringPropertyAnalysis {
+  const program = parseRouteModule(code);
+  if (!program) {
+    return {
+      hasExport: false,
+      hasUseClientDirective: false,
+      propertyValue: null,
+      reexport: null,
+    };
+  }
+
+  const reexport = findNamedExternalReexportInProgram(program, name);
+  const localName = findExportedLocalNameInProgram(program, name);
+  let propertyValue: string | null = null;
+  if (localName !== null) {
+    const initializer =
+      findExportedConstInitializerInProgram(program, name) ??
+      findLocalConstInitializerInProgram(program, localName);
+    if (initializer !== null) {
+      const expression = resolveLocalConstExpression(program, initializer, new Set());
+      if (expression.type === "ObjectExpression") {
+        for (const candidate of expression.properties) {
+          if (
+            candidate.type !== "Property" ||
+            candidate.computed ||
+            propertyKeyName(candidate.key) !== property
+          ) {
+            continue;
+          }
+          const value = resolveLocalConstExpression(program, candidate.value, new Set());
+          if (value.type === "Literal" && typeof value.value === "string") {
+            propertyValue = value.value;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return {
+    hasExport: localName !== null || reexport !== null,
+    hasUseClientDirective: program.body.some(
+      (node) => node.type === "ExpressionStatement" && node.directive === "use client",
+    ),
+    propertyValue,
+    reexport,
+  };
+}
+
 /** Returns the local module specifier that supplies a named re-export. */
 export function findNamedExternalReexport(
   code: string,
@@ -196,6 +257,13 @@ export function findNamedExternalReexport(
   const program = parseRouteModule(code);
   if (!program) return null;
 
+  return findNamedExternalReexportInProgram(program, name);
+}
+
+function findNamedExternalReexportInProgram(
+  program: Program,
+  name: string,
+): NamedExternalReexport | null {
   for (const node of program.body) {
     if (
       node.type !== "ExportNamedDeclaration" ||

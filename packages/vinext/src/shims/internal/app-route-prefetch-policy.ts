@@ -96,6 +96,20 @@ function runtimeInstantPolicy(): AppRoutePrefetchPolicy {
   };
 }
 
+function staticInstantPolicy(): AppRoutePrefetchPolicy {
+  return {
+    // Next reuses independently cached static segments. Until Vinext has that
+    // per-segment cache, render the same cache-aware instant shell but keep it
+    // learning-only so dynamic branches still require the click-time request.
+    cacheForNavigation: false,
+    fallbackTtl: "static",
+    honorDynamicStaleTime: true,
+    prefetchInstantShell: true,
+    prefetchShellFirst: false,
+    shouldPrefetch: true,
+  };
+}
+
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }
@@ -106,6 +120,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   const route = resolveMatchedAppRoute(href);
   if (!route) return NO_APP_ROUTE_PREFETCH;
   if (route.hasRuntimeInstant) return runtimeInstantPolicy();
+  if (route.hasInstant) return staticInstantPolicy();
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
   const hasSearchParams = new URL(routeHref, "http://vinext.local").search !== "";
@@ -124,12 +139,6 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     prefetchShellFirst: hasSearchParams || !route.isDynamic,
     shouldPrefetch: true,
   };
-  if (route.hasInstant) {
-    // Next can reuse the static segments independently. Vinext's prefetch
-    // cache is still monolithic, so retain the shell only for optimistic
-    // learning and require the click-time request for dynamic branches.
-    policy.cacheForNavigation = false;
-  }
   return policy;
 }
 
@@ -137,8 +146,7 @@ export function resolveFullAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   const route = resolveMatchedAppRoute(href);
   if (route?.hasRuntimeInstant) return runtimeInstantPolicy();
   // Next ignores the explicit "full" strategy for any truthy
-  // `unstable_instant` config. Static instant routes use the ordinary PPR
-  // strategy; runtime instant routes use the learning-only shell above.
+  // `unstable_instant` config.
   if (route?.hasInstant) return resolveAutoAppRoutePrefetch(href);
   return {
     cacheForNavigation: true,

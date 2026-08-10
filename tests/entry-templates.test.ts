@@ -432,10 +432,32 @@ describe("App Router generated manifest construction", () => {
   it("rejects unstable_instant routes when Cache Components are disabled", () => {
     expect(() =>
       toLinkPrefetchRoutes(
-        [{ ...minimalAppRoutes[1], hasInstant: true, hasRuntimeInstant: false }],
+        [
+          {
+            ...minimalAppRoutes[1],
+            hasInstant: false,
+            hasInstantConfig: true,
+            hasRuntimeInstant: false,
+          },
+        ],
         false,
       ),
     ).toThrow(/without enabling `cacheComponents`/);
+  });
+
+  it("rejects unstable_instant exports from Client Component modules", () => {
+    expect(() =>
+      toLinkPrefetchRoutes(
+        [
+          {
+            ...minimalAppRoutes[1],
+            hasInstantConfig: true,
+            hasInstantConfigInClientModule: true,
+          },
+        ],
+        true,
+      ),
+    ).toThrow(/cannot export "unstable_instant" from a Client Component/);
   });
 
   it("does not advertise an already-shared root loading boundary for nested static routes", () => {
