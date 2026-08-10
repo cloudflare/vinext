@@ -943,6 +943,10 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
       "experimental.instrumentationHook",
       `\`experimental.instrumentationHook\` is no longer needed, because \`instrumentation.js\` is available by default. You can remove it from ${configFileName}.`,
     ],
+    [
+      "experimental.cacheComponents",
+      `\`experimental.cacheComponents\` has been moved to \`cacheComponents\`. Please update your ${configFileName} file accordingly.`,
+    ],
   ] as const;
 
   for (const [propertyPath, warning] of warnings) {
@@ -1737,8 +1741,13 @@ export async function resolveNextConfig(
   const inlineCss = experimental?.inlineCss === true;
   const globalNotFound = experimental?.globalNotFound === true;
   const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
-  const cacheComponents = config.cacheComponents ?? false;
-  const cachedNavigations = cacheComponents && experimental?.cachedNavigations !== false;
+  // Next.js still accepts the deprecated experimental location and moves it
+  // onto the top-level config, overriding that value when both are present.
+  const cacheComponents =
+    typeof experimental?.cacheComponents === "boolean"
+      ? experimental.cacheComponents
+      : (config.cacheComponents ?? false);
+  const cachedNavigations = cacheComponents && experimental?.cachedNavigations === true;
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
@@ -1821,7 +1830,7 @@ export async function resolveNextConfig(
   }
 
   // Next.js rejects cached navigations unless cache components are enabled.
-  if (experimental?.cachedNavigations === true && !config.cacheComponents) {
+  if (experimental?.cachedNavigations === true && !cacheComponents) {
     throw new Error(
       "`experimental.cachedNavigations` requires `cacheComponents` to be enabled. " +
         "Please update your next.config accordingly.",
