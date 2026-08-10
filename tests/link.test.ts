@@ -326,6 +326,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
         {
+          canPrefetchLoadingShell: true,
+          patternParts: ["root-param", ":value"],
+          isDynamic: true,
+          requiresRouteTreePrefetch: true,
+        },
+        {
           canPrefetchLoadingShell: false,
           patternParts: ["teams", ":team", "dashboard"],
           isDynamic: true,
@@ -372,6 +378,22 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
+        cacheForNavigation: true,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
+        prefetchShellFirst: true,
+        requiresRouteTreePrefetch: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/root-param/aaa?q=1")).toEqual({
+        cacheForNavigation: false,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
+        prefetchShellFirst: true,
+        requiresRouteTreePrefetch: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({

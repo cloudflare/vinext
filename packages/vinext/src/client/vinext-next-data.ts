@@ -14,6 +14,12 @@ export type VinextLinkPrefetchRoute = {
   isDynamic: boolean;
   patternParts: string[];
   requiresDynamicNavigationRequest?: boolean;
+  /**
+   * Root-layout params must be hydrated from the concrete pathname before the
+   * client derives segment request keys. Start these automatic prefetches with
+   * the route tree even when generic prefetch inlining is disabled.
+   */
+  requiresRouteTreePrefetch?: true;
 };
 
 /**

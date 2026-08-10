@@ -512,7 +512,12 @@ function prefetchUrl(
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        if (__prefetchInlining && mode === "auto" && autoPrefetch.cacheForNavigation) {
+        const requiresRouteTreePrefetch = autoPrefetch.requiresRouteTreePrefetch === true;
+        if (
+          (__prefetchInlining || requiresRouteTreePrefetch) &&
+          mode === "auto" &&
+          autoPrefetch.cacheForNavigation
+        ) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
@@ -648,7 +653,9 @@ function prefetchUrl(
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
-          __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
+          (__prefetchInlining || requiresRouteTreePrefetch) &&
+          mode === "auto" &&
+          autoPrefetch.prefetchShellFirst;
         const gateViaExplicitSearchShell =
           mode === "full" &&
           hasSearchParams &&

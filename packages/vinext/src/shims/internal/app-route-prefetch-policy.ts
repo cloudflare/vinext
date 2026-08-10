@@ -44,6 +44,8 @@ export type AppRoutePrefetchPolicy = {
    */
   honorDynamicStaleTime: boolean;
   prefetchShellFirst: boolean;
+  /** Fetch the route tree before the concrete page segment. */
+  requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
 };
 
@@ -88,6 +90,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
   const route = match.route;
+  const requiresRouteTreePrefetch = route.requiresRouteTreePrefetch === true;
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
   const hasSearchParams = new URL(routeHref, "http://vinext.local").search !== "";
@@ -99,11 +102,12 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     // branches must be derived from the click-time target tree.
     cacheForNavigation:
       !hasSearchParams &&
-      !route.canPrefetchLoadingShell &&
-      route.requiresDynamicNavigationRequest !== true,
+      (requiresRouteTreePrefetch ||
+        (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true)),
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
-    prefetchShellFirst: hasSearchParams || !route.isDynamic,
+    prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
+    ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };
 }
