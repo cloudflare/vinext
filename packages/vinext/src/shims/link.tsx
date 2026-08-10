@@ -422,7 +422,9 @@ function prefetchUrl(
           rscCacheBusting,
           {
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+            APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
           },
           headersModule,
           hybridRouteOwner,
@@ -480,12 +482,14 @@ function prefetchUrl(
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
-            : resolveFullAppRoutePrefetch();
+            : resolveFullAppRoutePrefetch(prefetchPolicyHref);
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const isInstantShellPrefetch = autoPrefetch.prefetchInstantShell;
+        const isOptimisticRouteShellPrefetch =
+          !autoPrefetch.cacheForNavigation && !isInstantShellPrefetch;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
@@ -500,13 +504,17 @@ function prefetchUrl(
           interceptionContext,
           fetchPriority: priority,
           prefetchKind: mode === "full" ? "full" : "auto",
-          renderMode: isOptimisticRouteShellPrefetch
-            ? hasSearchAgnosticShell
-              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-              : isAutomaticSearchParamShell
-                ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
-                : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-            : undefined,
+          renderMode: isInstantShellPrefetch
+            ? autoPrefetch.prefetchInstantShell === "static"
+              ? APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
+              : APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL
+            : isOptimisticRouteShellPrefetch
+              ? hasSearchAgnosticShell
+                ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+                : isAutomaticSearchParamShell
+                  ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+                  : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+              : undefined,
         });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
@@ -620,12 +628,18 @@ function prefetchUrl(
             purpose: "prefetch",
           });
         };
+        // A runtime instant shell starts as learning-only, but a response that
+        // reaches the end of the tree is promoted to a navigation entry. A
+        // later viewport pass must reuse that promoted entry until its
+        // cacheLife-derived deadline instead of issuing another instant fetch.
+        const canReuseNavigationCacheEntry =
+          autoPrefetch.cacheForNavigation || isInstantShellPrefetch !== undefined;
         const hasExactNavigationCacheEntry =
-          autoPrefetch.cacheForNavigation &&
+          canReuseNavigationCacheEntry &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader);
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
-          (autoPrefetch.cacheForNavigation &&
+          (canReuseNavigationCacheEntry &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
             }));
@@ -717,8 +731,13 @@ function prefetchUrl(
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
                 : PREFETCH_CACHE_TTL,
             honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
+            instantShell: isInstantShellPrefetch !== undefined,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
-            prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
+            prefetchKind: isInstantShellPrefetch
+              ? "instant-shell"
+              : isOptimisticRouteShellPrefetch
+                ? "loading-shell"
+                : "navigation",
             prepareSnapshot: autoPrefetch.cacheForNavigation
               ? prepareNavigationPrefetchSnapshot
               : undefined,
@@ -793,7 +812,13 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
   }
 
   for (const [cacheKey, entry] of getPrefetchCache()) {
-    if (entry.optimisticRouteShell === true) continue;
+    if (
+      entry.instantShell === true ||
+      entry.optimisticRouteShell === true ||
+      entry.partialSuspenseShell === true
+    ) {
+      continue;
+    }
     if (entry.prefetchKind === "route-tree") continue;
 
     const [rscUrl] = cacheKey.split("\0", 1);

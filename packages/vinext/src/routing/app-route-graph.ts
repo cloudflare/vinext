@@ -11,6 +11,11 @@ import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
 import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
+import { isUnknownRecord as isRecord } from "../utils/record.js";
+import {
+  analyzeNamedExportObjectStringProperty,
+  type NamedExportObjectStringPropertyAnalysis,
+} from "../build/report.js";
 
 type InterceptingRoute = {
   /** Graph-owned identity for this interception edge. */
@@ -231,6 +236,14 @@ export type AppRoute = {
   layoutTreePositions: number[];
   /** Whether this is a dynamic route */
   isDynamic: boolean;
+  /** Whether the page or an active ancestor/slot layout enables runtime instant prefetching. */
+  hasRuntimeInstant?: boolean;
+  /** Whether the page or an active ancestor/slot layout enables any instant prefetch mode. */
+  hasInstant?: boolean;
+  /** Whether any active page/layout module exports unstable_instant, including false/invalid values. */
+  hasInstantConfig?: boolean;
+  /** Whether unstable_instant is exported from an active Client Component module. */
+  hasInstantConfigInClientModule?: boolean;
   /** Parameter names for dynamic segments */
   params: string[];
   /** Dynamic parameter names captured by the route's root layout. */
@@ -238,6 +251,311 @@ export type AppRoute = {
   /** Pre-split pattern segments (computed once at scan time, reused per request) */
   patternParts: string[];
 };
+
+const ROUTE_CONFIG_MODULE_EXTENSIONS = [
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mts",
+  ".mjs",
+  ".cts",
+  ".cjs",
+];
+function localRouteConfigModuleCandidates(importer: string, source: string): string[] {
+  if (!source.startsWith(".")) return [];
+
+  const base = path.resolve(path.dirname(importer), source);
+  const candidates = [
+    base,
+    ...ROUTE_CONFIG_MODULE_EXTENSIONS.map((extension) => `${base}${extension}`),
+    ...ROUTE_CONFIG_MODULE_EXTENSIONS.map((extension) => path.join(base, `index${extension}`)),
+  ];
+  const sourceExtension = path.extname(base);
+  if ([".js", ".jsx", ".mjs", ".cjs"].includes(sourceExtension)) {
+    const withoutExtension = base.slice(0, -sourceExtension.length);
+    candidates.push(
+      ...[".ts", ".tsx", ".mts", ".cts"].map((extension) => `${withoutExtension}${extension}`),
+    );
+  }
+
+  return candidates;
+}
+
+function resolveLocalRouteConfigModule(candidates: readonly string[]): string | null {
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Try the next source-resolution candidate.
+    }
+  }
+  return null;
+}
+
+type InstantPrefetchMode = "runtime" | "static";
+type InstantModuleAnalysisCache = {
+  analyses: Map<string, NamedExportObjectStringPropertyAnalysis | null>;
+  sources: Map<string, string | null>;
+};
+
+const INSTANT_CONFIG_KEYS = new Set([
+  "prefetch",
+  "samples",
+  "from",
+  "unstable_disableValidation",
+  "unstable_disableDevValidation",
+  "unstable_disableBuildValidation",
+]);
+const INSTANT_SAMPLE_KEYS = new Set(["cookies", "headers", "params", "searchParams"]);
+const INSTANT_COOKIE_KEYS = new Set(["name", "value"]);
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function isStringOrStringArray(value: unknown): boolean {
+  return (
+    typeof value === "string" ||
+    (Array.isArray(value) && value.every((item) => typeof item === "string"))
+  );
+}
+
+function isInstantSample(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, INSTANT_SAMPLE_KEYS)) return false;
+
+  if (
+    value.cookies !== undefined &&
+    (!Array.isArray(value.cookies) ||
+      !value.cookies.every(
+        (cookie) =>
+          isRecord(cookie) &&
+          hasOnlyKeys(cookie, INSTANT_COOKIE_KEYS) &&
+          typeof cookie.name === "string" &&
+          (typeof cookie.value === "string" || cookie.value === null),
+      ))
+  ) {
+    return false;
+  }
+
+  if (
+    value.headers !== undefined &&
+    (!Array.isArray(value.headers) ||
+      !value.headers.every(
+        (header) =>
+          Array.isArray(header) &&
+          header.length === 2 &&
+          typeof header[0] === "string" &&
+          (typeof header[1] === "string" || header[1] === null),
+      ))
+  ) {
+    return false;
+  }
+
+  if (
+    value.params !== undefined &&
+    (!isRecord(value.params) || !Object.values(value.params).every(isStringOrStringArray))
+  ) {
+    return false;
+  }
+
+  if (
+    value.searchParams !== undefined &&
+    (!isRecord(value.searchParams) ||
+      !Object.values(value.searchParams).every(
+        (entry) => entry === null || isStringOrStringArray(entry),
+      ))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function isValidInstantConfig(value: unknown): boolean {
+  if (value === false) return true;
+  if (!isRecord(value) || !hasOnlyKeys(value, INSTANT_CONFIG_KEYS)) return false;
+  if (value.prefetch !== "static" && value.prefetch !== "runtime") return false;
+
+  if (
+    value.samples !== undefined &&
+    (!Array.isArray(value.samples) ||
+      value.samples.length === 0 ||
+      !value.samples.every(isInstantSample))
+  ) {
+    return false;
+  }
+  if (value.prefetch === "runtime" && value.samples === undefined) return false;
+  if (
+    value.from !== undefined &&
+    (!Array.isArray(value.from) || !value.from.every((item) => typeof item === "string"))
+  ) {
+    return false;
+  }
+  for (const key of [
+    "unstable_disableValidation",
+    "unstable_disableDevValidation",
+    "unstable_disableBuildValidation",
+  ]) {
+    if (value[key] !== undefined && value[key] !== true) return false;
+  }
+  return true;
+}
+
+function assertValidInstantConfig(value: unknown, routePattern: string): void {
+  if (isValidInstantConfig(value)) return;
+  throw new Error(
+    `Invalid unstable_instant value ${JSON.stringify(value)} on "${routePattern}", must be an object with \`prefetch: "static"\` or \`prefetch: "runtime"\`, or \`false\`. Read more at https://nextjs.org/docs/messages/invalid-instant-configuration`,
+  );
+}
+
+function readInstantModuleAnalysis(
+  filePath: string,
+  exportName: string,
+  cache: InstantModuleAnalysisCache,
+): NamedExportObjectStringPropertyAnalysis | null {
+  const key = `${filePath}\0${exportName}`;
+  const cached = cache.analyses.get(key);
+  if (cached !== undefined) return cached;
+
+  let source = cache.sources.get(filePath);
+  if (source === undefined) {
+    try {
+      source = fs.readFileSync(filePath, "utf8");
+    } catch {
+      source = null;
+    }
+    cache.sources.set(filePath, source);
+  }
+  if (source === null) {
+    cache.analyses.set(key, null);
+    return null;
+  }
+
+  try {
+    const analysis = analyzeNamedExportObjectStringProperty(source, exportName, "prefetch");
+    cache.analyses.set(key, analysis);
+    return analysis;
+  } catch {
+    cache.analyses.set(key, null);
+    return null;
+  }
+}
+
+function routeModuleExportInstantPrefetchMode(
+  filePath: string,
+  exportName: string,
+  routePattern: string,
+  visited: Set<string>,
+  dependencies: Set<string>,
+  analysisCache: InstantModuleAnalysisCache,
+): InstantPrefetchMode | null {
+  const visitKey = `${filePath}\0${exportName}`;
+  if (visited.has(visitKey)) return null;
+  visited.add(visitKey);
+
+  const analysis = readInstantModuleAnalysis(filePath, exportName, analysisCache);
+  if (analysis === null) return null;
+  if (analysis.hasExport) dependencies.add(toSlash(filePath));
+  if (analysis.hasExport && !analysis.hasStaticValue && analysis.reexport === null) {
+    throw new Error(
+      `Invalid unstable_instant value on "${routePattern}": the exported configuration must be statically analyzable. Read more at https://nextjs.org/docs/messages/invalid-instant-configuration`,
+    );
+  }
+  if (analysis.hasStaticValue) assertValidInstantConfig(analysis.staticValue, routePattern);
+  if (analysis.propertyValue === "runtime" || analysis.propertyValue === "static") {
+    return analysis.propertyValue;
+  }
+
+  const reexport = analysis.reexport;
+  if (reexport === null) return null;
+  const candidates = localRouteConfigModuleCandidates(filePath, reexport.source);
+  for (const candidate of candidates) dependencies.add(toSlash(candidate));
+  const reexportPath = resolveLocalRouteConfigModule(candidates);
+  if (reexportPath === null) {
+    // Vite aliases and package exports require the configured resolver, which
+    // is not available to this synchronous graph scan. Conservatively treat
+    // unresolved named re-exports as runtime instant so a dynamic response is
+    // never promoted into the reusable full-prefetch cache.
+    return "runtime";
+  }
+  return routeModuleExportInstantPrefetchMode(
+    reexportPath,
+    reexport.importedName,
+    routePattern,
+    visited,
+    dependencies,
+    analysisCache,
+  );
+}
+
+function routeModuleInstantPrefetchMode(
+  filePath: string | null,
+  routePattern: string,
+  dependencies: Set<string>,
+  analysisCache: InstantModuleAnalysisCache,
+): InstantPrefetchMode | null {
+  return filePath === null
+    ? null
+    : routeModuleExportInstantPrefetchMode(
+        filePath,
+        "unstable_instant",
+        routePattern,
+        new Set(),
+        dependencies,
+        analysisCache,
+      );
+}
+
+function routeInstantConfigMetadata(
+  route: AppRoute,
+  dependencies: Set<string>,
+  analysisCache: InstantModuleAnalysisCache,
+): {
+  hasConfig: boolean;
+  hasConfigInClientModule: boolean;
+  mode: InstantPrefetchMode | null;
+} {
+  const modulePaths = [
+    route.pagePath,
+    ...route.layouts,
+    ...route.parallelSlots.flatMap((slot) => [
+      slot.pagePath,
+      slot.layoutPath ?? null,
+      ...(slot.configLayoutPaths ?? []),
+    ]),
+  ];
+  let mode: InstantPrefetchMode | null = null;
+  let hasConfig = false;
+  let hasConfigInClientModule = false;
+  for (const modulePath of modulePaths) {
+    if (modulePath === null) continue;
+    const analysis = readInstantModuleAnalysis(modulePath, "unstable_instant", analysisCache);
+    if (analysis?.hasExport) {
+      const dynamicStaleTimeAnalysis = readInstantModuleAnalysis(
+        modulePath,
+        "unstable_dynamicStaleTime",
+        analysisCache,
+      );
+      if (dynamicStaleTimeAnalysis?.hasExport) {
+        throw new Error(
+          `Page "${route.pattern}" cannot use both \`export const unstable_dynamicStaleTime\` and \`export const unstable_instant\`.`,
+        );
+      }
+      hasConfig = true;
+      if (analysis.hasUseClientDirective) hasConfigInClientModule = true;
+    }
+    const moduleMode = routeModuleInstantPrefetchMode(
+      modulePath,
+      route.pattern,
+      dependencies,
+      analysisCache,
+    );
+    if (moduleMode === "runtime") mode = "runtime";
+    else if (moduleMode === "static" && mode === null) mode = "static";
+  }
+  return { hasConfig, hasConfigInClientModule, mode };
+}
 
 export type AppRouteSemanticIds = {
   route: string;
@@ -944,7 +1262,17 @@ function createRouteManifestGraphVersion(segmentGraph: StaticSegmentGraph): Grap
 export async function buildAppRouteGraph(
   appDir: string,
   matcher: ValidFileMatcher,
-): Promise<{ routes: AppRouteGraphRoute[]; routeManifest: RouteManifest }> {
+): Promise<{
+  routes: AppRouteGraphRoute[];
+  routeManifest: RouteManifest;
+  instantConfigDependencies: Set<string>;
+}> {
+  const instantConfigDependencies = new Set<string>();
+  const instantModuleAnalysisCache: InstantModuleAnalysisCache = {
+    analyses: new Map(),
+    sources: new Map(),
+  };
+
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
   // and _private folders (Next.js convention for colocated non-route files).
@@ -1074,10 +1402,25 @@ export async function buildAppRouteGraph(
   ];
   validateRoutePatterns(interceptTargetPatterns);
 
+  // Compute this after slot sub-routes and intercept metadata are finalized so
+  // inherited layout and active parallel-slot configs propagate to every
+  // concrete route advertised to the browser prefetch policy.
+  for (const route of routes) {
+    const instant = routeInstantConfigMetadata(
+      route,
+      instantConfigDependencies,
+      instantModuleAnalysisCache,
+    );
+    route.hasInstant = instant.mode !== null;
+    route.hasRuntimeInstant = instant.mode === "runtime";
+    route.hasInstantConfig = instant.hasConfig;
+    route.hasInstantConfigInClientModule = instant.hasConfigInClientModule;
+  }
+
   // Sort: static routes first, then dynamic, then catch-all
   sortRoutes(routes);
 
-  return { routes, routeManifest: createRouteManifest(routes) };
+  return { routes, routeManifest: createRouteManifest(routes), instantConfigDependencies };
 }
 
 function hasParallelSlotDirectory(dir: string): boolean {

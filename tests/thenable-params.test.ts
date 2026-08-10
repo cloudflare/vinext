@@ -5,6 +5,10 @@ import {
   runWithPprFallbackShellState,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  createInstantPrefetchShellState,
+  runWithInstantPrefetchShellState,
+} from "../packages/vinext/src/shims/instant-prefetch-shell.js";
 
 describe("makeThenableParams", () => {
   it("is awaitable even when params contain then", async () => {
@@ -154,6 +158,49 @@ describe("makeThenableParams", () => {
 
     expect(slug).toBe("post");
     expect(observedKeys).toEqual([["slug"]]);
+  });
+
+  it("suspends params in static instant shells", async () => {
+    const state = createInstantPrefetchShellState("/blog/:slug", "static");
+    let suspension: Promise<unknown> | undefined;
+
+    runWithInstantPrefetchShellState(state, () => {
+      const params = makeThenableParams({ slug: "post" });
+      try {
+        Reflect.get(params, "slug");
+      } catch (error) {
+        suspension = error as Promise<unknown>;
+      }
+    });
+
+    expect(suspension).toBeDefined();
+    expect(state.hasDynamicBoundary).toBe(true);
+    const settled = suspension!.catch(() => {});
+    state.dynamicAbortController.abort();
+    await settled;
+  });
+
+  it("keeps params readable in runtime instant shells", () => {
+    const state = createInstantPrefetchShellState("/blog/:slug", "runtime");
+
+    runWithInstantPrefetchShellState(state, () => {
+      const params = makeThenableParams({ slug: "post" });
+      expect(params.slug).toBe("post");
+    });
+
+    expect(state.hasDynamicBoundary).toBe(false);
+  });
+
+  it("suspends awaited thenable data in static instant shells", async () => {
+    const state = createInstantPrefetchShellState("/search", "static");
+    const pending = runWithInstantPrefetchShellState(state, () =>
+      makeThenableParams({ q: "vinext" }).then(() => "resolved"),
+    );
+
+    expect(state.hasDynamicBoundary).toBe(true);
+    const settled = pending.catch(() => "aborted");
+    state.dynamicAbortController.abort();
+    await expect(settled).resolves.toBe("aborted");
   });
 
   it("suspends only fallback params during cacheComponents fallback-shell prerendering", () => {

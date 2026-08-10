@@ -87,6 +87,9 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 
+/** Marks an RSC prefetch response that contains a partial Suspense shell. */
+export const VINEXT_RSC_PARTIAL_SHELL_HEADER = "X-Vinext-Rsc-Partial-Shell";
+
 /** Disabled-by-default client hint describing already-held App Router payload entries. */
 export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
 

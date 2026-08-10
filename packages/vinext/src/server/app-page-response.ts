@@ -10,6 +10,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
@@ -80,6 +81,7 @@ type BuildAppPageRscResponseOptions = {
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
+  partialShell?: boolean;
   policy: AppPageResponsePolicy;
   renderedPathAndSearch?: string | null;
   requestCacheLife?: AppPagePrerenderCacheLife | null;
@@ -321,6 +323,11 @@ export function buildAppPageRscResponse(
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.partialShell) {
+    headers.set(VINEXT_RSC_PARTIAL_SHELL_HEADER, "1");
+  } else {
+    headers.delete(VINEXT_RSC_PARTIAL_SHELL_HEADER);
+  }
   if (options.renderedPathAndSearch) {
     headers.set(
       VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,

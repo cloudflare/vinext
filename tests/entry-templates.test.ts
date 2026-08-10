@@ -414,6 +414,52 @@ describe("App Router generated manifest construction", () => {
     ).toBe(false);
   });
 
+  it("advertises runtime instant routes to the browser prefetch policy", () => {
+    expect(
+      toLinkPrefetchRoute({
+        ...minimalAppRoutes[1],
+        hasInstant: true,
+        hasRuntimeInstant: true,
+      }),
+    ).toMatchObject({
+      canPrefetchLoadingShell: false,
+      hasInstant: true,
+      hasRuntimeInstant: true,
+      patternParts: ["about"],
+    });
+  });
+
+  it("rejects unstable_instant routes when Cache Components are disabled", () => {
+    expect(() =>
+      toLinkPrefetchRoutes(
+        [
+          {
+            ...minimalAppRoutes[1],
+            hasInstant: false,
+            hasInstantConfig: true,
+            hasRuntimeInstant: false,
+          },
+        ],
+        false,
+      ),
+    ).toThrow(/without enabling `cacheComponents`/);
+  });
+
+  it("rejects unstable_instant exports from Client Component modules", () => {
+    expect(() =>
+      toLinkPrefetchRoutes(
+        [
+          {
+            ...minimalAppRoutes[1],
+            hasInstantConfig: true,
+            hasInstantConfigInClientModule: true,
+          },
+        ],
+        true,
+      ),
+    ).toThrow(/cannot export "unstable_instant" from a Client Component/);
+  });
+
   it("does not advertise an already-shared root loading boundary for nested static routes", () => {
     const route = {
       ...minimalAppRoutes[0],

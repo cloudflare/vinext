@@ -38,7 +38,11 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -737,7 +741,43 @@ export async function renderAppPageLifecycle(
   // standalone call would establish here is only effective if the caller has
   // an outer runWithRequestContext / runWithFetchDedupe scope keeping the ALS
   // store alive across that consumption.
+  let instantPrefetchShellWasAborted = false;
   let rscStream = await runWithFetchDedupe(async () => {
+    if (
+      (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL ||
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL) &&
+      options.prerenderToReadableStream
+    ) {
+      const {
+        beginInstantPrefetchShellFinalRender,
+        createInstantPrefetchShellState,
+        getInstantPrefetchShellReactSignal,
+        runWithInstantPrefetchShellState,
+        wasInstantPrefetchShellAborted,
+      } = await import("vinext/shims/instant-prefetch-shell");
+      const shellState = createInstantPrefetchShellState(
+        options.cleanPathname,
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
+          ? "static"
+          : "runtime",
+      );
+      // Instant shells stay open until every Cache Component already
+      // started by this render settles. The shared fallback-shell tracker then
+      // aborts only after completed branches have flushed, preserving cold
+      // cache fills without allowing request-time content beyond the selected
+      // static/runtime stage into the payload.
+      const pendingResult = runWithInstantPrefetchShellState(shellState, () =>
+        options.prerenderToReadableStream!(outgoingElement, {
+          onError: rscErrorTracker.onRenderError,
+          signal: getInstantPrefetchShellReactSignal(shellState),
+        }),
+      );
+      beginInstantPrefetchShellFinalRender(shellState);
+      const result = await pendingResult;
+      instantPrefetchShellWasAborted = wasInstantPrefetchShellAborted(shellState);
+      return result.prelude;
+    }
+
     if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
       const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
@@ -820,7 +860,9 @@ export async function renderAppPageLifecycle(
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCacheForSkipTransport
+    const shouldBypassRscCache =
+      shouldBypassRscCacheForSkipTransport || instantPrefetchShellWasAborted;
+    const rscResponsePolicy = shouldBypassRscCache
       ? { cacheControl: NO_STORE_CACHE_CONTROL }
       : resolveAppPageRscResponsePolicy({
           dynamicUsedDuringBuild,
@@ -834,6 +876,8 @@ export async function renderAppPageLifecycle(
         });
     if (shouldBypassRscCacheForSkipTransport) {
       options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
+    } else if (instantPrefetchShellWasAborted) {
+      options.isrDebug?.("RSC cache write skipped (partial instant shell)", options.cleanPathname);
     }
     const shouldEmitDynamicStaleTime =
       dynamicStaleTimeSeconds !== undefined &&
@@ -860,6 +904,7 @@ export async function renderAppPageLifecycle(
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,
+      partialShell: instantPrefetchShellWasAborted,
       policy: rscResponsePolicy,
       renderedPathAndSearch: options.renderedPathAndSearch,
       requestCacheLife: requestCacheLifeForPrerender,
@@ -928,7 +973,9 @@ export async function renderAppPageLifecycle(
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
-        options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+        options.isProduction && shouldCaptureRscForCacheMetadata && !instantPrefetchShellWasAborted
+          ? capturedRscDataRef.value
+          : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,

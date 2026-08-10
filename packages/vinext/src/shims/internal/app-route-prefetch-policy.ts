@@ -44,6 +44,8 @@ export type AppRoutePrefetchPolicy = {
    * between `auto` and `full` in `getPrefetchEntryCacheStatus`.
    */
   honorDynamicStaleTime: boolean;
+  /** Render the configured `unstable_instant` shell stage. */
+  prefetchInstantShell?: "runtime" | "static";
   prefetchShellFirst: boolean;
   /** Fetch the route tree before the concrete page segment. */
   requiresRouteTreePrefetch?: true;
@@ -74,23 +76,54 @@ const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
   shouldPrefetch: false,
 };
 
+function resolveMatchedAppRoute(href: string): VinextLinkPrefetchRoute | null {
+  if (typeof window === "undefined") return null;
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) return null;
+  const routeHref = toSameOriginRouteHref(href);
+  if (routeHref === null) return null;
+  return matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache)?.route ?? null;
+}
+
+function runtimeInstantPolicy(): AppRoutePrefetchPolicy {
+  return {
+    // The response is a partial Suspense shell. It teaches optimistic routing
+    // what can commit immediately, while the click still issues the complete
+    // navigation request for blocked dynamic branches.
+    cacheForNavigation: false,
+    fallbackTtl: "dynamic",
+    honorDynamicStaleTime: true,
+    prefetchInstantShell: "runtime",
+    prefetchShellFirst: false,
+    shouldPrefetch: true,
+  };
+}
+
+function staticInstantPolicy(): AppRoutePrefetchPolicy {
+  return {
+    // Next reuses independently cached static segments. Until Vinext has that
+    // per-segment cache, render the same cache-aware instant shell but keep it
+    // learning-only so dynamic branches still require the click-time request.
+    cacheForNavigation: false,
+    fallbackTtl: "static",
+    honorDynamicStaleTime: true,
+    prefetchInstantShell: "static",
+    prefetchShellFirst: false,
+    shouldPrefetch: true,
+  };
+}
+
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }
 
 export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolicy {
-  if (typeof window === "undefined") return NO_APP_ROUTE_PREFETCH;
-
-  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  if (!routes) return NO_APP_ROUTE_PREFETCH;
-
   const routeHref = toSameOriginRouteHref(href);
   if (routeHref === null) return NO_APP_ROUTE_PREFETCH;
-
-  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
-  if (!match) return NO_APP_ROUTE_PREFETCH;
-
-  const route = match.route;
+  const route = resolveMatchedAppRoute(href);
+  if (!route) return NO_APP_ROUTE_PREFETCH;
+  if (route.hasRuntimeInstant) return runtimeInstantPolicy();
+  if (route.hasInstant) return staticInstantPolicy();
   const requiresRouteTreePrefetch =
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
   // A search-param href renders query-specific output, so its payload can only
@@ -133,7 +166,12 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   };
 }
 
-export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
+export function resolveFullAppRoutePrefetch(href: string): AppRoutePrefetchPolicy {
+  const route = resolveMatchedAppRoute(href);
+  if (route?.hasRuntimeInstant) return runtimeInstantPolicy();
+  // Next ignores the explicit "full" strategy for any truthy
+  // `unstable_instant` config.
+  if (route?.hasInstant) return resolveAutoAppRoutePrefetch(href);
   return {
     cacheForNavigation: true,
     fallbackTtl: "static",

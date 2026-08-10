@@ -10,13 +10,17 @@ import {
 } from "../packages/vinext/src/shims/link-prefetch.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -62,6 +66,19 @@ const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+  {
+    canPrefetchLoadingShell: false,
+    hasInstant: true,
+    hasRuntimeInstant: true,
+    patternParts: ["instant-target"],
+    isDynamic: false,
+  },
+  {
+    canPrefetchLoadingShell: false,
+    hasInstant: true,
+    patternParts: ["static-instant-target"],
+    isDynamic: false,
+  },
   {
     canPrefetchLoadingShell: false,
     patternParts: ["teams", ":team", "dashboard"],
@@ -2273,6 +2290,126 @@ describe("Link prefetch scheduling", () => {
       expect(
         (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
       ).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("downgrades explicit full prefetches to runtime instant shells", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/instant-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+    result.fetch.mockResolvedValue(
+      new Response("partial instant payload", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+        },
+      }),
+    );
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers as Headers | undefined;
+      expect(headers?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBeNull();
+      expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      expect([...getPrefetchCache().values()][0]).toMatchObject({
+        cacheForNavigation: false,
+        instantShell: true,
+        prefetchKind: "instant-shell",
+      });
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("refetches a runtime instant route after its server stale time elapses", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    // "expires runtime prefetches when their stale time has elapsed"
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/instant-target",
+      nodeEnv: "production",
+    });
+    result.fetch.mockResolvedValue(
+      new Response("complete instant payload", {
+        headers: {
+          "content-type": "text/x-component",
+          [NEXT_ROUTER_STALE_TIME_HEADER]: "120",
+        },
+      }),
+    );
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      observer.dispatchIntersectingEntry(result.anchor, false);
+      vi.mocked(Date.now).mockReturnValue(now + 119_999);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+
+      // A complete runtime instant response is promoted to a navigation
+      // entry. Reuse it for repeated viewport prefetches until the completed
+      // cacheLife stale time elapses.
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      observer.dispatchIntersectingEntry(result.anchor, false);
+      vi.mocked(Date.now).mockReturnValue(now + 120_001);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("renders cache-aware instant shells for static instant prefetches", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/static-instant-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+    result.fetch.mockResolvedValue(
+      new Response("partial instant payload", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+        },
+      }),
+    );
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers as Headers | undefined;
+      expect(headers?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBeNull();
+      expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      expect([...getPrefetchCache().values()][0]).toMatchObject({
+        cacheForNavigation: false,
+        instantShell: true,
+        prefetchKind: "instant-shell",
+      });
     } finally {
       result.restoreNodeEnv();
     }

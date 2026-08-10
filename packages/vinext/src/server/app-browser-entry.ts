@@ -22,6 +22,7 @@ import { notifyAppRouterTransitionStart } from "../client/instrumentation-client
 import {
   __basePath,
   appRouterInstance,
+  attachPrefetchInvalidationCallback,
   commitClientNavigationState,
   consumePrefetchResponse,
   consumePrefetchResponseForNavigation,
@@ -482,24 +483,44 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
   );
   const template = createOptimisticRouteTemplate({
-    allowLoadingShell: options.entry.optimisticRouteShell === true,
+    allowLoadingShell:
+      options.entry.optimisticRouteShell === true || options.entry.instantShell === true,
     basePath: __basePath,
     elements,
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    preservePageElements: options.entry.instantShell === true,
     routeManifest: options.routeManifest,
   });
   if (template === null) return false;
 
-  optimisticRouteTemplates.set(
-    getOptimisticRouteTemplateKey({
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeId: template.routeId,
-    }),
-    template,
-  );
+  const templateKey = getOptimisticRouteTemplateKey({
+    concreteHrefKey: template.concreteHrefKey,
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+    routeId: template.routeId,
+  });
+  const sourceKey = getOptimisticPrefetchSourceKey({
+    cacheKey: options.cacheKey,
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+  });
+  if (options.entry.instantShell === true) {
+    const attached = attachPrefetchInvalidationCallback(
+      options.cacheKey,
+      () => {
+        if (optimisticRouteTemplates.get(templateKey) === template) {
+          optimisticRouteTemplates.delete(templateKey);
+        }
+        optimisticRouteTemplateSources.delete(sourceKey);
+      },
+      options.entry,
+    );
+    if (!attached) return false;
+  }
+  optimisticRouteTemplates.set(templateKey, template);
+  optimisticRouteTemplateSources.add(sourceKey);
   return true;
 }
 
@@ -529,9 +550,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
       mountedSlotsHeader: options.mountedSlotsHeader,
       routeManifest: options.routeManifest,
     })
-      .then((learned) => {
-        if (learned) optimisticRouteTemplateSources.add(sourceKey);
-      })
+      .then(() => {})
       .finally(() => {
         optimisticRouteTemplateLearning.delete(sourceKey);
       });

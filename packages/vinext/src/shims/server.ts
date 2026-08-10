@@ -1277,6 +1277,11 @@ export async function connection(): Promise<void> {
   markRenderRequestApiUsage("connection");
   throwIfInsideCacheScope("connection()");
   markDynamicUsage();
+  const { suspendInstantPrefetchConnection } = await import("./instant-prefetch-shell.js");
+  const pendingInstantShell = suspendInstantPrefetchConnection();
+  if (pendingInstantShell) {
+    await pendingInstantShell;
+  }
   const pendingProbe = suspendConnectionProbe();
   if (pendingProbe) {
     await pendingProbe;

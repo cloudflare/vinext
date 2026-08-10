@@ -145,6 +145,178 @@ export function hasNamedExport(code: string, name: string): boolean {
   return hasNamedExportInProgram(program, name);
 }
 
+/**
+ * Returns whether a named export is statically known to use an object property
+ * with the requested string value. Local aliases are followed, while external
+ * re-exports remain unknown because evaluating user modules during route scans
+ * would run application code.
+ */
+export function hasNamedExportObjectStringProperty(
+  code: string,
+  name: string,
+  property: string,
+  expectedValue: string,
+): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+
+  const localName = findExportedLocalNameInProgram(program, name);
+  if (localName === null) return false;
+  const initializer =
+    findExportedConstInitializerInProgram(program, name) ??
+    findLocalConstInitializerInProgram(program, localName);
+  if (initializer === null) return false;
+
+  const expression = resolveLocalConstExpression(program, initializer, new Set());
+  if (expression.type !== "ObjectExpression") return false;
+  for (const candidate of expression.properties) {
+    if (
+      candidate.type !== "Property" ||
+      candidate.computed ||
+      propertyKeyName(candidate.key) !== property
+    ) {
+      continue;
+    }
+    const value = resolveLocalConstExpression(program, candidate.value, new Set());
+    return value.type === "Literal" && value.value === expectedValue;
+  }
+  return false;
+}
+
+export type NamedExternalReexport = {
+  importedName: string;
+  source: string;
+};
+
+export type NamedExportObjectStringPropertyAnalysis = {
+  hasExport: boolean;
+  hasUseClientDirective: boolean;
+  hasStaticValue: boolean;
+  staticValue: unknown;
+  propertyValue: string | null;
+  reexport: NamedExternalReexport | null;
+};
+
+/** Analyze an object-valued named export with one AST parse. */
+export function analyzeNamedExportObjectStringProperty(
+  code: string,
+  name: string,
+  property: string,
+): NamedExportObjectStringPropertyAnalysis {
+  const program = parseRouteModule(code);
+  if (!program) {
+    return {
+      hasExport: false,
+      hasUseClientDirective: false,
+      hasStaticValue: false,
+      staticValue: undefined,
+      propertyValue: null,
+      reexport: null,
+    };
+  }
+
+  const reexport = findNamedExternalReexportInProgram(program, name);
+  const localName = findExportedLocalNameInProgram(program, name);
+  let hasStaticValue = false;
+  let staticValue: unknown;
+  let propertyValue: string | null = null;
+  if (localName !== null) {
+    const initializer =
+      findExportedConstInitializerInProgram(program, name) ??
+      findLocalConstInitializerInProgram(program, localName);
+    if (initializer !== null) {
+      const expression = resolveLocalConstExpression(program, initializer, new Set());
+      const extractedValue = extractStaticJsonValue(expression, (candidate) =>
+        resolveLocalConstExpression(program, candidate, new Set()),
+      );
+      if (extractedValue !== UNSUPPORTED_STATIC_VALUE) {
+        hasStaticValue = true;
+        staticValue = extractedValue;
+      }
+      if (expression.type === "ObjectExpression") {
+        for (const candidate of expression.properties) {
+          if (
+            candidate.type !== "Property" ||
+            candidate.computed ||
+            propertyKeyName(candidate.key) !== property
+          ) {
+            continue;
+          }
+          const value = resolveLocalConstExpression(program, candidate.value, new Set());
+          if (value.type === "Literal" && typeof value.value === "string") {
+            propertyValue = value.value;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return {
+    hasExport: localName !== null || reexport !== null,
+    hasUseClientDirective: program.body.some(
+      (node) => node.type === "ExpressionStatement" && node.directive === "use client",
+    ),
+    hasStaticValue,
+    staticValue,
+    propertyValue,
+    reexport,
+  };
+}
+
+/** Returns the local module specifier that supplies a named re-export. */
+export function findNamedExternalReexport(
+  code: string,
+  name: string,
+): NamedExternalReexport | null {
+  const program = parseRouteModule(code);
+  if (!program) return null;
+
+  return findNamedExternalReexportInProgram(program, name);
+}
+
+function findNamedExternalReexportInProgram(
+  program: Program,
+  name: string,
+): NamedExternalReexport | null {
+  for (const node of program.body) {
+    if (
+      node.type !== "ExportNamedDeclaration" ||
+      node.exportKind === "type" ||
+      node.source === null ||
+      typeof node.source.value !== "string"
+    ) {
+      continue;
+    }
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind !== "type" && moduleExportNameValue(specifier.exported) === name) {
+        const importedName = moduleExportNameValue(specifier.local);
+        if (importedName !== null) {
+          return { importedName, source: node.source.value };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function findExportedLocalNameInProgram(program: Program, name: string): string | null {
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration" || node.exportKind === "type") continue;
+    if (declarationHasBindingName(node.declaration, name)) return name;
+
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.exported) === name) {
+        return moduleExportNameValue(specifier.local);
+      }
+    }
+  }
+
+  return null;
+}
+
 /** Returns true when Next.js' analyzer recognizes the requested export name. */
 export function hasExportedName(code: string, name: string): boolean {
   const program = parseRouteModule(code);
@@ -191,6 +363,20 @@ function unwrapStaticExpression(expression: Expression): Expression {
   return current;
 }
 
+function resolveLocalConstExpression(
+  program: Program,
+  expression: Expression,
+  visited: Set<string>,
+): Expression {
+  const unwrapped = unwrapStaticExpression(expression);
+  if (unwrapped.type !== "Identifier" || visited.has(unwrapped.name)) return unwrapped;
+
+  const initializer = findLocalConstInitializerInProgram(program, unwrapped.name);
+  if (initializer === null) return unwrapped;
+  visited.add(unwrapped.name);
+  return resolveLocalConstExpression(program, initializer, visited);
+}
+
 function findExportedConstInitializer(code: string, name: string): Expression | null {
   const program = parseRouteModule(code);
   if (!program) return null;
@@ -207,6 +393,17 @@ function findExportedConstInitializerInProgram(program: Program, name: string): 
       if (bindingName(declarator.id) === name) {
         return declarator.init;
       }
+    }
+  }
+
+  return null;
+}
+
+function findLocalConstInitializerInProgram(program: Program, name: string): Expression | null {
+  for (const node of program.body) {
+    if (node.type !== "VariableDeclaration" || node.kind !== "const") continue;
+    for (const declarator of node.declarations) {
+      if (bindingName(declarator.id) === name) return declarator.init;
     }
   }
 
@@ -290,8 +487,12 @@ function propertyKeyName(key: PropertyKey): string | null {
   return null;
 }
 
-function extractStaticJsonValue(expression: Expression): unknown {
-  const value = unwrapStaticExpression(expression);
+function extractStaticJsonValue(
+  expression: Expression,
+  resolveExpression: (expression: Expression) => Expression = unwrapStaticExpression,
+  visiting: Set<Expression> = new Set(),
+): unknown {
+  const value = resolveExpression(expression);
 
   if (value.type === "Literal") {
     if (
@@ -309,28 +510,48 @@ function extractStaticJsonValue(expression: Expression): unknown {
     return value.quasis[0]?.value.cooked ?? value.quasis[0]?.value.raw ?? "";
   }
 
+  if (value.type === "Identifier" && value.name === "undefined") {
+    return undefined;
+  }
+
   if (value.type === "ArrayExpression") {
+    if (visiting.has(value)) return UNSUPPORTED_STATIC_VALUE;
+    visiting.add(value);
     const items: unknown[] = [];
-    for (const element of value.elements) {
-      if (!element || element.type === "SpreadElement") return UNSUPPORTED_STATIC_VALUE;
-      const item = extractStaticJsonValue(element);
-      if (item === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
-      items.push(item);
+    try {
+      for (const element of value.elements) {
+        if (!element) {
+          items.push(undefined);
+          continue;
+        }
+        if (element.type === "SpreadElement") return UNSUPPORTED_STATIC_VALUE;
+        const item = extractStaticJsonValue(element, resolveExpression, visiting);
+        if (item === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+        items.push(item);
+      }
+      return items;
+    } finally {
+      visiting.delete(value);
     }
-    return items;
   }
 
   if (value.type === "ObjectExpression") {
+    if (visiting.has(value)) return UNSUPPORTED_STATIC_VALUE;
+    visiting.add(value);
     const object: Record<string, unknown> = {};
-    for (const property of value.properties) {
-      if (property.type !== "Property" || property.computed) return UNSUPPORTED_STATIC_VALUE;
-      const key = propertyKeyName(property.key);
-      if (!key) return UNSUPPORTED_STATIC_VALUE;
-      const propertyValue = extractStaticJsonValue(property.value);
-      if (propertyValue === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
-      object[key] = propertyValue;
+    try {
+      for (const property of value.properties) {
+        if (property.type !== "Property" || property.computed) return UNSUPPORTED_STATIC_VALUE;
+        const key = propertyKeyName(property.key);
+        if (!key) return UNSUPPORTED_STATIC_VALUE;
+        const propertyValue = extractStaticJsonValue(property.value, resolveExpression, visiting);
+        if (propertyValue === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+        object[key] = propertyValue;
+      }
+      return object;
+    } finally {
+      visiting.delete(value);
     }
-    return object;
   }
 
   return UNSUPPORTED_STATIC_VALUE;
