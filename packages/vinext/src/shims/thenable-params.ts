@@ -229,8 +229,8 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     // the ALS scope before the key is read — without it, an out-of-scope read
     // would return `null` and silently leak the raw `[slug]` placeholder (and
     // diverge between the `get` and `getOwnPropertyDescriptor` traps).
-    // Promise creation stays lazy so the dynamic-boundary side effects only
-    // fire on first actual fallback-key access.
+    // Hanging-promise creation stays lazy. Cached-navigation staging re-applies
+    // its idempotent dynamic-boundary mark on each fallback-key access.
     if ((!fallbackParamNames && !suspendEntireValue) || !fallbackShellState) return null;
     const stagedValue =
       fallbackShellState.cachedNavigationStage === "navigation"
