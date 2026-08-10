@@ -48,6 +48,8 @@ export type AppRoutePrefetchPolicy = {
    */
   honorDynamicStaleTime: boolean;
   prefetchShellFirst: boolean;
+  /** Fetch the route tree before the concrete page segment. */
+  requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
 };
 
@@ -106,6 +108,8 @@ export function resolveAutoAppRoutePrefetch(
         ),
       ) ??
         false));
+  const requiresRouteTreePrefetch =
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
   const routeUrl = new URL(routeHref, "http://vinext.local");
@@ -125,7 +129,8 @@ export function resolveAutoAppRoutePrefetch(
   const hasCacheComponentsLearningOnlyDynamicPath =
     route.isDynamic &&
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
-    (isFullyDynamicRootRoute || ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname));
+    (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
+      (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
   return {
     canPrefetchLoadingShell,
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
@@ -135,12 +140,13 @@ export function resolveAutoAppRoutePrefetch(
     // branches must be derived from the click-time target tree.
     cacheForNavigation:
       !hasSearchParams &&
-      !canPrefetchLoadingShell &&
       !hasCacheComponentsLearningOnlyDynamicPath &&
-      route.requiresDynamicNavigationRequest !== true,
+      (requiresRouteTreePrefetch ||
+        (!canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true)),
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
-    prefetchShellFirst: hasSearchParams || !route.isDynamic,
+    prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
+    ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };
 }

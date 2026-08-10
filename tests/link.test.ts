@@ -326,6 +326,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
         {
+          canPrefetchLoadingShell: true,
+          patternParts: ["root-param", ":value"],
+          isDynamic: true,
+          hasRootParams: true,
+        },
+        {
           canPrefetchLoadingShell: false,
           loadingShellInterceptionSourcePatterns: [["slow-intercept"]],
           patternParts: ["slow-intercept", "photo"],
@@ -341,6 +347,7 @@ describe("Link App Router prefetch mode", () => {
       ],
     };
 
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         canPrefetchLoadingShell: false,
@@ -399,6 +406,22 @@ describe("Link App Router prefetch mode", () => {
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
+      expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
+        cacheForNavigation: true,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
+        prefetchShellFirst: true,
+        requiresRouteTreePrefetch: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/root-param/aaa?q=1")).toEqual({
+        cacheForNavigation: false,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
+        prefetchShellFirst: true,
+        requiresRouteTreePrefetch: true,
+        shouldPrefetch: true,
+      });
       expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
         canPrefetchLoadingShell: false,
         cacheForNavigation: false,
@@ -421,6 +444,43 @@ describe("Link App Router prefetch mode", () => {
       } else {
         (globalThis as any).window = originalWindow;
       }
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps root-param loading routes shell-only without Cache Components", () => {
+    const originalWindow = globalThis.window;
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/root-params",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        {
+          canPrefetchLoadingShell: true,
+          patternParts: ["root-param", ":value"],
+          isDynamic: true,
+          hasRootParams: true,
+        },
+      ],
+    };
+
+    try {
+      expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
+        cacheForNavigation: false,
+        fallbackTtl: "static",
+        honorDynamicStaleTime: true,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+      vi.unstubAllEnvs();
     }
   });
 

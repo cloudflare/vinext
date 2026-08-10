@@ -1668,7 +1668,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // is not preserved in the bundle output format.
     if (
       pathname === "/__vinext/prerender/static-params" ||
-      pathname === "/__vinext/prerender/pages-static-paths"
+      pathname === "/__vinext/prerender/pages-static-paths" ||
+      pathname === "/__vinext/prerender/metadata-routes"
     ) {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {

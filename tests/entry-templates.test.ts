@@ -463,6 +463,29 @@ describe("App Router generated manifest construction", () => {
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
   });
 
+  it("marks root-param routes for concrete route-tree prefetching", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/:rootParam",
+      patternParts: [":rootParam"],
+      routeSegments: [":rootParam"],
+      isDynamic: true,
+      params: ["rootParam"],
+      rootParamNames: ["rootParam"],
+      loadingPath: "/tmp/test/app/[rootParam]/loading.tsx",
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route)).toEqual(
+      expect.objectContaining({
+        canPrefetchLoadingShell: true,
+        hasRootParams: true,
+      }),
+    );
+  });
+
   it("advertises sibling-intercept loading only on the target route", () => {
     const sourceRoute = {
       ...minimalAppRoutes[0],
