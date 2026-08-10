@@ -1597,6 +1597,97 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("reuses a visited response when an automatic prefetch is promoted to Full on hover", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+    const runtime = getNavigationRuntime();
+    if (runtime === null) throw new Error("Expected App navigation runtime");
+
+    // Model the upstream sequence: a prior navigation populated BFCache, then
+    // the user traversed back before revealing this dynamic-on-hover Link. The
+    // response is already stale for an ordinary navigation, but remains inside
+    // the distinct Full-prefetch freshness window.
+    const [{ AppElementsWire }, navigation, visitedResponseCache] = await Promise.all([
+      import("../packages/vinext/src/server/app-elements.js"),
+      import("../packages/vinext/src/shims/navigation.js"),
+      import("../packages/vinext/src/server/app-visited-response-cache.js"),
+    ]);
+    const navigatedRscUrl = "/blog/hello?_rsc=navigated";
+    const visitedEntry = visitedResponseCache.createVisitedResponseCacheEntry({
+      fallbackTtlMs: 0,
+      now,
+      params: { slug: "hello" },
+      response: {
+        buffer: new TextEncoder().encode("visited dynamic flight").buffer,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 0,
+        paramsHeader: null,
+        renderedPathAndSearch: "/blog/hello",
+        url: navigatedRscUrl,
+      },
+    });
+    const visitedCache = new Map([
+      [AppElementsWire.encodeCacheKey(navigatedRscUrl, null), visitedEntry],
+    ]);
+    const claimVisitedResponseForFullPrefetch = vi.fn(
+      (rscUrl: string, interceptionContext: string | null, mountedSlotsHeader: string | null) => {
+        const claim = visitedResponseCache.claimVisitedResponseCacheEntryForFullPrefetch(
+          visitedCache,
+          rscUrl,
+          interceptionContext,
+          mountedSlotsHeader,
+          { now, staleTimeMs: 30_000 },
+        );
+        if (claim === null) return null;
+        navigation.seedPrefetchResponseSnapshot(
+          rscUrl,
+          visitedResponseCache.createVisitedResponseFullPrefetchSnapshot(claim),
+          interceptionContext,
+          mountedSlotsHeader,
+          navigation.PREFETCH_CACHE_TTL,
+        );
+        return claim.expiresAt;
+      },
+    );
+    runtime.functions.claimVisitedResponseForFullPrefetch = claimVisitedResponseForFullPrefetch;
+
+    try {
+      // Viewport visibility performs only the default automatic loading-shell
+      // request. It must not claim the visited response yet.
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+      expect(claimVisitedResponseForFullPrefetch).not.toHaveBeenCalled();
+
+      // Hover upgrades the task to Full. That phase reuses the visited response
+      // instead of issuing a redundant full RSC GET.
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks(() => claimVisitedResponseForFullPrefetch.mock.calls.length === 1);
+
+      expect(claimVisitedResponseForFullPrefetch).toHaveBeenCalledOnce();
+      expect(result.fetch).toHaveBeenCalledOnce();
+      const [claimedRscUrl, claimedInterceptionContext] =
+        claimVisitedResponseForFullPrefetch.mock.calls[0]!;
+      expect(
+        navigation
+          .getPrefetchCache()
+          .get(AppElementsWire.encodeCacheKey(claimedRscUrl, claimedInterceptionContext))?.snapshot
+          ?.expiresAt,
+      ).toBe(now + 30_000);
+      // Full-prefetch ownership is published separately; it must not mutate
+      // the original entry's ordinary-navigation deadline.
+      expect(visitedEntry.expiresAt).toBe(now);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches visible links in production with low priority", async () => {
     const observer = stubIntersectionObserver();
 

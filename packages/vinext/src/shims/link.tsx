@@ -643,8 +643,10 @@ function prefetchUrl(
           }
           return;
         }
-        // `full-after-shell` is promoted by dynamic-on-hover and represents
-        // explicit navigation intent, so it may claim a visited response too.
+        // Both `prefetch={true}` and `unstable_dynamicOnHover` use Next's Full
+        // fetch strategy. The latter starts as an automatic shell and upgrades
+        // on hover, but the upgraded task may still reuse a recent visited
+        // response with the Full-prefetch freshness window.
         const claimedVisitedResponseExpiresAt =
           mode !== "auto"
             ? getNavigationRuntime()?.functions.claimVisitedResponseForFullPrefetch?.(
