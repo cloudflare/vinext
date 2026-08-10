@@ -307,9 +307,10 @@ test.describe("Next.js compat: client cache", () => {
 
     await page.click(`a[href="${home}"]`);
     await expect(page.locator("#client-cache-search-home")).toBeVisible();
-    // Next's BFCache-backed Full-prefetch path remains claimable at the exact
-    // static deadline and expires immediately after it.
-    await advanceTime(page, 270_001);
+    // The navigation at +30s refreshes the BFCache entry's `navigatedAt`.
+    // Cross the static deadline measured from that latest visit; Next keeps a
+    // BFCache-backed Full-prefetch claim valid at the exact deadline.
+    await advanceTime(page, 5 * 60 * 1_000 + 1);
     requests.length = 0;
     await page.click(`a[href="${target}?timeout=0"]`);
     await expect(page.locator("#client-cache-search-id")).toHaveText("0");
