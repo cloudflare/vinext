@@ -134,6 +134,8 @@ function isInstantSample(value: unknown): boolean {
 }
 
 function isInstantConfig(value: unknown): boolean {
+  // Mirrors the unstable_instant revision in Next.js v16.2.6, the pinned
+  // deploy-suite oracle. Canary revisions may use a different unstable shape.
   if (value === false) return true;
   if (!isPlainRecord(value) || !hasOnlyKeys(value, INSTANT_CONFIG_KEYS)) return false;
   if (value.prefetch !== "static" && value.prefetch !== "runtime") return false;

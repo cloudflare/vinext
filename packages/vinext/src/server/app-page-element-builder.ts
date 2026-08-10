@@ -517,6 +517,8 @@ export async function buildPageElements<
       : null;
   const routeLayoutRuntimeRequestApis = resolveCachedNavigationRuntimeModuleChain(route.layouts);
   const routeDescendantsRuntimeRequestApis = routeLayoutRuntimeRequestApis.at(-1) ?? false;
+  // The route graph records intercept layouts outermost-to-innermost, and the
+  // generated manifest preserves that positional order alongside the segments.
   const interceptLayoutRuntimeRequestApis = resolveCachedNavigationRuntimeModuleChain(
     opts?.interceptLayouts ?? [],
     routeDescendantsRuntimeRequestApis,
