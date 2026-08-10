@@ -91,6 +91,16 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
   const hasSearchParams = new URL(routeHref, "http://vinext.local").search !== "";
+  // Cache Components automatic prefetches keep dynamic path segments in the
+  // learning-only Segment Cache. Navigation must fetch the dynamic page data,
+  // while a later Link mount can still reuse the learned route identity. This
+  // also keeps encoded delimiters such as `%2F` under the exact href key instead
+  // of publishing a decoded server payload as authoritative navigation data.
+  //
+  // Next.js parity:
+  // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+  const isCacheComponentsDynamicRoute =
+    route.isDynamic && String(process.env.__NEXT_CACHE_COMPONENTS) === "true";
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
@@ -100,6 +110,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     cacheForNavigation:
       !hasSearchParams &&
       !route.canPrefetchLoadingShell &&
+      !isCacheComponentsDynamicRoute &&
       route.requiresDynamicNavigationRequest !== true,
     fallbackTtl: "static",
     honorDynamicStaleTime: true,

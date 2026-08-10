@@ -676,6 +676,29 @@ export function hasPrefetchCacheEntryForNavigation(
   return false;
 }
 
+/**
+ * Return whether the exact learning-only Link prefetch is still usable.
+ * Pending entries dedupe concurrent Links; settled entries only suppress a
+ * remount while their response-derived freshness window remains active.
+ */
+export function hasFreshLearningOnlyPrefetchCacheEntry(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+): boolean {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry?.cacheForNavigation !== false) return false;
+
+  if (entry.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) {
+    touchPrefetchCacheEntry(cache, cacheKey, entry);
+    return true;
+  }
+
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  return false;
+}
+
 export function hasSearchAgnosticPrefetchShellForRoute(
   rscUrl: string,
   interceptionContext: string | null = null,
