@@ -72,6 +72,30 @@ describe("prerender server pool sizing", () => {
     }
   });
 
+  it("starts render workers in the Next production-build phase", async () => {
+    const { dir, entry } = writeWorkerEntry(`
+      if (
+        process.env.VINEXT_PRERENDER !== "1" ||
+        process.env.NEXT_PHASE !== "phase-production-build"
+      ) {
+        process.send({ type: "error", error: JSON.stringify({
+          VINEXT_PRERENDER: process.env.VINEXT_PRERENDER,
+          NEXT_PHASE: process.env.NEXT_PHASE,
+        }) });
+      } else {
+        process.send({ type: "ready", port: 4125 });
+      }
+      setInterval(() => {}, 1000);
+    `);
+
+    try {
+      const pool = await startPrerenderServerPool(dir, 1, entry);
+      await pool.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails assertHealthy immediately after a worker transport error", async () => {
     const { dir, entry } = writeWorkerEntry(`
       process.send({ type: "ready", port: 4124 });
