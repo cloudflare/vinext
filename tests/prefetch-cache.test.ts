@@ -1047,6 +1047,53 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).toBeNull();
   });
 
+  it("dedupes pending and fresh Cache Components dynamic router.prefetch calls but refetches after expiry", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: [":slug"], isDynamic: true },
+    ];
+    const firstResponse = createDeferredResponse();
+    const fetch = vi
+      .fn<(input: RequestInfo | URL) => Promise<Response>>()
+      .mockImplementationOnce(() => firstResponse.promise)
+      .mockResolvedValue(
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+      );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    // A concurrent call shares the exact pending learning-only entry.
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await settlePrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    firstResponse.resolve(
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    await waitForPrefetchSetup(() => {
+      const entry = getPrefetchCache().values().next().value;
+      return entry?.outcome === "cache-seeded" && entry.pending === undefined;
+    });
+    const entry = getPrefetchCache().values().next().value;
+    expect(entry?.cacheForNavigation).toBe(false);
+    expect(entry?.expiresAt).toEqual(expect.any(Number));
+
+    // A settled but fresh learning-only entry still suppresses a duplicate.
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await settlePrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    vi.spyOn(Date, "now").mockReturnValue((entry?.expiresAt ?? 0) + 1);
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("promotes a queued prefetch when navigation consumes it (#2722)", async () => {
     // Every route is navigation-reusable, so the queued 5th prefetch is one a
     // navigation will actually try to await.

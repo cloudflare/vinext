@@ -2786,7 +2786,7 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
-      } else if (prefetched.has(cacheKey)) {
+      } else if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
         attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
         return;
       }
