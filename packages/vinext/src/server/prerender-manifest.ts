@@ -14,7 +14,9 @@ export type PrerenderManifestRoute = {
   path?: string;
   router?: string;
   fallback?: boolean;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | string[]>;
+  responseStatus?: number;
+  routeSegments?: string[];
   tags?: string[];
 };
 
@@ -42,6 +44,12 @@ export function readPrerenderManifest(manifestPath: string): PrerenderManifest |
 
 export function getRenderedAppRoutes(routes: PrerenderManifestRoute[]): PrerenderManifestRoute[] {
   return routes.filter((r) => r.status === "rendered" && r.router === "app");
+}
+
+export function getRenderedMetadataRoutes(
+  routes: PrerenderManifestRoute[],
+): PrerenderManifestRoute[] {
+  return routes.filter((route) => route.status === "rendered" && route.router === "metadata");
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {

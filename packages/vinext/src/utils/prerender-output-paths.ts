@@ -18,3 +18,9 @@ export function getRscOutputPath(urlPath: string): string {
   if (urlPath === "/") return "index.rsc";
   return urlPath.replace(/^\//, "") + ".rsc";
 }
+
+/** Determine the binary artifact path for a prerendered App Route response. */
+export function getAppRouteOutputPath(urlPath: string): string {
+  if (urlPath === "/") return "index.route";
+  return urlPath.replace(/^\//, "") + ".route";
+}
