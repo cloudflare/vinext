@@ -143,6 +143,7 @@ export function toLinkPrefetchRoute(
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
     ...(slotParamPatterns.length > 0 ? { slotParamPatterns } : {}),
+    ...((route.rootParamNames?.length ?? 0) > 0 ? { hasRootParams: true } : {}),
   };
 }
 

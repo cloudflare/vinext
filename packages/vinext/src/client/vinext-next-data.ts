@@ -55,6 +55,8 @@ export type VinextLinkPrefetchRoute = {
     paramNames: string[];
     patternParts: string[];
   }>;
+  /** The route has dynamic params above its root layout. */
+  hasRootParams?: true;
 };
 
 /**

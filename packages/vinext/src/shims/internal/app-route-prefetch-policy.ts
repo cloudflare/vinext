@@ -67,6 +67,8 @@ export type AppRoutePrefetchPolicy = {
   prefetchShellFirst: boolean;
   /** Render only the nearest loading boundary instead of the route's prefetchable body. */
   renderLoadingShell: boolean;
+  /** Fetch the route tree before the concrete page segment. */
+  requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
 };
 
@@ -282,6 +284,8 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
   const route = match.route;
+  const requiresRouteTreePrefetch =
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
   if (isAppPrefetchVaryEnabled() && route.canPrefetchRuntimeShell) {
     return {
       cacheForNavigation: false,
@@ -304,8 +308,9 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
       cacheForNavigation: !requiresDynamicNavigationRequest,
       fallbackTtl: "static",
       honorDynamicStaleTime: false,
-      prefetchShellFirst: false,
+      prefetchShellFirst: requiresRouteTreePrefetch,
       renderLoadingShell: requiresDynamicNavigationRequest,
+      ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
       shouldPrefetch: true,
     };
   }
@@ -328,7 +333,8 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   const hasCacheComponentsLearningOnlyDynamicPath =
     route.isDynamic &&
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
-    (isFullyDynamicRootRoute || ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname));
+    (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
+      (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
@@ -337,17 +343,19 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     // branches must be derived from the click-time target tree.
     cacheForNavigation:
       !hasSearchParams &&
-      !route.canPrefetchLoadingShell &&
       !hasCacheComponentsLearningOnlyDynamicPath &&
-      route.requiresDynamicNavigationRequest !== true,
+      (requiresRouteTreePrefetch ||
+        (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true)),
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
-    prefetchShellFirst: hasSearchParams || !route.isDynamic,
+    prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
     renderLoadingShell:
-      hasSearchParams ||
-      hasCacheComponentsLearningOnlyDynamicPath ||
-      route.canPrefetchLoadingShell ||
-      route.requiresDynamicNavigationRequest === true,
+      !requiresRouteTreePrefetch &&
+      (hasSearchParams ||
+        hasCacheComponentsLearningOnlyDynamicPath ||
+        route.canPrefetchLoadingShell ||
+        route.requiresDynamicNavigationRequest === true),
+    ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };
 }
