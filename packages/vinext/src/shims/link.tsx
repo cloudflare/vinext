@@ -448,6 +448,7 @@ function prefetchUrl(
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
+          hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
           peekPrefetchResponseForNavigation,
@@ -550,20 +551,24 @@ function prefetchUrl(
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
-            const entry = getPrefetchCache().get(cacheKey);
-            // Runtime instant shells start as learning-only entries, but a
-            // complete response is promoted for navigation reuse. Once
-            // promoted, apply the same freshness-aware gate as a regular
-            // reusable prefetch so an expired shell does not remain pinned by
-            // the learning-only `prefetched` marker forever.
-            if (
-              entry?.cacheForNavigation !== true ||
-              hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
-            ) {
-              return;
-            }
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+        ) {
+          return;
+        }
+        if (!autoPrefetch.cacheForNavigation && prefetched.has(cacheKey)) {
+          const entry = getPrefetchCache().get(cacheKey);
+          // Runtime instant shells start as learning-only entries, but a
+          // complete response is promoted for navigation reuse. Once
+          // promoted, apply the same freshness-aware gate as a regular
+          // reusable prefetch so an expired shell does not remain pinned by
+          // the learning-only `prefetched` marker forever.
+          if (
+            entry?.cacheForNavigation === true &&
+            hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+          ) {
+            return;
           }
         }
         const fetchFullRscPayload = () =>
