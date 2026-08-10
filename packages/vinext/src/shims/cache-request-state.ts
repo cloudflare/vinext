@@ -26,6 +26,7 @@ type CacheContextLike = {
   tags: string[];
   lifeConfigs: CacheLifeConfig[];
   variant: string;
+  readRootParamNames?: Set<string>;
   hasExplicitRevalidate: boolean;
   hasExplicitExpire: boolean;
   dynamicNestedCacheError: Error | undefined;
@@ -40,6 +41,14 @@ export function _registerCacheContextAccessor(fn: () => CacheContextLike | null)
 
 export function getRegisteredCacheContext(): CacheContextLike | null {
   return getCacheContext?.() ?? null;
+}
+
+/** Record a root-param dependency on the active public `"use cache"` scope. */
+export function _recordUseCacheRootParamRead(name: string): void {
+  const context = getRegisteredCacheContext();
+  if (context && context.variant !== "private") {
+    context.readRootParamNames?.add(name);
+  }
 }
 
 export type UnstableCacheRevalidationMode = "foreground" | "background";
