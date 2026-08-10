@@ -26,7 +26,6 @@ import {
   invalidateAppRouteCache,
   matchAppRoute,
 } from "./routing/app-router.js";
-import { isRuntimeInstantConfigDependency } from "./routing/app-route-graph.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import {
   buildViteResolveExtensions,
@@ -1432,6 +1431,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Production builds leave it null and scan the configured public directory
   // once while generating the RSC entry.
   let devPublicFileRoutes: Set<string> | null = null;
+  // Source modules that currently contribute `unstable_instant` metadata to
+  // this plugin instance's App Router graph. Kept per plugin so concurrent
+  // Vite servers cannot clear or overwrite each other's HMR dependencies.
+  let instantConfigDependencies = new Set<string>();
   let publicDirConflictOptions: Parameters<typeof assertNoPublicDirAssetConflict>[0] | null = null;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
@@ -1519,9 +1522,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `Router.prefetch` can mark App Router targets on `Router.components`
     // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
     // #1526 for the Next.js parity rationale.
-    const appPrefetchRoutes = hasAppDir
-      ? toLinkPrefetchRoutes(await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
-      : [];
+    let appPrefetchRoutes: ReturnType<typeof toLinkPrefetchRoutes> = [];
+    if (hasAppDir) {
+      const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+      instantConfigDependencies = graph.instantConfigDependencies;
+      appPrefetchRoutes = toLinkPrefetchRoutes(graph.routes, nextConfig.cacheComponents);
+    }
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
       instrumentationClientPath,
@@ -3862,6 +3868,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
             const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+            instantConfigDependencies = graph.instantConfigDependencies;
             // In a hybrid build, the App browser entry also exposes the Pages
             // route manifest so a user who lands on an App page can still
             // see Pages ownership from a `<Link>` click.
@@ -3889,6 +3896,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
+              nextConfig.cacheComponents,
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
@@ -4604,10 +4612,27 @@ export const loadServerActionClient = ${
           if (hasAppDir) invalidateRscEntryModule();
           if (hasCloudflarePlugin && hasPagesDir && !hasAppDir) invalidatePagesServerEntry();
         };
+        const isTrackedInstantConfigDependency = (filePath: string): boolean =>
+          instantConfigDependencies.has(toSlash(filePath));
+        const routeModuleNowExportsInstantConfig = (filePath: string): boolean => {
+          const canonicalPath = toSlash(filePath);
+          if (
+            !canonicalPath.startsWith(`${appDir}/`) ||
+            (!fileMatcher.isAppRouterPage(filePath) && !fileMatcher.isAppLayoutFile(filePath))
+          ) {
+            return false;
+          }
+          try {
+            return hasExportedName(fs.readFileSync(filePath, "utf8"), "unstable_instant");
+          } catch {
+            return false;
+          }
+        };
 
         server.watcher.on("add", (filePath: string) => {
           updatePublicFileRoute(filePath, true);
           let routeChanged = false;
+          const instantConfigChanged = hasAppDir && isTrackedInstantConfigDependency(filePath);
           const pagesAppChanged = isPagesAppFile(filePath);
           const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
@@ -4629,6 +4654,8 @@ export const loadServerActionClient = ${
             invalidateAppRoutingModules();
             regenerateAppRouteTypes();
             routeChanged = true;
+          } else if (instantConfigChanged) {
+            invalidateAppRoutingModules();
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
@@ -4648,9 +4675,8 @@ export const loadServerActionClient = ${
           }
           if (
             hasAppDir &&
-            ((toSlash(filePath).startsWith(`${appDir}/`) &&
-              (fileMatcher.isAppRouterPage(filePath) || fileMatcher.isAppLayoutFile(filePath))) ||
-              isRuntimeInstantConfigDependency(filePath))
+            (isTrackedInstantConfigDependency(filePath) ||
+              routeModuleNowExportsInstantConfig(filePath))
           ) {
             // Route metadata such as `unstable_instant` is content-derived and
             // may also be supplied by a local re-export. Rebuild both route
@@ -4663,6 +4689,7 @@ export const loadServerActionClient = ${
         server.watcher.on("unlink", (filePath: string) => {
           updatePublicFileRoute(filePath, false);
           let routeChanged = false;
+          const instantConfigChanged = hasAppDir && isTrackedInstantConfigDependency(filePath);
           const pagesAppChanged = isPagesAppFile(filePath);
           const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
@@ -4684,6 +4711,8 @@ export const loadServerActionClient = ${
             invalidateAppRoutingModules();
             regenerateAppRouteTypes();
             routeChanged = true;
+          } else if (instantConfigChanged) {
+            invalidateAppRoutingModules();
           }
           if (routeChanged) {
             invalidatePagesServerEntry();

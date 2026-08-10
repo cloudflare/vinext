@@ -29,6 +29,7 @@ export {
 } from "./app-route-graph.js";
 
 type AppRouteGraph = {
+  instantConfigDependencies: Set<string>;
   routes: AppRouteGraphRoute[];
   routeManifest: RouteManifest;
 };

@@ -11,7 +11,11 @@ import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
 import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
-import { findNamedExternalReexport, hasNamedExportObjectStringProperty } from "../build/report.js";
+import {
+  findNamedExternalReexport,
+  hasExportedName,
+  hasNamedExportObjectStringProperty,
+} from "../build/report.js";
 
 type InterceptingRoute = {
   /** Graph-owned identity for this interception edge. */
@@ -234,6 +238,8 @@ export type AppRoute = {
   isDynamic: boolean;
   /** Whether the page or an active ancestor/slot layout enables runtime instant prefetching. */
   hasRuntimeInstant?: boolean;
+  /** Whether the page or an active ancestor/slot layout enables any instant prefetch mode. */
+  hasInstant?: boolean;
   /** Parameter names for dynamic segments */
   params: string[];
   /** Dynamic parameter names captured by the route's root layout. */
@@ -252,14 +258,8 @@ const ROUTE_CONFIG_MODULE_EXTENSIONS = [
   ".cts",
   ".cjs",
 ];
-const runtimeInstantConfigDependencies = new Set<string>();
-
-export function isRuntimeInstantConfigDependency(filePath: string): boolean {
-  return runtimeInstantConfigDependencies.has(toSlash(filePath));
-}
-
-function resolveLocalRouteConfigModule(importer: string, source: string): string | null {
-  if (!source.startsWith(".")) return null;
+function localRouteConfigModuleCandidates(importer: string, source: string): string[] {
+  if (!source.startsWith(".")) return [];
 
   const base = path.resolve(path.dirname(importer), source);
   const candidates = [
@@ -275,6 +275,10 @@ function resolveLocalRouteConfigModule(importer: string, source: string): string
     );
   }
 
+  return candidates;
+}
+
+function resolveLocalRouteConfigModule(candidates: readonly string[]): string | null {
   for (const candidate of candidates) {
     try {
       if (fs.statSync(candidate).isFile()) return candidate;
@@ -285,55 +289,80 @@ function resolveLocalRouteConfigModule(importer: string, source: string): string
   return null;
 }
 
-function routeModuleExportHasRuntimeInstant(
+type InstantPrefetchMode = "runtime" | "static";
+
+function routeModuleExportInstantPrefetchMode(
   filePath: string,
   exportName: string,
   visited: Set<string>,
-): boolean {
+  dependencies: Set<string>,
+): InstantPrefetchMode | null {
   const visitKey = `${filePath}\0${exportName}`;
-  if (visited.has(visitKey)) return false;
+  if (visited.has(visitKey)) return null;
   visited.add(visitKey);
 
   try {
     const source = fs.readFileSync(filePath, "utf8");
+    if (hasExportedName(source, exportName)) dependencies.add(toSlash(filePath));
     if (hasNamedExportObjectStringProperty(source, exportName, "prefetch", "runtime")) {
-      return true;
+      return "runtime";
+    }
+    if (hasNamedExportObjectStringProperty(source, exportName, "prefetch", "static")) {
+      return "static";
     }
 
     const reexport = findNamedExternalReexport(source, exportName);
-    if (reexport === null) return false;
-    const reexportPath = resolveLocalRouteConfigModule(filePath, reexport.source);
+    if (reexport === null) return null;
+    const candidates = localRouteConfigModuleCandidates(filePath, reexport.source);
+    for (const candidate of candidates) dependencies.add(toSlash(candidate));
+    const reexportPath = resolveLocalRouteConfigModule(candidates);
     if (reexportPath === null) {
       // Vite aliases and package exports require the configured resolver, which
       // is not available to this synchronous graph scan. Conservatively treat
       // unresolved named re-exports as runtime instant so a dynamic response is
       // never promoted into the reusable full-prefetch cache.
-      return true;
+      return "runtime";
     }
-    runtimeInstantConfigDependencies.add(toSlash(reexportPath));
-    return routeModuleExportHasRuntimeInstant(reexportPath, reexport.importedName, visited);
+    return routeModuleExportInstantPrefetchMode(
+      reexportPath,
+      reexport.importedName,
+      visited,
+      dependencies,
+    );
   } catch {
-    return false;
+    return null;
   }
 }
 
-function routeModuleHasRuntimeInstant(filePath: string | null): boolean {
-  return (
-    filePath !== null && routeModuleExportHasRuntimeInstant(filePath, "unstable_instant", new Set())
-  );
+function routeModuleInstantPrefetchMode(
+  filePath: string | null,
+  dependencies: Set<string>,
+): InstantPrefetchMode | null {
+  return filePath === null
+    ? null
+    : routeModuleExportInstantPrefetchMode(filePath, "unstable_instant", new Set(), dependencies);
 }
 
-function routeHasRuntimeInstant(route: AppRoute): boolean {
-  return (
-    routeModuleHasRuntimeInstant(route.pagePath) ||
-    route.layouts.some(routeModuleHasRuntimeInstant) ||
-    route.parallelSlots.some(
-      (slot) =>
-        routeModuleHasRuntimeInstant(slot.pagePath) ||
-        routeModuleHasRuntimeInstant(slot.layoutPath ?? null) ||
-        (slot.configLayoutPaths ?? []).some(routeModuleHasRuntimeInstant),
-    )
-  );
+function routeInstantPrefetchMode(
+  route: AppRoute,
+  dependencies: Set<string>,
+): InstantPrefetchMode | null {
+  const modulePaths = [
+    route.pagePath,
+    ...route.layouts,
+    ...route.parallelSlots.flatMap((slot) => [
+      slot.pagePath,
+      slot.layoutPath ?? null,
+      ...(slot.configLayoutPaths ?? []),
+    ]),
+  ];
+  let mode: InstantPrefetchMode | null = null;
+  for (const modulePath of modulePaths) {
+    const moduleMode = routeModuleInstantPrefetchMode(modulePath, dependencies);
+    if (moduleMode === "runtime") return "runtime";
+    if (moduleMode === "static") mode = "static";
+  }
+  return mode;
 }
 
 export type AppRouteSemanticIds = {
@@ -1041,8 +1070,12 @@ function createRouteManifestGraphVersion(segmentGraph: StaticSegmentGraph): Grap
 export async function buildAppRouteGraph(
   appDir: string,
   matcher: ValidFileMatcher,
-): Promise<{ routes: AppRouteGraphRoute[]; routeManifest: RouteManifest }> {
-  runtimeInstantConfigDependencies.clear();
+): Promise<{
+  routes: AppRouteGraphRoute[];
+  routeManifest: RouteManifest;
+  instantConfigDependencies: Set<string>;
+}> {
+  const instantConfigDependencies = new Set<string>();
 
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
@@ -1177,13 +1210,15 @@ export async function buildAppRouteGraph(
   // inherited layout and active parallel-slot configs propagate to every
   // concrete route advertised to the browser prefetch policy.
   for (const route of routes) {
-    route.hasRuntimeInstant = routeHasRuntimeInstant(route);
+    const instantMode = routeInstantPrefetchMode(route, instantConfigDependencies);
+    route.hasInstant = instantMode !== null;
+    route.hasRuntimeInstant = instantMode === "runtime";
   }
 
   // Sort: static routes first, then dynamic, then catch-all
   sortRoutes(routes);
 
-  return { routes, routeManifest: createRouteManifest(routes) };
+  return { routes, routeManifest: createRouteManifest(routes), instantConfigDependencies };
 }
 
 function hasParallelSlotDirectory(dir: string): boolean {

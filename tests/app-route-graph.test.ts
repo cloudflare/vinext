@@ -7,7 +7,6 @@ import { toSlash } from "pathslash";
 import {
   buildAppRouteGraph,
   findOwnerRouteForDir,
-  isRuntimeInstantConfigDependency,
   type AppRouteGraphRoute,
   type RouteManifest,
 } from "../packages/vinext/src/routing/app-route-graph.js";
@@ -177,7 +176,9 @@ describe("App Router route graph builder", () => {
       expect(findRoute(graph.routes, "/reexported-instant").hasRuntimeInstant).toBe(true);
       expect(findRoute(graph.routes, "/indirect-instant").hasRuntimeInstant).toBe(true);
       expect(findRoute(graph.routes, "/aliased-reexport-instant").hasRuntimeInstant).toBe(true);
+      expect(findRoute(graph.routes, "/static-instant").hasInstant).toBe(true);
       expect(findRoute(graph.routes, "/static-instant").hasRuntimeInstant).toBe(false);
+      expect(findRoute(graph.routes, "/plain").hasInstant).toBe(false);
       expect(findRoute(graph.routes, "/plain").hasRuntimeInstant).toBe(false);
     });
   });
@@ -197,12 +198,31 @@ describe("App Router route graph builder", () => {
         'export const unstable_instant = { prefetch: "runtime" };\n',
       );
 
-      await buildAppRouteGraph(appDir, createValidFileMatcher());
-      expect(isRuntimeInstantConfigDependency(configPath)).toBe(true);
+      let graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      expect(graph.instantConfigDependencies.has(canonical(appDir, "page.tsx"))).toBe(true);
+      expect(graph.instantConfigDependencies.has(canonical(configPath))).toBe(true);
 
       await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
-      await buildAppRouteGraph(appDir, createValidFileMatcher());
-      expect(isRuntimeInstantConfigDependency(configPath)).toBe(false);
+      graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      expect(graph.instantConfigDependencies.has(canonical(appDir, "page.tsx"))).toBe(false);
+      expect(graph.instantConfigDependencies.has(canonical(configPath))).toBe(false);
+    });
+  });
+
+  it("tracks missing relative instant config targets for watcher add events", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(
+        appDir,
+        "page.tsx",
+        `export { unstable_instant } from "./missing-config";\n${EMPTY_PAGE}`,
+      );
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      expect(graph.instantConfigDependencies.has(canonical(appDir, "missing-config.ts"))).toBe(
+        true,
+      );
+      expect(findRoute(graph.routes, "/").hasRuntimeInstant).toBe(true);
     });
   });
 

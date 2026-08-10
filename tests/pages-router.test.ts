@@ -3721,7 +3721,7 @@ describe("Virtual server entry generation", () => {
     const testServer = await createServer({
       root: tmpDir,
       configFile: false,
-      plugins: [vinext({ appDir: tmpDir })],
+      plugins: [vinext({ appDir: tmpDir, nextConfig: { cacheComponents: true } })],
       server: { port: 0 },
       logLevel: "silent",
     });
@@ -3745,6 +3745,15 @@ describe("Virtual server entry generation", () => {
       testServer.watcher.emit("change", configPath);
 
       expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+
+      fs.rmSync(configPath);
+      testServer.watcher.emit("unlink", configPath);
+      // Missing relative re-exports are conservatively runtime instant.
+      expect(await loadCode()).toContain('"hasRuntimeInstant":true');
+
+      fs.writeFileSync(configPath, 'export const unstable_instant = { prefetch: "static" };\n');
+      testServer.watcher.emit("add", configPath);
+      expect(await loadCode()).not.toContain('"hasRuntimeInstant":true');
     } finally {
       await testServer.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
