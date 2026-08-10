@@ -135,6 +135,7 @@ describe("App Router route tree prefetch", () => {
     const firstSidebar = AppElementsWire.encodeSlotId("sidebar", "/products");
     const secondSidebar = AppElementsWire.encodeSlotId("sidebar", "/products/details");
     const childrenPage = AppElementsWire.encodeSlotId("children", "/products");
+    const rendered: unknown[] = [];
     const sizes = await measureAppRouteTreePrefetchSizes(
       {
         __layoutIds: [],
@@ -142,7 +143,11 @@ describe("App Router route tree prefetch", () => {
         [secondSidebar]: "second sidebar with more output",
         [childrenPage]: "children page",
       },
-      (model) => new Blob([String((model as { rsc: unknown }).rsc)]).stream(),
+      (model) => {
+        const rsc = (model as { rsc: unknown }).rsc;
+        rendered.push(rsc);
+        return new Blob([String(rsc)]).stream();
+      },
     );
 
     expect(Object.keys(sizes.slots).sort()).toEqual(
@@ -150,6 +155,7 @@ describe("App Router route tree prefetch", () => {
     );
     expect(sizes.slots[firstSidebar]).not.toBe(sizes.slots[secondSidebar]);
     expect(sizes.page).toBe(sizes.slots[childrenPage]);
+    expect(rendered.filter((value) => value === "children page")).toHaveLength(1);
   });
 
   it("detects segment-cache route tree prefetch requests", () => {

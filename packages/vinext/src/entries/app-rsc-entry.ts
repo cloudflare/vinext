@@ -737,11 +737,11 @@ ${rootParamNameEntries.join("\n")}
 };
 
 async function __collectPrefetchHints({ affinity, pathname, pattern, rscData }) {
+  const head = affinity ? __prefetchHeadsByAffinity.get(affinity) : undefined;
+  if (affinity) __prefetchHeadsByAffinity.delete(affinity);
   const match = matchRoute(pathname);
   if (!match || match.route.pattern !== pattern || match.route.routeHandler) return null;
   await __ensureRouteLoaded(match.route);
-  const head = affinity ? __prefetchHeadsByAffinity.get(affinity) : undefined;
-  if (affinity) __prefetchHeadsByAffinity.delete(affinity);
   const decoded = await _createFromReadableStream(new Blob([rscData]).stream());
   const measuredSizes = await __measureAppRouteTreePrefetchSizes(decoded, async (model) => {
     const result = await _prerender(model, _createClientManifest());

@@ -353,7 +353,7 @@ export async function measureAppRouteTreePrefetchSizes(
   );
 
   let pageValue: unknown;
-  let childrenSlotPageValue: unknown;
+  let childrenSlotPageMeasurement: Promise<number | null> | undefined;
   const slots: Record<string, number | null> = {};
   const slotTasks: Promise<void>[] = [];
   for (const [key, element] of Object.entries(elements)) {
@@ -361,20 +361,24 @@ export async function measureAppRouteTreePrefetchSizes(
     if (parsed?.kind === "page" && pageValue === undefined) {
       pageValue = element;
     } else if (parsed?.kind === "slot") {
-      if (parsed.name === "children" && childrenSlotPageValue === undefined) {
-        childrenSlotPageValue = element;
+      const measurement = measurePrefetchModel(element, render, measurementOptions);
+      if (parsed.name === "children" && childrenSlotPageMeasurement === undefined) {
+        childrenSlotPageMeasurement = measurement;
       }
       slots[key] = null;
       slotTasks.push(
-        measurePrefetchModel(element, render, measurementOptions).then((size) => {
+        measurement.then((size) => {
           slots[key] = size;
         }),
       );
     }
   }
-  if (pageValue === undefined) pageValue = childrenSlotPageValue;
+  const pageMeasurement =
+    pageValue === undefined
+      ? (childrenSlotPageMeasurement ?? Promise.resolve(null))
+      : measurePrefetchModel(pageValue, render, measurementOptions);
   const [page, head] = await Promise.all([
-    measurePrefetchModel(pageValue, render, measurementOptions),
+    pageMeasurement,
     measurePrefetchModel(options.head, render, measurementOptions),
     ...slotTasks,
   ]);
