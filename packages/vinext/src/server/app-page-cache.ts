@@ -606,6 +606,66 @@ export async function readAppPageFallbackShellCacheResponse(
   }
 }
 
+/**
+ * Read and classify one fallback-shell entry without issuing separate cache
+ * reads for resumable and complete artifacts.
+ */
+export async function readAppPageFallbackShellCache(
+  options: ReadAppPageFallbackShellCacheResponseOptions,
+): Promise<Response | { html: string; postponed: string } | null> {
+  const isrKey = options.isrHtmlKey(options.fallbackPathname);
+
+  try {
+    const cached = await options.isrGet(isrKey);
+    const cachedValue = getCachedAppPageValue(cached);
+    if (!cachedValue) {
+      options.isrDebug?.("MISS (fallback shell)", options.fallbackPathname);
+      return null;
+    }
+
+    if (isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
+      if (cached?.isExpired || !cachedValue.postponed) {
+        options.isrDebug?.(
+          "MISS (dynamic fallback shell requires resume)",
+          options.fallbackPathname,
+        );
+        return null;
+      }
+      options.isrDebug?.(
+        `${cached?.isStale ? "STALE" : "HIT"} (fallback shell resume)`,
+        options.fallbackPathname,
+      );
+      return {
+        html: options.rewriteHtml(stripAppPprDynamicFallbackShellMarker(cachedValue.html)),
+        postponed: cachedValue.postponed,
+      };
+    }
+
+    return await serveAppPageCachedHtml(
+      {
+        cached,
+        cachedValue,
+        clearRequestContext: options.clearRequestContext,
+        emptyDebugMessage: "MISS (empty fallback shell)",
+        expireSeconds: options.expireSeconds,
+        isEdgeRuntime: options.isEdgeRuntime,
+        isrDebug: options.isrDebug,
+        middlewareHeaders: options.middlewareHeaders,
+        middlewareStatus: options.middlewareStatus,
+        pathname: options.fallbackPathname,
+        revalidateSeconds: options.revalidateSeconds,
+        scheduleRegeneration() {},
+        stateDebugLabel: "fallback shell",
+      },
+      (value) => ({ ...value, html: options.rewriteHtml(value.html) }),
+    );
+  } catch (isrReadError) {
+    options.isrDebug?.("MISS (fallback shell read error)", options.fallbackPathname);
+    console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+    return null;
+  }
+}
+
 export async function readAppPageFallbackShellCacheResume(
   options: Pick<
     ReadAppPageFallbackShellCacheResponseOptions,

@@ -1315,60 +1315,69 @@ export async function renderAppPageLifecycle(
   return response;
 }
 
-function prependTextToStream(
-  text: string,
+type TextStreamDecoration = {
+  prefix?: Uint8Array;
+  suffix?: Uint8Array;
+};
+
+function decorateTextStream(
   stream: ReadableStream<Uint8Array>,
+  decoration: TextStreamDecoration,
 ): ReadableStream<Uint8Array> {
-  const prefix = new TextEncoder().encode(text);
+  const reader = stream.getReader();
+  let prefixPending = decoration.prefix !== undefined;
+  let readerReleased = false;
+
+  const releaseReader = () => {
+    if (readerReleased) return;
+    readerReleased = true;
+    reader.releaseLock();
+  };
+
   return new ReadableStream({
-    async start(controller) {
-      controller.enqueue(prefix);
-      const reader = stream.getReader();
+    async pull(controller) {
+      if (prefixPending) {
+        prefixPending = false;
+        controller.enqueue(decoration.prefix!);
+        return;
+      }
+
       try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
+        const { done, value } = await reader.read();
+        if (!done) {
           controller.enqueue(value);
+          return;
         }
+        if (decoration.suffix) controller.enqueue(decoration.suffix);
         controller.close();
+        releaseReader();
       } catch (error) {
-        controller.error(error);
-      } finally {
-        reader.releaseLock();
+        releaseReader();
+        throw error;
       }
     },
-    cancel(reason) {
-      return stream.cancel(reason);
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        releaseReader();
+      }
     },
   });
 }
 
-function appendTextToStream(
+export function prependTextToStream(
+  text: string,
+  stream: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  return decorateTextStream(stream, { prefix: new TextEncoder().encode(text) });
+}
+
+export function appendTextToStream(
   stream: ReadableStream<Uint8Array>,
   text: string,
 ): ReadableStream<Uint8Array> {
-  const suffix = new TextEncoder().encode(text);
-  return new ReadableStream({
-    async start(controller) {
-      const reader = stream.getReader();
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          controller.enqueue(value);
-        }
-        controller.enqueue(suffix);
-        controller.close();
-      } catch (error) {
-        controller.error(error);
-      } finally {
-        reader.releaseLock();
-      }
-    },
-    cancel(reason) {
-      return stream.cancel(reason);
-    },
-  });
+  return decorateTextStream(stream, { suffix: new TextEncoder().encode(text) });
 }
 
 async function settleCapturedRscRenderForCacheMetadata(

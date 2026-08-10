@@ -6,6 +6,7 @@ import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
   readAppPageCacheResponse,
+  readAppPageFallbackShellCache,
   readAppPageFallbackShellCacheResume,
   readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
@@ -1001,6 +1002,36 @@ describe("app page cache helpers", () => {
       html: "<html><body>rewritten static shell",
       postponed: '{"nextSegmentId":1}',
     });
+  });
+
+  it("classifies a resumable fallback shell with one cache read", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry({
+        ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<html><body>static shell")),
+        postponed: '{"nextSegmentId":1}',
+      }),
+    );
+
+    const result = await readAppPageFallbackShellCache({
+      clearRequestContext() {
+        throw new Error("resume must not clear the request context");
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      isrGet,
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      revalidateSeconds: 60,
+      rewriteHtml(html) {
+        return html.replace("static shell", "rewritten static shell");
+      },
+    });
+
+    expect(result).toEqual({
+      html: "<html><body>rewritten static shell",
+      postponed: '{"nextSegmentId":1}',
+    });
+    expect(isrGet).toHaveBeenCalledOnce();
   });
 
   it("still schedules stale regeneration when the stale payload is unusable for this request", async () => {

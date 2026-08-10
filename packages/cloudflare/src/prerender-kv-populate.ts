@@ -173,6 +173,7 @@ export function buildPrerenderKVPairs(
           kind: "APP_PAGE",
           html: fs.readFileSync(htmlPath, "utf-8"),
           headers: route.headers,
+          postponed: route.postponed,
         },
         tags,
         now,

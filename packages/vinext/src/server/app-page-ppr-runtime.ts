@@ -71,8 +71,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
   fallbackShells: NonNullable<DispatchAppPageOptions<TRoute>["pprFallbackCacheShells"]>,
   currentRevalidateSeconds: number | null,
 ): Promise<Response | { html: string; postponed: string } | null> {
-  const { readAppPageFallbackShellCacheResponse, readAppPageFallbackShellCacheResume } =
-    await import("./app-page-cache.js");
+  const { readAppPageFallbackShellCache } = await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
   for (const fallbackShell of fallbackShells) {
     const rewriteHtml = (html: string) =>
@@ -82,15 +81,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
         pathname: options.cleanPathname,
         searchParams: options.searchParams,
       });
-    const resume = await readAppPageFallbackShellCacheResume({
-      fallbackPathname: fallbackShell.pathname,
-      isrDebug: options.isrDebug,
-      isrGet: options.isrGet,
-      isrHtmlKey: options.isrHtmlKey,
-      rewriteHtml,
-    });
-    if (resume) return resume;
-    const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
+    const fallbackShellResult = await readAppPageFallbackShellCache({
       clearRequestContext: options.clearRequestContext,
       expireSeconds: options.expireSeconds,
       fallbackPathname: fallbackShell.pathname,
@@ -103,7 +94,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       rewriteHtml,
     });
-    if (fallbackShellResponse) return fallbackShellResponse;
+    if (fallbackShellResult) return fallbackShellResult;
   }
   return null;
 }

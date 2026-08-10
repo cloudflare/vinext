@@ -20,7 +20,11 @@ import {
 import type { LayoutClassificationOptions } from "../packages/vinext/src/server/app-page-execution.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
-import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import {
+  appendTextToStream,
+  prependTextToStream,
+  renderAppPageLifecycle,
+} from "../packages/vinext/src/server/app-page-render.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -76,6 +80,36 @@ function createDeferred<T = void>() {
   });
   return { promise, reject, resolve };
 }
+
+describe("PPR resumed HTML stream decoration", () => {
+  it("propagates cancellation through the acquired source reader", async () => {
+    const cancel = vi.fn();
+    const source = new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel,
+    });
+    const reader = prependTextToStream("shell", source).getReader();
+
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await expect(reader.cancel("client disconnected")).resolves.toBeUndefined();
+    expect(cancel).toHaveBeenCalledWith("client disconnected");
+    expect(source.locked).toBe(false);
+  });
+
+  it("propagates source errors without appending the closing suffix", async () => {
+    const failure = new Error("resume stream failed");
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(failure);
+      },
+    });
+
+    await expect(new Response(appendTextToStream(source, "</body></html>")).text()).rejects.toBe(
+      failure,
+    );
+    expect(source.locked).toBe(false);
+  });
+});
 
 function createCommonOptions() {
   const waitUntilPromises: Promise<void>[] = [];
