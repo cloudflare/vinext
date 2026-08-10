@@ -341,7 +341,7 @@ describe("App Router generated manifest construction", () => {
     expect(code).toContain("registerNavigationRuntimeBootstrap({");
     expect(code).toContain("routeManifest: null");
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":false,"canPrefetchStaticRoute":true,"patternParts":["about"],"isDynamic":false}',
+      '{"canPrefetchLoadingShell":false,"canPrefetchFullStaticRoute":true,"canPrefetchStaticRoute":true,"patternParts":["about"],"isDynamic":false}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["blog",":slug"],"isDynamic":true}',
@@ -350,13 +350,13 @@ describe("App Router generated manifest construction", () => {
       '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"canPrefetchStaticRoute":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
+      '{"canPrefetchLoadingShell":true,"canPrefetchFullStaticRoute":true,"canPrefetchStaticRoute":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"canPrefetchStaticRoute":true,"patternParts":["modal-host"],"isDynamic":false}',
+      '{"canPrefetchLoadingShell":true,"canPrefetchFullStaticRoute":true,"canPrefetchStaticRoute":true,"patternParts":["modal-host"],"isDynamic":false}',
     );
     expect(code).not.toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["api"],"isDynamic":false}',

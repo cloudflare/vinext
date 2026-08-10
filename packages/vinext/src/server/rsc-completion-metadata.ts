@@ -35,6 +35,15 @@ function isOrdinalArray(value: unknown): value is number[] {
   );
 }
 
+function isOrdinalRecord(value: unknown): value is Record<string, number[]> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.keys(value).length <= 64 &&
+    Object.entries(value).every(([key, ordinals]) => key.length <= 256 && isOrdinalArray(ordinals))
+  );
+}
+
 export function parsePrefetchVaryMetadata(value: unknown): VinextPrefetchVaryMetadata | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const fields = value as Record<string, unknown>;
@@ -44,6 +53,8 @@ export function parsePrefetchVaryMetadata(value: unknown): VinextPrefetchVaryMet
     typeof fields.metadataSearchParams !== "boolean" ||
     (fields.pageDynamicSuspenseOrdinals !== undefined &&
       !isOrdinalArray(fields.pageDynamicSuspenseOrdinals)) ||
+    (fields.pageDynamicSuspenseOrdinalsByElementId !== undefined &&
+      !isOrdinalRecord(fields.pageDynamicSuspenseOrdinalsByElementId)) ||
     !isStringArray(fields.pageParamNames) ||
     typeof fields.pageSearchParams !== "boolean"
   ) {
@@ -54,6 +65,7 @@ export function parsePrefetchVaryMetadata(value: unknown): VinextPrefetchVaryMet
     metadataParamNames: fields.metadataParamNames ?? [],
     metadataSearchParams: fields.metadataSearchParams,
     pageDynamicSuspenseOrdinals: fields.pageDynamicSuspenseOrdinals ?? [],
+    pageDynamicSuspenseOrdinalsByElementId: fields.pageDynamicSuspenseOrdinalsByElementId ?? {},
     pageParamNames: fields.pageParamNames,
     pageSearchParams: fields.pageSearchParams,
   };

@@ -43,16 +43,17 @@ function createObservation(
 }
 
 describe("app layout param observation", () => {
-  it("snapshots page dependencies at the render-observed connection boundary", () => {
+  it("keeps observing static siblings after a render-observed connection boundary", () => {
     const tracker = createAppLayoutParamAccessTracker();
-    const observer = tracker.createPageParamsObserver();
+    const pageElementId = "page:/items/one";
+    const observer = tracker.createPageParamsObserver(undefined, pageElementId);
 
     // These calls model an imported/re-exported helper: the tracker observes
     // the values read at runtime, independent of which source file performed
     // the access.
     observer.observeParamAccess(["category"]);
-    tracker.observePageSearchParams();
-    tracker.observePageDynamicSuspenseBoundary(1);
+    tracker.observePageSearchParams(pageElementId);
+    tracker.observePageDynamicSuspenseBoundary(pageElementId, 1);
     observer.observeParamAccess(["itemId"]);
 
     expect(tracker.getPrefetchVaryMetadata()).toEqual({
@@ -60,7 +61,8 @@ describe("app layout param observation", () => {
       metadataParamNames: [],
       metadataSearchParams: false,
       pageDynamicSuspenseOrdinals: [1],
-      pageParamNames: ["category"],
+      pageDynamicSuspenseOrdinalsByElementId: { [pageElementId]: [1] },
+      pageParamNames: ["category", "itemId"],
       pageSearchParams: true,
     });
   });

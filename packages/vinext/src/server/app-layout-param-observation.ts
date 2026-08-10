@@ -49,15 +49,18 @@ export type AppLayoutParamAccessObservation = Readonly<{
 
 export type AppLayoutParamAccessTracker = Readonly<{
   createMetadataParamsObserver: () => ThenableParamsObserver;
-  createPageParamsObserver: (paramNames?: readonly string[]) => ThenableParamsObserver;
+  createPageParamsObserver: (
+    paramNames?: readonly string[],
+    pageElementId?: string,
+  ) => ThenableParamsObserver;
   createThenableParamsObserver: (layoutId: string) => ThenableParamsObserver;
   getPrefetchVaryMetadata: () => VinextPrefetchVaryMetadata;
   getLayoutObservation: (layoutId: string) => AppLayoutParamAccessObservation;
   recordLayoutFiniteRevalidate: (layoutId: string, revalidateSeconds: number) => void;
   recordLayoutParamScope: (layoutId: string, paramScopeKeys: readonly string[]) => void;
   observeMetadataSearchParams: () => void;
-  observePageDynamicSuspenseBoundary: (ordinal: number) => void;
-  observePageSearchParams: () => void;
+  observePageDynamicSuspenseBoundary: (pageElementId: string, ordinal: number) => void;
+  observePageSearchParams: (pageElementId?: string) => void;
   observeRootParamAccess: (name: string) => void;
   runLayoutProbe: (layoutId: string, probe: () => unknown) => unknown;
 }>;
@@ -158,12 +161,12 @@ type MutableLayoutParamAccessObservation = {
 export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker {
   const observations = new Map<string, MutableLayoutParamAccessObservation>();
   const metadataParamKeys = new Set<string>();
-  const pageDynamicSuspenseOrdinals = new Set<number>();
+  const pageDynamicSuspenseOrdinalsByElementId = new Map<string, Set<number>>();
   const pageParamKeys = new Set<string>();
-  let pageParamKeysBeforeDynamicBoundary: Set<string> | null = null;
+  let hasPageParamProbe = false;
   let metadataSearchParams = false;
   let pageSearchParams = false;
-  let pageSearchParamsBeforeDynamicBoundary: boolean | null = null;
+  let pageProbeSearchParams = false;
 
   const ensureObservation = (layoutId: string): MutableLayoutParamAccessObservation => {
     const existing = observations.get(layoutId);
@@ -256,7 +259,8 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
         observeAwaitedProperties: true,
       };
     },
-    createPageParamsObserver(paramNames) {
+    createPageParamsObserver(paramNames, pageElementId) {
+      hasPageParamProbe ||= pageElementId !== undefined;
       return {
         observeParamAccess(keys) {
           for (const key of keys) pageParamKeys.add(key);
@@ -282,13 +286,23 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
       for (const observation of observations.values()) {
         for (const key of observation.prefetchKeys) loadingParamNames.add(key);
       }
+      const pageDynamicSuspenseOrdinals = new Set<number>();
+      const pageDynamicSuspenseOrdinalsRecord: Record<string, number[]> = {};
+      for (const [pageElementId, ordinals] of [...pageDynamicSuspenseOrdinalsByElementId].sort(
+        ([left], [right]) => left.localeCompare(right),
+      )) {
+        const sorted = [...ordinals].sort((a, b) => a - b);
+        pageDynamicSuspenseOrdinalsRecord[pageElementId] = sorted;
+        for (const ordinal of sorted) pageDynamicSuspenseOrdinals.add(ordinal);
+      }
       return {
         loadingParamNames: [...loadingParamNames].sort(),
         metadataParamNames: [...metadataParamKeys].sort(),
         metadataSearchParams,
         pageDynamicSuspenseOrdinals: [...pageDynamicSuspenseOrdinals].sort((a, b) => a - b),
-        pageParamNames: [...(pageParamKeysBeforeDynamicBoundary ?? pageParamKeys)].sort(),
-        pageSearchParams: pageSearchParamsBeforeDynamicBoundary ?? pageSearchParams,
+        pageDynamicSuspenseOrdinalsByElementId: pageDynamicSuspenseOrdinalsRecord,
+        pageParamNames: [...pageParamKeys].sort(),
+        pageSearchParams: hasPageParamProbe ? pageProbeSearchParams : pageSearchParams,
       };
     },
     getLayoutObservation(layoutId) {
@@ -344,13 +358,17 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
     observeMetadataSearchParams() {
       metadataSearchParams = true;
     },
-    observePageDynamicSuspenseBoundary(ordinal) {
-      pageDynamicSuspenseOrdinals.add(ordinal);
-      pageParamKeysBeforeDynamicBoundary ??= new Set(pageParamKeys);
-      pageSearchParamsBeforeDynamicBoundary ??= pageSearchParams;
+    observePageDynamicSuspenseBoundary(pageElementId, ordinal) {
+      let ordinals = pageDynamicSuspenseOrdinalsByElementId.get(pageElementId);
+      if (ordinals === undefined) {
+        ordinals = new Set();
+        pageDynamicSuspenseOrdinalsByElementId.set(pageElementId, ordinals);
+      }
+      ordinals.add(ordinal);
     },
-    observePageSearchParams() {
-      pageSearchParams = true;
+    observePageSearchParams(pageElementId) {
+      if (pageElementId === undefined) pageSearchParams = true;
+      else pageProbeSearchParams = true;
     },
     observeRootParamAccess(name) {
       // Root-param access can originate in either the root layout or page. The

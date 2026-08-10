@@ -905,28 +905,39 @@ export default createAppRscHandler({
         // observes the page's searchParams/headers access. Shared loader, so
         // the import is isolated from the request context here too.
         if (__probeIntercept) await __loadAppInterceptPage(__probeIntercept);
+        const __probeMainPageElementId = __AppElementsWire.encodePageId(
+          cleanPathname,
+          interceptionContext,
+        );
         return Promise.all(__buildAppPageProbes({
           route,
           pageComponent: PageComponent,
           asyncRouteParams: makeThenableParams(
             params,
-            layoutParamAccess?.createPageParamsObserver(route.params ?? undefined),
+            layoutParamAccess?.createPageParamsObserver(
+              route.params ?? undefined,
+              __probeMainPageElementId,
+            ),
           ),
+          mainPageElementId: __probeMainPageElementId,
           searchParams: probeSearchParams,
           intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,
-          makeThenableParams(value) {
+          makeThenableParams(value, pageElementId) {
             return makeThenableParams(
               value,
-              layoutParamAccess?.createPageParamsObserver(route.params ?? undefined),
+              layoutParamAccess?.createPageParamsObserver(
+                route.params ?? undefined,
+                pageElementId,
+              ),
             );
           },
-          onSearchParamsAccess() {
-            layoutParamAccess?.observePageSearchParams();
+          onSearchParamsAccess(pageElementId) {
+            layoutParamAccess?.observePageSearchParams(pageElementId);
           },
-          onDynamicSuspenseBoundary(ordinal) {
-            layoutParamAccess?.observePageDynamicSuspenseBoundary(ordinal);
+          onDynamicSuspenseBoundary(pageElementId, ordinal) {
+            layoutParamAccess?.observePageDynamicSuspenseBoundary(pageElementId, ordinal);
           },
         }));
       },

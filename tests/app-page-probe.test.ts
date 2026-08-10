@@ -62,10 +62,51 @@ describe("app page probe helpers", () => {
           { onDynamicSuspenseBoundary: (ordinal) => observed.push(ordinal) },
         ),
       );
-      expect(result.completed).toBe(false);
+      expect(result.completed).toBe(true);
     });
 
     expect(observed).toEqual([0]);
+  });
+
+  it("continues probing static siblings after a connection boundary", async () => {
+    const calls: string[] = [];
+    const observed: number[] = [];
+
+    async function DynamicChild({ label }: { label: string }) {
+      calls.push(`${label}:before`);
+      await connection();
+      calls.push(`${label}:after`);
+      return null;
+    }
+
+    function StaticSibling() {
+      calls.push("static");
+      return null;
+    }
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      await probeReactServerSubtree(
+        [
+          React.createElement(
+            React.Suspense,
+            { fallback: null },
+            React.createElement(DynamicChild, { label: "first" }),
+          ),
+          React.createElement(StaticSibling),
+          React.createElement(
+            React.Suspense,
+            { fallback: null },
+            React.createElement(DynamicChild, { label: "second" }),
+          ),
+        ],
+        {
+          onDynamicSuspenseBoundary: (ordinal) => observed.push(ordinal),
+        },
+      );
+    });
+
+    expect(calls).toEqual(["first:before", "static", "second:before"]);
+    expect(observed).toEqual([0, 1]);
   });
 
   it("probes server components returned below a layout result", async () => {
@@ -536,7 +577,7 @@ describe("app page probe helpers", () => {
     expect(renderPageSpecialError).not.toHaveBeenCalled();
   });
 
-  it("skips the page probe when a loading boundary is present (special errors handled post-shell)", async () => {
+  it("starts a non-blocking observation probe when a loading boundary is present", async () => {
     // With a route-level loading.tsx Suspense boundary, the probe can't
     // catch a redirect()/notFound() thrown by the page without serializing
     // on the page promise — which would defeat loading.tsx's whole point.
@@ -566,9 +607,54 @@ describe("app page probe helpers", () => {
       },
     });
 
-    expect(probePage).not.toHaveBeenCalled();
+    expect(probePage).toHaveBeenCalledOnce();
     expect(renderPageSpecialError).not.toHaveBeenCalled();
     expect(result.response).toBeNull();
+  });
+
+  it("observes dynamic Suspense boundaries behind a route loading boundary", async () => {
+    const observed: number[] = [];
+
+    async function DynamicChild() {
+      await connection();
+      return null;
+    }
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      const result = await probeAppPageBeforeRender({
+        hasLoadingBoundary: true,
+        layoutCount: 0,
+        probeLayoutAt() {
+          return null;
+        },
+        probePage() {
+          return probeReactServerSubtree(
+            React.createElement(
+              React.Suspense,
+              { fallback: null },
+              React.createElement(DynamicChild),
+            ),
+            { onDynamicSuspenseBoundary: (ordinal) => observed.push(ordinal) },
+          );
+        },
+        renderLayoutSpecialError() {
+          throw new Error("unreachable");
+        },
+        renderPageSpecialError() {
+          throw new Error("unreachable");
+        },
+        resolveSpecialError() {
+          return null;
+        },
+        runWithSuppressedHookWarning(probe) {
+          return probe();
+        },
+      });
+
+      expect(result.response).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(observed).toEqual([0]);
+    });
   });
 
   it("skips the page probe when disabled for document rendering", async () => {
@@ -881,7 +967,7 @@ describe("buildAppPageProbes", () => {
     expect(probed.sort()).toEqual(["modal", "page"]);
   });
 
-  it("does not await slot pages protected by branch-local loading boundaries", async () => {
+  it("observes slot pages without awaiting branches protected by loading boundaries", async () => {
     const probed: string[] = [];
     const probes = buildAppPageProbes({
       route: {
@@ -907,10 +993,10 @@ describe("buildAppPageProbes", () => {
 
     await Promise.all(probes);
 
-    expect(probed.sort()).toEqual(["page", "team"]);
+    expect(probed.sort()).toEqual(["modal", "page", "sidebar", "team"]);
   });
 
-  it("does not await intercepted pages protected by slot or intercept loading boundaries", async () => {
+  it("observes intercepted pages without awaiting their loading-protected branches", async () => {
     const probed: string[] = [];
     const buildProbes = (interceptLoadings?: readonly { default?: unknown }[]) =>
       buildAppPageProbes({
@@ -938,7 +1024,7 @@ describe("buildAppPageProbes", () => {
     await Promise.all(buildProbes([{ default: () => "intercept loading" }]));
     await Promise.all(buildProbes());
 
-    expect(probed).toEqual(["page", "page"]);
+    expect(probed).toEqual(["page", "intercept", "page", "intercept"]);
   });
 
   it("does await intercepted pages when only a sibling normal branch has loading", async () => {

@@ -1,5 +1,5 @@
 import { Fragment, isValidElement, Suspense, type ReactElement, type ReactNode } from "react";
-import { runWithConnectionProbeBoundary } from "vinext/shims/headers";
+import { runWithConnectionProbe, runWithConnectionProbeBoundary } from "vinext/shims/headers";
 import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
 import { isNextRouterError } from "vinext/shims/navigation-server";
 import { collectAppPageSearchParams } from "./app-page-head.js";
@@ -213,9 +213,11 @@ export async function probeReactServerSubtree(
 
     if (value.type === Suspense) {
       const ordinal = suspenseOrdinal++;
-      await runWithConnectionProbeBoundary(ordinal, options.onDynamicSuspenseBoundary, () =>
-        visit(value.props.children, depth + 1),
-      );
+      await runWithConnectionProbe(async () => {
+        await runWithConnectionProbeBoundary(ordinal, options.onDynamicSuspenseBoundary, () =>
+          visit(value.props.children, depth + 1),
+        );
+      });
       return;
     }
 
@@ -299,6 +301,7 @@ type AppPageProbeModule = Readonly<{ default?: unknown }> | null | undefined;
 
 type AppPageProbeSlot =
   | Readonly<{
+      id?: string | null;
       page?: AppPageProbeModule;
       loading?: AppPageProbeModule;
       loadings?: readonly AppPageProbeModule[] | null;
@@ -316,6 +319,7 @@ type AppPageProbeIntercept =
       page?: AppPageProbeModule;
       interceptLoadings?: readonly AppPageProbeModule[] | null;
       matchedParams?: unknown;
+      slotId?: string | null;
       /**
        * Key of the parallel-route slot this interception overrides. At render
        * time the matched route's `slots[slotKey].page` is replaced by the
@@ -384,9 +388,10 @@ export function buildAppPageProbes(options: {
   isRscRequest: boolean;
   /** Fallback raw params used when an interception match omits its own. */
   matchedParams: unknown;
-  makeThenableParams: (params: unknown) => unknown;
-  onDynamicSuspenseBoundary?: (ordinal: number) => void;
-  onSearchParamsAccess?: () => void;
+  makeThenableParams: (params: unknown, pageElementId: string) => unknown;
+  mainPageElementId?: string;
+  onDynamicSuspenseBoundary?: (pageElementId: string, ordinal: number) => void;
+  onSearchParamsAccess?: (pageElementId: string) => void;
 }): Promise<unknown>[] {
   const { route, pageComponent, asyncRouteParams, searchParams, matchedParams } = options;
 
@@ -394,15 +399,33 @@ export function buildAppPageProbes(options: {
   // route renders normally, so ignore any interception match entirely.
   const intercept = options.isRscRequest ? options.intercept : null;
 
-  const probes: unknown[] = [
-    probeAppPage({
-      pageComponent,
-      asyncRouteParams,
-      onDynamicSuspenseBoundary: options.onDynamicSuspenseBoundary,
-      onSearchParamsAccess: options.onSearchParamsAccess,
-      searchParams,
-    }),
-  ];
+  const probes: Promise<unknown>[] = [];
+  const addProbe = (
+    probePageComponent: unknown,
+    probeParams: unknown,
+    pageElementId: string,
+    awaitResult = true,
+  ) => {
+    const probe = Promise.resolve(
+      probeAppPage({
+        pageComponent: probePageComponent,
+        asyncRouteParams: probeParams,
+        onDynamicSuspenseBoundary: (ordinal) =>
+          options.onDynamicSuspenseBoundary?.(pageElementId, ordinal),
+        onSearchParamsAccess: () => options.onSearchParamsAccess?.(pageElementId),
+        searchParams,
+      }),
+    );
+    if (awaitResult) {
+      probes.push(probe);
+    } else {
+      void probe.catch(() => {});
+      probes.push(Promise.resolve(null));
+    }
+  };
+
+  const mainPageElementId = options.mainPageElementId ?? "page";
+  addProbe(pageComponent, asyncRouteParams, mainPageElementId);
 
   // A slot whose page is replaced by an active interception override does not
   // render its own `page.tsx`; the interception page (probed below) renders in
@@ -413,17 +436,11 @@ export function buildAppPageProbes(options: {
     if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
       continue;
     }
-    if (slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)) {
-      continue;
-    }
-    probes.push(
-      probeAppPage({
-        pageComponent: slot?.page?.default,
-        asyncRouteParams,
-        onDynamicSuspenseBoundary: options.onDynamicSuspenseBoundary,
-        onSearchParamsAccess: options.onSearchParamsAccess,
-        searchParams,
-      }),
+    addProbe(
+      slot?.page?.default,
+      asyncRouteParams,
+      slot?.id ?? `slot:${slotKey}`,
+      !(slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)),
     );
   }
 
@@ -438,19 +455,23 @@ export function buildAppPageProbes(options: {
     intercept?.interceptLoadings?.some((loading) => loading?.default) ||
     interceptedSlotHasRootLoading,
   );
-  if (intercept && !interceptHasLoadingBoundary) {
-    probes.push(
-      probeAppPage({
-        pageComponent: intercept.page?.default,
-        asyncRouteParams: options.makeThenableParams(intercept.matchedParams ?? matchedParams),
-        onDynamicSuspenseBoundary: options.onDynamicSuspenseBoundary,
-        onSearchParamsAccess: options.onSearchParamsAccess,
-        searchParams,
-      }),
+  if (intercept) {
+    const interceptedPageElementId =
+      intercept.slotId ??
+      (intercept.slotKey ? route.slots?.[intercept.slotKey]?.id : null) ??
+      mainPageElementId;
+    addProbe(
+      intercept.page?.default,
+      options.makeThenableParams(
+        intercept.matchedParams ?? matchedParams,
+        interceptedPageElementId,
+      ),
+      interceptedPageElementId,
+      !interceptHasLoadingBoundary,
     );
   }
 
-  return probes.map((probe) => Promise.resolve(probe));
+  return probes;
 }
 
 type ProbeAppPageBeforeRenderResult = {
@@ -523,7 +544,26 @@ export async function probeAppPageBeforeRender(
   // onError callback, and a short race window after shell-ready lets the
   // lifecycle swap the response to a 307/404 before bytes are flushed.
   // This mirrors Next.js's "until-first-byte-is-flushed" swap behavior.
-  if (options.hasLoadingBoundary || options.probePageBeforeRender === false) {
+  if (options.probePageBeforeRender === false) {
+    return { response: null, layoutFlags };
+  }
+
+  if (options.hasLoadingBoundary) {
+    // Start the observation probe without awaiting its async result. The
+    // route-level loading boundary must remain streamable, but invoking the
+    // probe still lets synchronous server-component output and its branch-local
+    // Suspense probes publish render-observed vary metadata before the RSC
+    // completion footer is emitted.
+    await probeAppPageComponent({
+      awaitAsyncResult: false,
+      async onError() {
+        return null;
+      },
+      probePage: options.probePage,
+      runWithSuppressedHookWarning(probe) {
+        return options.runWithSuppressedHookWarning(probe);
+      },
+    });
     return { response: null, layoutFlags };
   }
 

@@ -702,7 +702,7 @@ function prefetchUrl(
             }
             cacheForNavigation = false;
             reusePageSegment = true;
-            shouldLearnOptimisticRouteShell = true;
+            shouldLearnOptimisticRouteShell = false;
             sharedCacheKey = loadingShellSharedCacheKey;
             headers = shellHeaders;
             rscUrl = shellRscUrl;

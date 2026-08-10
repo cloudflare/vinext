@@ -36,6 +36,7 @@ type OptimisticRouteMatch = {
 export type OptimisticRouteTemplate = {
   elements: AppElements;
   dynamicSuspenseOrdinals?: readonly number[];
+  dynamicSuspenseOrdinalsByPageElementId?: Readonly<Record<string, readonly number[]>>;
   mountedSlotsHeader: string | null;
   pageElementIds: readonly string[];
   pageElementsPrepared?: boolean;
@@ -467,9 +468,13 @@ export async function prepareOptimisticRouteTemplate(
   for (const pageElementId of template.pageElementIds) {
     const preserved = elements[pageElementId];
     if (preserved === undefined) continue;
+    const dynamicOrdinals =
+      template.dynamicSuspenseOrdinalsByPageElementId === undefined
+        ? template.dynamicSuspenseOrdinals
+        : template.dynamicSuspenseOrdinalsByPageElementId[pageElementId];
     const result = await replaceObservedDynamicSuspenseChildrenAsync(
       preserved,
-      new Set(template.dynamicSuspenseOrdinals ?? []),
+      new Set(dynamicOrdinals ?? []),
       { value: 0 },
     );
     elements[pageElementId] = result.value;
@@ -483,6 +488,7 @@ export function createOptimisticRouteTemplate(options: {
   basePath: string;
   elements: AppElements;
   dynamicSuspenseOrdinals?: readonly number[];
+  dynamicSuspenseOrdinalsByPageElementId?: Readonly<Record<string, readonly number[]>>;
   href: string;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
@@ -529,12 +535,23 @@ export function createOptimisticRouteTemplate(options: {
 
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
+  if (
+    options.preservePageElements === true &&
+    pageElementIds.every((pageElementId) => options.elements[pageElementId] == null)
+  ) {
+    return null;
+  }
 
   return {
     elements: options.elements,
     ...(options.dynamicSuspenseOrdinals && options.dynamicSuspenseOrdinals.length > 0
       ? { dynamicSuspenseOrdinals: [...options.dynamicSuspenseOrdinals] }
       : {}),
+    ...(options.dynamicSuspenseOrdinalsByPageElementId === undefined
+      ? {}
+      : {
+          dynamicSuspenseOrdinalsByPageElementId: options.dynamicSuspenseOrdinalsByPageElementId,
+        }),
     mountedSlotsHeader: options.mountedSlotsHeader,
     pageElementIds,
     ...(options.preservePageElements ? { preservePageElements: true } : {}),
@@ -550,9 +567,13 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
       const preserved = elements[pageElementId];
       if (preserved !== undefined) {
         if (template.pageElementsPrepared === true) continue;
+        const dynamicOrdinals =
+          template.dynamicSuspenseOrdinalsByPageElementId === undefined
+            ? template.dynamicSuspenseOrdinals
+            : template.dynamicSuspenseOrdinalsByPageElementId[pageElementId];
         const result = replaceObservedDynamicSuspenseChildren(
           preserved,
-          new Set(template.dynamicSuspenseOrdinals ?? []),
+          new Set(dynamicOrdinals ?? []),
           { value: 0 },
         );
         elements[pageElementId] = result.value;

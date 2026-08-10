@@ -502,6 +502,62 @@ describe("App Router optimistic routing", () => {
     );
   });
 
+  it("scopes dynamic Suspense ordinals to each rendered page element", () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/parallel");
+    const routeManifest = manifest([
+      route({
+        id: "route:/runtime/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/runtime/:itemId",
+        patternParts: ["runtime", ":itemId"],
+        slotIds: [childrenSlotId],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/runtime/phone", null);
+    const pageId = AppElementsWire.encodePageId("/runtime/phone", null);
+    const mainBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading main") },
+      createElement("div", null, "Stale main"),
+    );
+    const slotBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading slot") },
+      createElement("div", null, "Cached slot"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: mainBoundary,
+      [childrenSlotId]: slotBoundary,
+      [routeId]: createElement("main", null, "Route"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: [0],
+      dynamicSuspenseOrdinalsByPageElementId: {
+        [childrenSlotId]: [],
+        [pageId]: [0],
+      },
+      elements,
+      href: "/runtime/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+    const optimistic = createOptimisticRouteElements(template!);
+
+    expect(optimistic[pageId]).not.toBe(mainBoundary);
+    expect(optimistic[childrenSlotId]).toBe(slotBoundary);
+  });
+
   it("includes active parallel slot params in optimistic navigation payloads", () => {
     // Mirrors the immediate pre-dynamic-render assertion in Next.js:
     // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
@@ -660,6 +716,22 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
+      }),
+    ).toBeNull();
+
+    expect(
+      createOptimisticRouteTemplate({
+        basePath: "",
+        elements: {
+          ...elements,
+          [AppElementsWire.encodePageId("/blog/post-1", null)]: null,
+        },
+        href: "/blog/post-1.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        preservePageElements: true,
+        routeManifest,
+        variantKey: "runtime\0loading",
       }),
     ).toBeNull();
   });

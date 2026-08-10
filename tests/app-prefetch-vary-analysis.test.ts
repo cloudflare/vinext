@@ -184,6 +184,7 @@ describe("App Router prefetch vary analysis", () => {
         metadataParamNames: [],
         metadataSearchParams: true,
         pageDynamicSuspenseOrdinals: [],
+        pageDynamicSuspenseOrdinalsByElementId: {},
         pageParamNames: ["category"],
         pageSearchParams: false,
       });
@@ -239,6 +240,7 @@ describe("App Router prefetch vary analysis", () => {
         metadataParamNames: [],
         metadataSearchParams: false,
         pageDynamicSuspenseOrdinals: [],
+        pageDynamicSuspenseOrdinalsByElementId: {},
         pageParamNames: ["category"],
         pageSearchParams: false,
       });

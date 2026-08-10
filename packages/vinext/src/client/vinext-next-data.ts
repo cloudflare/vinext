@@ -21,6 +21,7 @@ export type VinextPrefetchVaryMetadata = {
   metadataParamNames: string[];
   metadataSearchParams: boolean;
   pageDynamicSuspenseOrdinals: number[];
+  pageDynamicSuspenseOrdinalsByElementId: Record<string, number[]>;
   pageParamNames: string[];
   pageSearchParams: boolean;
 };

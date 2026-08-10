@@ -499,6 +499,9 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     dynamicSuspenseOrdinals: preservePageElements
       ? options.entry.snapshot.prefetchVary?.pageDynamicSuspenseOrdinals
       : undefined,
+    dynamicSuspenseOrdinalsByPageElementId: preservePageElements
+      ? options.entry.snapshot.prefetchVary?.pageDynamicSuspenseOrdinalsByElementId
+      : undefined,
     elements,
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
