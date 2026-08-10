@@ -34,6 +34,7 @@ import {
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_FULL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
@@ -3707,6 +3708,56 @@ describe("app page route wiring helpers", () => {
 
     expect(html).toContain("slot:de");
     expect(html).not.toContain("slot:en");
+  });
+
+  it("yields to full-prefetch page continuations before serializing streaming metadata", async () => {
+    const pageRenderDependency = createAppPageRenderDependency();
+    const elements = buildAppPageElements({
+      element: createElement("main", null, "Target page"),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      pageRenderDependency,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_FULL,
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["metadata"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/metadata",
+      rootNotFoundModule: null,
+      streamingMetadata: Promise.resolve({ title: "Prefetched title" }),
+    });
+
+    const streamingMetadataBodyId = "__vinext_streaming_metadata_body:route:/metadata";
+    let metadataRenderSettled = false;
+    const metadataHtmlPromise = renderHtml(readChildren(elements[streamingMetadataBodyId])).then(
+      (html) => {
+        metadataRenderSettled = true;
+        return html;
+      },
+    );
+
+    await Promise.resolve();
+    expect(metadataRenderSettled).toBe(false);
+
+    pageRenderDependency.release();
+    await Promise.resolve();
+    expect(metadataRenderSettled).toBe(false);
+
+    const html = await withTimeout(metadataHtmlPromise, 1_000);
+    expect(html).toContain("Prefetched title");
   });
 
   it("preserves parent-before-child execution under an ancestor loading boundary", async () => {

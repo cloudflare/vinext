@@ -12,6 +12,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_FULL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
@@ -2121,9 +2122,9 @@ describe("Link prefetch scheduling", () => {
         }),
       );
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
-      expect(
-        (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBeNull();
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_FULL,
+      );
       const shellFetchCall = await waitForFetchCall(result.fetch, (call) => {
         const init = call[1] as RequestInit | undefined;
         return (
@@ -2181,7 +2182,7 @@ describe("Link prefetch scheduling", () => {
       const fullFetchInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
       expect(
         (fullFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBeNull();
+      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_FULL);
     } finally {
       result.restoreNodeEnv();
     }
@@ -2271,9 +2272,9 @@ describe("Link prefetch scheduling", () => {
       expect(
         (fetchInit?.headers as Headers | undefined)?.get("next-router-state-tree"),
       ).toBeTruthy();
-      expect(
-        (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBeNull();
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_FULL,
+      );
     } finally {
       result.restoreNodeEnv();
     }

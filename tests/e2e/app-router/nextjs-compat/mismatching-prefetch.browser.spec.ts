@@ -100,7 +100,10 @@ export default async function Page({ params }: { params: Promise<{ param: string
     `import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
-  if (request.headers.get("x-vinext-rsc-render-mode") === "prefetch-loading-shell") {
+  if (
+    request.method === "HEAD" &&
+    request.headers.get("x-vinext-rsc-render-mode") === "prefetch-empty"
+  ) {
     return NextResponse.next();
   }
   const destination = request.nextUrl.searchParams.get("mismatch-rewrite");
@@ -173,7 +176,7 @@ test("recovers when navigation middleware rewrites away from the prefetched rout
     const prefetchResponse = page.waitForResponse((response) => {
       const request = response.request();
       return (
-        request.headers()["x-vinext-rsc-render-mode"] === "prefetch-loading-shell" &&
+        request.headers()["x-vinext-rsc-render-mode"] === "prefetch-empty" &&
         response.url().includes("/mismatching-prefetch/dynamic-page/a?")
       );
     });

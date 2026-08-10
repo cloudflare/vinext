@@ -41,6 +41,7 @@ import {
   createAppRenderDependency,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
+  renderAfterAppDependenciesInNextTask,
   renderAppComponentWithDependencyBarrier,
   type AppPageRenderDependency,
   type AppRenderDependency,
@@ -54,6 +55,7 @@ import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_FULL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -855,6 +857,7 @@ export function buildAppPageElements<
     return nearest;
   };
   const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
+  const isPrefetchFull = renderMode === APP_RSC_RENDER_MODE_PREFETCH_FULL;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
   // Loading-shell prefetches intentionally omit the page, so they cannot wait
   // on a dependency that only the page invocation can release.
@@ -1018,21 +1021,6 @@ export function buildAppPageElements<
   // fully-static routes.
   if (options.route.staticSiblings && options.route.staticSiblings.length > 0) {
     elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
-  }
-  if (options.streamingMetadata && streamingMetadataBodyId) {
-    elements[streamingMetadataBodyId] = (
-      <AppPageStreamingMetadata
-        metadata={options.streamingMetadataTags ?? options.streamingMetadata}
-        pathname={options.resolvedMetadataPathname ?? options.routePath}
-        scriptNonce={options.scriptNonce}
-        trailingSlash={options.trailingSlash}
-      />
-    );
-  }
-  if (options.streamingMetadataOutlet && streamingMetadataOutletId) {
-    elements[streamingMetadataOutletId] = (
-      <AppPageMetadataOutlet metadata={options.streamingMetadataOutlet} />
-    );
   }
   const getEffectiveSlotParams = (slotKey: string, _slotName: string): AppPageParams =>
     slotPlansByKey.get(slotKey)?.params ?? options.matchedParams;
@@ -1784,6 +1772,36 @@ export function buildAppPageElements<
   elements[routeId] = pageRenderDependency
     ? renderAfterAppDependencies(routeElement, [pageRenderDependency])
     : routeElement;
+
+  // Next's Segment Cache gives page work a scheduling turn before its head
+  // segment. A full prefetch uses a unified Flight response in vinext, so give
+  // already-started page Suspense continuations the same opportunity before
+  // serializing already-resolved streaming metadata.
+  if (options.streamingMetadata && streamingMetadataBodyId) {
+    const streamingMetadataElement = (
+      <AppPageStreamingMetadata
+        metadata={options.streamingMetadataTags ?? options.streamingMetadata}
+        pathname={options.resolvedMetadataPathname ?? options.routePath}
+        scriptNonce={options.scriptNonce}
+        trailingSlash={options.trailingSlash}
+      />
+    );
+    elements[streamingMetadataBodyId] =
+      isPrefetchFull && pageRenderDependency
+        ? renderAfterAppDependenciesInNextTask(streamingMetadataElement, [pageRenderDependency])
+        : streamingMetadataElement;
+  }
+  if (options.streamingMetadataOutlet && streamingMetadataOutletId) {
+    const streamingMetadataOutletElement = (
+      <AppPageMetadataOutlet metadata={options.streamingMetadataOutlet} />
+    );
+    elements[streamingMetadataOutletId] =
+      isPrefetchFull && pageRenderDependency
+        ? renderAfterAppDependenciesInNextTask(streamingMetadataOutletElement, [
+            pageRenderDependency,
+          ])
+        : streamingMetadataOutletElement;
+  }
 
   // Merge only after rendering is complete so metadata never participates in
   // element construction, without copying the rendered element map on return.

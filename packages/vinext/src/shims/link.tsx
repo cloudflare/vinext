@@ -428,6 +428,7 @@ function prefetchUrl(
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+            APP_RSC_RENDER_MODE_PREFETCH_FULL,
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           },
           headersModule,
@@ -530,7 +531,9 @@ function prefetchUrl(
                 : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
             : mode === "full-after-shell"
               ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL
-              : undefined,
+              : mode === "full"
+                ? APP_RSC_RENDER_MODE_PREFETCH_FULL
+                : undefined,
         });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);

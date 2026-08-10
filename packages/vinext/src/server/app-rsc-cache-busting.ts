@@ -1,6 +1,7 @@
 import { fnv1a64 } from "../utils/hash.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_FULL,
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -170,7 +171,10 @@ export function resolveRscCompatibilityNavigationDecision(options: {
 
 function normalizeRenderModeHeaderValue(value: string | null): string | null {
   const renderMode = parseAppRscRenderMode(value);
-  return renderMode === APP_RSC_RENDER_MODE_NAVIGATION ? null : renderMode;
+  return renderMode === APP_RSC_RENDER_MODE_NAVIGATION ||
+    renderMode === APP_RSC_RENDER_MODE_PREFETCH_FULL
+    ? null
+    : renderMode;
 }
 
 type CreateCacheBustingInputOptions = {
