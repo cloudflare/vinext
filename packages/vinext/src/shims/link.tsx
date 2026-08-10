@@ -540,7 +540,11 @@ function prefetchUrl(
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
-        if (prefetched.has(cacheKey) && hasFreshPrefetchCacheEntry(cacheKey)) {
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          prefetched.has(cacheKey) &&
+          hasFreshPrefetchCacheEntry(cacheKey)
+        ) {
           return;
         }
         const fetchFullRscPayload = () =>
