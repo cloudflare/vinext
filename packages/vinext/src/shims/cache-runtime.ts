@@ -431,7 +431,7 @@ export function clearPrivateCache(): void {
 // Core runtime: registerCachedFunction
 // ---------------------------------------------------------------------------
 
-type RegisterCachedFunctionOptions = {
+export type RegisterCachedFunctionOptions = {
   /**
    * Whether the original function declaration accepts a second argument.
    * Function.length cannot represent default or rest parameters, so the
@@ -446,6 +446,9 @@ type RegisterCachedFunctionOptions = {
    * rather than on the intermediate createElement config object.
    */
   appPageDefaultExport?: boolean;
+  /** Number of declared arguments supplied by the directive transform. */
+  argumentCount?: number;
+  decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
 };
 
 /**
@@ -478,6 +481,18 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
+      const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
+      const hasCaptureEnvelope = captures !== undefined;
+      const admittedArgs =
+        options.argumentCount === undefined
+          ? args
+          : hasCaptureEnvelope
+            ? [args[0], ...args.slice(1, 1 + options.argumentCount)]
+            : args.slice(0, options.argumentCount);
+      const executionArgs = hasCaptureEnvelope
+        ? [captures, ...admittedArgs.slice(1)]
+        : admittedArgs;
+      const callArgs = executionArgs as TArgs;
 
       // Build the cache key. Use encodeReply (RSC protocol) when available —
       // it correctly handles React elements as temporary references (excluded
@@ -485,10 +500,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       let cacheKey: string;
       try {
         const processedArgs =
-          args.length > 0
-            ? unwrapThenableObjectArray(args, { omitAppPageSearchParamsFromFirstArg })
+          executionArgs.length > 0
+            ? unwrapThenableObjectArray(executionArgs, { omitAppPageSearchParamsFromFirstArg })
             : [];
-        if (rsc && args.length > 0) {
+        if (rsc && executionArgs.length > 0) {
           // Temporary references let encodeReply handle non-serializable values
           // (like React elements in args) by excluding them from the key.
           const tempRefs = rsc.createClientTemporaryReferenceSet();
@@ -510,7 +525,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       } catch {
         // Non-serializable arguments — run without caching
-        return fn(...args);
+        return fn(...callArgs);
       }
 
       // "use cache: private" uses per-request in-memory cache
@@ -535,7 +550,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           return privateHit as TResult;
         }
 
-        const result = await executeWithContext(fn, args, cacheVariant);
+        const result = await executeWithContext(fn, callArgs, cacheVariant);
         privateCache.set(cacheKey, result);
         return result;
       }
@@ -545,7 +560,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // preview request would otherwise seed unpublished content into an entry
       // later served to public requests. Mirrors Next.js's `isDraftMode` guard.
       if (isDev || isDraftModeEnabled()) {
-        return executeWithContext(fn, args, cacheVariant);
+        return executeWithContext(fn, callArgs, cacheVariant);
       }
 
       // Shared cache ("use cache" / "use cache: remote")
@@ -606,7 +621,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // Cache miss (or stale) — execute with context
       const { result, ctx, effectiveLife } = await runCachedFunctionWithContext(
         fn,
-        args,
+        callArgs,
         cacheVariant,
       );
 

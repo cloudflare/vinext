@@ -78,7 +78,6 @@ function applyPendingDynamicCdnHeaders(
   tags?: readonly string[],
   options: { omitCacheState?: boolean } = {},
 ): void {
-  clearSharedCacheOverrides(headers);
   const cacheable = headers.get("Cache-Control") ?? "";
   applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
   finalizePendingCacheStateHeaders(headers, options);
@@ -92,11 +91,9 @@ function applyMountedSlotRscNoStoreHeaders(
   // cache. Make that same bypass explicit to every CDN adapter: an edge-managed
   // adapter may intentionally cache pending-dynamic responses, so the generic
   // pendingDynamicCheck signal is not strong enough for this variant.
-  // Middleware owns ordinary response headers, but provider-specific shared-
-  // cache overrides are cleared before both pending-response adapter calls so
-  // they cannot defeat the adapter's policy. This branch additionally forces
-  // no-store because mounted variants have no persistent admission path at all.
-  clearSharedCacheOverrides(headers);
+  // This branch additionally forces no-store because mounted variants have no
+  // persistent admission path at all. The active adapter clears any stale
+  // provider-specific headers that it owns.
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   // Dynamic and draft responses intentionally have no cache state. Do not
   // manufacture a MISS solely because the request carried mounted slots.
@@ -104,12 +101,6 @@ function applyMountedSlotRscNoStoreHeaders(
     ...options,
     preserveMissingCacheState: true,
   });
-}
-
-function clearSharedCacheOverrides(headers: Headers): void {
-  headers.delete("CDN-Cache-Control");
-  headers.delete("Cloudflare-CDN-Cache-Control");
-  headers.delete("Cache-Tag");
 }
 
 function finalizePendingCacheStateHeaders(

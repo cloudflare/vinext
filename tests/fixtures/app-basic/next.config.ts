@@ -189,6 +189,14 @@ const nextConfig: NextConfig = {
           has: [{ type: "cookie", key: "mw-pages-fallback-user" }],
           destination: "/pages-header-override-delete",
         },
+        // Used by hybrid App+Pages dev and production tests: the Pages
+        // pipeline sees the unmatched /api source first, then hands the
+        // internal fallback destination to the App route handler.
+        {
+          source: "/api/pages-fallback-to-app/:path*",
+          has: [{ type: "cookie", key: "mw-api-fallback-user" }],
+          destination: "/api/fallback-rewrite-target/:path*?from=fallback",
+        },
       ],
     };
   },

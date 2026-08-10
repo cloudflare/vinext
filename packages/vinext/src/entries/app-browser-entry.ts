@@ -26,11 +26,13 @@ export function generateBrowserEntry(
   },
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
+  const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
   const prefetchRoutes = toLinkPrefetchRoutes(routes);
   const clientRewrites = toClientRewrites(rewrites);
 
-  return `import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
+  return `import ${JSON.stringify(reactInstanceBootstrapPath)};
+import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
 
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
 // Pages route manifest for hybrid ownership decisions. In a hybrid

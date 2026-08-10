@@ -3455,43 +3455,47 @@ describe("createAppRscHandler", () => {
     },
   );
 
-  it("propagates rewritten query parameters to App route handlers", async () => {
-    const route = createPageRoute({
-      page: null,
-      pattern: "/api/static",
-      routeHandler: { GET: () => new Response("route") },
-      routeSegments: ["api", "static"],
-    });
-    const dispatchMatchedRouteHandler = vi.fn(
-      async (_options: Parameters<HandlerOptions["dispatchMatchedRouteHandler"]>[0]) =>
-        new Response("route"),
-    );
-    const handler = createHandler({
-      configHeaders: [],
-      configRewrites: {
-        beforeFiles: [{ source: "/legacy", destination: "/api/static?destination=2&same=new" }],
-        afterFiles: [],
-        fallback: [],
-      },
-      dispatchMatchedRouteHandler,
-      matchRoute: (pathname) => (pathname === "/api/static" ? { params: {}, route } : null),
-    });
+  it.each(["beforeFiles", "fallback"] as const)(
+    "propagates %s rewrite query parameters to App route handlers",
+    async (rewritePhase) => {
+      const route = createPageRoute({
+        page: null,
+        pattern: "/api/static",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "static"],
+      });
+      const dispatchMatchedRouteHandler = vi.fn(
+        async (_options: Parameters<HandlerOptions["dispatchMatchedRouteHandler"]>[0]) =>
+          new Response("route"),
+      );
+      const rewrite = { source: "/legacy", destination: "/api/static?destination=2&same=new" };
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: rewritePhase === "beforeFiles" ? [rewrite] : [],
+          afterFiles: [],
+          fallback: rewritePhase === "fallback" ? [rewrite] : [],
+        },
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname) => (pathname === "/api/static" ? { params: {}, route } : null),
+      });
 
-    await handler(new Request("https://example.test/docs/legacy?original=1&same=old"), null);
+      await handler(new Request("https://example.test/docs/legacy?original=1&same=old"), null);
 
-    const routeHandlerOptions = dispatchMatchedRouteHandler.mock.lastCall?.[0];
-    expect(Object.fromEntries(routeHandlerOptions!.searchParams)).toEqual({
-      destination: "2",
-      original: "1",
-      same: "new",
-    });
-    expect(new URL(routeHandlerOptions!.request.url).pathname).toBe("/docs/legacy");
-    expect(Object.fromEntries(new URL(routeHandlerOptions!.request.url).searchParams)).toEqual({
-      destination: "2",
-      original: "1",
-      same: "new",
-    });
-  });
+      const routeHandlerOptions = dispatchMatchedRouteHandler.mock.lastCall?.[0];
+      expect(Object.fromEntries(routeHandlerOptions!.searchParams)).toEqual({
+        destination: "2",
+        original: "1",
+        same: "new",
+      });
+      expect(new URL(routeHandlerOptions!.request.url).pathname).toBe("/docs/legacy");
+      expect(Object.fromEntries(new URL(routeHandlerOptions!.request.url).searchParams)).toEqual({
+        destination: "2",
+        original: "1",
+        same: "new",
+      });
+    },
+  );
 
   it("does not let afterFiles rewrites override non-dynamic app routes", async () => {
     const routes = {

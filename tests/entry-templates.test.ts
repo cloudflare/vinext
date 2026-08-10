@@ -23,6 +23,7 @@ import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-gra
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import { createPagesDevHydrationScript } from "../packages/vinext/src/server/pages-dev-hydration.js";
 
 // ── Minimal App Router route fixtures ─────────────────────────────────
 // Use stable absolute paths so tests don't depend on the machine.
@@ -128,6 +129,19 @@ const minimalAppRoutes: AppRoute[] = [
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
+  it("registers the host React instance before the App Router browser runtime", () => {
+    const code = generateBrowserEntry();
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const navigationRuntimeIndex = code.indexOf("navigation-runtime");
+    const browserRuntimeIndex = code.indexOf("app-browser-entry");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(navigationRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(browserRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(navigationRuntimeIndex);
+    expect(reactBootstrapIndex).toBeLessThan(browserRuntimeIndex);
+  });
+
   it("embeds only client-safe rewrite data in the App browser entry", () => {
     const code = generateBrowserEntry([], null, [], {
       afterFiles: [
@@ -1710,14 +1724,37 @@ describe("Pages Router entry template", () => {
       // side-effect import (no `from`, no `as`) so its top-level statements
       // execute when the client entry module is evaluated.
       const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
       const hydrateRootIndex = code.indexOf("hydrateRoot(");
 
+      expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
       expect(userImportIndex).toBeGreaterThanOrEqual(0);
       expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(reactBootstrapIndex).toBeLessThan(userImportIndex);
       expect(userImportIndex).toBeLessThan(hydrateRootIndex);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("registers the host React instance before Pages Router dev hydration", () => {
+    const code = createPagesDevHydrationScript({
+      appModuleSource: "/tmp/test/pages/_app.tsx",
+      pageModuleSource: "/tmp/test/pages/index.tsx",
+      reactStrictMode: false,
+    });
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const instrumentationIndex = code.indexOf('import "vinext/instrumentation-client"');
+    const pageImportIndex = code.indexOf('await import("/tmp/test/pages/index.tsx")');
+    const hydrateRootIndex = code.indexOf("hydrateRoot(");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(instrumentationIndex).toBeGreaterThanOrEqual(0);
+    expect(pageImportIndex).toBeGreaterThanOrEqual(0);
+    expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(instrumentationIndex);
+    expect(reactBootstrapIndex).toBeLessThan(pageImportIndex);
+    expect(reactBootstrapIndex).toBeLessThan(hydrateRootIndex);
   });
 
   it("omits the user instrumentation-client import when no file is present", async () => {

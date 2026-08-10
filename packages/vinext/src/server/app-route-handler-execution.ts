@@ -226,7 +226,7 @@ export async function executeAppRouteHandler(
       markKnownDynamicAppRoute(options.routePattern);
     }
 
-    // The route's cache tags, shared by the response Cache-Tag header (so edge
+    // The route's cache tags, shared by the adapter's response policy (so edge
     // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
     const routeTags = options.buildPageCacheTags(
       options.cleanPathname,
