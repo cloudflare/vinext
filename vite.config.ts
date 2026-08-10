@@ -11,6 +11,14 @@ const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 // @vinext/cloudflare dependency edge points at source (single module instance,
 // no prior build required). Shared by both test projects below.
 const WORKSPACE_SRC_ALIAS = {
+  // The next/image shim imports this virtual module, which only the vinext
+  // plugin can resolve. Tests load the shim source directly, so point it at the
+  // unconfigured stand-in — the same module the generator emits when
+  // `images.loaderFile` is unset.
+  "virtual:vinext-image-loader": path.resolve(
+    import.meta.dirname,
+    "packages/vinext/src/image/image-loader-unconfigured.ts",
+  ),
   "vinext/shims": SHIMS_SRC,
   "vinext/internal": VINEXT_SRC,
   "@vinext/cloudflare/internal": CLOUDFLARE_SRC,
@@ -209,6 +217,7 @@ export default defineConfig({
             "tests/entry-templates.test.ts",
             "tests/features.test.ts",
             "tests/favicon-short-circuit.test.ts",
+            "tests/image-loader-plugin.test.ts",
             "tests/image-optimization-parity.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/optimize-imports-integration.test.ts",
@@ -272,6 +281,7 @@ export default defineConfig({
             "tests/entry-templates.test.ts",
             "tests/favicon-short-circuit.test.ts",
             "tests/features.test.ts",
+            "tests/image-loader-plugin.test.ts",
             "tests/image-optimization-parity.test.ts",
             "tests/kv-cache-handler.test.ts",
             "tests/node-modules-css.test.ts",

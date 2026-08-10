@@ -22564,10 +22564,16 @@ describe("next/image enhancements", () => {
       alt: "Custom",
       width: 800,
       height: 600,
-      loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+      loader: ({ src, width, quality }) =>
+        `https://cdn.example.com${src}?w=${width}&q=${quality ?? 75}`,
     });
-    // Custom loader bypasses the /_next/image endpoint
-    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
+    // Custom loader bypasses the /_next/image endpoint. Per Next.js
+    // `getWidths`, candidates are [800, 1600] snapped up to [828, 1920], and
+    // `src` is the largest so non-srcSet browsers get the best image.
+    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=1920&q=75");
+    expect(result.props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=828&q=75 1x, https://cdn.example.com/photo.jpg?w=1920&q=75 2x",
+    );
     expect(result.props.src).not.toContain("/_next/image");
   });
 
@@ -22719,10 +22725,14 @@ describe("next/image component rendering", () => {
         width: 800,
         height: 600,
         loader: ({ src, width, quality }: { src: string; width: number; quality?: number }) =>
-          `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+          `https://cdn.example.com${src}?w=${width}&q=${quality ?? 75}`,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=800&amp;q=75"');
+    // `src` is the largest candidate width (800 -> 828, 1600 -> 1920).
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=1920&amp;q=75"');
+    expect(html).toContain(
+      'srcSet="https://cdn.example.com/photo.jpg?w=828&amp;q=75 1x, https://cdn.example.com/photo.jpg?w=1920&amp;q=75 2x"',
+    );
   });
 
   it("renders with custom sizes attribute", async () => {

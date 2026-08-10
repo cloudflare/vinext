@@ -53,6 +53,7 @@ function renderContracts(tempDir) {
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(typesRoot, "index.d.ts")))} />`,
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(repoRoot, "packages/vinext/src/global.d.ts")))} />`,
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(repoRoot, "packages/vinext/src/private-next-instrumentation-client.d.ts")))} />`,
+    `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(repoRoot, "packages/vinext/src/virtual-vinext-image-loader.d.ts")))} />`,
     "",
   ];
 

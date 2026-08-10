@@ -58,6 +58,7 @@ import {
   generateImageAdaptersModule,
   type VinextImageConfig,
 } from "./image/image-adapters-virtual.js";
+import { VIRTUAL_IMAGE_LOADER, generateImageLoaderModule } from "./image/image-loader-virtual.js";
 import { generateBrowserEntry, toLinkPrefetchRoutes } from "./entries/app-browser-entry.js";
 import {
   collectRouteClassificationManifest,
@@ -1078,6 +1079,8 @@ const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
 /** Virtual module that registers the config-driven image optimizer (see VinextOptions.images). */
 const RESOLVED_IMAGE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_IMAGE_ADAPTERS;
+/** Virtual module exposing `images.loaderFile` to the next/image shim. */
+const RESOLVED_IMAGE_LOADER = VIRTUAL_PREFIX + VIRTUAL_IMAGE_LOADER;
 /** Virtual module for composed instrumentation-client bootstrap. */
 const VIRTUAL_INSTRUMENTATION_CLIENT = "private-next-instrumentation-client";
 const RESOLVED_INSTRUMENTATION_CLIENT = `${VIRTUAL_PREFIX}${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
@@ -3683,6 +3686,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ) {
             return RESOLVED_IMAGE_ADAPTERS;
           }
+          if (cleanId === VIRTUAL_IMAGE_LOADER || cleanId.endsWith("/" + VIRTUAL_IMAGE_LOADER)) {
+            return RESOLVED_IMAGE_LOADER;
+          }
           if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
             return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
           }
@@ -3855,6 +3861,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_IMAGE_ADAPTERS) {
             return generateImageAdaptersModule(options.images);
+          }
+          if (id === RESOLVED_IMAGE_LOADER) {
+            // From next.config's `images`, not the vinext() plugin `images`
+            // option — `loaderFile` is a Next.js config key, and the path was
+            // already resolved and existence-checked by resolveNextConfig().
+            return generateImageLoaderModule(nextConfig?.images);
           }
           if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
             return generateSsrEntry(hasPagesDir);

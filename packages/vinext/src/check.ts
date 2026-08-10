@@ -186,7 +186,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   images: {
     status: "partial",
     detail:
-      "remotePatterns validated; on-the-fly optimization via images.optimizer (Cloudflare Images), passthrough otherwise",
+      "remotePatterns validated; loader/loaderFile supported; on-the-fly optimization via images.optimizer (Cloudflare Images), passthrough otherwise",
   },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
