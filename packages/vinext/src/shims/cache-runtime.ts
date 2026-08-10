@@ -53,6 +53,7 @@ import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { markUseCacheFunction } from "./internal/use-cache-function.js";
+import { isAppLayoutPropsForUseCache } from "./internal/app-layout-props-cache-key.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -176,10 +177,13 @@ export function getCacheContext(): CacheContext | null {
  * In test environments, the import fails and we fall back to JSON.
  */
 type RscModule = {
-  renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
+  renderToReadableStream: (
+    data: unknown,
+    options?: { temporaryReferences?: unknown },
+  ) => ReadableStream<Uint8Array>;
   createFromReadableStream: <T>(
     stream: ReadableStream<Uint8Array>,
-    options?: object,
+    options?: { temporaryReferences?: unknown },
     context?: { preserveServerReferences?: boolean },
   ) => Promise<T>;
   encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
@@ -461,6 +465,36 @@ export function clearPrivateCache(): void {
 // Core runtime: registerCachedFunction
 // ---------------------------------------------------------------------------
 
+type AppLayoutCacheInvocation = {
+  directArgs: unknown[];
+  outerParams: unknown;
+};
+
+function resolveAppLayoutCacheInvocation(
+  args: readonly unknown[],
+): AppLayoutCacheInvocation | null {
+  const [firstArg, ...otherArgs] = args;
+  if (!isAppLayoutPropsForUseCache(firstArg)) return null;
+
+  const { $$isLayout: _marker, params, ...slots } = firstArg;
+  return {
+    directArgs: [{ params, ...slots }, ...otherArgs],
+    outerParams: params,
+  };
+}
+
+function restoreAppLayoutOuterParams(
+  decodedArgs: readonly unknown[],
+  outerParams: unknown,
+): unknown[] {
+  const [firstArg, ...otherArgs] = decodedArgs;
+  if (typeof firstArg !== "object" || firstArg === null || Array.isArray(firstArg)) {
+    throw new Error("Expected cached App Layout props to be an object.");
+  }
+  const { params: _innerParams, ...innerSlots } = firstArg as Record<string, unknown>;
+  return [{ params: outerParams, ...innerSlots }, ...otherArgs];
+}
+
 export type RegisterCachedFunctionOptions = {
   /**
    * Whether the original function declaration accepts a second argument.
@@ -523,18 +557,26 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const executionArgs = hasCaptureEnvelope
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
-      const callArgs = executionArgs as TArgs;
+      const appLayoutInvocation = resolveAppLayoutCacheInvocation(executionArgs);
+      const directCallArgs = (appLayoutInvocation?.directArgs ?? executionArgs) as TArgs;
+
+      // Cached layouts/templates serialize their slots as React temporary
+      // references. The stored RSC payload therefore contains holes which are
+      // reconnected to the current invocation's children on every replay.
+      let appLayoutClientTemporaryReferences: unknown;
+      let encodedAppLayoutArgs: string | FormData | undefined;
 
       // Build the cache key. Use encodeReply (RSC protocol) when available —
       // it correctly handles React elements as temporary references (excluded
       // from key). Falls back to stableStringify when RSC is unavailable.
       let cacheKey: string;
       try {
+        const cacheInputArgs = appLayoutInvocation?.directArgs ?? executionArgs;
         const processedArgs =
-          executionArgs.length > 0
-            ? unwrapThenableObjectArray(executionArgs, { omitAppPageSearchParamsFromFirstArg })
+          cacheInputArgs.length > 0
+            ? unwrapThenableObjectArray(cacheInputArgs, { omitAppPageSearchParamsFromFirstArg })
             : [];
-        if (rsc && executionArgs.length > 0) {
+        if (rsc && cacheInputArgs.length > 0) {
           // Temporary references let encodeReply handle non-serializable values
           // (like React elements in args) by excluding them from the key.
           const tempRefs = rsc.createClientTemporaryReferenceSet();
@@ -549,6 +591,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           const encoded = await rsc.encodeReply(processedArgs, {
             temporaryReferences: tempRefs,
           });
+          if (appLayoutInvocation) {
+            appLayoutClientTemporaryReferences = tempRefs;
+            encodedAppLayoutArgs = encoded;
+          }
           cacheKey = buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
         } else {
           const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
@@ -556,7 +602,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       } catch {
         // Non-serializable arguments — run without caching
-        return fn(...callArgs);
+        return fn(...directCallArgs);
+      }
+
+      // The JSON fallback cannot represent layout slot holes. Unit-test and
+      // non-RSC environments execute cached layouts directly rather than
+      // risking a cache entry that captures one route's children.
+      if (appLayoutInvocation && !rsc) {
+        return executeWithContext(fn, directCallArgs, cacheVariant);
       }
 
       // "use cache: private" uses per-request in-memory cache
@@ -573,6 +626,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           markDynamicUsage();
         }
 
+        // The private cache stores live values rather than RSC payloads, so it
+        // has no representation for a layout slot hole. Keep the invocation
+        // correct if a private cache directive is used on a layout/template.
+        if (appLayoutInvocation) {
+          return executeWithContext(fn, directCallArgs, cacheVariant);
+        }
+
         const privateCache = _getPrivateState()._privateCache!;
         const privateHit = privateCache.get(cacheKey);
         if (privateHit !== undefined) {
@@ -581,7 +641,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           return privateHit as TResult;
         }
 
-        const result = await executeWithContext(fn, callArgs, cacheVariant);
+        const result = await executeWithContext(fn, directCallArgs, cacheVariant);
         privateCache.set(cacheKey, result);
         return result;
       }
@@ -591,7 +651,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // preview request would otherwise seed unpublished content into an entry
       // later served to public requests. Mirrors Next.js's `isDraftMode` guard.
       if (isDev || isDraftModeEnabled()) {
-        return executeWithContext(fn, callArgs, cacheVariant);
+        return executeWithContext(fn, directCallArgs, cacheVariant);
       }
 
       // Shared cache ("use cache" / "use cache: remote")
@@ -622,9 +682,30 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
 
       const refreshAndStore = async (propagateToRequest = true): Promise<TResult> => {
+        // Cached layouts/templates receive framework-owned slot elements. Decode
+        // those arguments through server temporary references so the stored RSC
+        // payload records holes instead of capturing one concrete route tree.
+        let appLayoutServerTemporaryReferences: unknown;
+        let cacheCallArgs = directCallArgs;
+        if (appLayoutInvocation && encodedAppLayoutArgs !== undefined && rsc) {
+          try {
+            appLayoutServerTemporaryReferences = rsc.createTemporaryReferenceSet();
+            const decodedArgs = await rsc.decodeReply(encodedAppLayoutArgs, {
+              temporaryReferences: appLayoutServerTemporaryReferences,
+            });
+            cacheCallArgs = restoreAppLayoutOuterParams(
+              decodedArgs,
+              appLayoutInvocation.outerParams,
+            ) as TArgs;
+          } catch {
+            await handler.releasePendingSet?.(cacheKey);
+            return executeWithContext(fn, directCallArgs, cacheVariant);
+          }
+        }
+
         let execution: CachedFunctionResult<TResult>;
         try {
-          execution = await runCachedFunctionWithContext(fn, callArgs, cacheVariant, {
+          execution = await runCachedFunctionWithContext(fn, cacheCallArgs, cacheVariant, {
             skipPropagation: !propagateToRequest,
           });
         } catch (error) {
@@ -646,18 +727,29 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
         // Store in cache — use RSC stream serialization when available (handles
         // React elements, client refs, Promises, etc.), JSON otherwise.
+        let resultForCaller = result;
+        let cacheValue: CachedFetchValue;
         try {
           let body: string;
           const headers: Record<string, string> = {};
 
           if (rsc) {
-            // RSC serialization: result → stream → bytes → base64.
-            // No temporaryReferences — cached values must be self-contained
-            // since they're persisted across requests.
-            const stream = rsc.renderToReadableStream(result);
+            const stream = rsc.renderToReadableStream(
+              result,
+              appLayoutServerTemporaryReferences
+                ? { temporaryReferences: appLayoutServerTemporaryReferences }
+                : undefined,
+            );
             const bytes = await collectStream(stream);
             body = uint8ToBase64(bytes);
             headers[VINEXT_RSC_MARKER_HEADER] = "1";
+            if (appLayoutInvocation && propagateToRequest) {
+              resultForCaller = await rsc.createFromReadableStream<TResult>(
+                uint8ToStream(bytes),
+                { temporaryReferences: appLayoutClientTemporaryReferences },
+                { preserveServerReferences: true },
+              );
+            }
           } else {
             // JSON fallback
             body = JSON.stringify(result);
@@ -667,7 +759,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             }
           }
 
-          const cacheValue = {
+          cacheValue = {
             kind: "FETCH",
             data: {
               headers,
@@ -677,7 +769,16 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             tags: ctx.tags,
             revalidate: revalidateSeconds,
           } satisfies CachedFetchValue;
+        } catch {
+          await handler.releasePendingSet?.(cacheKey);
+          // A foreground layout result containing opaque slot references cannot
+          // be returned directly. Re-run once with the live invocation props.
+          return appLayoutInvocation && propagateToRequest
+            ? executeWithContext(fn, directCallArgs, cacheVariant)
+            : result;
+        }
 
+        try {
           await handler.set(cacheKey, cacheValue, {
             fetchCache: true,
             tags: ctx.tags,
@@ -690,11 +791,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             },
           });
         } catch {
-          // Result not serializable — skip caching, still return the result
+          // Cache handler failures must not affect the rendered result.
           await handler.releasePendingSet?.(cacheKey);
         }
 
-        return result;
+        return resultForCaller;
       };
 
       // A handler failure (e.g. a transient KV error, or a key the store
@@ -738,7 +839,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             const stream = uint8ToStream(bytes);
             const result = await rsc.createFromReadableStream<TResult>(
               stream,
-              {},
+              appLayoutInvocation
+                ? { temporaryReferences: appLayoutClientTemporaryReferences }
+                : {},
               { preserveServerReferences: true },
             );
             recordRequestScopedCacheControl(existing.cacheControl);

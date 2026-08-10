@@ -53,6 +53,7 @@ import {
 import { isPromiseLike } from "../utils/promise.js";
 import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
 import { isUseCacheFunction } from "vinext/shims/internal/use-cache-function";
+import { prepareAppLayoutPropsForUseCache } from "vinext/shims/internal/app-layout-props-cache-key";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -648,7 +649,9 @@ export async function buildPageElements<
         );
         siblingInterceptElement = createElement(
           LayoutComponent,
-          { params: makeThenableParams(interceptLayoutParams) },
+          prepareAppLayoutPropsForUseCache(LayoutComponent, {
+            params: makeThenableParams(interceptLayoutParams),
+          }),
           siblingInterceptElement,
         );
       }

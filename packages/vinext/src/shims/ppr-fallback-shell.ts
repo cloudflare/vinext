@@ -10,6 +10,7 @@ export type PprFallbackShellState = {
   cacheEpoch: number;
   cacheReadyResolvers: Array<() => void>;
   fallbackParamNames: ReadonlySet<string>;
+  hasCacheTask: boolean;
   hasDynamicBoundary: boolean;
   isFinalRenderStarted: boolean;
   isAbortScheduled: boolean;
@@ -148,6 +149,7 @@ export function createPprFallbackShellState(
     cacheEpoch: 0,
     cacheReadyResolvers: [],
     fallbackParamNames: new Set(options.fallbackParamNames),
+    hasCacheTask: false,
     hasDynamicBoundary: false,
     isFinalRenderStarted: false,
     isAbortScheduled: false,
@@ -176,6 +178,7 @@ export function trackPprFallbackShellCacheTask<T>(
     return fn();
   }
 
+  state.hasCacheTask = true;
   cancelPendingCacheReady(state);
   state.pendingCacheTasks++;
   const task: PprFallbackShellCacheTask = {

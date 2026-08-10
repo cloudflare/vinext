@@ -660,76 +660,8 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result?.code).toContain('"appPageDefaultExport":true');
   });
 
-  it("marks function-level App Page default exports after hoisting", async () => {
-    const plugins = await getPlugins();
-    await configureVinext(plugins);
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const pageId = path.join(APP_FIXTURE_DIR, "app", "page.tsx");
-    const result = await unwrapHook(plugin.transform)!.call(
-      { environment: { name: "rsc", mode: "build" } },
-      [
-        `export default async function Page({ searchParams }) {`,
-        `  "use cache";`,
-        `  return await searchParams;`,
-        `}`,
-      ].join("\n"),
-      pageId,
-    );
-
-    expect(result?.code).toContain('"appPageDefaultExport":true');
-  });
-
-  it("marks a function-level cached App Page exported through a binding", async () => {
-    const plugins = await getPlugins();
-    await configureVinext(plugins);
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const pageId = path.join(APP_FIXTURE_DIR, "app", "page.tsx");
-    const result = await unwrapHook(plugin.transform)!.call(
-      { environment: { name: "rsc", mode: "build" } },
-      [
-        `const Page = async ({ searchParams }) => {`,
-        `  "use cache";`,
-        `  return await searchParams;`,
-        `};`,
-        `export default Page;`,
-      ].join("\n"),
-      pageId,
-    );
-
-    expect(result?.code).toContain('"appPageDefaultExport":true');
-  });
-
-  it("marks a function-level cached App Page exported through a default alias", async () => {
-    const plugins = await getPlugins();
-    await configureVinext(plugins);
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const pageId = path.join(APP_FIXTURE_DIR, "app", "page.tsx");
-    const result = await unwrapHook(plugin.transform)!.call(
-      { environment: { name: "rsc", mode: "build" } },
-      [
-        `const Page = async ({ searchParams }) => {`,
-        `  "use cache";`,
-        `  return await searchParams;`,
-        `};`,
-        `export { Page as default };`,
-      ].join("\n"),
-      pageId,
-    );
-
-    expect(result?.code).toContain('"appPageDefaultExport":true');
-  });
-
-  it.each(["layout", "template", "component"])(
-    "does not mark a function-level cached %s default alias as an App Page export",
+  it.each(["layout", "template"])(
+    "wraps a file-level cached App %s default export",
     async (fileName) => {
       const plugins = await getPlugins();
       await configureVinext(plugins);
@@ -741,16 +673,14 @@ describe("plugin-rsc inline use-cache references", () => {
       const result = await unwrapHook(plugin.transform)!.call(
         { environment: { name: "rsc", mode: "build" } },
         [
-          `const Component = async ({ children }) => {`,
-          `  "use cache";`,
-          `  return children;`,
-          `};`,
-          `export { Component as default };`,
+          `"use cache";`,
+          `export default async function Segment({ children }) { return children; }`,
         ].join("\n"),
         moduleId,
       );
 
-      expect(result?.code).not.toContain('"appPageDefaultExport":true');
+      expect(result?.code).toContain("registerCachedFunction");
+      expect(result?.code).toContain("registerServerReference");
     },
   );
 

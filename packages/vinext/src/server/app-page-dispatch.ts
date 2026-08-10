@@ -261,7 +261,7 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isDraftMode: boolean,
     isForceStatic: boolean,
     isForceDynamic: boolean,
-  ): Promise<Response | null>;
+  ): Promise<Response | { html: string; postponed: string } | null>;
   warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
 };
 
@@ -877,7 +877,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResponse = options.pprRuntime
+  const fallbackShellResult = options.pprRuntime
     ? await options.pprRuntime.tryServe(
         options,
         currentRevalidateSeconds,
@@ -886,8 +886,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isForceDynamic,
       )
     : null;
-  if (fallbackShellResponse) {
-    return fallbackShellResponse;
+  if (fallbackShellResult instanceof Response) {
+    return fallbackShellResult;
   }
 
   let interceptDynamicConfig: string | null | undefined;
@@ -1144,7 +1144,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     navigationParams,
     params: options.params,
     pprFallbackShellSignal,
+    pprFallbackShellHasCacheTask: activeFallbackShellState?.hasCacheTask,
     pprFallbackShellReactSignal,
+    pprResume: fallbackShellResult ?? undefined,
     renderedPathAndSearch: options.renderedPathAndSearch,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {

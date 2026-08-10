@@ -14,6 +14,7 @@ export type PrerenderManifestRoute = {
   path?: string;
   router?: string;
   fallback?: boolean;
+  postponed?: string;
   headers?: Record<string, string>;
   tags?: string[];
 };

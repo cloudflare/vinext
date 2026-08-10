@@ -84,6 +84,8 @@ import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-obse
 import { peekDynamicUsage } from "vinext/shims/headers";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
+import { createAppPprPostponedStateMarker } from "./app-ppr-fallback-shell.js";
+import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -160,6 +162,8 @@ type RenderAppPageLifecycleOptions = {
   navigationParams: Record<string, unknown>;
   params: Record<string, unknown>;
   pprFallbackShellSignal?: AbortSignal;
+  pprFallbackShellHasCacheTask?: boolean;
+  pprResume?: { html: string; postponed: string };
   pprFallbackShellReactSignal?: AbortSignal;
   abortPprFallbackShell?: () => void;
   rootParams?: RootParams;
@@ -741,7 +745,10 @@ export async function renderAppPageLifecycle(
     if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
       const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
-        onError: rscErrorTracker.onRenderError,
+        onError(error, requestInfo, errorContext) {
+          if (reactSignal.aborted || isPprFallbackShellAbortError(error)) return undefined;
+          return rscErrorTracker.onRenderError(error, requestInfo, errorContext);
+        },
         signal: reactSignal,
       });
       if (options.abortPprFallbackShell) {
@@ -1052,6 +1059,8 @@ export async function renderAppPageLifecycle(
         reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         pprFallbackShellSignal: options.pprFallbackShellSignal,
+        pprFallbackShellHasCacheTask: options.pprFallbackShellHasCacheTask,
+        postponed: options.pprResume?.postponed,
         formState: options.formState ?? null,
         rscStream: rscForResponse,
         scriptNonce: options.scriptNonce,
@@ -1075,6 +1084,16 @@ export async function renderAppPageLifecycle(
   let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
+  }
+
+  if (htmlRender.postponed) {
+    htmlStream = appendTextToStream(
+      htmlStream,
+      createAppPprPostponedStateMarker(htmlRender.postponed),
+    );
+  }
+  if (options.pprResume) {
+    htmlStream = prependTextToStream(options.pprResume.html, htmlStream);
   }
 
   // Combine React's preload `Link` header (captured via onHeaders during SSR)
@@ -1280,7 +1299,7 @@ export async function renderAppPageLifecycle(
     });
   }
 
-  return buildAppPageHtmlResponse(safeHtmlStream, {
+  const response = buildAppPageHtmlResponse(safeHtmlStream, {
     cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
@@ -1289,6 +1308,66 @@ export async function renderAppPageLifecycle(
     policy: htmlResponsePolicy,
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
+  });
+  if (options.pprResume) {
+    response.headers.set("x-nextjs-postponed", "1");
+  }
+  return response;
+}
+
+function prependTextToStream(
+  text: string,
+  stream: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const prefix = new TextEncoder().encode(text);
+  return new ReadableStream({
+    async start(controller) {
+      controller.enqueue(prefix);
+      const reader = stream.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      } finally {
+        reader.releaseLock();
+      }
+    },
+    cancel(reason) {
+      return stream.cancel(reason);
+    },
+  });
+}
+
+function appendTextToStream(
+  stream: ReadableStream<Uint8Array>,
+  text: string,
+): ReadableStream<Uint8Array> {
+  const suffix = new TextEncoder().encode(text);
+  return new ReadableStream({
+    async start(controller) {
+      const reader = stream.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.enqueue(suffix);
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      } finally {
+        reader.releaseLock();
+      }
+    },
+    cancel(reason) {
+      return stream.cancel(reason);
+    },
   });
 }
 

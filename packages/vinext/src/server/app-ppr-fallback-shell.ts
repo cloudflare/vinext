@@ -1,7 +1,12 @@
 import { createInlineScriptTag } from "./html.js";
-import { createNavigationRuntimeRscMetadataScript } from "./app-ssr-stream.js";
+import {
+  createNavigationRuntimeRscMetadataScript,
+  navigationRuntimeRscBootstrapExpression,
+} from "./app-ssr-stream.js";
 
 const PPR_DYNAMIC_FALLBACK_SHELL_MARKER = "<!--vinext-ppr-dynamic-fallback-shell-->";
+const PPR_POSTPONED_STATE_PREFIX = "<!--vinext-ppr-postponed:";
+const PPR_POSTPONED_STATE_SUFFIX = "-->";
 
 type AppPprFallbackShellRoute = {
   params: readonly string[];
@@ -32,6 +37,48 @@ export function markAppPprDynamicFallbackShellHtml(html: string): string {
 
 export function isAppPprDynamicFallbackShellHtml(html: string): boolean {
   return html.includes(PPR_DYNAMIC_FALLBACK_SHELL_MARKER);
+}
+
+export function stripAppPprDynamicFallbackShellMarker(html: string): string {
+  return html.replace(PPR_DYNAMIC_FALLBACK_SHELL_MARKER, "");
+}
+
+/**
+ * Keep the reusable Fizz shell, but discard the build-time Flight bootstrap.
+ * Resume embeds a fresh Flight stream for the concrete request; replaying the
+ * fallback render's terminal `done=true` before those chunks makes the browser
+ * close its RSC controller and reject the resumed model.
+ */
+export function prepareAppPprFallbackShellHtmlForResume(html: string): string {
+  const bootstrap = navigationRuntimeRscBootstrapExpression();
+  return html
+    .replace(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script\s*>/gi, (script, content: string) =>
+      content.includes(bootstrap) ? "" : script,
+    )
+    .replace(/<\/body>\s*<\/html>\s*$/i, "");
+}
+
+export function createAppPprPostponedStateMarker(postponed: string): string {
+  return `${PPR_POSTPONED_STATE_PREFIX}${encodeURIComponent(postponed)}${PPR_POSTPONED_STATE_SUFFIX}`;
+}
+
+export function extractAppPprPostponedState(html: string): {
+  html: string;
+  postponed: string | undefined;
+} {
+  const start = html.lastIndexOf(PPR_POSTPONED_STATE_PREFIX);
+  if (start === -1 || !html.endsWith(PPR_POSTPONED_STATE_SUFFIX)) {
+    return { html, postponed: undefined };
+  }
+  const encoded = html.slice(
+    start + PPR_POSTPONED_STATE_PREFIX.length,
+    -PPR_POSTPONED_STATE_SUFFIX.length,
+  );
+  try {
+    return { html: html.slice(0, start), postponed: decodeURIComponent(encoded) };
+  } catch {
+    return { html, postponed: undefined };
+  }
 }
 
 function routeRootParamNames(route: AppPprFallbackShellRoute): Set<string> {
@@ -68,8 +115,6 @@ export function createAppPprFallbackShells(
   matchedParams: Record<string, string | string[]>,
 ): AppPprFallbackShell[] {
   const rootParamNames = routeRootParamNames(route);
-  if (rootParamNames.size === 0) return [];
-
   let minKeptParamCount = 0;
   for (const rootParamName of rootParamNames) {
     const rootParamIndex = route.params.indexOf(rootParamName);
@@ -138,6 +183,7 @@ export function rewriteAppPprFallbackShellHtmlNavigation(options: {
   pathname: string;
   searchParams: URLSearchParams;
 }): string {
+  const shellHtml = prepareAppPprFallbackShellHtmlForResume(options.html);
   const metadataScript = createInlineScriptTag(
     createNavigationRuntimeRscMetadataScript(options.params, {
       pathname: options.pathname,
@@ -145,12 +191,10 @@ export function rewriteAppPprFallbackShellHtmlNavigation(options: {
     }),
   );
 
-  const headCloseIndex = options.html.indexOf("</head>");
+  const headCloseIndex = shellHtml.indexOf("</head>");
   if (headCloseIndex !== -1) {
-    return (
-      options.html.slice(0, headCloseIndex) + metadataScript + options.html.slice(headCloseIndex)
-    );
+    return shellHtml.slice(0, headCloseIndex) + metadataScript + shellHtml.slice(headCloseIndex);
   }
 
-  return metadataScript + options.html;
+  return metadataScript + shellHtml;
 }

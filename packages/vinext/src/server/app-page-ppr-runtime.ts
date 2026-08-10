@@ -70,10 +70,26 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShells: NonNullable<DispatchAppPageOptions<TRoute>["pprFallbackCacheShells"]>,
   currentRevalidateSeconds: number | null,
-): Promise<Response | null> {
-  const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
+): Promise<Response | { html: string; postponed: string } | null> {
+  const { readAppPageFallbackShellCacheResponse, readAppPageFallbackShellCacheResume } =
+    await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
   for (const fallbackShell of fallbackShells) {
+    const rewriteHtml = (html: string) =>
+      rewriteAppPprFallbackShellHtmlNavigation({
+        html,
+        params: options.params,
+        pathname: options.cleanPathname,
+        searchParams: options.searchParams,
+      });
+    const resume = await readAppPageFallbackShellCacheResume({
+      fallbackPathname: fallbackShell.pathname,
+      isrDebug: options.isrDebug,
+      isrGet: options.isrGet,
+      isrHtmlKey: options.isrHtmlKey,
+      rewriteHtml,
+    });
+    if (resume) return resume;
     const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
       clearRequestContext: options.clearRequestContext,
       expireSeconds: options.expireSeconds,
@@ -85,14 +101,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       revalidateSeconds: currentRevalidateSeconds ?? 0,
-      rewriteHtml(html) {
-        return rewriteAppPprFallbackShellHtmlNavigation({
-          html,
-          params: options.params,
-          pathname: options.cleanPathname,
-          searchParams: options.searchParams,
-        });
-      },
+      rewriteHtml,
     });
     if (fallbackShellResponse) return fallbackShellResponse;
   }

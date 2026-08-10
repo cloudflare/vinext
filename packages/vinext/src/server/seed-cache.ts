@@ -137,6 +137,7 @@ export async function seedMemoryCacheFromPrerender(
         artifactPathname,
         trailingSlash,
         route.headers,
+        route.postponed,
         revalidateSeconds,
         expireSeconds,
         staleSeconds,
@@ -179,6 +180,7 @@ async function seedHtml(
   pathname: string,
   trailingSlash: boolean,
   headers: Record<string, string> | undefined,
+  postponed: string | undefined,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
@@ -193,7 +195,7 @@ async function seedHtml(
     html: fs.readFileSync(fullPath, "utf-8"),
     rscData: undefined,
     headers,
-    postponed: undefined,
+    postponed,
     status: undefined,
   };
 

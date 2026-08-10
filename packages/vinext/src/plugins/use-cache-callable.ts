@@ -132,7 +132,6 @@ function shouldTransformModuleExport(name: string, id: string, meta: ModuleExpor
   ) {
     return false;
   }
-  if (/\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id) && name === "default") return false;
   return true;
 }
 

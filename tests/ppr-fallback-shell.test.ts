@@ -49,6 +49,20 @@ describe("ppr fallback shell cache task tracking", () => {
     await tracked;
     await ready;
     expect(state.pendingCacheTasks).toBe(0);
+    expect(state.hasCacheTask).toBe(true);
+  });
+
+  it("does not treat private cache work as reusable fallback-shell IO", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    await runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => undefined, "private"),
+    );
+
+    expect(state.hasCacheTask).toBe(false);
   });
 
   it("completes independent child public cache work before cache-ready when parent hits dynamic boundary", async () => {

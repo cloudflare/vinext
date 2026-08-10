@@ -6,6 +6,7 @@ import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
   readAppPageCacheResponse,
+  readAppPageFallbackShellCacheResume,
   readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
@@ -975,6 +976,31 @@ describe("app page cache helpers", () => {
       "MISS (dynamic fallback shell requires resume)",
       "/en/blog/[slug]",
     ]);
+  });
+
+  it("returns the cached prelude and postponed state for request-time resume", async () => {
+    const resume = await readAppPageFallbackShellCacheResume({
+      async isrGet() {
+        return buildISRCacheEntry({
+          ...buildCachedAppPageValue(
+            markAppPprDynamicFallbackShellHtml("<html><body>static shell"),
+          ),
+          postponed: '{"nextSegmentId":1}',
+        });
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      rewriteHtml(html) {
+        return html.replace("static shell", "rewritten static shell");
+      },
+    });
+
+    expect(resume).toEqual({
+      html: "<html><body>rewritten static shell",
+      postponed: '{"nextSegmentId":1}',
+    });
   });
 
   it("still schedules stale regeneration when the stale payload is unusable for this request", async () => {

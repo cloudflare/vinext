@@ -63,6 +63,7 @@ import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.j
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import {
   createAppPprFallbackShells,
+  extractAppPprPostponedState,
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
 import {
@@ -70,14 +71,6 @@ import {
   resetPrerenderDataCache,
 } from "../server/prerender-data-cache.js";
 export { readPrerenderSecret } from "./server-manifest.js";
-
-const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
-
-function isExperimentalPprFallbackShellGenerationEnabled(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  return env[EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV] === "1";
-}
 
 function getErrorMessageWithStack(err: Error): string {
   // Include the full stack trace for sourcemap-aware error reporting during
@@ -166,6 +159,8 @@ export type PrerenderRouteResult =
       tags?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
+      /** React HTML resume state for a partial PPR fallback shell. */
+      postponed?: string;
     }
   | {
       route: string;
@@ -1254,6 +1249,26 @@ export async function prerenderApp({
             : false;
 
       if (route.isDynamic) {
+        const queueFallbackShellsWithoutStaticParams = (): boolean => {
+          if (config.cacheComponents !== true) return false;
+          let queued = false;
+          for (const fallbackShell of createAppPprFallbackShells(route, {})) {
+            urlsToRender.push({
+              urlPath: fallbackShell.pathname,
+              routePattern: route.pattern,
+              prerenderRouteParams: encodePrerenderRouteParams(
+                route.pattern,
+                fallbackShell.params,
+                fallbackShell.fallbackParamNames,
+              ),
+              revalidate,
+              isSpeculative: false,
+              isFallback: true,
+            });
+            queued = true;
+          }
+          return queued;
+        };
         // Dynamic URL — needs generateStaticParams
         // (also handles isImplicitlyDynamic case: dynamic URL with no explicit config)
         try {
@@ -1270,7 +1285,7 @@ export async function prerenderApp({
                 status: "error",
                 error: `Dynamic route requires generateStaticParams() with output: 'export'`,
               });
-            } else {
+            } else if (!queueFallbackShellsWithoutStaticParams()) {
               results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
             }
             continue;
@@ -1313,7 +1328,7 @@ export async function prerenderApp({
                 status: "error",
                 error: `Dynamic route requires generateStaticParams() with output: 'export'`,
               });
-            } else {
+            } else if (!queueFallbackShellsWithoutStaticParams()) {
               results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
             }
             continue;
@@ -1354,14 +1369,9 @@ export async function prerenderApp({
               isSpeculative: false,
             });
 
-            // These artifacts contain a partial HTML/RSC shell that requires
-            // request-time resume. Keep generation internal-only until vinext
-            // implements that resume lifecycle; serving one as complete HTML
-            // causes hydration to fall into the global error boundary.
-            if (
-              config.cacheComponents === true &&
-              isExperimentalPprFallbackShellGenerationEnabled()
-            ) {
+            // Cache Components fallback artifacts carry React's postponed
+            // state and are completed by the request-time resume path.
+            if (config.cacheComponents === true) {
               for (const fallbackShell of createAppPprFallbackShells(route, params)) {
                 if (queuedRouteUrls.has(fallbackShell.pathname)) continue;
                 queuedRouteUrls.add(fallbackShell.pathname);
@@ -1517,9 +1527,20 @@ export async function prerenderApp({
             error: "RSC handler returned no prerender HTML",
           };
         }
+        const extractedShell = isFallback
+          ? extractAppPprPostponedState(htmlRender.html)
+          : { html: htmlRender.html, postponed: undefined };
+        // A root-level suspension (no enclosing Suspense boundary), or a route
+        // with no reusable `use cache` work, cannot produce a useful fallback
+        // shell. The renderer deliberately omits postponed state for both;
+        // avoid writing an artifact that request-time dispatch could mistake
+        // for a complete static response.
+        if (isFallback && !extractedShell.postponed) {
+          return { route: routePattern, status: "skipped", reason: "dynamic" };
+        }
         const html = isFallback
-          ? markAppPprDynamicFallbackShellHtml(htmlRender.html)
-          : htmlRender.html;
+          ? markAppPprDynamicFallbackShellHtml(extractedShell.html)
+          : extractedShell.html;
 
         // Reconstruct the RSC payload from the inline bootstrap chunks already
         // streamed into the HTML body. The generated RSC entry performs
@@ -1599,6 +1620,7 @@ export async function prerenderApp({
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
+          ...(extractedShell.postponed ? { postponed: extractedShell.postponed } : {}),
         };
       } catch (e) {
         renderPool?.recordRenderError(e);
@@ -1689,7 +1711,6 @@ export async function prerenderApp({
         buildId: config.buildId,
         trailingSlash: config.trailingSlash,
       });
-
     return {
       routes: results,
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
@@ -1822,6 +1843,7 @@ export function writePrerenderIndex(
         ...(r.headers ? { headers: r.headers } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
+        ...(r.postponed ? { postponed: r.postponed } : {}),
       };
     }
     if (r.status === "skipped") {

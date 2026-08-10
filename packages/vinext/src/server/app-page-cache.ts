@@ -21,7 +21,10 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
-import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
+import {
+  isAppPprDynamicFallbackShellHtml,
+  stripAppPprDynamicFallbackShellMarker,
+} from "./app-ppr-fallback-shell.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -599,6 +602,39 @@ export async function readAppPageFallbackShellCacheResponse(
   } catch (isrReadError) {
     options.isrDebug?.("MISS (fallback shell read error)", options.fallbackPathname);
     console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+    return null;
+  }
+}
+
+export async function readAppPageFallbackShellCacheResume(
+  options: Pick<
+    ReadAppPageFallbackShellCacheResponseOptions,
+    "fallbackPathname" | "isrDebug" | "isrGet" | "isrHtmlKey" | "rewriteHtml"
+  >,
+): Promise<{ html: string; postponed: string } | null> {
+  const isrKey = options.isrHtmlKey(options.fallbackPathname);
+  try {
+    const cached = await options.isrGet(isrKey);
+    const cachedValue = getCachedAppPageValue(cached);
+    if (
+      cached?.isExpired ||
+      !cachedValue ||
+      !cachedValue.postponed ||
+      !isAppPprDynamicFallbackShellHtml(cachedValue.html)
+    ) {
+      return null;
+    }
+    options.isrDebug?.(
+      `${cached?.isStale ? "STALE" : "HIT"} (fallback shell resume)`,
+      options.fallbackPathname,
+    );
+    return {
+      html: options.rewriteHtml(stripAppPprDynamicFallbackShellMarker(cachedValue.html)),
+      postponed: cachedValue.postponed,
+    };
+  } catch (isrReadError) {
+    options.isrDebug?.("MISS (fallback shell resume read error)", options.fallbackPathname);
+    console.error("[vinext] ISR fallback shell resume read error:", isrReadError);
     return null;
   }
 }
