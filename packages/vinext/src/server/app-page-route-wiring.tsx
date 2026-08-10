@@ -256,6 +256,7 @@ type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
+  allowPageLocalPrefetchShell?: boolean;
   interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
   isRscRequest?: boolean;
@@ -1064,9 +1065,14 @@ export function buildAppPageElements<
   const prefetchLoadingComponent = getDefaultExport(prefetchLoadingEntry?.loadingModule);
   const shouldProbePageLocalFallback =
     isPrefetchLoadingShell &&
+    options.allowPageLocalPrefetchShell === true &&
     prefetchLoadingComponent === null &&
     prefetchSlotLoadingEntries.length === 0;
-  const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell;
+  const shouldRenderPrefetchLoadingShell =
+    isPrefetchLoadingShell &&
+    (shouldProbePageLocalFallback ||
+      prefetchLoadingComponent !== null ||
+      prefetchSlotLoadingEntries.length > 0);
   const prefetchLoadingShellMarker = shouldProbePageLocalFallback
     ? APP_PREFETCH_PAGE_SHELL_MARKER_VALUE
     : APP_PREFETCH_LOADING_SHELL_MARKER_VALUE;

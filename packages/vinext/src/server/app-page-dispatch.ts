@@ -88,7 +88,10 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import {
+  VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -355,6 +358,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    mismatchRecoveryPrefetch?: boolean,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -633,7 +637,9 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
 
   const fallbackShell =
     options.pprFallbackShell ??
-    (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+    (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
+    options.isRscRequest &&
+    options.request.headers.get(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER) === "1"
       ? {
           fallbackParamNames: [],
           preserveDynamicMetadata: true,
@@ -653,6 +659,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  const mismatchRecoveryPrefetch =
+    options.isRscRequest &&
+    options.request.headers.get(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER) === "1";
   const serveStreamingMetadata = shouldServeStreamingMetadata(
     options.request.headers.get("user-agent") ?? "",
     options.htmlLimitedBots,
@@ -747,6 +756,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       interceptionContext: options.interceptionContext,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
+      mismatchRecoveryPrefetch,
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
@@ -1070,7 +1080,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const fallbackShellState = options.pprRuntime?.getState() ?? null;
   const isPageLocalPrefetchShell =
     options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
-    options.isRscRequest &&
+    mismatchRecoveryPrefetch &&
     !hasActiveLoadingBoundary;
   let pageLocalPrefetchHasDynamicBoundary = false;
   if (
@@ -1169,6 +1179,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
     interceptionContext: options.interceptionContext,
+    mismatchRecoveryPrefetch,
     expireSeconds: options.expireSeconds,
     // A loading convention at tree position N wraps descendants, but not a
     // layout co-located at N. Probing any deeper async layout before creating

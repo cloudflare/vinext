@@ -653,6 +653,35 @@ describe("app page cache helpers", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
+  it("threads mismatch-recovery prefetches into the persistent RSC cache key", async () => {
+    const isrRscKey = vi.fn(() => "rsc:/cached:mismatch-recovery-prefetch");
+    const isrGet = vi.fn(async () => null);
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {},
+      isRscRequest: true,
+      isrGet,
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey,
+      async isrSet() {},
+      mismatchRecoveryPrefetch: true,
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("read helper should not render directly");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+    });
+
+    expect(response).toBeNull();
+    expect(isrRscKey).toHaveBeenCalledWith("/cached", null, undefined, undefined, true);
+    expect(isrGet).toHaveBeenCalledWith("rsc:/cached:mismatch-recovery-prefetch");
+  });
+
   it("bypasses persistent RSC cache reads for mounted-slot variants", async () => {
     const debugCalls: Array<[string, string]> = [];
     const isrGet = vi.fn();

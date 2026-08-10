@@ -1529,42 +1529,53 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("keeps the page entry for loading-shell prefetches without a route loading boundary", async () => {
-    const elements = buildAppPageElements({
-      element: createElement(PageProbe),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
-      route: {
-        error: null,
-        errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: RootLayout }],
-        loading: null,
-        notFound: null,
-        notFounds: [null],
-        routeSegments: ["dashboard"],
-        templateTreePositions: [],
-        templates: [],
-      },
-      routePath: "/dashboard",
-      rootNotFoundModule: null,
-      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-    });
+  it.each([
+    {
+      allowPageLocalPrefetchShell: false,
+      expectedMarker: undefined,
+      expectedPage: false,
+    },
+    {
+      allowPageLocalPrefetchShell: true,
+      expectedMarker: APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
+      expectedPage: true,
+    },
+  ])(
+    "scopes page-local loading shells to mismatch recovery ($allowPageLocalPrefetchShell)",
+    async ({ allowPageLocalPrefetchShell, expectedMarker, expectedPage }) => {
+      const elements = buildAppPageElements({
+        allowPageLocalPrefetchShell,
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        resolvedMetadata: null,
+        resolvedViewport: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      });
 
-    // The dispatch layer renders this entry through the two-pass PPR path so
-    // React preserves static siblings and selects only active Suspense fallbacks.
-    expect(elements["page:/dashboard"]).toBeDefined();
-    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe(
-      APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
-    );
-    const html = await renderRouteEntry(elements, "route:/dashboard");
+      expect(elements["page:/dashboard"] !== null).toBe(expectedPage);
+      expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe(expectedMarker);
+      const html = await renderRouteEntry(elements, "route:/dashboard");
 
-    expect(html).toContain("Page");
-  });
+      expect(html.includes("Page")).toBe(expectedPage);
+    },
+  );
 
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
     const elements = buildAppPageElements({

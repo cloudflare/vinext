@@ -299,6 +299,22 @@ describe("App Router ISR cache key primitives", () => {
       appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
     ).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
   });
+
+  it("keys mismatch-recovery loading shells separately from ordinary loading shells", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const ordinary = appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+    const recovery = appIsrRscKey(
+      "/feed",
+      null,
+      APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      null,
+      true,
+    );
+
+    expect(recovery).toBe("app:/feed:rsc:prefetch-loading-shell:mismatch-recovery-prefetch");
+    expect(recovery).not.toBe(ordinary);
+  });
 });
 
 describe("normalizeMountedSlotsHeader", () => {

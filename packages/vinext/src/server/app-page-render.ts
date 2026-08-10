@@ -151,6 +151,7 @@ type RenderAppPageLifecycleOptions = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    mismatchRecoveryPrefetch?: boolean,
   ) => string;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
@@ -191,6 +192,7 @@ type RenderAppPageLifecycleOptions = {
   scriptNonce?: string;
   clientReuseManifest?: ClientReuseManifestParseResult;
   skipDisposition?: ClientReuseManifestSkipDisposition;
+  mismatchRecoveryPrefetch?: boolean;
   mountedSlotsHeader?: string | null;
   renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
@@ -960,6 +962,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      mismatchRecoveryPrefetch: options.mismatchRecoveryPrefetch,
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
@@ -1271,6 +1274,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      mismatchRecoveryPrefetch: options.mismatchRecoveryPrefetch,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,

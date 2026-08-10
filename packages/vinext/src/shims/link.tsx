@@ -352,6 +352,8 @@ type ClientMiddlewareMatcherCondition = {
   value?: string;
 };
 
+const INVARIANT_APP_RSC_REQUEST_HEADERS = new Set(["accept", "rsc"]);
+
 function isClientMiddlewareMatcherObject(value: unknown): value is ClientMiddlewareMatcherObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -481,6 +483,25 @@ function middlewareMatcherConditionsMayMatchNavigation(
   return true;
 }
 
+function middlewareMatcherMayDifferBetweenPrefetchAndNavigation(
+  matcher: ClientMiddlewareMatcherObject,
+): boolean {
+  for (const rawCondition of [...(matcher.has ?? []), ...(matcher.missing ?? [])]) {
+    if (!isClientMiddlewareMatcherCondition(rawCondition)) return true;
+    // Query, host, and cookie values are identical for the prefetch and its
+    // navigation. Some request headers are invariant too: every App Router
+    // flight request carries the same RSC and Accept values. Other headers can
+    // differ, most importantly Next-Router-Prefetch.
+    if (
+      rawCondition.type === "header" &&
+      (!rawCondition.key || !INVARIANT_APP_RSC_REQUEST_HEADERS.has(rawCondition.key.toLowerCase()))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function middlewareMayAffectNavigation(target: URL, matcher: unknown): boolean {
   if (matcher === undefined || matcher === null) return false;
   const matchers = typeof matcher === "string" ? [matcher] : matcher;
@@ -522,7 +543,12 @@ function middlewareMayAffectNavigation(target: URL, matcher: unknown): boolean {
       );
     });
     if (!sourceMayMatch) continue;
-    if (middlewareMatcherConditionsMayMatchNavigation(normalized, target)) return true;
+    if (
+      middlewareMatcherMayDifferBetweenPrefetchAndNavigation(normalized) &&
+      middlewareMatcherConditionsMayMatchNavigation(normalized, target)
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -651,6 +677,7 @@ function prefetchUrl(
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+          VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER,
           VINEXT_MOUNTED_SLOTS_HEADER,
         } = headersModule;
         // Hybrid ownership: skip the App RSC prefetch when Pages owns the
@@ -708,6 +735,9 @@ function prefetchUrl(
         });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+        }
+        if (mayMismatchNavigation) {
+          headers.set(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER, "1");
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
         if (__prefetchInlining && mode === "auto" && cacheForNavigation) {
