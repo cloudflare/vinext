@@ -509,6 +509,26 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
   const cachedFn = (...args: TArgs): Promise<TResult> =>
     trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+      // Establish private-cache semantics before doing any work that can fail
+      // while deriving the cache key. A non-serializable argument must not
+      // bypass either the public-parent guard or prerender dynamic tracking.
+      if (cacheVariant === "private") {
+        const parentCtx = cacheContextStorage.getStore();
+        if (parentCtx && parentCtx.variant !== "private") {
+          throwPrivateUseCacheInsidePublicUseCacheError();
+        }
+
+        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
+          // Next.js treats "use cache: private" as dynamic during prerendering:
+          // it is excluded from the static artifact and resolved per request.
+          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+          if (isInsideUnifiedScope()) {
+            getRequestContext().prerenderDataCacheState.privateCacheUsed = true;
+          }
+          markDynamicUsage();
+        }
+      }
+
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
@@ -554,24 +574,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           cacheKey = buildUseCacheKey(id, keySeed, argsKey);
         }
       } catch {
-        // Non-serializable arguments — run without caching
-        return fn(...callArgs);
+        // Non-serializable arguments — run without caching, but retain the
+        // cache scope so nested directives and cache-life propagation keep the
+        // same semantics as serializable calls.
+        return executeWithContext(fn, callArgs, cacheVariant);
       }
 
       // "use cache: private" uses per-request in-memory cache
       if (cacheVariant === "private") {
-        const parentCtx = cacheContextStorage.getStore();
-        if (parentCtx && parentCtx.variant !== "private") {
-          throwPrivateUseCacheInsidePublicUseCacheError();
-        }
-
-        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
-          // Next.js treats "use cache: private" as dynamic during prerendering:
-          // it is excluded from the static artifact and resolved per request.
-          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
-          markDynamicUsage();
-        }
-
         const privateCache = _getPrivateState()._privateCache!;
         const privateHit = privateCache.get(cacheKey);
         if (privateHit !== undefined) {
@@ -892,12 +902,14 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   args: any[],
   variant: string,
 ): Promise<Awaited<ReturnType<T>>> {
-  const {
-    result,
-    ctx: _ctx,
-    effectiveLife,
-  } = await runCachedFunctionWithContext(fn, args, variant);
+  const { result, ctx, effectiveLife } = await runCachedFunctionWithContext(fn, args, variant);
   recordRequestScopedCacheLife(effectiveLife);
+  // Transient executions (dev/draft/private or an uncacheable argument) do not
+  // reach the normal shared-cache MISS publication path. Their tags still
+  // invalidate the enclosing cache/request, exactly as a stored execution's
+  // tags do. The helper deduplicates when runCachedFunctionWithContext already
+  // bubbled them into a parent cache scope.
+  propagateCacheTagsToRequest(ctx.tags);
   return result;
 }
 

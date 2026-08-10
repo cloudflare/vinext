@@ -49,6 +49,22 @@ export type UnifiedRequestContext = {
   // ── next/server after() ───────────────────────────────────────────
   /** Shared lifecycle state for work deferred until the response closes. */
   afterContext: AfterRequestContext;
+
+  // ── build prerender data cache ───────────────────────────────────
+  /**
+   * Shared across nested unified scopes so cache writes created inside a cache
+   * scope observe the outer response's final prerender disposition.
+   */
+  prerenderDataCacheState: {
+    /** Whether this request produced a cacheable artifact. */
+    commit: boolean | null;
+    /** Per-handler transaction finalizers drained after normal after() work. */
+    finalizers: Set<() => Promise<void>>;
+    /** Whether the shared after-drain callback has been registered. */
+    finalizerQueued: boolean;
+    /** Whether this request encountered a `"use cache: private"` boundary. */
+    privateCacheUsed: boolean;
+  };
 } & VinextHeadersShimState &
   I18nState &
   NavigationState &
@@ -126,6 +142,12 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     currentFetchDedupeEntries: new Map(),
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestCache: new WeakMap(),
+    prerenderDataCacheState: {
+      commit: null,
+      finalizers: new Set(),
+      finalizerQueued: false,
+      privateCacheUsed: false,
+    },
     afterContext: {
       callbacks: [],
       responseClosed: false,
@@ -376,7 +398,8 @@ export function runWithUnifiedStateMutation<T>(
 
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
-  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
+  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren,
+  // prerenderDataCacheState), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
   // cacheableFetchUrls, dynamicFetchUrls),
   // Map fields (unstableCacheObservations, _privateCache),

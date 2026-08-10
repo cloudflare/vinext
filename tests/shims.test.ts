@@ -7268,6 +7268,36 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("marks private prerenders dynamic before a non-serializable cache key fails", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      const requestContext = createRequestContext();
+      await runWithRequestContext(requestContext, async () => {
+        let calls = 0;
+        const cached = registerCachedFunction(
+          async (_value: symbol) => ++calls,
+          "test:private-prerender-nonserializable",
+          "private",
+        );
+
+        await expect(cached(Symbol("first"))).resolves.toBe(1);
+        await expect(cached(Symbol("second"))).resolves.toBe(2);
+        expect(consumeDynamicUsage()).toBe(true);
+        expect(requestContext.prerenderDataCacheState.privateCacheUsed).toBe(true);
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
   it('rejects "use cache: private" nested inside public "use cache"', async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -7297,6 +7327,37 @@ describe('"use cache" runtime', () => {
       } finally {
         setHeadersContext(null);
       }
+    });
+  });
+
+  it("rejects private cache nested inside a public cache with a non-serializable key", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const handler = new MemoryCacheHandler();
+    const set = vi.spyOn(handler, "set");
+    setCacheHandler(handler);
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      let innerCalls = 0;
+      const inner = registerCachedFunction(
+        async () => ++innerCalls,
+        "test:private-nonserializable-inner",
+        "private",
+      );
+      const outer = registerCachedFunction(
+        async (_value: symbol) => inner(),
+        "test:private-nonserializable-outer",
+      );
+
+      await expect(outer(Symbol("request"))).rejects.toThrow(
+        /"use cache: private" must not be used within "use cache"/,
+      );
+      expect(innerCalls).toBe(0);
+      expect(set).not.toHaveBeenCalled();
     });
   });
 
@@ -7504,6 +7565,29 @@ describe('"use cache" runtime', () => {
     await cached(() => {});
     await cached(() => {});
     expect(callCount).toBe(2);
+  });
+
+  it("propagates and deduplicates tags from non-serializable cache calls", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    const requestContext = createRequestContext();
+
+    await runWithRequestContext(requestContext, async () => {
+      const cached = registerCachedFunction(async (_value: symbol) => {
+        cacheTag("transient-tag", "transient-tag");
+        return "ok";
+      }, "test:nonserializable-tags");
+
+      await cached(Symbol("first"));
+      await cached(Symbol("second"));
+    });
+
+    expect(requestContext.currentRequestTags).toEqual(["transient-tag"]);
   });
 
   it("produces different cache entries for Promise-augmented params with different values", async () => {
