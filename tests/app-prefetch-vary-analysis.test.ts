@@ -4,7 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { toLinkPrefetchRoute } from "../packages/vinext/src/entries/app-browser-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
-import { resolveAppPrefetchSharedCacheKey } from "../packages/vinext/src/shims/internal/app-route-prefetch-policy.js";
+import {
+  learnAppPrefetchVaryMetadata,
+  resolveAutoAppRoutePrefetch,
+  resolveAppPrefetchSharedCacheKey,
+} from "../packages/vinext/src/shims/internal/app-route-prefetch-policy.js";
 
 // Ported from Next.js:
 // test/e2e/app-dir/segment-cache/vary-params/vary-params.test.ts
@@ -52,94 +56,74 @@ afterEach(() => {
 });
 
 describe("App Router prefetch vary analysis", () => {
-  it("tracks page params independently from layout params", () => {
-    const layoutPath = writeSource(
-      "layout.tsx",
-      `export default async function Layout({ children, params }) {
-        const { category, itemId } = await params;
-        return <div>{category}:{itemId}{children}</div>;
-      }`,
-    );
+  it("detects explicit runtime-prefetch capability without inferring dependencies", () => {
     const pagePath = writeSource(
       "page.tsx",
-      `export default async function Page({ params }) {
-        const { category } = await params;
+      `import { readCategory } from "./helper";
+      export const unstable_instant = { prefetch: "runtime", samples: [] };
+      export default async function Page({ params }) {
+        const category = await readCategory(params);
         return <div>{category}</div>;
       }`,
     );
-
-    const route = toLinkPrefetchRoute(
-      createRoute({ layouts: [layoutPath], loadingPath: "/tmp/loading.tsx", pagePath }),
-    );
-    expect(route.loadingShellVaryParamNames).toEqual(["category", "itemId"]);
-    expect(route.prefetchVaryParamNames).toEqual(["category"]);
-  });
-
-  it("separates generateMetadata access from a static page body", () => {
-    const pagePath = writeSource(
-      "page.tsx",
-      `export async function generateMetadata({ params }) {
-        const { itemId } = await params;
-        return { title: itemId };
-      }
-      export function generateStaticParams() { return []; }
-      export default function Page() { return <div>static</div>; }`,
-    );
-
-    const route = toLinkPrefetchRoute(createRoute({ loadingPath: "/tmp/loading.tsx", pagePath }));
-    expect(route.canPrefetchStaticRoute).toBe(true);
-    expect(route.loadingShellVaryParamNames).toEqual(["itemId"]);
-    expect(route.prefetchVaryParamNames).toBeUndefined();
-  });
-
-  it("tracks only params accessed before connection for runtime prefetches", () => {
-    const pagePath = writeSource(
-      "page.tsx",
-      `import { connection } from "next/server";
-      export const unstable_instant = { prefetch: "runtime", samples: [] };
-      export default async function Page({ params }) {
-        const { category } = await params;
-        await connection();
-        const { itemId } = await params;
-        return <div>{category}:{itemId}</div>;
-      }`,
-    );
-
     const route = toLinkPrefetchRoute(createRoute({ pagePath }));
     expect(route.canPrefetchRuntimeShell).toBe(true);
-    expect(route.runtimePrefetchVaryParamNames).toEqual(["category"]);
+    expect(route.prefetchVaryParamNames).toBeUndefined();
+    expect(route.runtimePrefetchVaryParamNames).toBeUndefined();
   });
 
-  it("does not treat static searchParams text as query access", () => {
+  it("detects generateStaticParams capability from the page or a layout", () => {
     const pagePath = writeSource(
       "page.tsx",
-      `export default function Page() { return <div>searchParams are not accessed</div>; }`,
+      `export function generateStaticParams() { return []; }
+      export default function Page() { return <div>static</div>; }`,
     );
-    const route = toLinkPrefetchRoute(
-      createRoute({ isDynamic: false, pagePath, params: [], patternParts: ["static"] }),
+    const layoutPath = writeSource(
+      "layout.tsx",
+      `export async function generateStaticParams() { return []; }
+      export default function Layout({ children }) { return children; }`,
     );
-    expect(route.prefetchVarySearchParams).toBeUndefined();
+    expect(toLinkPrefetchRoute(createRoute({ pagePath })).canPrefetchStaticRoute).toBe(true);
+    expect(toLinkPrefetchRoute(createRoute({ layouts: [layoutPath] })).canPrefetchStaticRoute).toBe(
+      true,
+    );
   });
 
-  it("tracks searchParams and optional catch-all reflection", () => {
-    const pagePath = writeSource(
-      "page.tsx",
-      `export default async function Page({ params, searchParams }) {
-        const resolved = await params;
-        const copied = { ...resolved };
-        const query = await searchParams;
-        return <div>{copied.slug}:{query.q}</div>;
-      }`,
-    );
-    const route = toLinkPrefetchRoute(
-      createRoute({ pagePath, params: ["slug"], patternParts: [":slug*"] }),
-    );
-    expect(route.prefetchVaryParamNames).toEqual(["slug"]);
-    expect(route.prefetchVarySearchParams).toBe(true);
+  it("prefetches the loading shell for partially static dynamic routes", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: { href: "http://localhost/", origin: "http://localhost" },
+      __VINEXT_PREFETCH_VARY_ENABLED__: true,
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        {
+          canPrefetchLoadingShell: true,
+          canPrefetchStaticRoute: true,
+          isDynamic: true,
+          patternParts: ["items", ":category", ":itemId"],
+        },
+      ],
+    };
+    try {
+      expect(resolveAutoAppRoutePrefetch("/items/books/one")).toMatchObject({
+        cacheForNavigation: false,
+        renderLoadingShell: true,
+      });
+    } finally {
+      if (originalWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = originalWindow;
+    }
   });
 
   it("keys concrete prefetches only by observed params and search", () => {
     const originalWindow = globalThis.window;
+    const originalFlags = {
+      cacheComponents: process.env.__NEXT_CACHE_COMPONENTS,
+      optimisticRouting: process.env.__VINEXT_OPTIMISTIC_ROUTING,
+      varyParams: process.env.__VINEXT_VARY_PARAMS,
+    };
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    process.env.__VINEXT_OPTIMISTIC_ROUTING = "true";
+    process.env.__VINEXT_VARY_PARAMS = "true";
     (globalThis as any).window = {
       location: { href: "http://localhost/", origin: "http://localhost" },
       __VINEXT_LINK_PREFETCH_ROUTES__: [
@@ -164,6 +148,107 @@ describe("App Router prefetch vary analysis", () => {
         "items/:category/:itemId\0items/books/two",
       );
     } finally {
+      if (originalFlags.cacheComponents === undefined) delete process.env.__NEXT_CACHE_COMPONENTS;
+      else process.env.__NEXT_CACHE_COMPONENTS = originalFlags.cacheComponents;
+      if (originalFlags.optimisticRouting === undefined)
+        delete process.env.__VINEXT_OPTIMISTIC_ROUTING;
+      else process.env.__VINEXT_OPTIMISTIC_ROUTING = originalFlags.optimisticRouting;
+      if (originalFlags.varyParams === undefined) delete process.env.__VINEXT_VARY_PARAMS;
+      else process.env.__VINEXT_VARY_PARAMS = originalFlags.varyParams;
+      if (originalWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = originalWindow;
+    }
+  });
+
+  it("learns render-observed vary metadata on the matching route", () => {
+    const originalWindow = globalThis.window;
+    const originalFlags = {
+      cacheComponents: process.env.__NEXT_CACHE_COMPONENTS,
+      optimisticRouting: process.env.__VINEXT_OPTIMISTIC_ROUTING,
+      varyParams: process.env.__VINEXT_VARY_PARAMS,
+    };
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    process.env.__VINEXT_OPTIMISTIC_ROUTING = "true";
+    process.env.__VINEXT_VARY_PARAMS = "true";
+    const route = createRoute();
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/items/books/one",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [route],
+    };
+    try {
+      learnAppPrefetchVaryMetadata("/items/books/one", {
+        loadingParamNames: ["category", "itemId"],
+        metadataParamNames: [],
+        metadataSearchParams: true,
+        pageDynamicSuspenseOrdinals: [],
+        pageParamNames: ["category"],
+        pageSearchParams: false,
+      });
+      expect(route).toMatchObject({
+        loadingShellVaryParamNames: ["category", "itemId"],
+        loadingShellVarySearchParams: true,
+        prefetchVaryParamNames: ["category"],
+        runtimePrefetchVaryParamNames: ["category"],
+        runtimePrefetchVarySearchParams: true,
+      });
+      expect(resolveAppPrefetchSharedCacheKey("/items/books/one?q=1", "navigation")).toBe(
+        resolveAppPrefetchSharedCacheKey("/items/books/one?q=2", "navigation"),
+      );
+      expect(resolveAppPrefetchSharedCacheKey("/items/books/one?q=1", "loading-shell")).not.toBe(
+        resolveAppPrefetchSharedCacheKey("/items/books/one?q=2", "loading-shell"),
+      );
+    } finally {
+      if (originalFlags.cacheComponents === undefined) delete process.env.__NEXT_CACHE_COMPONENTS;
+      else process.env.__NEXT_CACHE_COMPONENTS = originalFlags.cacheComponents;
+      if (originalFlags.optimisticRouting === undefined)
+        delete process.env.__VINEXT_OPTIMISTIC_ROUTING;
+      else process.env.__VINEXT_OPTIMISTIC_ROUTING = originalFlags.optimisticRouting;
+      if (originalFlags.varyParams === undefined) delete process.env.__VINEXT_VARY_PARAMS;
+      else process.env.__VINEXT_VARY_PARAMS = originalFlags.varyParams;
+      if (originalWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = originalWindow;
+    }
+  });
+
+  it.each([
+    ["cacheComponents", "__NEXT_CACHE_COMPONENTS"],
+    ["optimisticRouting", "__VINEXT_OPTIMISTIC_ROUTING"],
+    ["varyParams", "__VINEXT_VARY_PARAMS"],
+  ] as const)("keeps vary behavior off without %s", (_name, disabledFlag) => {
+    const originalWindow = globalThis.window;
+    const originalFlags = {
+      __NEXT_CACHE_COMPONENTS: process.env.__NEXT_CACHE_COMPONENTS,
+      __VINEXT_OPTIMISTIC_ROUTING: process.env.__VINEXT_OPTIMISTIC_ROUTING,
+      __VINEXT_VARY_PARAMS: process.env.__VINEXT_VARY_PARAMS,
+    };
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    process.env.__VINEXT_OPTIMISTIC_ROUTING = "true";
+    process.env.__VINEXT_VARY_PARAMS = "true";
+    process.env[disabledFlag] = "false";
+    const route = createRoute();
+    (globalThis as any).window = {
+      location: { href: "http://localhost/", origin: "http://localhost" },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [route],
+    };
+    try {
+      learnAppPrefetchVaryMetadata("/items/books/one", {
+        loadingParamNames: ["category"],
+        metadataParamNames: [],
+        metadataSearchParams: false,
+        pageDynamicSuspenseOrdinals: [],
+        pageParamNames: ["category"],
+        pageSearchParams: false,
+      });
+      expect(resolveAppPrefetchSharedCacheKey("/items/books/one", "navigation")).toBeNull();
+      expect(route).not.toHaveProperty("prefetchVaryParamNames");
+    } finally {
+      for (const [key, value] of Object.entries(originalFlags)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       if (originalWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = originalWindow;
     }

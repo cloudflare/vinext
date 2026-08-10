@@ -9,7 +9,13 @@ import {
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
+  runWithConnectionProbe,
 } from "../packages/vinext/src/shims/headers.js";
+import { connection } from "../packages/vinext/src/shims/server.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 // Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
 // converts raw null-prototype params into objects that work with both
@@ -33,6 +39,35 @@ async function registerCachedProbePage<TProps extends Record<string, unknown>, T
 }
 
 describe("app page probe helpers", () => {
+  it("reports the Suspense boundary interrupted by connection through an imported helper", async () => {
+    const observed: number[] = [];
+
+    async function importedHelper(): Promise<void> {
+      await connection();
+    }
+
+    async function DynamicChild() {
+      await importedHelper();
+      return React.createElement("div", null, "dynamic");
+    }
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      const result = await runWithConnectionProbe(() =>
+        probeReactServerSubtree(
+          React.createElement(
+            React.Suspense,
+            { fallback: React.createElement("p", null, "loading") },
+            React.createElement(DynamicChild),
+          ),
+          { onDynamicSuspenseBoundary: (ordinal) => observed.push(ordinal) },
+        ),
+      );
+      expect(result.completed).toBe(false);
+    });
+
+    expect(observed).toEqual([0]);
+  });
+
   it("probes server components returned below a layout result", async () => {
     const calls: string[] = [];
 
@@ -634,6 +669,39 @@ describe("probeAppPage", () => {
 
     expect(received).toBeDefined();
     expect(Object.keys(received ?? {})).toEqual([]);
+  });
+
+  it("observes awaiting searchParams even when no resolved property is read", async () => {
+    const onSearchParamsAccess = vi.fn();
+    async function Page(props: { searchParams: Promise<Record<string, unknown>> }) {
+      await props.searchParams;
+    }
+
+    await probeAppPage({
+      pageComponent: Page,
+      asyncRouteParams: makeThenableParams({}),
+      onSearchParamsAccess,
+      searchParams: new URLSearchParams("q=hello"),
+    });
+
+    expect(onSearchParamsAccess).toHaveBeenCalled();
+  });
+
+  it("observes properties destructured from awaited searchParams", async () => {
+    const onSearchParamsAccess = vi.fn();
+    async function Page(props: { searchParams: Promise<{ q?: string }> }) {
+      const { q } = await props.searchParams;
+      return q;
+    }
+
+    await probeAppPage({
+      pageComponent: Page,
+      asyncRouteParams: makeThenableParams({}),
+      onSearchParamsAccess,
+      searchParams: new URLSearchParams("q=hello"),
+    });
+
+    expect(onSearchParamsAccess).toHaveBeenCalled();
   });
 
   it("does not mark dynamic when a cached page probe only derives its cache key", async () => {

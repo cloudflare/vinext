@@ -1,4 +1,5 @@
-import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
+import { Fragment, isValidElement, Suspense, type ReactElement, type ReactNode } from "react";
+import { runWithConnectionProbeBoundary } from "vinext/shims/headers";
 import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
 import { isNextRouterError } from "vinext/shims/navigation-server";
 import { collectAppPageSearchParams } from "./app-page-head.js";
@@ -22,6 +23,7 @@ const REACT_CLIENT_REFERENCE_TYPE = Symbol.for("react.client.reference");
 type ProbeReactServerSubtreeOptions = Readonly<{
   maxDepth?: number;
   maxNodes?: number;
+  onDynamicSuspenseBoundary?: (ordinal: number) => void;
 }>;
 
 type ProbeReactElementProps = Readonly<{
@@ -130,6 +132,7 @@ export async function probeReactServerSubtree(
   const maxDepth = options.maxDepth ?? DEFAULT_SUBTREE_PROBE_MAX_DEPTH;
   const maxNodes = options.maxNodes ?? DEFAULT_SUBTREE_PROBE_MAX_NODES;
   let visitedNodes = 0;
+  let suspenseOrdinal = 0;
 
   const enterProbeNode = (depth: number): void => {
     if (depth > maxDepth) {
@@ -208,6 +211,14 @@ export async function probeReactServerSubtree(
       return;
     }
 
+    if (value.type === Suspense) {
+      const ordinal = suspenseOrdinal++;
+      await runWithConnectionProbeBoundary(ordinal, options.onDynamicSuspenseBoundary, () =>
+        visit(value.props.children, depth + 1),
+      );
+      return;
+    }
+
     if (await renderElementType(value.type, value.props, depth)) {
       return;
     }
@@ -218,9 +229,12 @@ export async function probeReactServerSubtree(
   await visit(node, 0);
 }
 
-async function probeReactServerSubtreeForDynamicUsage(node: unknown): Promise<void> {
+async function probeReactServerSubtreeForDynamicUsage(
+  node: unknown,
+  onDynamicSuspenseBoundary?: (ordinal: number) => void,
+): Promise<void> {
   try {
-    await probeReactServerSubtree(node);
+    await probeReactServerSubtree(node, { onDynamicSuspenseBoundary });
   } catch (error) {
     if (isNextRouterError(error)) {
       return;
@@ -249,6 +263,8 @@ async function probeReactServerSubtreeForDynamicUsage(node: unknown): Promise<vo
 export function probeAppPage(options: {
   pageComponent: unknown;
   asyncRouteParams: unknown;
+  onSearchParamsAccess?: () => void;
+  onDynamicSuspenseBoundary?: (ordinal: number) => void;
   searchParams: URLSearchParams | null | undefined;
 }): unknown {
   const { pageComponent, asyncRouteParams, searchParams } = options;
@@ -257,6 +273,7 @@ export function probeAppPage(options: {
   }
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
   const asyncSearchParams = makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+    onAccess: options.onSearchParamsAccess,
     observeReactPromiseStatus: true,
   });
   const pageProps = markAppPagePropsForUseCache({
@@ -266,12 +283,14 @@ export function probeAppPage(options: {
   const result = (pageComponent as (props: Record<string, unknown>) => unknown)(pageProps);
   if (isPromiseLike(result)) {
     return result.then(async (resolved) => {
-      await probeReactServerSubtreeForDynamicUsage(resolved);
+      await probeReactServerSubtreeForDynamicUsage(resolved, options.onDynamicSuspenseBoundary);
       return resolved;
     });
   }
   if (isValidElement(result) || Array.isArray(result)) {
-    return probeReactServerSubtreeForDynamicUsage(result).then(() => result);
+    return probeReactServerSubtreeForDynamicUsage(result, options.onDynamicSuspenseBoundary).then(
+      () => result,
+    );
   }
   return result;
 }
@@ -366,6 +385,8 @@ export function buildAppPageProbes(options: {
   /** Fallback raw params used when an interception match omits its own. */
   matchedParams: unknown;
   makeThenableParams: (params: unknown) => unknown;
+  onDynamicSuspenseBoundary?: (ordinal: number) => void;
+  onSearchParamsAccess?: () => void;
 }): Promise<unknown>[] {
   const { route, pageComponent, asyncRouteParams, searchParams, matchedParams } = options;
 
@@ -373,7 +394,15 @@ export function buildAppPageProbes(options: {
   // route renders normally, so ignore any interception match entirely.
   const intercept = options.isRscRequest ? options.intercept : null;
 
-  const probes: unknown[] = [probeAppPage({ pageComponent, asyncRouteParams, searchParams })];
+  const probes: unknown[] = [
+    probeAppPage({
+      pageComponent,
+      asyncRouteParams,
+      onDynamicSuspenseBoundary: options.onDynamicSuspenseBoundary,
+      onSearchParamsAccess: options.onSearchParamsAccess,
+      searchParams,
+    }),
+  ];
 
   // A slot whose page is replaced by an active interception override does not
   // render its own `page.tsx`; the interception page (probed below) renders in
@@ -391,6 +420,8 @@ export function buildAppPageProbes(options: {
       probeAppPage({
         pageComponent: slot?.page?.default,
         asyncRouteParams,
+        onDynamicSuspenseBoundary: options.onDynamicSuspenseBoundary,
+        onSearchParamsAccess: options.onSearchParamsAccess,
         searchParams,
       }),
     );
@@ -412,6 +443,8 @@ export function buildAppPageProbes(options: {
       probeAppPage({
         pageComponent: intercept.page?.default,
         asyncRouteParams: options.makeThenableParams(intercept.matchedParams ?? matchedParams),
+        onDynamicSuspenseBoundary: options.onDynamicSuspenseBoundary,
+        onSearchParamsAccess: options.onSearchParamsAccess,
         searchParams,
       }),
     );

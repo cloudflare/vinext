@@ -161,7 +161,10 @@ import {
   installAppNavigationFailureListeners,
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
-import { resolveAppPrefetchSharedCacheKey } from "vinext/shims/internal/app-route-prefetch-policy";
+import {
+  isAppPrefetchVaryEnabled,
+  resolveAppPrefetchSharedCacheKey,
+} from "vinext/shims/internal/app-route-prefetch-policy";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -181,6 +184,7 @@ import {
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
+  prepareOptimisticRouteTemplate,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
@@ -483,22 +487,29 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
   );
   const preservePageElements =
-    options.entry.cacheForNavigation === false && options.entry.optimisticRouteShell !== true;
+    isAppPrefetchVaryEnabled() &&
+    options.entry.cacheForNavigation === false &&
+    options.entry.optimisticRouteShell !== true;
   const variantKey = preservePageElements
     ? (options.entry.runtimeTemplateVariantKey ?? options.entry.sharedCacheKey ?? null)
     : null;
-  const template = createOptimisticRouteTemplate({
+  let template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
     basePath: __basePath,
+    dynamicSuspenseOrdinals: preservePageElements
+      ? options.entry.snapshot.prefetchVary?.pageDynamicSuspenseOrdinals
+      : undefined,
     elements,
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
     preservePageElements,
     routeManifest: options.routeManifest,
-    runtimeLoadingFallback: preservePageElements ? options.entry.runtimeLoadingFallback : null,
     variantKey,
   });
+  if (template?.preservePageElements === true) {
+    template = await prepareOptimisticRouteTemplate(template);
+  }
   if (template === null) return false;
 
   optimisticRouteTemplates.set(
@@ -1801,10 +1812,9 @@ function bootstrapHydration(
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
             : null;
         const targetPathAndSearch = url.pathname + url.search;
-        const sharedPrefetchCacheKey = resolveAppPrefetchSharedCacheKey(url.href, "navigation");
-        const runtimeTemplateVariantKey = `${
-          resolveAppPrefetchSharedCacheKey(url.href, "runtime") ?? ""
-        }\0${resolveAppPrefetchSharedCacheKey(url.href, "loading-shell") ?? ""}`;
+        const runtimeTemplateVariantKey = isAppPrefetchVaryEnabled()
+          ? `${resolveAppPrefetchSharedCacheKey(url.href, "runtime") ?? ""}\0${resolveAppPrefetchSharedCacheKey(url.href, "loading-shell") ?? ""}`
+          : null;
         const additionalPrefetchPathAndSearch =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref
             ? [rewrittenNavigationHref]
@@ -1876,7 +1886,6 @@ function bootstrapHydration(
               {
                 additionalRscUrls: additionalPrefetchRscUrls,
                 notifyInvalidation: false,
-                sharedCacheKey: sharedPrefetchCacheKey,
               },
             ));
         const reuseDecision = navigationPlanner.classifyNavigationReuse({
@@ -1995,10 +2004,7 @@ function bootstrapHydration(
                 targetPathAndSearch,
                 requestInterceptionContext,
                 mountedSlotsHeader,
-                {
-                  additionalRscUrls: additionalPrefetchPathAndSearch,
-                  sharedCacheKey: sharedPrefetchCacheKey,
-                },
+                { additionalRscUrls: additionalPrefetchPathAndSearch },
               )
             : await consumePrefetchResponseForNavigation(
                 rscUrl,
@@ -2006,7 +2012,6 @@ function bootstrapHydration(
                 mountedSlotsHeader,
                 {
                   additionalRscUrls: additionalPrefetchRscUrls,
-                  sharedCacheKey: sharedPrefetchCacheKey,
                   shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
                 },
               );

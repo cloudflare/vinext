@@ -2078,6 +2078,8 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      optimisticRouting: false,
+      varyParams: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,

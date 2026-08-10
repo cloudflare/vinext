@@ -205,6 +205,9 @@ window.__VINEXT_APP_LOADER__ = appLoader;
 // when the user lands on an App Router page (see app-browser-entry.ts) — the
 // two writes do not race because only one entry executes per page load.
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
+window.__VINEXT_PREFETCH_VARY_ENABLED__ = ${JSON.stringify(
+    nextConfig.cacheComponents && nextConfig.varyParams && nextConfig.optimisticRouting,
+  )};
 // Pages route manifest, exposed so the App Router runtime can decide when
 // a soft-navigated URL is actually owned by Pages (and must hard-navigate
 // instead of issuing an RSC request). Set here AND in app-browser-entry.ts

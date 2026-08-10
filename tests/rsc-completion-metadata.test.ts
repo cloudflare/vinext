@@ -183,7 +183,7 @@ describe("RSC completion metadata", () => {
   });
 
   it("rejects oversized footer frames in buffered and streaming decoders", async () => {
-    const oversized = new Uint8Array(257);
+    const oversized = new Uint8Array(4097);
     oversized.set([0xff, 0x00]);
 
     expect(() => extractRscCompletionMetadata(oversized.buffer)).toThrow(

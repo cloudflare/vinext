@@ -13,6 +13,7 @@ import type { AppPageSearchParams } from "./app-page-head.js";
 
 type AppPageSearchParamsObservationOptions = {
   markDynamic?: boolean;
+  onAccess?: () => void;
   observeReactPromiseStatus?: boolean;
 };
 
@@ -29,9 +30,12 @@ export function createAppPageSearchParamsObserver(
   options: AppPageSearchParamsObservationOptions = {},
 ): ThenableParamsObserver {
   return {
+    observeAwaitedProperties: true,
     observeParamAccess() {
+      options.onAccess?.();
       markAppPageSearchParamsAccess(options.markDynamic !== false);
     },
+    observePromiseContinuation: true,
   };
 }
 

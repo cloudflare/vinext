@@ -9,7 +9,10 @@
  * React module while `navigation.ts` must stay importable without React —
  * mirrors the layering of `internal/app-route-detection.ts`.
  */
-import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
+import type {
+  VinextLinkPrefetchRoute,
+  VinextPrefetchVaryMetadata,
+} from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
@@ -26,6 +29,21 @@ declare global {
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
+
+export function isAppPrefetchVaryEnabled(): boolean {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.__VINEXT_PREFETCH_VARY_ENABLED__ === "boolean"
+  ) {
+    return window.__VINEXT_PREFETCH_VARY_ENABLED__;
+  }
+  const enabled = (value: unknown) => value === true || value === "true";
+  return (
+    enabled(process.env.__NEXT_CACHE_COMPONENTS) &&
+    enabled(process.env.__VINEXT_VARY_PARAMS) &&
+    enabled(process.env.__VINEXT_OPTIMISTIC_ROUTING)
+  );
+}
 
 /**
  * How an App Router prefetch for a given href should behave: whether to issue
@@ -46,7 +64,6 @@ export type AppRoutePrefetchPolicy = {
   prefetchShellFirst: boolean;
   /** Render only the nearest loading boundary instead of the route's prefetchable body. */
   renderLoadingShell: boolean;
-  runtimeLoadingFallback?: VinextLinkPrefetchRoute["runtimePrefetchLoadingFallback"];
   shouldPrefetch: boolean;
 };
 
@@ -80,6 +97,63 @@ function encodePrefetchParamValue(value: string | string[] | undefined): string 
   return encodeURIComponent(value ?? "");
 }
 
+function mergeVaryParamNames(
+  current: readonly string[] | undefined,
+  observed: readonly string[],
+): string[] | undefined {
+  if (current === undefined && observed.length === 0) return undefined;
+  return Array.from(new Set([...(current ?? []), ...observed])).sort();
+}
+
+/**
+ * Teach the client route manifest the dependency set observed by a completed
+ * server prefetch render. Observations are monotonic: a later conditional
+ * render can add a dependency but can never make an earlier dependency safe to
+ * forget.
+ */
+export function learnAppPrefetchVaryMetadata(
+  href: string,
+  metadata: VinextPrefetchVaryMetadata,
+): void {
+  if (!isAppPrefetchVaryEnabled() || typeof window === "undefined") return;
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) return;
+
+  let url: URL;
+  try {
+    url = new URL(href, window.location.href);
+  } catch {
+    return;
+  }
+  if (url.origin !== window.location.origin) return;
+
+  const routeHref = `${stripBasePath(url.pathname, __basePath)}${url.search}`;
+  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
+  if (!match) return;
+
+  const route = match.route;
+  route.loadingShellVaryParamNames = mergeVaryParamNames(
+    route.loadingShellVaryParamNames,
+    metadata.loadingParamNames,
+  );
+  route.metadataVaryParamNames = mergeVaryParamNames(
+    route.metadataVaryParamNames,
+    metadata.metadataParamNames,
+  );
+  route.prefetchVaryParamNames = mergeVaryParamNames(
+    route.prefetchVaryParamNames,
+    metadata.pageParamNames,
+  );
+  route.runtimePrefetchVaryParamNames = mergeVaryParamNames(route.runtimePrefetchVaryParamNames, [
+    ...metadata.pageParamNames,
+  ]);
+  route.prefetchVarySearchParams ||= metadata.pageSearchParams;
+  route.loadingShellVarySearchParams ||= metadata.metadataSearchParams;
+  route.metadataVarySearchParams ||= metadata.metadataSearchParams;
+  route.runtimePrefetchVarySearchParams ||=
+    metadata.pageSearchParams || metadata.metadataSearchParams;
+}
+
 /**
  * Resolve the route-pattern cache identity for a prefetch segment. Only params
  * observed before a runtime boundary contribute values; all others remain
@@ -87,8 +161,9 @@ function encodePrefetchParamValue(value: string | string[] | undefined): string 
  */
 export function resolveAppPrefetchSharedCacheKey(
   href: string,
-  kind: "loading-shell" | "navigation" | "runtime",
+  kind: "loading-shell" | "metadata" | "navigation" | "runtime",
 ): string | null {
+  if (!isAppPrefetchVaryEnabled()) return null;
   if (typeof window === "undefined") return null;
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes) return null;
@@ -109,9 +184,11 @@ export function resolveAppPrefetchSharedCacheKey(
   const varyParamNames =
     kind === "loading-shell"
       ? route.loadingShellVaryParamNames
-      : kind === "runtime"
-        ? route.runtimePrefetchVaryParamNames
-        : route.prefetchVaryParamNames;
+      : kind === "metadata"
+        ? route.metadataVaryParamNames
+        : kind === "runtime"
+          ? route.runtimePrefetchVaryParamNames
+          : route.prefetchVaryParamNames;
   const varyParams = new Set(varyParamNames ?? []);
   const keyParts = route.patternParts.map((part) => {
     if (!part.startsWith(":")) return part;
@@ -119,11 +196,15 @@ export function resolveAppPrefetchSharedCacheKey(
     return varyParams.has(name) ? encodePrefetchParamValue(match.params[name]) : `:${name}`;
   });
   const search =
-    kind === "runtime" && route.runtimePrefetchVarySearchParams === true
+    kind === "loading-shell" && route.loadingShellVarySearchParams === true
       ? url.search
-      : kind === "navigation" && route.prefetchVarySearchParams === true
+      : kind === "metadata" && route.metadataVarySearchParams === true
         ? url.search
-        : "";
+        : kind === "runtime" && route.runtimePrefetchVarySearchParams === true
+          ? url.search
+          : kind === "navigation" && route.prefetchVarySearchParams === true
+            ? url.search
+            : "";
   return `${route.patternParts.join("/")}\0${keyParts.join("/")}${search}`;
 }
 
@@ -144,7 +225,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
   const route = match.route;
-  if (route.canPrefetchRuntimeShell) {
+  if (isAppPrefetchVaryEnabled() && route.canPrefetchRuntimeShell) {
     return {
       cacheForNavigation: false,
       fallbackTtl: "static",
@@ -153,12 +234,15 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
       honorDynamicStaleTime: false,
       prefetchShellFirst: false,
       renderLoadingShell: false,
-      runtimeLoadingFallback: route.runtimePrefetchLoadingFallback,
       shouldPrefetch: true,
     };
   }
-  if (route.canPrefetchStaticRoute) {
-    const requiresDynamicNavigationRequest = route.requiresDynamicNavigationRequest === true;
+  if (isAppPrefetchVaryEnabled() && route.canPrefetchStaticRoute) {
+    const requiresDynamicNavigationRequest =
+      route.requiresDynamicNavigationRequest === true ||
+      (route.isDynamic &&
+        route.canPrefetchLoadingShell &&
+        route.canPrefetchFullStaticRoute !== true);
     return {
       cacheForNavigation: !requiresDynamicNavigationRequest,
       fallbackTtl: "static",

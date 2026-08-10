@@ -165,6 +165,8 @@ type AppRouterConfig = {
   globalNotFound?: boolean;
   /** Enables Next.js Cache Components semantics for App Router document HTML. */
   cacheComponents?: boolean;
+  /** Enable render-observed segment prefetch variation metadata. */
+  prefetchVaryEnabled?: boolean;
   /** Resolved `experimental.prefetchInlining` thresholds. */
   prefetchInlining?: PrefetchInliningConfig;
   /** Whether the RSC build discovered any server references. Defaults to true. */
@@ -230,6 +232,7 @@ export function generateRscEntry(
   const cacheMaxMemorySize = config?.cacheMaxMemorySize;
   const inlineCss = config?.inlineCss === true;
   const cacheComponents = config?.cacheComponents === true;
+  const prefetchVaryEnabled = cacheComponents && config?.prefetchVaryEnabled === true;
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
   const i18nConfig = config?.i18n ?? null;
@@ -801,7 +804,6 @@ export default createAppRscHandler({
       routePatternParts: route.patternParts,
       routeSegments: route.routeSegments,
     });
-    const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
       ensureRouteLoaded: __ensureRouteLoaded,
@@ -835,6 +837,7 @@ export default createAppRscHandler({
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+      prefetchVaryEnabled: ${JSON.stringify(prefetchVaryEnabled)},
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       findIntercept(pathname) {
@@ -892,7 +895,7 @@ export default createAppRscHandler({
           route,
         });
       },
-      async probePage(probeSearchParams = searchParams) {
+      async probePage(probeSearchParams = searchParams, layoutParamAccess) {
         const __probeIntercept = findIntercept(interceptionPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
@@ -905,12 +908,26 @@ export default createAppRscHandler({
         return Promise.all(__buildAppPageProbes({
           route,
           pageComponent: PageComponent,
-          asyncRouteParams: _asyncRouteParams,
+          asyncRouteParams: makeThenableParams(
+            params,
+            layoutParamAccess?.createPageParamsObserver(route.params ?? undefined),
+          ),
           searchParams: probeSearchParams,
           intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,
-          makeThenableParams,
+          makeThenableParams(value) {
+            return makeThenableParams(
+              value,
+              layoutParamAccess?.createPageParamsObserver(route.params ?? undefined),
+            );
+          },
+          onSearchParamsAccess() {
+            layoutParamAccess?.observePageSearchParams();
+          },
+          onDynamicSuspenseBoundary(ordinal) {
+            layoutParamAccess?.observePageDynamicSuspenseBoundary(ordinal);
+          },
         }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {

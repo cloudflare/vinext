@@ -12,7 +12,7 @@
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
 import type { Params } from "@vinext/types/next/upstream/dist/server/request/params";
-import type { VinextRuntimePrefetchLoadingFallback } from "../client/vinext-next-data.js";
+import type { VinextPrefetchVaryMetadata } from "../client/vinext-next-data.js";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
@@ -46,11 +46,16 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_PREFETCH_VARY_HEADER,
+  VINEXT_PREFETCH_VARY_REQUEST_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../server/headers.js";
-import { extractRscCompletionMetadata } from "../server/rsc-completion-metadata.js";
+import {
+  decodePrefetchVaryHeader,
+  extractRscCompletionMetadata,
+} from "../server/rsc-completion-metadata.js";
 import {
   isHashOnlyBrowserUrlChange,
   toBrowserNavigationHref,
@@ -316,6 +321,7 @@ export type CachedRscResponse = {
   expiresAt?: number;
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
+  prefetchVary?: VinextPrefetchVaryMetadata;
   preparedElements?: AppElements;
   renderedPathAndSearch: string | null;
   serverStaleTime?: ServerStaleTime;
@@ -333,6 +339,7 @@ export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
   expiresAt?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
+  metadataSharedCacheKey?: string | null;
   mountedSlotsHeader?: string | null;
   onInvalidateCallbacks?: Set<() => void>;
   optimisticRouteShell?: boolean;
@@ -344,7 +351,6 @@ export type PrefetchCacheEntry = {
   pending?: Promise<void>;
   preparedElements?: AppElements;
   prefetchKind?: PrefetchCacheKind;
-  runtimeLoadingFallback?: VinextRuntimePrefetchLoadingFallback | null;
   runtimeTemplateVariantKey?: string | null;
   searchAgnosticShell?: boolean;
   sharedCacheKey?: string | null;
@@ -393,15 +399,20 @@ export function createAppPrefetchRequestHeaders(options: {
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   prefetchKind?: "auto" | "full";
+  prefetchVaryLearning?: boolean;
   renderMode?: AppRscRenderMode;
 }): Headers {
   const prefetchRouterState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
-  return createRscRequestHeaders({
+  const headers = createRscRequestHeaders({
     ...options,
     nextUrl: getCurrentNextUrl(),
     includePrefetchHeader: options.prefetchKind !== "full",
     prefetchRouterState,
   });
+  if (options.prefetchVaryLearning === true) {
+    headers.set(VINEXT_PREFETCH_VARY_REQUEST_HEADER, "1");
+  }
+  return headers;
 }
 
 /** Get or create the shared in-memory RSC prefetch cache on window. */
@@ -423,6 +434,22 @@ export function getPrefetchedUrls(): Set<string> {
     window.__VINEXT_RSC_PREFETCHED_URLS__ = new Set<string>();
   }
   return window.__VINEXT_RSC_PREFETCHED_URLS__;
+}
+
+/**
+ * Let a preceding segment prefetch publish its render-observed identity before
+ * another intent decides whether the two concrete URLs can share. Pending
+ * entries are deduplicated because rendered-path aliases point at the same
+ * object.
+ */
+export async function waitForPendingPrefetchVaryLearning(): Promise<void> {
+  const pending = new Set<Promise<void>>();
+  for (const entry of getPrefetchCache().values()) {
+    if (typeof entry.sharedCacheKey === "string" && entry.pending) pending.add(entry.pending);
+  }
+  if (pending.size > 0) {
+    await Promise.all(Array.from(pending, (promise) => promise.catch(() => {})));
+  }
 }
 
 function isStaleTimeSeconds(value: unknown): value is number {
@@ -682,6 +709,40 @@ export function hasPrefetchCacheEntryForNavigation(
     match.entry,
     options.notifyInvalidation ?? true,
   );
+  return false;
+}
+
+export function hasPrefetchRuntimeTemplateVariant(
+  variantKey: string,
+  mountedSlotsHeader: string | null = null,
+): boolean {
+  const cache = getPrefetchCache();
+  for (const [cacheKey, entry] of cache) {
+    if (entry.runtimeTemplateVariantKey !== variantKey) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (entry.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) {
+      return true;
+    }
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  }
+  return false;
+}
+
+export function hasPrefetchMetadataVariant(
+  metadataSharedCacheKey: string,
+  sharedCacheKey: string,
+  mountedSlotsHeader: string | null = null,
+): boolean {
+  const cache = getPrefetchCache();
+  for (const [cacheKey, entry] of cache) {
+    if (entry.sharedCacheKey !== sharedCacheKey) continue;
+    if (entry.metadataSharedCacheKey !== metadataSharedCacheKey) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (entry.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) {
+      return true;
+    }
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  }
   return false;
 }
 
@@ -1205,6 +1266,9 @@ export function createCachedRscResponseSnapshot(
       ? undefined
       : { kind: "resolved" as const, seconds: extracted.metadata!.serverStaleTimeSeconds! }
     : parsedServerStaleTime;
+  const prefetchVary =
+    extracted.metadata?.prefetchVary ??
+    decodePrefetchVaryHeader(response.headers.get(VINEXT_PREFETCH_VARY_HEADER));
   return {
     compatibilityIdHeader: response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
     buffer: extracted.buffer,
@@ -1213,6 +1277,7 @@ export function createCachedRscResponseSnapshot(
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
+    ...(prefetchVary === undefined ? {} : { prefetchVary }),
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
       response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
     ),
@@ -1340,7 +1405,12 @@ export function prefetchRscResponse(
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
-    runtimeLoadingFallback?: VinextRuntimePrefetchLoadingFallback | null;
+    learnPrefetchVary?: (metadata: VinextPrefetchVaryMetadata) => {
+      metadataSharedCacheKey?: string | null;
+      runtimeTemplateVariantKey?: string | null;
+      sharedCacheKey?: string | null;
+    };
+    metadataSharedCacheKey?: string | null;
     runtimeTemplateVariantKey?: string | null;
     searchAgnosticShell?: boolean;
     sharedCacheKey?: string | null;
@@ -1359,12 +1429,12 @@ export function prefetchRscResponse(
     cacheForNavigation: behavior.cacheForNavigation ?? true,
     cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
+    metadataSharedCacheKey: behavior.metadataSharedCacheKey ?? null,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
     prefetchKind:
       behavior.prefetchKind ??
       (behavior.optimisticRouteShell === true ? "loading-shell" : "navigation"),
-    runtimeLoadingFallback: behavior.runtimeLoadingFallback ?? null,
     runtimeTemplateVariantKey: behavior.runtimeTemplateVariantKey ?? null,
     searchAgnosticShell: behavior.searchAgnosticShell === true,
     sharedCacheKey: behavior.sharedCacheKey ?? null,
@@ -1376,6 +1446,21 @@ export function prefetchRscResponse(
   entry.pending = fetchPromise
     .then(async (response) => {
       if (response.ok) {
+        const provisionalPrefetchVary = decodePrefetchVaryHeader(
+          response.headers.get(VINEXT_PREFETCH_VARY_HEADER),
+        );
+        if (provisionalPrefetchVary && behavior.learnPrefetchVary) {
+          const learned = behavior.learnPrefetchVary(provisionalPrefetchVary);
+          if (Object.hasOwn(learned, "metadataSharedCacheKey")) {
+            entry.metadataSharedCacheKey = learned.metadataSharedCacheKey ?? null;
+          }
+          if (Object.hasOwn(learned, "sharedCacheKey")) {
+            entry.sharedCacheKey = learned.sharedCacheKey ?? null;
+          }
+          if (Object.hasOwn(learned, "runtimeTemplateVariantKey")) {
+            entry.runtimeTemplateVariantKey = learned.runtimeTemplateVariantKey ?? null;
+          }
+        }
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
         const previousSize = getPrefetchCacheEntrySize(entry);
@@ -1392,6 +1477,18 @@ export function prefetchRscResponse(
           // the later navigation response still honors dynamicStaleTime.
           behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
         );
+        if (snapshot.prefetchVary && behavior.learnPrefetchVary) {
+          const learned = behavior.learnPrefetchVary(snapshot.prefetchVary);
+          if (Object.hasOwn(learned, "metadataSharedCacheKey")) {
+            entry.metadataSharedCacheKey = learned.metadataSharedCacheKey ?? null;
+          }
+          if (Object.hasOwn(learned, "sharedCacheKey")) {
+            entry.sharedCacheKey = learned.sharedCacheKey ?? null;
+          }
+          if (Object.hasOwn(learned, "runtimeTemplateVariantKey")) {
+            entry.runtimeTemplateVariantKey = learned.runtimeTemplateVariantKey ?? null;
+          }
+        }
         if (behavior.prepareSnapshot) {
           try {
             const preparedElements = await behavior.prepareSnapshot(snapshot);
@@ -2729,9 +2826,12 @@ const _appRouter: AppRouterInstance = {
         ? resolveLoadedHybridClientRewriteHref(fullHref, __basePath)
         : null;
       const kind = options?.kind === "full" ? "full" : "auto";
+      await waitForPendingPrefetchVaryLearning();
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
       const {
+        isAppPrefetchVaryEnabled,
+        learnAppPrefetchVaryMetadata,
         resolveAppPrefetchSharedCacheKey,
         resolveAutoAppRoutePrefetch,
         resolveFullAppRoutePrefetch,
@@ -2740,6 +2840,9 @@ const _appRouter: AppRouterInstance = {
         kind === "full"
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
+      if (isAppPrefetchVaryEnabled()) {
+        headers.set(VINEXT_PREFETCH_VARY_REQUEST_HEADER, "1");
+      }
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
       if (policy.renderLoadingShell) {
         headers = createAppPrefetchRequestHeaders({
@@ -2836,6 +2939,12 @@ const _appRouter: AppRouterInstance = {
                   : PREFETCH_CACHE_TTL,
               honorDynamicStaleTime: policy.honorDynamicStaleTime,
               optimisticRouteShell: false,
+              learnPrefetchVary(metadata) {
+                learnAppPrefetchVaryMetadata(fullHref, metadata);
+                return {
+                  sharedCacheKey: resolveAppPrefetchSharedCacheKey(fullHref, "navigation"),
+                };
+              },
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
               sharedCacheKey,
@@ -2845,11 +2954,24 @@ const _appRouter: AppRouterInstance = {
               fallbackTtlMs: PREFETCH_CACHE_TTL,
               honorDynamicStaleTime: policy.honorDynamicStaleTime,
               optimisticRouteShell: !policy.shouldPrefetch || policy.renderLoadingShell,
+              learnPrefetchVary(metadata) {
+                learnAppPrefetchVaryMetadata(fullHref, metadata);
+                const learnedSharedCacheKey = resolveAppPrefetchSharedCacheKey(
+                  fullHref,
+                  policy.renderLoadingShell ? "loading-shell" : "runtime",
+                );
+                return {
+                  runtimeTemplateVariantKey:
+                    !policy.renderLoadingShell && learnedSharedCacheKey !== null
+                      ? `${learnedSharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
+                      : null,
+                  sharedCacheKey: learnedSharedCacheKey,
+                };
+              },
               // Programmatic prefetches remain upgradeable by kind:"full";
               // discardLearningOnlyPrefetchCacheEntry keys that lifecycle by
               // the navigation family even when the body is a loading shell.
               prefetchKind: "navigation",
-              runtimeLoadingFallback: policy.runtimeLoadingFallback ?? null,
               runtimeTemplateVariantKey:
                 !policy.renderLoadingShell && sharedCacheKey !== null
                   ? `${sharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`

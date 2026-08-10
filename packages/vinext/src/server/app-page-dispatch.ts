@@ -21,6 +21,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   closeAfterResponse,
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import {
@@ -82,7 +83,10 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import {
+  VINEXT_PREFETCH_VARY_REQUEST_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -304,6 +308,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   dynamicConfig?: string;
   dynamicStaleTimeSeconds?: number;
   dynamicParamsConfig?: boolean;
+  prefetchVaryEnabled?: boolean;
   /**
    * Hydrate a source route's lazy page/route-handler modules before reading
    * `route.page` (e.g. for fetch-cache-mode resolution) on intercept and ISR
@@ -364,7 +369,10 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
-  probePage: (searchParams?: URLSearchParams) => unknown;
+  probePage: (
+    searchParams?: URLSearchParams,
+    layoutParamAccess?: AppLayoutParamAccessTracker,
+  ) => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (
     error: unknown,
@@ -495,6 +503,7 @@ export function shouldReadAppPageCache(options: {
   isProgressiveActionRender: boolean;
   isDraftMode: boolean;
   isForceDynamic: boolean;
+  isPrefetchVaryLearningRequest?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
   revalidateSeconds: number | null;
@@ -505,6 +514,10 @@ export function shouldReadAppPageCache(options: {
     !options.isProgressiveActionRender &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
+    // Prerendered RSC artifacts predate the request and therefore carry no
+    // render-observed vary metadata. The first vary-aware prefetch must render
+    // once so the client can learn its safe cross-URL segment identity.
+    options.isPrefetchVaryLearningRequest !== true &&
     (options.isRscRequest || !options.scriptNonce) &&
     (options.revalidateSeconds === null || options.revalidateSeconds > 0)
   );
@@ -647,6 +660,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     ? new URLSearchParams()
     : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
+  getRequestContext().rootParamsAccessObserver = (name) => {
+    layoutParamAccess.observeRootParamAccess(name);
+  };
   const activeLoadingTreePositions = getActiveLoadingTreePositions(route);
   const hasActiveLoadingBoundary = activeLoadingTreePositions.length > 0;
 
@@ -701,6 +717,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isDraftMode,
       isForceDynamic,
       isProgressiveActionRender: options.isProgressiveActionRender === true,
+      isPrefetchVaryLearningRequest:
+        options.prefetchVaryEnabled === true &&
+        options.request.headers.get(VINEXT_PREFETCH_VARY_REQUEST_HEADER) === "1",
       isProduction: options.isProduction,
       isRscRequest: options.isRscRequest,
       revalidateSeconds: currentRevalidateSeconds,
@@ -1163,7 +1182,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.probeLayoutAt(layoutIndex, layoutParamAccess);
     },
     probePage() {
-      return options.probePage(pageSearchParams);
+      return options.probePage(pageSearchParams, layoutParamAccess);
     },
     probePageBeforeRender: options.isRscRequest,
     classification: {
@@ -1186,6 +1205,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       },
     },
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
+    emitPrefetchVary:
+      options.prefetchVaryEnabled === true &&
+      options.request.headers.get(VINEXT_PREFETCH_VARY_REQUEST_HEADER) === "1",
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,

@@ -7,7 +7,7 @@ import { toClientRewrites } from "../client/client-rewrites.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
 import type { NextRewrite } from "../config/next-config.js";
-import { analyzeAppPrefetchVary } from "../server/app-prefetch-vary-analysis.js";
+import { analyzeAppPrefetchCapabilities } from "../server/app-prefetch-vary-analysis.js";
 
 /**
  * Generate the virtual browser entry module.
@@ -25,6 +25,7 @@ export function generateBrowserEntry(
     beforeFiles: [],
     fallback: [],
   },
+  prefetchVaryEnabled = false,
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
@@ -36,6 +37,7 @@ export function generateBrowserEntry(
 import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
 
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
+window.__VINEXT_PREFETCH_VARY_ENABLED__ = ${JSON.stringify(prefetchVaryEnabled)};
 // Pages route manifest for hybrid ownership decisions. In a hybrid
 // app+pages build the user can land on an App page, so the App browser
 // entry must also expose the Pages manifest (the Pages client entry does
@@ -68,13 +70,8 @@ function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
   };
 }
 
-function requiresDynamicNavigationRequest(
-  route: AppRoute,
-  vary: ReturnType<typeof analyzeAppPrefetchVary>,
-): boolean {
-  return (
-    (route.isDynamic && route.parallelSlots.length > 0) || vary.requiresDynamicNavigationRequest
-  );
+function requiresDynamicNavigationRequest(route: AppRoute): boolean {
+  return route.isDynamic && route.parallelSlots.length > 0;
 }
 
 function splitPatternParts(pattern: string): string[] {
@@ -119,31 +116,15 @@ export function toLinkPrefetchRoute(
       (intercept.loadingPaths?.length ?? 0) > 0,
   ),
 ): VinextLinkPrefetchRoute {
-  const vary = analyzeAppPrefetchVary(route);
+  const capabilities = analyzeAppPrefetchCapabilities(route);
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
-    ...(vary.canPrefetchRuntimeShell ? { canPrefetchRuntimeShell: true } : {}),
-    ...(vary.canPrefetchStaticRoute || !route.isDynamic ? { canPrefetchStaticRoute: true } : {}),
-    ...((hasLoadingBoundary(route, hasSiblingInterceptLoading) || vary.canPrefetchRuntimeShell) &&
-    vary.loadingShellParamNames.length > 0
-      ? { loadingShellVaryParamNames: vary.loadingShellParamNames }
-      : {}),
+    ...(capabilities.canPrefetchFullStaticRoute ? { canPrefetchFullStaticRoute: true } : {}),
+    ...(capabilities.canPrefetchRuntimeShell ? { canPrefetchRuntimeShell: true } : {}),
+    ...(capabilities.canPrefetchStaticRoute ? { canPrefetchStaticRoute: true } : {}),
     patternParts: [...route.patternParts],
-    ...(vary.prefetchParamNames.length > 0
-      ? { prefetchVaryParamNames: vary.prefetchParamNames }
-      : {}),
-    ...(vary.prefetchVarySearchParams ? { prefetchVarySearchParams: true } : {}),
-    ...(vary.runtimePrefetchParamNames.length > 0
-      ? { runtimePrefetchVaryParamNames: vary.runtimePrefetchParamNames }
-      : {}),
-    ...(vary.runtimePrefetchLoadingFallback
-      ? { runtimePrefetchLoadingFallback: vary.runtimePrefetchLoadingFallback }
-      : {}),
-    ...(vary.runtimePrefetchVarySearchParams ? { runtimePrefetchVarySearchParams: true } : {}),
     isDynamic: route.isDynamic,
-    ...(requiresDynamicNavigationRequest(route, vary)
-      ? { requiresDynamicNavigationRequest: true }
-      : {}),
+    ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
   };
 }
 

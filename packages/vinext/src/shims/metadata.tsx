@@ -33,9 +33,10 @@ export async function resolveModuleViewport(
   searchParams?: Record<string, string | string[]>,
   parent: Promise<ResolvedViewport> = Promise.resolve(mergeViewport([])),
   searchParamsObserver?: ThenableParamsObserver,
+  paramsObserver?: ThenableParamsObserver,
 ): Promise<Viewport | null> {
   if (typeof mod.generateViewport === "function") {
-    const asyncParams = makeThenableParams(params);
+    const asyncParams = makeThenableParams(params, paramsObserver);
     const props =
       searchParams === undefined
         ? { params: asyncParams }
@@ -589,12 +590,13 @@ export async function resolveModuleMetadata(
   searchParams?: Record<string, string | string[]>,
   parent: Promise<Metadata> = Promise.resolve({}),
   searchParamsObserver?: ThenableParamsObserver,
+  paramsObserver?: ThenableParamsObserver,
 ): Promise<Metadata | null> {
   if (typeof mod.generateMetadata === "function") {
     const generateMetadata = mod.generateMetadata;
     // Next.js 16 passes params/searchParams as Promises (async pattern).
     // makeThenableParams() normalises null-prototype + preserves sync access.
-    const asyncParams = makeThenableParams(params);
+    const asyncParams = makeThenableParams(params, paramsObserver);
     const props =
       searchParams === undefined
         ? { params: asyncParams }

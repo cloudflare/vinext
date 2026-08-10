@@ -55,6 +55,8 @@ export type VinextHeadersShimState = {
   dynamicUsageDetected: boolean;
   renderRequestApiUsage: Set<RenderRequestApiKind>;
   connectionProbe: ConnectionProbeState | null;
+  connectionProbeBoundaryObserver: ((ordinal: number) => void) | null;
+  connectionProbeBoundaryOrdinal: number | null;
   /** Error recorded by throwIfInsideCacheScope for dev diagnostics, persists even if caught by user code. */
   invalidDynamicUsageError: unknown;
   pendingSetCookies: string[];
@@ -95,6 +97,8 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   dynamicUsageDetected: false,
   renderRequestApiUsage: new Set<RenderRequestApiKind>(),
   connectionProbe: null,
+  connectionProbeBoundaryObserver: null,
+  connectionProbeBoundaryOrdinal: null,
   invalidDynamicUsageError: null,
   pendingSetCookies: [],
   draftModeCookieHeader: null,
@@ -359,11 +363,41 @@ export async function runWithConnectionProbe<T>(
 }
 
 export function suspendConnectionProbe(): Promise<never> | null {
-  const probe = _getState().connectionProbe;
+  const state = _getState();
+  const probe = state.connectionProbe;
   if (!probe?.active) return null;
 
+  if (state.connectionProbeBoundaryOrdinal !== null) {
+    state.connectionProbeBoundaryObserver?.(state.connectionProbeBoundaryOrdinal);
+  }
   probe.interrupt();
   return probe.pending;
+}
+
+export function runWithConnectionProbeBoundary<T>(
+  ordinal: number,
+  observer: ((ordinal: number) => void) | undefined,
+  fn: () => T,
+): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((context) => {
+      context.connectionProbeBoundaryObserver = observer ?? null;
+      context.connectionProbeBoundaryOrdinal = ordinal;
+    }, fn);
+  }
+  return _als.run(
+    {
+      ..._getState(),
+      connectionProbeBoundaryObserver: observer ?? null,
+      connectionProbeBoundaryOrdinal: ordinal,
+    },
+    fn,
+  );
+}
+
+/** Whether the current async branch is still before its probe's connection boundary. */
+export function isConnectionProbeActive(): boolean {
+  return _getState().connectionProbe?.active === true;
 }
 
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {
@@ -608,6 +642,8 @@ export function runWithHeadersContext<T>(
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
+    connectionProbeBoundaryObserver: null,
+    connectionProbeBoundaryOrdinal: null,
     invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,

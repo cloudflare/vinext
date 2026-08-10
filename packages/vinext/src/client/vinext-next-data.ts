@@ -8,24 +8,38 @@
 import type { NEXT_DATA } from "vinext/shims/internal/utils";
 import { isUnknownRecord } from "../utils/record.js";
 
-export type VinextRuntimePrefetchLoadingFallback = {
-  attributes: Record<string, string>;
-  tagName: string;
-  text: string;
+declare global {
+  // Window must use interface merging for this browser bootstrap flag.
+  // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
+  interface Window {
+    __VINEXT_PREFETCH_VARY_ENABLED__?: boolean;
+  }
+}
+
+export type VinextPrefetchVaryMetadata = {
+  loadingParamNames: string[];
+  metadataParamNames: string[];
+  metadataSearchParams: boolean;
+  pageDynamicSuspenseOrdinals: number[];
+  pageParamNames: string[];
+  pageSearchParams: boolean;
 };
 
 export type VinextLinkPrefetchRoute = {
   canPrefetchLoadingShell: boolean;
+  canPrefetchFullStaticRoute?: boolean;
   canPrefetchRuntimeShell?: boolean;
   canPrefetchStaticRoute?: boolean;
   documentOnly?: boolean;
   isDynamic: boolean;
   loadingShellVaryParamNames?: string[];
+  loadingShellVarySearchParams?: boolean;
+  metadataVaryParamNames?: string[];
+  metadataVarySearchParams?: boolean;
   patternParts: string[];
   prefetchVaryParamNames?: string[];
   prefetchVarySearchParams?: boolean;
   requiresDynamicNavigationRequest?: boolean;
-  runtimePrefetchLoadingFallback?: VinextRuntimePrefetchLoadingFallback;
   runtimePrefetchVaryParamNames?: string[];
   runtimePrefetchVarySearchParams?: boolean;
 };

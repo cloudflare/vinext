@@ -57,6 +57,8 @@ import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import {
   canAutoPrefetchFullAppRoute,
+  isAppPrefetchVaryEnabled,
+  learnAppPrefetchVaryMetadata,
   resolveAutoAppRoutePrefetch,
   resolveAppPrefetchSharedCacheKey,
   resolveFullAppRoutePrefetch,
@@ -424,6 +426,7 @@ function prefetchUrl(
           {
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            APP_RSC_RENDER_MODE_PREFETCH_REUSE_PAGE,
           },
           headersModule,
           hybridRouteOwner,
@@ -448,12 +451,15 @@ function prefetchUrl(
           discardLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
+          hasPrefetchMetadataVariant,
+          hasPrefetchRuntimeTemplateVariant,
           peekPrefetchResponseForNavigation,
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
           DYNAMIC_NAVIGATION_CACHE_TTL,
           restoreRscResponse,
           PREFETCH_CACHE_TTL,
+          waitForPendingPrefetchVaryLearning,
         } = navigation;
         const { createRscRequestUrl } = rscCacheBusting;
         const {
@@ -474,6 +480,7 @@ function prefetchUrl(
         if (hybridOwner === "pages" || hybridOwner === "document") {
           return;
         }
+        await waitForPendingPrefetchVaryLearning();
         const rewrittenPrefetchHref = HAS_CLIENT_REWRITES
           ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
           : null;
@@ -488,6 +495,7 @@ function prefetchUrl(
         const mountedSlotsHeader = getMountedSlotsHeader();
         let cacheForNavigation = autoPrefetch.cacheForNavigation;
         let renderLoadingShell = autoPrefetch.renderLoadingShell;
+        let reusePageSegment = false;
         let shouldLearnOptimisticRouteShell = !cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
@@ -499,10 +507,13 @@ function prefetchUrl(
             interceptionContext,
             mountedSlotsHeader,
           );
+        const prefetchVaryEnabled = isAppPrefetchVaryEnabled();
         let headers = createAppPrefetchRequestHeaders({
           interceptionContext,
           fetchPriority: priority,
-          prefetchKind: mode === "full" ? "full" : "auto",
+          prefetchKind:
+            mode === "full" || (prefetchVaryEnabled && cacheForNavigation) ? "full" : "auto",
+          prefetchVaryLearning: prefetchVaryEnabled,
           renderMode: renderLoadingShell
             ? hasSearchAgnosticShell
               ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
@@ -514,8 +525,11 @@ function prefetchUrl(
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
-        const shouldSendSegmentPrefetchHeaders = shouldLearnOptimisticRouteShell || mode === "auto";
-        if (__prefetchInlining && mode === "auto" && cacheForNavigation) {
+        const shouldSendSegmentPrefetchHeaders =
+          shouldLearnOptimisticRouteShell ||
+          (mode === "auto" && !(prefetchVaryEnabled && cacheForNavigation));
+        const usePrefetchInlining = __prefetchInlining && !prefetchVaryEnabled;
+        if (usePrefetchInlining && mode === "auto" && cacheForNavigation) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
@@ -638,22 +652,37 @@ function prefetchUrl(
             sharedCacheKey,
           });
 
-        // A page/head segment may be reusable while its parent layout varies
-        // on more params. In that case fetch only the loading/layout shell and
-        // preserve the already-cached page segment.
-        if (cacheForNavigation && hasNavigationCacheEntry && mountedSlotsHeader === null) {
+        if (hasNavigationCacheEntry && mountedSlotsHeader === null) {
           const loadingShellSharedCacheKey = resolveAppPrefetchSharedCacheKey(
             fullHref,
             "loading-shell",
           );
+          const metadataSharedCacheKey = resolveAppPrefetchSharedCacheKey(fullHref, "metadata");
+          const isRuntimePrefetch = !cacheForNavigation && !renderLoadingShell;
+          const hasReusableMetadata =
+            metadataSharedCacheKey !== null &&
+            sharedCacheKey !== null &&
+            hasPrefetchMetadataVariant(metadataSharedCacheKey, sharedCacheKey, mountedSlotsHeader);
+          const targetRuntimeTemplateVariantKey =
+            isRuntimePrefetch && sharedCacheKey !== null && loadingShellSharedCacheKey !== null
+              ? `${sharedCacheKey}\0${loadingShellSharedCacheKey}`
+              : null;
+          if (
+            targetRuntimeTemplateVariantKey !== null &&
+            hasPrefetchRuntimeTemplateVariant(targetRuntimeTemplateVariantKey, mountedSlotsHeader)
+          ) {
+            return;
+          }
           if (
             loadingShellSharedCacheKey !== null &&
-            loadingShellSharedCacheKey !== sharedCacheKey
+            loadingShellSharedCacheKey !== sharedCacheKey &&
+            (!isRuntimePrefetch || !hasReusableMetadata)
           ) {
             const shellHeaders = createAppPrefetchRequestHeaders({
               interceptionContext,
               fetchPriority: priority,
-              renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+              prefetchVaryLearning: prefetchVaryEnabled,
+              renderMode: APP_RSC_RENDER_MODE_PREFETCH_REUSE_PAGE,
             });
             shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
             shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
@@ -672,7 +701,7 @@ function prefetchUrl(
               return;
             }
             cacheForNavigation = false;
-            renderLoadingShell = true;
+            reusePageSegment = true;
             shouldLearnOptimisticRouteShell = true;
             sharedCacheKey = loadingShellSharedCacheKey;
             headers = shellHeaders;
@@ -683,6 +712,7 @@ function prefetchUrl(
             hasNavigationCacheEntry = false;
           }
         }
+
         // A single freshness-aware gate covers both an exact prior prefetch and
         // an equivalent `_rsc` variant; the helper also deletes any stale exact
         // entry, so a stale `prefetched` member is harmlessly re-added below.
@@ -708,7 +738,7 @@ function prefetchUrl(
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
-          __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
+          usePrefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
         const gateViaExplicitSearchShell =
           mode === "full" &&
           hasSearchParams &&
@@ -818,12 +848,37 @@ function prefetchUrl(
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
                 : PREFETCH_CACHE_TTL,
             honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
+            learnPrefetchVary(metadata) {
+              learnAppPrefetchVaryMetadata(fullHref, metadata);
+              const learnedSharedCacheKey = resolveAppPrefetchSharedCacheKey(
+                fullHref,
+                cacheForNavigation
+                  ? "navigation"
+                  : renderLoadingShell
+                    ? "loading-shell"
+                    : "runtime",
+              );
+              return {
+                metadataSharedCacheKey: resolveAppPrefetchSharedCacheKey(fullHref, "metadata"),
+                runtimeTemplateVariantKey:
+                  shouldLearnOptimisticRouteShell &&
+                  !renderLoadingShell &&
+                  !reusePageSegment &&
+                  learnedSharedCacheKey !== null
+                    ? `${learnedSharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
+                    : null,
+                sharedCacheKey: learnedSharedCacheKey,
+              };
+            },
+            metadataSharedCacheKey: resolveAppPrefetchSharedCacheKey(fullHref, "metadata"),
             optimisticRouteShell: shouldLearnOptimisticRouteShell && renderLoadingShell,
             prefetchKind: renderLoadingShell ? "loading-shell" : "navigation",
             prepareSnapshot: cacheForNavigation ? prepareNavigationPrefetchSnapshot : undefined,
-            runtimeLoadingFallback: autoPrefetch.runtimeLoadingFallback ?? null,
             runtimeTemplateVariantKey:
-              shouldLearnOptimisticRouteShell && !renderLoadingShell && sharedCacheKey !== null
+              shouldLearnOptimisticRouteShell &&
+              !renderLoadingShell &&
+              !reusePageSegment &&
+              sharedCacheKey !== null
                 ? `${sharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
                 : null,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,

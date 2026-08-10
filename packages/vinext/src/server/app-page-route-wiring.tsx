@@ -55,6 +55,7 @@ import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_REUSE_PAGE,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
@@ -856,9 +857,11 @@ export function buildAppPageElements<
   };
   const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+  const isPrefetchReusePage = renderMode === APP_RSC_RENDER_MODE_PREFETCH_REUSE_PAGE;
   // Loading-shell prefetches intentionally omit the page, so they cannot wait
   // on a dependency that only the page invocation can release.
-  const pageRenderDependency = isPrefetchLoadingShell ? null : options.pageRenderDependency;
+  const pageRenderDependency =
+    isPrefetchLoadingShell || isPrefetchReusePage ? null : options.pageRenderDependency;
   const prefetchLoadingEntry = isPrefetchLoadingShell
     ? getPrefetchLoadingEntry(options.route)
     : null;
@@ -1089,11 +1092,12 @@ export function buildAppPageElements<
   ) : (
     options.element
   );
-  elements[pageElementId] = isPrefetchLoadingShell
-    ? null
-    : pageRenderDependency
-      ? pageElement
-      : renderAfterAppDependencies(pageElement, pageDependencies);
+  elements[pageElementId] =
+    isPrefetchLoadingShell || isPrefetchReusePage
+      ? null
+      : pageRenderDependency
+        ? pageElement
+        : renderAfterAppDependencies(pageElement, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {

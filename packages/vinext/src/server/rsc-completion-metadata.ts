@@ -1,4 +1,5 @@
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
+import type { VinextPrefetchVaryMetadata } from "../client/vinext-next-data.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -6,15 +7,71 @@ const FRAME_ESCAPE_BYTE = 0xff;
 const FOOTER_TAG_BYTE = 0x00;
 const FOOTER_PREFIX_BYTES = 2;
 const FOOTER_LENGTH_BYTES = 4;
-const MAX_FOOTER_BYTES = 256;
+const MAX_FOOTER_BYTES = 4096;
 
 export type RscCompletionMetadata = Readonly<{
-  dynamicStaleTimeSeconds: number;
+  dynamicStaleTimeSeconds?: number;
+  prefetchVary?: VinextPrefetchVaryMetadata;
   serverStaleTimeSeconds?: number | null;
 }>;
 
 function isDynamicStaleTimeSeconds(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 64 &&
+    value.every((entry) => typeof entry === "string" && entry.length <= 128)
+  );
+}
+
+function isOrdinalArray(value: unknown): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 64 &&
+    value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 1000)
+  );
+}
+
+export function parsePrefetchVaryMetadata(value: unknown): VinextPrefetchVaryMetadata | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const fields = value as Record<string, unknown>;
+  if (
+    !isStringArray(fields.loadingParamNames) ||
+    (fields.metadataParamNames !== undefined && !isStringArray(fields.metadataParamNames)) ||
+    typeof fields.metadataSearchParams !== "boolean" ||
+    (fields.pageDynamicSuspenseOrdinals !== undefined &&
+      !isOrdinalArray(fields.pageDynamicSuspenseOrdinals)) ||
+    !isStringArray(fields.pageParamNames) ||
+    typeof fields.pageSearchParams !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    loadingParamNames: fields.loadingParamNames,
+    metadataParamNames: fields.metadataParamNames ?? [],
+    metadataSearchParams: fields.metadataSearchParams,
+    pageDynamicSuspenseOrdinals: fields.pageDynamicSuspenseOrdinals ?? [],
+    pageParamNames: fields.pageParamNames,
+    pageSearchParams: fields.pageSearchParams,
+  };
+}
+
+export function encodePrefetchVaryHeader(metadata: VinextPrefetchVaryMetadata): string {
+  return encodeURIComponent(JSON.stringify(metadata));
+}
+
+export function decodePrefetchVaryHeader(
+  value: string | null,
+): VinextPrefetchVaryMetadata | undefined {
+  if (value === null) return undefined;
+  try {
+    return parsePrefetchVaryMetadata(JSON.parse(decodeURIComponent(value)));
+  } catch {
+    return undefined;
+  }
 }
 
 function encodeFooter(metadata: RscCompletionMetadata): Uint8Array {
@@ -63,7 +120,16 @@ function parseFooterCandidate(candidate: Uint8Array): RscCompletionMetadata {
     );
     if (typeof parsed !== "object" || parsed === null) return invalidFooter();
     const fields = parsed as Record<string, unknown>;
-    if (!isDynamicStaleTimeSeconds(fields.dynamicStaleTimeSeconds)) return invalidFooter();
+    const dynamicStaleTimeSeconds = fields.dynamicStaleTimeSeconds;
+    const prefetchVary = parsePrefetchVaryMetadata(fields.prefetchVary);
+    if (
+      dynamicStaleTimeSeconds !== undefined &&
+      !isDynamicStaleTimeSeconds(dynamicStaleTimeSeconds)
+    ) {
+      return invalidFooter();
+    }
+    if (fields.prefetchVary !== undefined && prefetchVary === undefined) return invalidFooter();
+    if (dynamicStaleTimeSeconds === undefined && prefetchVary === undefined) return invalidFooter();
 
     const hasServerStaleTime = Object.hasOwn(fields, "serverStaleTimeSeconds");
     const serverStaleTimeSeconds = fields.serverStaleTimeSeconds;
@@ -75,7 +141,8 @@ function parseFooterCandidate(candidate: Uint8Array): RscCompletionMetadata {
       return invalidFooter();
     }
     return {
-      dynamicStaleTimeSeconds: fields.dynamicStaleTimeSeconds,
+      ...(dynamicStaleTimeSeconds === undefined ? {} : { dynamicStaleTimeSeconds }),
+      ...(prefetchVary === undefined ? {} : { prefetchVary }),
       ...(hasServerStaleTime
         ? { serverStaleTimeSeconds: serverStaleTimeSeconds as number | null }
         : {}),

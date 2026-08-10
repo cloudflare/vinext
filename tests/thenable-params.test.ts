@@ -139,6 +139,60 @@ describe("makeThenableParams", () => {
     expect(observedKeys).toEqual([["slug", "category"]]);
   });
 
+  it("can observe only properties read from the awaited params object", async () => {
+    const observedKeys: string[][] = [];
+    const params = makeThenableParams(
+      { slug: "post", category: "news" },
+      {
+        observeAwaitedProperties: true,
+        observeParamAccess(keys) {
+          observedKeys.push([...keys]);
+        },
+      },
+    );
+
+    const { category } = await params;
+
+    expect(category).toBe("news");
+    expect(observedKeys).toEqual([["category"]]);
+  });
+
+  it("observes route-declared keys when empty optional params are enumerated", async () => {
+    const observedKeys: string[][] = [];
+    const params = makeThenableParams(
+      {},
+      {
+        observeAwaitedProperties: true,
+        observeParamAccess(keys) {
+          observedKeys.push([...keys]);
+        },
+        paramKeysOnEnumeration: ["slug"],
+      },
+    );
+
+    expect({ ...(await params) }).toEqual({});
+    expect(observedKeys).toEqual([["slug"]]);
+  });
+
+  it("can observe awaiting separately from resolved property access", async () => {
+    const observedKeys: string[][] = [];
+    const params = makeThenableParams(
+      { slug: "post", category: "news" },
+      {
+        observeAwaitedProperties: true,
+        observeParamAccess(keys) {
+          observedKeys.push([...keys]);
+        },
+        observePromiseContinuation: true,
+      },
+    );
+
+    const { category } = await params;
+
+    expect(category).toBe("news");
+    expect(observedKeys).toEqual([[], ["category"]]);
+  });
+
   it("reports destructured param property access to an observer", () => {
     const observedKeys: string[][] = [];
     const params = makeThenableParams(

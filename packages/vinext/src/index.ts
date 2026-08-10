@@ -2361,6 +2361,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
           nextConfig.cacheComponents ?? false,
         );
+        defines["process.env.__VINEXT_OPTIMISTIC_ROUTING"] = JSON.stringify(
+          nextConfig.optimisticRouting,
+        );
+        defines["process.env.__VINEXT_VARY_PARAMS"] = JSON.stringify(nextConfig.varyParams);
 
         // User-defined compile-time constants from `compiler.define` in
         // next.config. Applied to BOTH client and server bundles via Vite's
@@ -3816,6 +3820,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 inlineCss: nextConfig?.inlineCss,
                 globalNotFound: nextConfig?.globalNotFound,
                 cacheComponents: nextConfig?.cacheComponents,
+                prefetchVaryEnabled:
+                  nextConfig?.cacheComponents === true &&
+                  nextConfig?.varyParams === true &&
+                  nextConfig?.optimisticRouting === true,
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
                 i18n: nextConfig?.i18n,
@@ -3888,6 +3896,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
+              nextConfig.cacheComponents && nextConfig.varyParams && nextConfig.optimisticRouting,
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {

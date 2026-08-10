@@ -82,8 +82,11 @@ import type {
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
-import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
-import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
+import { VINEXT_PREFETCH_VARY_HEADER, VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
+import {
+  appendRscCompletionMetadata,
+  encodePrefetchVaryHeader,
+} from "./rsc-completion-metadata.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -132,6 +135,7 @@ type RenderAppPageLifecycleOptions = {
   hasCustomGlobalError?: boolean;
   hasLoadingBoundary: boolean;
   dynamicStaleTimeSeconds?: number;
+  emitPrefetchVary?: boolean;
   isDynamicError: boolean;
   isDraftMode: boolean;
   isEdgeRuntime?: boolean;
@@ -883,31 +887,56 @@ export async function renderAppPageLifecycle(
     // if uncaught by user code. Full parity with Next.js would require checking
     // invalidDynamicUsageError after SSR rendering, which is deferred as out of scope
     // for this PR focused on client-side navigations.
-    const completionHeaders = new Headers(rscResponse.headers);
-    completionHeaders.set(VINEXT_RSC_COMPLETION_METADATA_HEADER, "1");
-    const completionResponse =
+    const shouldEmitDynamicCompletion =
       dynamicStaleTimeSeconds !== undefined &&
       options.isPrerender !== true &&
-      !options.isForceStatic &&
-      rscResponse.body
+      !options.isForceStatic;
+    const shouldEmitPrefetchVary =
+      options.emitPrefetchVary === true && options.layoutParamAccess !== undefined;
+    const completionHeaders = new Headers(rscResponse.headers);
+    if (shouldEmitPrefetchVary) {
+      completionHeaders.set(
+        VINEXT_PREFETCH_VARY_HEADER,
+        encodePrefetchVaryHeader(options.layoutParamAccess!.getPrefetchVaryMetadata()),
+      );
+    }
+    if (shouldEmitDynamicCompletion || shouldEmitPrefetchVary) {
+      completionHeaders.set(VINEXT_RSC_COMPLETION_METADATA_HEADER, "1");
+    }
+    const completionResponse =
+      (shouldEmitDynamicCompletion || shouldEmitPrefetchVary) && rscResponse.body
         ? new Response(
             appendRscCompletionMetadata(rscResponse.body, () => {
-              if (!finalizeRenderDynamicUsage()) return undefined;
-              const completedServerStaleTimeSeconds = resolveClientStaleTimeSeconds(
-                options.peekRequestCacheLife?.(),
-              );
+              const dynamicCompleted = shouldEmitDynamicCompletion && finalizeRenderDynamicUsage();
+              const prefetchVary = shouldEmitPrefetchVary
+                ? options.layoutParamAccess!.getPrefetchVaryMetadata()
+                : undefined;
+              if (!dynamicCompleted && prefetchVary === undefined) return undefined;
+              const completedServerStaleTimeSeconds = dynamicCompleted
+                ? resolveClientStaleTimeSeconds(options.peekRequestCacheLife?.())
+                : undefined;
               // A known-dynamic response already carries its BFCache bound in
               // the header. Add a footer only when it has a distinct completed
               // cacheLife claim for runtime-prefetch expiry.
-              if (shouldEmitDynamicStaleTime && completedServerStaleTimeSeconds === undefined) {
+              if (
+                dynamicCompleted &&
+                shouldEmitDynamicStaleTime &&
+                completedServerStaleTimeSeconds === undefined &&
+                prefetchVary === undefined
+              ) {
                 return undefined;
               }
               return {
-                dynamicStaleTimeSeconds,
-                serverStaleTimeSeconds:
-                  completedServerStaleTimeSeconds === undefined
-                    ? null
-                    : Math.floor(completedServerStaleTimeSeconds),
+                ...(dynamicCompleted ? { dynamicStaleTimeSeconds } : {}),
+                ...(prefetchVary === undefined ? {} : { prefetchVary }),
+                ...(dynamicCompleted
+                  ? {
+                      serverStaleTimeSeconds:
+                        completedServerStaleTimeSeconds === undefined
+                          ? null
+                          : Math.floor(completedServerStaleTimeSeconds),
+                    }
+                  : {}),
               };
             }),
             {

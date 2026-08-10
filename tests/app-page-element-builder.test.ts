@@ -31,6 +31,7 @@ import {
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -984,6 +985,38 @@ describe("buildPageElements", () => {
 
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
+  it("records render-observed page searchParams for prefetch vary metadata", async () => {
+    async function SearchPage(props: { searchParams: Promise<{ q?: string }> }) {
+      const { q } = await props.searchParams;
+      return React.createElement("div", null, q);
+    }
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(SearchPage),
+      layouts: [],
+      routeSegments: ["search"],
+      pattern: "/search",
+    });
+    const layoutParamAccess = createAppLayoutParamAccessTracker();
+
+    const result = await buildPageElements({
+      ...createBaseOptions({
+        route,
+        routePath: "/search",
+        searchParams: new URLSearchParams("q=hello"),
+      }),
+      layoutParamAccess,
+      pageRequest: {
+        ...createBaseOptions().pageRequest,
+        isRscRequest: true,
+        observePageSearchParamsAccess: true,
+        searchParams: new URLSearchParams("q=hello"),
+      },
+    });
+
+    await expect(renderElementEntry(result, "page:/search")).resolves.toContain("hello");
+    expect(layoutParamAccess.getPrefetchVaryMetadata().pageSearchParams).toBe(true);
   });
 
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {
