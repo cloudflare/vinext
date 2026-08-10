@@ -1,5 +1,6 @@
 import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
 import {
+  VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
@@ -20,6 +21,7 @@ type AppPrerenderPageRoute = {
 
 type HandleAppPrerenderEndpointOptions = {
   isPrerenderEnabled?: () => boolean;
+  getMetadataRoutePaths?: () => Promise<unknown>;
   loadPagesRoutes?: () => Promise<unknown>;
   pathname: string;
   rootParamNamesByPattern?: AppPrerenderRootParamNamesMap;
@@ -41,7 +43,26 @@ export async function handleAppPrerenderEndpoint(
     return handlePagesStaticPathsEndpoint(request, options);
   }
 
+  if (options.pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH) {
+    if (!options.getMetadataRoutePaths) return null;
+    return handleMetadataRoutesEndpoint(options);
+  }
+
   return null;
+}
+
+async function handleMetadataRoutesEndpoint(
+  options: HandleAppPrerenderEndpointOptions,
+): Promise<Response> {
+  if (!isEnabled(options)) {
+    return notFoundResponse();
+  }
+
+  try {
+    return jsonResponse(await options.getMetadataRoutePaths?.());
+  } catch (error) {
+    return jsonResponse({ error: String(error) }, 500);
+  }
 }
 
 async function handleStaticParamsEndpoint(
