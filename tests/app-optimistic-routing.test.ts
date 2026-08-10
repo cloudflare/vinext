@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { createElement, isValidElement, Suspense } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -281,6 +281,120 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("preserves runtime-prefetch page content while suspending its innermost boundary", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/runtime/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/runtime/:itemId",
+        patternParts: ["runtime", ":itemId"],
+      }),
+    ]);
+    const layoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/runtime/phone", null);
+    const pageId = AppElementsWire.encodePageId("/runtime/phone", null);
+    const layout = createElement("div", { "data-layout": true }, "Cached layout");
+    const staticContent = createElement("div", { "data-static": true }, "Static content");
+    const innerSuspense = createElement(
+      Suspense,
+      { fallback: createElement("p", { id: "page-loading" }, "Loading item details") },
+      createElement("div", { "data-dynamic": true }, "Stale item"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [layoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [layoutId]: layout,
+      [pageId]: createElement("section", null, staticContent, innerSuspense),
+      [routeId]: createElement("main", null, "Route"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/runtime/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+      variantKey: "runtime:phone",
+    });
+    expect(template?.pageElementIds).toEqual([pageId]);
+
+    const optimisticElements = createOptimisticRouteElements(template!);
+    expect(optimisticElements[layoutId]).toBe(layout);
+    const pageElement = optimisticElements[pageId];
+    expect(isValidElement(pageElement)).toBe(true);
+    if (!isValidElement(pageElement)) return;
+    const children = (pageElement.props as { children: unknown }).children;
+    expect(Array.isArray(children)).toBe(true);
+    if (!Array.isArray(children)) return;
+    expect(children[0]).toBe(staticContent);
+    expect(children[1]).not.toBe(innerSuspense);
+    const suspense = children[1];
+    expect(isValidElement(suspense)).toBe(true);
+    if (!isValidElement(suspense)) return;
+    expect((suspense.props as { fallback: unknown }).fallback).toBe(
+      (innerSuspense.props as { fallback: unknown }).fallback,
+    );
+  });
+
+  it("appends a runtime loading fallback when the static page has no suspense", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/runtime/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/runtime/:itemId",
+        patternParts: ["runtime", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/runtime/phone", null);
+    const pageId = AppElementsWire.encodePageId("/runtime/phone", null);
+    const staticContent = createElement("div", { "data-static": true }, "Static content");
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement("section", null, staticContent),
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/runtime/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+      runtimeLoadingFallback: {
+        attributes: { "data-loading": "true" },
+        tagName: "div",
+        text: "Loading item details...",
+      },
+    });
+
+    const optimisticPage = createOptimisticRouteElements(template!)[pageId];
+    expect(isValidElement(optimisticPage)).toBe(true);
+    if (!isValidElement(optimisticPage)) return;
+    const children = (optimisticPage.props as { children: unknown }).children;
+    expect(Array.isArray(children)).toBe(true);
+    if (!Array.isArray(children)) return;
+    expect(children[0]).toBe(staticContent);
+    const fallback = children[1];
+    expect(isValidElement(fallback)).toBe(true);
+    if (!isValidElement(fallback)) return;
+    expect((fallback.props as { "data-loading": unknown })["data-loading"]).toBe("true");
+    expect((fallback.props as { children: unknown }).children).toBe("Loading item details...");
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {

@@ -341,6 +341,7 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: true,
+        renderLoadingShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
@@ -348,6 +349,7 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: false,
+        renderLoadingShell: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
@@ -355,6 +357,7 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: true,
+        renderLoadingShell: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
@@ -362,6 +365,7 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: false,
+        renderLoadingShell: false,
         shouldPrefetch: true,
       });
       // Ported from Next.js:
@@ -372,6 +376,7 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: false,
+        renderLoadingShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
@@ -379,6 +384,7 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: false,
+        renderLoadingShell: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
@@ -386,6 +392,7 @@ describe("Link App Router prefetch mode", () => {
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: false,
+        renderLoadingShell: false,
         shouldPrefetch: false,
       });
     } finally {

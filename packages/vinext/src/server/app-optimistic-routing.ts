@@ -1,4 +1,11 @@
-import { createElement, isValidElement, Suspense } from "react";
+import {
+  cloneElement,
+  createElement,
+  isValidElement,
+  Suspense,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
@@ -11,6 +18,7 @@ import {
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
+import type { VinextRuntimePrefetchLoadingFallback } from "../client/vinext-next-data.js";
 
 type OptimisticRouteTrieNode = {
   catchAllChild: { paramName: string; route: RouteManifestRoute } | null;
@@ -29,7 +37,10 @@ export type OptimisticRouteTemplate = {
   elements: AppElements;
   mountedSlotsHeader: string | null;
   pageElementIds: readonly string[];
+  preservePageElements?: boolean;
   routeId: string;
+  runtimeLoadingFallback?: VinextRuntimePrefetchLoadingFallback | null;
+  variantKey?: string | null;
 };
 
 type OptimisticNavigationPayload = {
@@ -47,8 +58,9 @@ export function getOptimisticRouteTemplateKey(options: {
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
   routeId: string;
+  variantKey?: string | null;
 }): string {
-  return `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}`;
+  return `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}\0${options.variantKey ?? ""}`;
 }
 
 export function getOptimisticPrefetchSourceKey(options: {
@@ -300,6 +312,91 @@ function OptimisticRouteSegment(): null {
   throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
 }
 
+type SuspenseReplacementResult = {
+  containsSuspense: boolean;
+  replaced: boolean;
+  value: AppElementValue;
+};
+
+function createRuntimeLoadingFallbackElement(
+  fallback: VinextRuntimePrefetchLoadingFallback | null | undefined,
+): AppElementValue | null {
+  if (!fallback) return null;
+  return createElement(fallback.tagName, fallback.attributes, fallback.text);
+}
+
+function appendRuntimeLoadingFallback(
+  value: AppElementValue,
+  fallback: VinextRuntimePrefetchLoadingFallback | null | undefined,
+): AppElementValue {
+  const fallbackElement = createRuntimeLoadingFallbackElement(fallback);
+  if (fallbackElement === null) return value;
+  if (!isValidElement(value)) {
+    return [value as ReactNode, fallbackElement] as unknown as AppElementValue;
+  }
+  const props = Reflect.get(value, "props");
+  if (!isUnknownRecord(props)) return value;
+  const children = Reflect.get(props, "children");
+  const nextChildren =
+    children === undefined
+      ? fallbackElement
+      : Array.isArray(children)
+        ? [...children, fallbackElement]
+        : [children, fallbackElement];
+  return cloneElement<{ children?: ReactNode }>(
+    value as ReactElement<{ children?: ReactNode }>,
+    undefined,
+    nextChildren as ReactNode,
+  ) as AppElementValue;
+}
+
+function replaceInnermostSuspenseChildren(
+  value: AppElementValue,
+  depth = 0,
+): SuspenseReplacementResult {
+  if (depth > 100) return { containsSuspense: false, replaced: false, value };
+  if (Array.isArray(value)) {
+    let containsSuspense = false;
+    let replaced = false;
+    const nextValue = value.map((entry) => {
+      const result = replaceInnermostSuspenseChildren(entry, depth + 1);
+      containsSuspense ||= result.containsSuspense;
+      replaced ||= result.replaced;
+      return result.value;
+    });
+    return { containsSuspense, replaced, value: replaced ? nextValue : value };
+  }
+  if (!isValidElement(value)) return { containsSuspense: false, replaced: false, value };
+  const props = Reflect.get(value, "props");
+  if (!isUnknownRecord(props)) return { containsSuspense: false, replaced: false, value };
+  const children = Reflect.get(props, "children") as AppElementValue;
+  const childResult =
+    children === undefined
+      ? { containsSuspense: false, replaced: false, value: children as AppElementValue }
+      : replaceInnermostSuspenseChildren(children, depth + 1);
+  const isSuspense = value.type === Suspense;
+  const containsSuspense = isSuspense || childResult.containsSuspense;
+  if (isSuspense && !childResult.containsSuspense) {
+    return {
+      containsSuspense: true,
+      replaced: true,
+      value: cloneElement(value as ReactElement, undefined, createElement(OptimisticRouteSegment)),
+    };
+  }
+  if (childResult.replaced) {
+    return {
+      containsSuspense,
+      replaced: true,
+      value: cloneElement<{ children?: ReactNode }>(
+        value as ReactElement<{ children?: ReactNode }>,
+        undefined,
+        childResult.value as ReactNode,
+      ) as AppElementValue,
+    };
+  }
+  return { containsSuspense, replaced: false, value };
+}
+
 export function createOptimisticRouteTemplate(options: {
   allowLoadingShell?: boolean;
   basePath: string;
@@ -307,14 +404,21 @@ export function createOptimisticRouteTemplate(options: {
   href: string;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
+  preservePageElements?: boolean;
   routeManifest: RouteManifest;
+  runtimeLoadingFallback?: VinextRuntimePrefetchLoadingFallback | null;
+  variantKey?: string | null;
 }): OptimisticRouteTemplate | null {
   const match = matchOptimisticRouteManifestRoute({
     basePath: options.basePath,
     href: options.href,
     routeManifest: options.routeManifest,
   });
-  if (match === null || (!options.allowLoadingShell && !match.route.isDynamic)) return null;
+  if (
+    match === null ||
+    (!options.preservePageElements && !options.allowLoadingShell && !match.route.isDynamic)
+  )
+    return null;
   if (options.interceptionContext !== null) return null;
 
   const metadata = AppElementsWire.readMetadata(options.elements);
@@ -325,7 +429,12 @@ export function createOptimisticRouteTemplate(options: {
   // are accepted only when the serialized route subtree still contains a
   // Suspense fallback. Authoritative loading-shell prefetches use the marker
   // check below instead.
-  if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
+  if (
+    !options.preservePageElements &&
+    !options.allowLoadingShell &&
+    !elementHasSuspenseFallback(routeElement)
+  )
+    return null;
   if (
     options.allowLoadingShell &&
     options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary"
@@ -344,14 +453,29 @@ export function createOptimisticRouteTemplate(options: {
     elements: options.elements,
     mountedSlotsHeader: options.mountedSlotsHeader,
     pageElementIds,
+    ...(options.preservePageElements ? { preservePageElements: true } : {}),
     routeId: match.route.id,
+    ...(options.runtimeLoadingFallback
+      ? { runtimeLoadingFallback: options.runtimeLoadingFallback }
+      : {}),
+    ...(options.variantKey != null ? { variantKey: options.variantKey } : {}),
   };
 }
 
 export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
   for (const pageElementId of template.pageElementIds) {
-    elements[pageElementId] = createElement(OptimisticRouteSegment);
+    if (template.preservePageElements === true) {
+      const preserved = elements[pageElementId];
+      if (preserved !== undefined) {
+        const result = replaceInnermostSuspenseChildren(preserved);
+        elements[pageElementId] = result.replaced
+          ? result.value
+          : appendRuntimeLoadingFallback(result.value, template.runtimeLoadingFallback);
+      }
+    } else {
+      elements[pageElementId] = createElement(OptimisticRouteSegment);
+    }
   }
   return elements;
 }
@@ -363,6 +487,7 @@ export function resolveOptimisticNavigationPayload(options: {
   mountedSlotsHeader: string | null;
   routeManifest: RouteManifest;
   templates: ReadonlyMap<string, OptimisticRouteTemplate>;
+  variantKey?: string | null;
 }): OptimisticNavigationPayload | null {
   if (options.interceptionContext !== null) return null;
 
@@ -376,13 +501,26 @@ export function resolveOptimisticNavigationPayload(options: {
   });
   if (match === null) return null;
 
-  const template = options.templates.get(
-    getOptimisticRouteTemplateKey({
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeId: match.route.id,
-    }),
-  );
+  const variantTemplate =
+    options.variantKey == null
+      ? undefined
+      : options.templates.get(
+          getOptimisticRouteTemplateKey({
+            interceptionContext: options.interceptionContext,
+            mountedSlotsHeader: options.mountedSlotsHeader,
+            routeId: match.route.id,
+            variantKey: options.variantKey,
+          }),
+        );
+  const template =
+    variantTemplate ??
+    options.templates.get(
+      getOptimisticRouteTemplateKey({
+        interceptionContext: options.interceptionContext,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+        routeId: match.route.id,
+      }),
+    );
   if (template === undefined) return null;
   if (template.mountedSlotsHeader !== options.mountedSlotsHeader) return null;
 

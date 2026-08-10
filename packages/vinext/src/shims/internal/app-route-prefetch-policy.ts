@@ -44,6 +44,9 @@ export type AppRoutePrefetchPolicy = {
    */
   honorDynamicStaleTime: boolean;
   prefetchShellFirst: boolean;
+  /** Render only the nearest loading boundary instead of the route's prefetchable body. */
+  renderLoadingShell: boolean;
+  runtimeLoadingFallback?: VinextLinkPrefetchRoute["runtimePrefetchLoadingFallback"];
   shouldPrefetch: boolean;
 };
 
@@ -68,8 +71,61 @@ const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
   fallbackTtl: "static",
   honorDynamicStaleTime: true,
   prefetchShellFirst: false,
+  renderLoadingShell: false,
   shouldPrefetch: false,
 };
+
+function encodePrefetchParamValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value.map(encodeURIComponent).join("/");
+  return encodeURIComponent(value ?? "");
+}
+
+/**
+ * Resolve the route-pattern cache identity for a prefetch segment. Only params
+ * observed before a runtime boundary contribute values; all others remain
+ * pattern placeholders and can share a cached prefetch across concrete URLs.
+ */
+export function resolveAppPrefetchSharedCacheKey(
+  href: string,
+  kind: "loading-shell" | "navigation" | "runtime",
+): string | null {
+  if (typeof window === "undefined") return null;
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) return null;
+
+  let url: URL;
+  try {
+    url = new URL(href, window.location.href);
+  } catch {
+    return null;
+  }
+  if (url.origin !== window.location.origin) return null;
+
+  const routeHref = `${stripBasePath(url.pathname, __basePath)}${url.search}`;
+  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
+  if (!match) return null;
+
+  const route = match.route;
+  const varyParamNames =
+    kind === "loading-shell"
+      ? route.loadingShellVaryParamNames
+      : kind === "runtime"
+        ? route.runtimePrefetchVaryParamNames
+        : route.prefetchVaryParamNames;
+  const varyParams = new Set(varyParamNames ?? []);
+  const keyParts = route.patternParts.map((part) => {
+    if (!part.startsWith(":")) return part;
+    const name = part.replace(/^:/, "").replace(/[+*]$/, "");
+    return varyParams.has(name) ? encodePrefetchParamValue(match.params[name]) : `:${name}`;
+  });
+  const search =
+    kind === "runtime" && route.runtimePrefetchVarySearchParams === true
+      ? url.search
+      : kind === "navigation" && route.prefetchVarySearchParams === true
+        ? url.search
+        : "";
+  return `${route.patternParts.join("/")}\0${keyParts.join("/")}${search}`;
+}
 
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
@@ -88,6 +144,30 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
   const route = match.route;
+  if (route.canPrefetchRuntimeShell) {
+    return {
+      cacheForNavigation: false,
+      fallbackTtl: "static",
+      // The response's dynamic tail is discarded when learning the optimistic
+      // template, so a dynamic stale-time of zero must not expire the shell.
+      honorDynamicStaleTime: false,
+      prefetchShellFirst: false,
+      renderLoadingShell: false,
+      runtimeLoadingFallback: route.runtimePrefetchLoadingFallback,
+      shouldPrefetch: true,
+    };
+  }
+  if (route.canPrefetchStaticRoute) {
+    const requiresDynamicNavigationRequest = route.requiresDynamicNavigationRequest === true;
+    return {
+      cacheForNavigation: !requiresDynamicNavigationRequest,
+      fallbackTtl: "static",
+      honorDynamicStaleTime: false,
+      prefetchShellFirst: false,
+      renderLoadingShell: requiresDynamicNavigationRequest,
+      shouldPrefetch: true,
+    };
+  }
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
   const hasSearchParams = new URL(routeHref, "http://vinext.local").search !== "";
@@ -104,6 +184,10 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
     prefetchShellFirst: hasSearchParams || !route.isDynamic,
+    renderLoadingShell:
+      hasSearchParams ||
+      route.canPrefetchLoadingShell ||
+      route.requiresDynamicNavigationRequest === true,
     shouldPrefetch: true,
   };
 }
@@ -114,6 +198,7 @@ export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
     fallbackTtl: "static",
     honorDynamicStaleTime: false,
     prefetchShellFirst: true,
+    renderLoadingShell: false,
     shouldPrefetch: true,
   };
 }

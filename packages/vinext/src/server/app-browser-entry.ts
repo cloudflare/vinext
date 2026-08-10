@@ -161,6 +161,7 @@ import {
   installAppNavigationFailureListeners,
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
+import { resolveAppPrefetchSharedCacheKey } from "vinext/shims/internal/app-route-prefetch-policy";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -481,6 +482,11 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
   );
+  const preservePageElements =
+    options.entry.cacheForNavigation === false && options.entry.optimisticRouteShell !== true;
+  const variantKey = preservePageElements
+    ? (options.entry.runtimeTemplateVariantKey ?? options.entry.sharedCacheKey ?? null)
+    : null;
   const template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
     basePath: __basePath,
@@ -488,7 +494,10 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    preservePageElements,
     routeManifest: options.routeManifest,
+    runtimeLoadingFallback: preservePageElements ? options.entry.runtimeLoadingFallback : null,
+    variantKey,
   });
   if (template === null) return false;
 
@@ -497,6 +506,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       routeId: template.routeId,
+      variantKey: template.variantKey,
     }),
     template,
   );
@@ -1791,6 +1801,10 @@ function bootstrapHydration(
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
             : null;
         const targetPathAndSearch = url.pathname + url.search;
+        const sharedPrefetchCacheKey = resolveAppPrefetchSharedCacheKey(url.href, "navigation");
+        const runtimeTemplateVariantKey = `${
+          resolveAppPrefetchSharedCacheKey(url.href, "runtime") ?? ""
+        }\0${resolveAppPrefetchSharedCacheKey(url.href, "loading-shell") ?? ""}`;
         const additionalPrefetchPathAndSearch =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref
             ? [rewrittenNavigationHref]
@@ -1862,6 +1876,7 @@ function bootstrapHydration(
               {
                 additionalRscUrls: additionalPrefetchRscUrls,
                 notifyInvalidation: false,
+                sharedCacheKey: sharedPrefetchCacheKey,
               },
             ));
         const reuseDecision = navigationPlanner.classifyNavigationReuse({
@@ -1980,7 +1995,10 @@ function bootstrapHydration(
                 targetPathAndSearch,
                 requestInterceptionContext,
                 mountedSlotsHeader,
-                { additionalRscUrls: additionalPrefetchPathAndSearch },
+                {
+                  additionalRscUrls: additionalPrefetchPathAndSearch,
+                  sharedCacheKey: sharedPrefetchCacheKey,
+                },
               )
             : await consumePrefetchResponseForNavigation(
                 rscUrl,
@@ -1988,6 +2006,7 @@ function bootstrapHydration(
                 mountedSlotsHeader,
                 {
                   additionalRscUrls: additionalPrefetchRscUrls,
+                  sharedCacheKey: sharedPrefetchCacheKey,
                   shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
                 },
               );
@@ -2046,6 +2065,7 @@ function bootstrapHydration(
               mountedSlotsHeader,
               routeManifest,
               templates: optimisticRouteTemplates,
+              variantKey: runtimeTemplateVariantKey,
             });
 
             if (optimisticPayload !== null) {

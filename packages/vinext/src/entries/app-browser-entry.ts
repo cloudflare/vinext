@@ -7,6 +7,7 @@ import { toClientRewrites } from "../client/client-rewrites.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
 import type { NextRewrite } from "../config/next-config.js";
+import { analyzeAppPrefetchVary } from "../server/app-prefetch-vary-analysis.js";
 
 /**
  * Generate the virtual browser entry module.
@@ -67,8 +68,13 @@ function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
   };
 }
 
-function requiresDynamicNavigationRequest(route: AppRoute): boolean {
-  return route.isDynamic && route.parallelSlots.length > 0;
+function requiresDynamicNavigationRequest(
+  route: AppRoute,
+  vary: ReturnType<typeof analyzeAppPrefetchVary>,
+): boolean {
+  return (
+    (route.isDynamic && route.parallelSlots.length > 0) || vary.requiresDynamicNavigationRequest
+  );
 }
 
 function splitPatternParts(pattern: string): string[] {
@@ -113,11 +119,31 @@ export function toLinkPrefetchRoute(
       (intercept.loadingPaths?.length ?? 0) > 0,
   ),
 ): VinextLinkPrefetchRoute {
+  const vary = analyzeAppPrefetchVary(route);
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
+    ...(vary.canPrefetchRuntimeShell ? { canPrefetchRuntimeShell: true } : {}),
+    ...(vary.canPrefetchStaticRoute || !route.isDynamic ? { canPrefetchStaticRoute: true } : {}),
+    ...((hasLoadingBoundary(route, hasSiblingInterceptLoading) || vary.canPrefetchRuntimeShell) &&
+    vary.loadingShellParamNames.length > 0
+      ? { loadingShellVaryParamNames: vary.loadingShellParamNames }
+      : {}),
     patternParts: [...route.patternParts],
+    ...(vary.prefetchParamNames.length > 0
+      ? { prefetchVaryParamNames: vary.prefetchParamNames }
+      : {}),
+    ...(vary.prefetchVarySearchParams ? { prefetchVarySearchParams: true } : {}),
+    ...(vary.runtimePrefetchParamNames.length > 0
+      ? { runtimePrefetchVaryParamNames: vary.runtimePrefetchParamNames }
+      : {}),
+    ...(vary.runtimePrefetchLoadingFallback
+      ? { runtimePrefetchLoadingFallback: vary.runtimePrefetchLoadingFallback }
+      : {}),
+    ...(vary.runtimePrefetchVarySearchParams ? { runtimePrefetchVarySearchParams: true } : {}),
     isDynamic: route.isDynamic,
-    ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
+    ...(requiresDynamicNavigationRequest(route, vary)
+      ? { requiresDynamicNavigationRequest: true }
+      : {}),
   };
 }
 

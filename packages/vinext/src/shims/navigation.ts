@@ -12,6 +12,7 @@
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
 import type { Params } from "@vinext/types/next/upstream/dist/server/request/params";
+import type { VinextRuntimePrefetchLoadingFallback } from "../client/vinext-next-data.js";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
@@ -63,7 +64,10 @@ import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
-import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  type AppRscRenderMode,
+} from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
@@ -340,7 +344,10 @@ export type PrefetchCacheEntry = {
   pending?: Promise<void>;
   preparedElements?: AppElements;
   prefetchKind?: PrefetchCacheKind;
+  runtimeLoadingFallback?: VinextRuntimePrefetchLoadingFallback | null;
+  runtimeTemplateVariantKey?: string | null;
   searchAgnosticShell?: boolean;
+  sharedCacheKey?: string | null;
   size?: number;
   timestamp: number;
 };
@@ -587,17 +594,21 @@ function findPrefetchCacheEntryForNavigation(
   rscUrl: string,
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
-  additionalRscUrls: readonly string[] = [],
+  options: {
+    additionalRscUrls?: readonly string[];
+    includeNonNavigation?: boolean;
+    sharedCacheKey?: string | null;
+  } = {},
 ): { cacheKey: string; entry: PrefetchCacheEntry } | null {
   const cache = getPrefetchCache();
-  const rscUrls = [rscUrl, ...additionalRscUrls];
+  const rscUrls = [rscUrl, ...(options.additionalRscUrls ?? [])];
 
   for (const lookupRscUrl of rscUrls) {
     const exactCacheKey = AppElementsWire.encodeCacheKey(lookupRscUrl, interceptionContext);
     const exactEntry = cache.get(exactCacheKey);
     if (
       exactEntry &&
-      exactEntry.cacheForNavigation !== false &&
+      (options.includeNonNavigation === true || exactEntry.cacheForNavigation !== false) &&
       isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
     ) {
       return { cacheKey: exactCacheKey, entry: exactEntry };
@@ -609,15 +620,20 @@ function findPrefetchCacheEntryForNavigation(
       .map((lookupRscUrl) => normalizeRscCacheLookupUrl(lookupRscUrl))
       .filter((lookupRscUrl): lookupRscUrl is string => lookupRscUrl !== null),
   );
-  if (normalizedTargets.size === 0) return null;
+  if (normalizedTargets.size === 0 && options.sharedCacheKey == null) return null;
 
   for (const [cacheKey, entry] of cache) {
-    if (entry.cacheForNavigation === false) continue;
+    if (options.includeNonNavigation !== true && entry.cacheForNavigation === false) continue;
 
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     const normalizedSource = normalizeRscCacheLookupUrl(source.rscUrl);
-    if (normalizedSource === null || !normalizedTargets.has(normalizedSource)) continue;
+    if (
+      (normalizedSource === null || !normalizedTargets.has(normalizedSource)) &&
+      (options.sharedCacheKey == null || entry.sharedCacheKey !== options.sharedCacheKey)
+    ) {
+      continue;
+    }
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
 
     return { cacheKey, entry };
@@ -632,15 +648,17 @@ export function hasPrefetchCacheEntryForNavigation(
   mountedSlotsHeader: string | null = null,
   options: {
     additionalRscUrls?: readonly string[];
+    includeNonNavigation?: boolean;
     notifyInvalidation?: boolean;
     onInvalidate?: () => void;
+    sharedCacheKey?: string | null;
   } = {},
 ): boolean {
   const match = findPrefetchCacheEntryForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
-    options.additionalRscUrls,
+    options,
   );
   if (match === null) return false;
 
@@ -1322,7 +1340,10 @@ export function prefetchRscResponse(
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
+    runtimeLoadingFallback?: VinextRuntimePrefetchLoadingFallback | null;
+    runtimeTemplateVariantKey?: string | null;
     searchAgnosticShell?: boolean;
+    sharedCacheKey?: string | null;
   } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
@@ -1343,7 +1364,10 @@ export function prefetchRscResponse(
     prefetchKind:
       behavior.prefetchKind ??
       (behavior.optimisticRouteShell === true ? "loading-shell" : "navigation"),
+    runtimeLoadingFallback: behavior.runtimeLoadingFallback ?? null,
+    runtimeTemplateVariantKey: behavior.runtimeTemplateVariantKey ?? null,
     searchAgnosticShell: behavior.searchAgnosticShell === true,
+    sharedCacheKey: behavior.sharedCacheKey ?? null,
     timestamp: now,
   };
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
@@ -1438,13 +1462,13 @@ export function peekPrefetchResponseForNavigation(
   rscUrl: string,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
-  options?: { additionalRscUrls?: readonly string[] },
+  options?: { additionalRscUrls?: readonly string[]; sharedCacheKey?: string | null },
 ): CachedRscResponse | null {
   const match = findPrefetchCacheEntryForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
-    options?.additionalRscUrls,
+    options,
   );
   if (!match) return null;
 
@@ -1473,7 +1497,7 @@ export function consumePrefetchResponse(
   rscUrl: string,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
-  options?: { additionalRscUrls?: readonly string[] },
+  options?: { additionalRscUrls?: readonly string[]; sharedCacheKey?: string | null },
 ): CachedRscResponse | null {
   const cache = getPrefetchCache();
   const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
@@ -1490,7 +1514,7 @@ export function consumePrefetchResponse(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
-    options?.additionalRscUrls,
+    options,
   );
   if (!match) return null;
   const { cacheKey, entry } = match;
@@ -1555,6 +1579,7 @@ function consumeMatchedPrefetchResponse(
  */
 type ConsumePrefetchResponseForNavigationOptions = {
   additionalRscUrls?: readonly string[];
+  sharedCacheKey?: string | null;
   shouldConsume?: () => boolean;
 };
 
@@ -1569,7 +1594,7 @@ export async function consumePrefetchResponseForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
-    options?.additionalRscUrls,
+    options,
   );
   if (!match) return null;
   const { cacheKey, entry } = match;
@@ -2658,7 +2683,7 @@ const _appRouter: AppRouterInstance = {
     // or mounted-slot key.
     const interceptionContext = getPrefetchInterceptionContext(fullHref);
     const mountedSlotsHeader = getMountedSlotsHeader();
-    const headers = createAppPrefetchRequestHeaders({
+    let headers = createAppPrefetchRequestHeaders({
       fetchPriority: "low",
       interceptionContext,
       mountedSlotsHeader: mountedSlotsHeader || null,
@@ -2706,13 +2731,24 @@ const _appRouter: AppRouterInstance = {
       const kind = options?.kind === "full" ? "full" : "auto";
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
-      const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
-        await import("./internal/app-route-prefetch-policy.js");
+      const {
+        resolveAppPrefetchSharedCacheKey,
+        resolveAutoAppRoutePrefetch,
+        resolveFullAppRoutePrefetch,
+      } = await import("./internal/app-route-prefetch-policy.js");
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
+      if (policy.renderLoadingShell) {
+        headers = createAppPrefetchRequestHeaders({
+          fetchPriority: "low",
+          interceptionContext,
+          mountedSlotsHeader: mountedSlotsHeader || null,
+          renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        });
+      }
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.
       if (reusable && kind === "full") {
@@ -2739,6 +2775,10 @@ const _appRouter: AppRouterInstance = {
       if (setup.cancelled) return;
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
       const prefetched = getPrefetchedUrls();
+      const sharedCacheKey = resolveAppPrefetchSharedCacheKey(
+        fullHref,
+        reusable ? "navigation" : policy.renderLoadingShell ? "loading-shell" : "runtime",
+      );
       if (reusable) {
         // A previous learning-only prefetch for the same URL must not satisfy
         // the freshness gate below; only a navigation-reusable entry counts.
@@ -2750,13 +2790,26 @@ const _appRouter: AppRouterInstance = {
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
             additionalRscUrls,
             onInvalidate: options?.onInvalidate,
+            sharedCacheKey,
           })
         ) {
           return;
         }
-      } else if (prefetched.has(cacheKey)) {
-        attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
-        return;
+      } else {
+        if (
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
+            additionalRscUrls,
+            includeNonNavigation: true,
+            onInvalidate: options?.onInvalidate,
+            sharedCacheKey,
+          })
+        ) {
+          return;
+        }
+        if (prefetched.has(cacheKey)) {
+          attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
+          return;
+        }
       }
       prefetched.add(cacheKey);
       prefetchRscResponse(
@@ -2785,11 +2838,23 @@ const _appRouter: AppRouterInstance = {
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
+              sharedCacheKey,
             }
           : {
               cacheForNavigation: false,
-              optimisticRouteShell: true,
+              fallbackTtlMs: PREFETCH_CACHE_TTL,
+              honorDynamicStaleTime: policy.honorDynamicStaleTime,
+              optimisticRouteShell: !policy.shouldPrefetch || policy.renderLoadingShell,
+              // Programmatic prefetches remain upgradeable by kind:"full";
+              // discardLearningOnlyPrefetchCacheEntry keys that lifecycle by
+              // the navigation family even when the body is a loading shell.
               prefetchKind: "navigation",
+              runtimeLoadingFallback: policy.runtimeLoadingFallback ?? null,
+              runtimeTemplateVariantKey:
+                !policy.renderLoadingShell && sharedCacheKey !== null
+                  ? `${sharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
+                  : null,
+              sharedCacheKey,
             },
       );
     })()
