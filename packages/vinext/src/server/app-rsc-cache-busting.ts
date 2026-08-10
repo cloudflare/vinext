@@ -13,6 +13,7 @@ import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_PREFETCH_VARY_REQUEST_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
@@ -39,6 +40,7 @@ export const VINEXT_RSC_VARY_HEADER = [
   NEXT_URL_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_PREFETCH_VARY_REQUEST_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 ].join(", ");
 
@@ -174,6 +176,7 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 }
 
 type CreateCacheBustingInputOptions = {
+  includePrefetchVaryRequestHeader?: boolean;
   includeRenderModeHeader?: boolean;
 };
 
@@ -190,6 +193,9 @@ function createCacheBustingInput(
     headers.get(NEXT_URL_HEADER),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
     headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
+    ...(options.includePrefetchVaryRequestHeader === false
+      ? []
+      : [headers.get(VINEXT_PREFETCH_VARY_REQUEST_HEADER)]),
     ...(options.includeRenderModeHeader === false
       ? []
       : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
@@ -213,7 +219,9 @@ function computeLegacyRscCacheBustingSearchParam(headers: Headers): string {
 }
 
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includePrefetchVaryRequestHeader: false,
+  });
   if (input === null) {
     return null;
   }
@@ -222,7 +230,25 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
 }
 
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includePrefetchVaryRequestHeader: false,
+  });
+  return input === null ? null : fnv1a64(input);
+}
+
+async function computeOlderRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
+  const input = createCacheBustingInput(headers, {
+    includePrefetchVaryRequestHeader: false,
+    includeRenderModeHeader: false,
+  });
+  return input === null ? null : sha256CacheBustingHash(input);
+}
+
+function computeOlderLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
+  const input = createCacheBustingInput(headers, {
+    includePrefetchVaryRequestHeader: false,
+    includeRenderModeHeader: false,
+  });
   return input === null ? null : fnv1a64(input);
 }
 
@@ -398,16 +424,20 @@ export async function resolveInvalidRscCacheBustingRequest(
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
+    const previousHash = await computePreviousRscCacheBustingSearchParam(options.request.headers);
+    const previousLegacyHash = computePreviousLegacyRscCacheBustingSearchParam(
+      options.request.headers,
+    );
+    if (previousHash !== null) acceptedHashes.add(previousHash);
+    if (previousLegacyHash !== null) acceptedHashes.add(previousLegacyHash);
     if (
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
       null
     ) {
-      const previousHash = await computePreviousRscCacheBustingSearchParam(options.request.headers);
-      const previousLegacyHash = computePreviousLegacyRscCacheBustingSearchParam(
-        options.request.headers,
-      );
-      if (previousHash !== null) acceptedHashes.add(previousHash);
-      if (previousLegacyHash !== null) acceptedHashes.add(previousLegacyHash);
+      const olderHash = await computeOlderRscCacheBustingSearchParam(options.request.headers);
+      const olderLegacyHash = computeOlderLegacyRscCacheBustingSearchParam(options.request.headers);
+      if (olderHash !== null) acceptedHashes.add(olderHash);
+      if (olderLegacyHash !== null) acceptedHashes.add(olderLegacyHash);
     }
   }
 

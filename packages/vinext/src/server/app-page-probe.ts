@@ -1,4 +1,5 @@
-import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
+import { Fragment, isValidElement, Suspense, type ReactElement, type ReactNode } from "react";
+import { runWithConnectionProbe, runWithConnectionProbeBoundary } from "vinext/shims/headers";
 import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
 import { isNextRouterError } from "vinext/shims/navigation-server";
 import { collectAppPageSearchParams } from "./app-page-head.js";
@@ -10,6 +11,7 @@ import {
   type LayoutFlags,
 } from "./app-page-execution.js";
 import { makeObservedAppPageSearchParamsThenable } from "./app-page-search-params-observation.js";
+import { AppElementsWire } from "./app-elements.js";
 import { isPromiseLike } from "../utils/promise.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
@@ -22,6 +24,7 @@ const REACT_CLIENT_REFERENCE_TYPE = Symbol.for("react.client.reference");
 type ProbeReactServerSubtreeOptions = Readonly<{
   maxDepth?: number;
   maxNodes?: number;
+  onDynamicSuspenseBoundary?: (ordinal: number) => void;
 }>;
 
 type ProbeReactElementProps = Readonly<{
@@ -130,6 +133,7 @@ export async function probeReactServerSubtree(
   const maxDepth = options.maxDepth ?? DEFAULT_SUBTREE_PROBE_MAX_DEPTH;
   const maxNodes = options.maxNodes ?? DEFAULT_SUBTREE_PROBE_MAX_NODES;
   let visitedNodes = 0;
+  let suspenseOrdinal = 0;
 
   const enterProbeNode = (depth: number): void => {
     if (depth > maxDepth) {
@@ -208,6 +212,16 @@ export async function probeReactServerSubtree(
       return;
     }
 
+    if (value.type === Suspense) {
+      const ordinal = suspenseOrdinal++;
+      await runWithConnectionProbe(async () => {
+        await runWithConnectionProbeBoundary(ordinal, options.onDynamicSuspenseBoundary, () =>
+          visit(value.props.children, depth + 1),
+        );
+      });
+      return;
+    }
+
     if (await renderElementType(value.type, value.props, depth)) {
       return;
     }
@@ -218,9 +232,12 @@ export async function probeReactServerSubtree(
   await visit(node, 0);
 }
 
-async function probeReactServerSubtreeForDynamicUsage(node: unknown): Promise<void> {
+async function probeReactServerSubtreeForDynamicUsage(
+  node: unknown,
+  onDynamicSuspenseBoundary?: (ordinal: number) => void,
+): Promise<void> {
   try {
-    await probeReactServerSubtree(node);
+    await probeReactServerSubtree(node, { onDynamicSuspenseBoundary });
   } catch (error) {
     if (isNextRouterError(error)) {
       return;
@@ -249,6 +266,8 @@ async function probeReactServerSubtreeForDynamicUsage(node: unknown): Promise<vo
 export function probeAppPage(options: {
   pageComponent: unknown;
   asyncRouteParams: unknown;
+  onSearchParamsAccess?: () => void;
+  onDynamicSuspenseBoundary?: (ordinal: number) => void;
   searchParams: URLSearchParams | null | undefined;
 }): unknown {
   const { pageComponent, asyncRouteParams, searchParams } = options;
@@ -257,6 +276,7 @@ export function probeAppPage(options: {
   }
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
   const asyncSearchParams = makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+    onAccess: options.onSearchParamsAccess,
     observeReactPromiseStatus: true,
   });
   const pageProps = markAppPagePropsForUseCache({
@@ -266,12 +286,14 @@ export function probeAppPage(options: {
   const result = (pageComponent as (props: Record<string, unknown>) => unknown)(pageProps);
   if (isPromiseLike(result)) {
     return result.then(async (resolved) => {
-      await probeReactServerSubtreeForDynamicUsage(resolved);
+      await probeReactServerSubtreeForDynamicUsage(resolved, options.onDynamicSuspenseBoundary);
       return resolved;
     });
   }
   if (isValidElement(result) || Array.isArray(result)) {
-    return probeReactServerSubtreeForDynamicUsage(result).then(() => result);
+    return probeReactServerSubtreeForDynamicUsage(result, options.onDynamicSuspenseBoundary).then(
+      () => result,
+    );
   }
   return result;
 }
@@ -280,23 +302,39 @@ type AppPageProbeModule = Readonly<{ default?: unknown }> | null | undefined;
 
 type AppPageProbeSlot =
   | Readonly<{
+      id?: string | null;
       page?: AppPageProbeModule;
       loading?: AppPageProbeModule;
       loadings?: readonly AppPageProbeModule[] | null;
       loadingTreePositions?: readonly number[] | null;
+      slotParamNames?: readonly string[] | null;
+      slotPatternParts?: readonly string[] | null;
     }>
   | null
   | undefined;
 
 type AppPageProbeRoute = Readonly<{
+  childrenSlot?: Readonly<{ ownerTreePath: string }> | null;
+  params?: readonly string[] | null;
   slots?: Readonly<Record<string, AppPageProbeSlot>> | null;
 }>;
+
+export function resolveAppPageProbeMainElementId(
+  route: AppPageProbeRoute,
+  routePath: string,
+  interceptionContext: string | null,
+): string {
+  return route.childrenSlot
+    ? AppElementsWire.encodeSlotId("children", route.childrenSlot.ownerTreePath)
+    : AppElementsWire.encodePageId(routePath, interceptionContext);
+}
 
 type AppPageProbeIntercept =
   | Readonly<{
       page?: AppPageProbeModule;
       interceptLoadings?: readonly AppPageProbeModule[] | null;
       matchedParams?: unknown;
+      slotId?: string | null;
       /**
        * Key of the parallel-route slot this interception overrides. At render
        * time the matched route's `slots[slotKey].page` is replaced by the
@@ -354,6 +392,7 @@ type AppPageProbeIntercept =
  */
 export function buildAppPageProbes(options: {
   route: AppPageProbeRoute;
+  elements?: Readonly<Record<string, unknown>>;
   pageComponent: unknown;
   asyncRouteParams: unknown;
   searchParams: URLSearchParams | null | undefined;
@@ -365,7 +404,15 @@ export function buildAppPageProbes(options: {
   isRscRequest: boolean;
   /** Fallback raw params used when an interception match omits its own. */
   matchedParams: unknown;
-  makeThenableParams: (params: unknown) => unknown;
+  makeThenableParams: (
+    params: unknown,
+    pageElementId: string,
+    paramNames?: readonly string[] | null,
+  ) => unknown;
+  mainPageElementId?: string;
+  onDynamicSuspenseBoundary?: (pageElementId: string, ordinal: number) => void;
+  onSearchParamsAccess?: (pageElementId: string) => void;
+  slotParamOverrides?: Readonly<Record<string, unknown>> | null;
 }): Promise<unknown>[] {
   const { route, pageComponent, asyncRouteParams, searchParams, matchedParams } = options;
 
@@ -373,7 +420,57 @@ export function buildAppPageProbes(options: {
   // route renders normally, so ignore any interception match entirely.
   const intercept = options.isRscRequest ? options.intercept : null;
 
-  const probes: unknown[] = [probeAppPage({ pageComponent, asyncRouteParams, searchParams })];
+  const probes: Promise<unknown>[] = [];
+  const hasSerializedElement = (pageElementId: string): boolean =>
+    options.elements !== undefined &&
+    Object.hasOwn(options.elements, pageElementId) &&
+    options.elements[pageElementId] !== null &&
+    options.elements[pageElementId] !== undefined;
+  const addSerializedElementProbe = (pageElementId: string, awaitResult = true): boolean => {
+    if (!hasSerializedElement(pageElementId)) return false;
+    const element = options.elements?.[pageElementId];
+    const probe = probeReactServerSubtree(element, {
+      onDynamicSuspenseBoundary: (ordinal) =>
+        options.onDynamicSuspenseBoundary?.(pageElementId, ordinal),
+    });
+    if (awaitResult) {
+      probes.push(probe);
+    } else {
+      void probe.catch(() => {});
+      probes.push(Promise.resolve(null));
+    }
+    return true;
+  };
+  const addProbe = (
+    probePageComponent: unknown,
+    probeParams: unknown,
+    pageElementId: string,
+    awaitResult = true,
+    observeDynamicSuspense = true,
+  ) => {
+    const probe = Promise.resolve(
+      probeAppPage({
+        pageComponent: probePageComponent,
+        asyncRouteParams: probeParams,
+        onDynamicSuspenseBoundary: observeDynamicSuspense
+          ? (ordinal) => options.onDynamicSuspenseBoundary?.(pageElementId, ordinal)
+          : undefined,
+        onSearchParamsAccess: () => options.onSearchParamsAccess?.(pageElementId),
+        searchParams,
+      }),
+    );
+    if (awaitResult) {
+      probes.push(probe);
+    } else {
+      void probe.catch(() => {});
+      probes.push(Promise.resolve(null));
+    }
+  };
+
+  const mainPageElementId = options.mainPageElementId ?? "page";
+  const hasSerializedMainPage = hasSerializedElement(mainPageElementId);
+  addProbe(pageComponent, asyncRouteParams, mainPageElementId, true, !hasSerializedMainPage);
+  if (hasSerializedMainPage) addSerializedElementProbe(mainPageElementId);
 
   // A slot whose page is replaced by an active interception override does not
   // render its own `page.tsx`; the interception page (probed below) renders in
@@ -384,16 +481,23 @@ export function buildAppPageProbes(options: {
     if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
       continue;
     }
-    if (slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)) {
-      continue;
-    }
-    probes.push(
-      probeAppPage({
-        pageComponent: slot?.page?.default,
-        asyncRouteParams,
-        searchParams,
-      }),
+    const slotElementId = slot?.id ?? AppElementsWire.encodeSlotId(slotKey, "/");
+    const awaitResult = !(
+      slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)
     );
+    const hasSerializedSlot = hasSerializedElement(slotElementId);
+    addProbe(
+      slot?.page?.default,
+      options.makeThenableParams(
+        options.slotParamOverrides?.[slotKey] ?? matchedParams,
+        slotElementId,
+        slot?.slotParamNames ?? options.route.params,
+      ),
+      slotElementId,
+      awaitResult,
+      !hasSerializedSlot,
+    );
+    if (hasSerializedSlot) addSerializedElementProbe(slotElementId, awaitResult);
   }
 
   const interceptedSlot = intercept?.slotKey ? route.slots?.[intercept.slotKey] : null;
@@ -407,17 +511,29 @@ export function buildAppPageProbes(options: {
     intercept?.interceptLoadings?.some((loading) => loading?.default) ||
     interceptedSlotHasRootLoading,
   );
-  if (intercept && !interceptHasLoadingBoundary) {
-    probes.push(
-      probeAppPage({
-        pageComponent: intercept.page?.default,
-        asyncRouteParams: options.makeThenableParams(intercept.matchedParams ?? matchedParams),
-        searchParams,
-      }),
+  if (intercept) {
+    const interceptedPageElementId =
+      intercept.slotId ??
+      (intercept.slotKey ? route.slots?.[intercept.slotKey]?.id : null) ??
+      mainPageElementId;
+    const hasSerializedIntercept = hasSerializedElement(interceptedPageElementId);
+    addProbe(
+      intercept.page?.default,
+      options.makeThenableParams(
+        intercept.matchedParams ?? matchedParams,
+        interceptedPageElementId,
+        interceptedSlot?.slotParamNames ?? options.route.params,
+      ),
+      interceptedPageElementId,
+      !interceptHasLoadingBoundary,
+      !hasSerializedIntercept,
     );
+    if (hasSerializedIntercept) {
+      addSerializedElementProbe(interceptedPageElementId, !interceptHasLoadingBoundary);
+    }
   }
 
-  return probes.map((probe) => Promise.resolve(probe));
+  return probes;
 }
 
 type ProbeAppPageBeforeRenderResult = {
@@ -490,7 +606,26 @@ export async function probeAppPageBeforeRender(
   // onError callback, and a short race window after shell-ready lets the
   // lifecycle swap the response to a 307/404 before bytes are flushed.
   // This mirrors Next.js's "until-first-byte-is-flushed" swap behavior.
-  if (options.hasLoadingBoundary || options.probePageBeforeRender === false) {
+  if (options.probePageBeforeRender === false) {
+    return { response: null, layoutFlags };
+  }
+
+  if (options.hasLoadingBoundary) {
+    // Start the observation probe without awaiting its async result. The
+    // route-level loading boundary must remain streamable, but invoking the
+    // probe still lets synchronous server-component output and its branch-local
+    // Suspense probes publish render-observed vary metadata before the RSC
+    // completion footer is emitted.
+    await probeAppPageComponent({
+      awaitAsyncResult: false,
+      async onError() {
+        return null;
+      },
+      probePage: options.probePage,
+      runWithSuppressedHookWarning(probe) {
+        return options.runWithSuppressedHookWarning(probe);
+      },
+    });
     return { response: null, layoutFlags };
   }
 

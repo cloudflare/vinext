@@ -5,11 +5,18 @@ import {
   probeAppPage,
   probeAppPageBeforeRender,
   probeReactServerSubtree,
+  resolveAppPageProbeMainElementId,
 } from "../packages/vinext/src/server/app-page-probe.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
+  runWithConnectionProbe,
 } from "../packages/vinext/src/shims/headers.js";
+import { connection } from "../packages/vinext/src/shims/server.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 // Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
 // converts raw null-prototype params into objects that work with both
@@ -33,6 +40,87 @@ async function registerCachedProbePage<TProps extends Record<string, unknown>, T
 }
 
 describe("app page probe helpers", () => {
+  it("uses the serialized children-slot identity for synthetic page routes", () => {
+    expect(
+      resolveAppPageProbeMainElementId(
+        { childrenSlot: { ownerTreePath: "/blog" } },
+        "/blog/post-1",
+        null,
+      ),
+    ).toBe("slot:children:/blog");
+    expect(resolveAppPageProbeMainElementId({}, "/blog/post-1", null)).toBe("page:/blog/post-1");
+  });
+
+  it("reports the Suspense boundary interrupted by connection through an imported helper", async () => {
+    const observed: number[] = [];
+
+    async function importedHelper(): Promise<void> {
+      await connection();
+    }
+
+    async function DynamicChild() {
+      await importedHelper();
+      return React.createElement("div", null, "dynamic");
+    }
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      const result = await runWithConnectionProbe(() =>
+        probeReactServerSubtree(
+          React.createElement(
+            React.Suspense,
+            { fallback: React.createElement("p", null, "loading") },
+            React.createElement(DynamicChild),
+          ),
+          { onDynamicSuspenseBoundary: (ordinal) => observed.push(ordinal) },
+        ),
+      );
+      expect(result.completed).toBe(true);
+    });
+
+    expect(observed).toEqual([0]);
+  });
+
+  it("continues probing static siblings after a connection boundary", async () => {
+    const calls: string[] = [];
+    const observed: number[] = [];
+
+    async function DynamicChild({ label }: { label: string }) {
+      calls.push(`${label}:before`);
+      await connection();
+      calls.push(`${label}:after`);
+      return null;
+    }
+
+    function StaticSibling() {
+      calls.push("static");
+      return null;
+    }
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      await probeReactServerSubtree(
+        [
+          React.createElement(
+            React.Suspense,
+            { fallback: null },
+            React.createElement(DynamicChild, { label: "first" }),
+          ),
+          React.createElement(StaticSibling),
+          React.createElement(
+            React.Suspense,
+            { fallback: null },
+            React.createElement(DynamicChild, { label: "second" }),
+          ),
+        ],
+        {
+          onDynamicSuspenseBoundary: (ordinal) => observed.push(ordinal),
+        },
+      );
+    });
+
+    expect(calls).toEqual(["first:before", "static", "second:before"]);
+    expect(observed).toEqual([0, 1]);
+  });
+
   it("probes server components returned below a layout result", async () => {
     const calls: string[] = [];
 
@@ -501,7 +589,7 @@ describe("app page probe helpers", () => {
     expect(renderPageSpecialError).not.toHaveBeenCalled();
   });
 
-  it("skips the page probe when a loading boundary is present (special errors handled post-shell)", async () => {
+  it("starts a non-blocking observation probe when a loading boundary is present", async () => {
     // With a route-level loading.tsx Suspense boundary, the probe can't
     // catch a redirect()/notFound() thrown by the page without serializing
     // on the page promise — which would defeat loading.tsx's whole point.
@@ -531,9 +619,54 @@ describe("app page probe helpers", () => {
       },
     });
 
-    expect(probePage).not.toHaveBeenCalled();
+    expect(probePage).toHaveBeenCalledOnce();
     expect(renderPageSpecialError).not.toHaveBeenCalled();
     expect(result.response).toBeNull();
+  });
+
+  it("observes dynamic Suspense boundaries behind a route loading boundary", async () => {
+    const observed: number[] = [];
+
+    async function DynamicChild() {
+      await connection();
+      return null;
+    }
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      const result = await probeAppPageBeforeRender({
+        hasLoadingBoundary: true,
+        layoutCount: 0,
+        probeLayoutAt() {
+          return null;
+        },
+        probePage() {
+          return probeReactServerSubtree(
+            React.createElement(
+              React.Suspense,
+              { fallback: null },
+              React.createElement(DynamicChild),
+            ),
+            { onDynamicSuspenseBoundary: (ordinal) => observed.push(ordinal) },
+          );
+        },
+        renderLayoutSpecialError() {
+          throw new Error("unreachable");
+        },
+        renderPageSpecialError() {
+          throw new Error("unreachable");
+        },
+        resolveSpecialError() {
+          return null;
+        },
+        runWithSuppressedHookWarning(probe) {
+          return probe();
+        },
+      });
+
+      expect(result.response).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(observed).toEqual([0]);
+    });
   });
 
   it("skips the page probe when disabled for document rendering", async () => {
@@ -636,6 +769,39 @@ describe("probeAppPage", () => {
     expect(Object.keys(received ?? {})).toEqual([]);
   });
 
+  it("observes awaiting searchParams even when no resolved property is read", async () => {
+    const onSearchParamsAccess = vi.fn();
+    async function Page(props: { searchParams: Promise<Record<string, unknown>> }) {
+      await props.searchParams;
+    }
+
+    await probeAppPage({
+      pageComponent: Page,
+      asyncRouteParams: makeThenableParams({}),
+      onSearchParamsAccess,
+      searchParams: new URLSearchParams("q=hello"),
+    });
+
+    expect(onSearchParamsAccess).toHaveBeenCalled();
+  });
+
+  it("observes properties destructured from awaited searchParams", async () => {
+    const onSearchParamsAccess = vi.fn();
+    async function Page(props: { searchParams: Promise<{ q?: string }> }) {
+      const { q } = await props.searchParams;
+      return q;
+    }
+
+    await probeAppPage({
+      pageComponent: Page,
+      asyncRouteParams: makeThenableParams({}),
+      onSearchParamsAccess,
+      searchParams: new URLSearchParams("q=hello"),
+    });
+
+    expect(onSearchParamsAccess).toHaveBeenCalled();
+  });
+
   it("does not mark dynamic when a cached page probe only derives its cache key", async () => {
     const CachedPage = await registerCachedProbePage(
       async (props: {
@@ -710,6 +876,124 @@ describe("buildAppPageProbes", () => {
       return label;
     };
   }
+
+  it("counts named-slot dynamic boundaries in the complete serialized slot tree", async () => {
+    const mainPageElementId = "page:/dashboard";
+    const slotElementId = "slot:modal:/";
+    const observed: Array<[string, number]> = [];
+
+    function SlotLayout({ children }: { children: React.ReactNode }) {
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          React.Suspense,
+          { fallback: React.createElement("p", null, "Loading static sibling") },
+          React.createElement("div", null, "Cached sibling"),
+        ),
+        children,
+      );
+    }
+
+    async function DynamicSlotPage() {
+      await connection();
+      return React.createElement("div", null, "Dynamic modal");
+    }
+
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: {
+            id: slotElementId,
+            page: {
+              default: () => "modal page probe",
+            },
+          },
+        },
+      },
+      elements: {
+        [slotElementId]: React.createElement(
+          SlotLayout,
+          null,
+          React.createElement(
+            React.Suspense,
+            { fallback: React.createElement("p", null, "Loading modal") },
+            React.createElement(DynamicSlotPage),
+          ),
+        ),
+      },
+      pageComponent: () => "main page probe",
+      asyncRouteParams: makeThenableParams({}),
+      mainPageElementId,
+      searchParams: null,
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+      onDynamicSuspenseBoundary(pageElementId, ordinal) {
+        observed.push([pageElementId, ordinal]);
+      },
+    });
+
+    await runWithRequestContext(createRequestContext(), () => Promise.all(probes));
+
+    expect(observed).toEqual([[slotElementId, 1]]);
+  });
+
+  it("probes named slots with their effective catch-all params and name domain", async () => {
+    const slotElementId = "slot:slot:/:teamID";
+    const observedKeys: string[] = [];
+    const receivedParams: Array<Record<string, unknown>> = [];
+    const receivedParamNames: Array<readonly string[] | null | undefined> = [];
+
+    async function SlotPage({ params }: { params: Promise<Record<string, unknown>> }) {
+      const resolved = await params;
+      void resolved.catchAll;
+      receivedParams.push(resolved);
+      return null;
+    }
+
+    const probes = buildAppPageProbes({
+      route: {
+        params: ["teamID", "folder"],
+        slots: {
+          slot: {
+            id: slotElementId,
+            page: { default: SlotPage },
+            slotParamNames: ["teamID", "catchAll"],
+            slotPatternParts: [":teamID", ":catchAll+"],
+          },
+        },
+      },
+      pageComponent: () => null,
+      asyncRouteParams: makeThenableParams({ teamID: "acme", folder: "docs" }),
+      mainPageElementId: "page:/acme/sub/docs",
+      searchParams: null,
+      isRscRequest: true,
+      matchedParams: { teamID: "acme", folder: "docs" },
+      makeThenableParams(params, _pageElementId, paramNames) {
+        receivedParamNames.push(paramNames);
+        const resolved = new Proxy(
+          { ...(params as Record<string, unknown>) },
+          {
+            get(target, property, receiver) {
+              if (property === "catchAll") observedKeys.push(property);
+              return Reflect.get(target, property, receiver);
+            },
+          },
+        );
+        return Promise.resolve(resolved);
+      },
+      slotParamOverrides: {
+        slot: { teamID: "acme", catchAll: ["sub", "docs"] },
+      },
+    });
+
+    await Promise.all(probes);
+
+    expect(receivedParamNames).toEqual([["teamID", "catchAll"]]);
+    expect(observedKeys).toEqual(["catchAll"]);
+    expect(receivedParams).toEqual([{ teamID: "acme", catchAll: ["sub", "docs"] }]);
+  });
 
   it("probes the matched page, every slot page, and the interception page", async () => {
     const probed: string[] = [];
@@ -813,7 +1097,7 @@ describe("buildAppPageProbes", () => {
     expect(probed.sort()).toEqual(["modal", "page"]);
   });
 
-  it("does not await slot pages protected by branch-local loading boundaries", async () => {
+  it("observes slot pages without awaiting branches protected by loading boundaries", async () => {
     const probed: string[] = [];
     const probes = buildAppPageProbes({
       route: {
@@ -839,10 +1123,10 @@ describe("buildAppPageProbes", () => {
 
     await Promise.all(probes);
 
-    expect(probed.sort()).toEqual(["page", "team"]);
+    expect(probed.sort()).toEqual(["modal", "page", "sidebar", "team"]);
   });
 
-  it("does not await intercepted pages protected by slot or intercept loading boundaries", async () => {
+  it("observes intercepted pages without awaiting their loading-protected branches", async () => {
     const probed: string[] = [];
     const buildProbes = (interceptLoadings?: readonly { default?: unknown }[]) =>
       buildAppPageProbes({
@@ -870,7 +1154,7 @@ describe("buildAppPageProbes", () => {
     await Promise.all(buildProbes([{ default: () => "intercept loading" }]));
     await Promise.all(buildProbes());
 
-    expect(probed).toEqual(["page", "page"]);
+    expect(probed).toEqual(["page", "intercept", "page", "intercept"]);
   });
 
   it("does await intercepted pages when only a sibling normal branch has loading", async () => {

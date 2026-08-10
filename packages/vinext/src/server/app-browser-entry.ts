@@ -162,6 +162,11 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
+  encodeAppPrefetchRuntimeTemplateVariantKey,
+  isAppPrefetchVaryEnabled,
+  resolveAppPrefetchSharedCacheKey,
+} from "vinext/shims/internal/app-route-prefetch-policy";
+import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getVinextRscCompatibilityId,
@@ -180,6 +185,7 @@ import {
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
+  prepareOptimisticRouteTemplate,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
@@ -481,15 +487,35 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
   );
-  const template = createOptimisticRouteTemplate({
+  const preservePageElements =
+    isAppPrefetchVaryEnabled() &&
+    options.entry.cacheForNavigation === false &&
+    options.entry.optimisticRouteShell !== true;
+  const variantKey = preservePageElements
+    ? (options.entry.runtimeTemplateVariantKey ?? options.entry.sharedCacheKey ?? null)
+    : null;
+  let template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
     basePath: __basePath,
+    dynamicSuspenseOrdinals: preservePageElements
+      ? options.entry.snapshot.prefetchVary?.pageDynamicSuspenseOrdinals
+      : undefined,
+    dynamicSuspenseOrdinalsByPageElementId: preservePageElements
+      ? options.entry.snapshot.prefetchVary?.pageDynamicSuspenseOrdinalsByElementId
+      : undefined,
     elements,
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    pageAllSuspenseDynamic:
+      preservePageElements && options.entry.snapshot.prefetchVary?.pageAllSuspenseDynamic === true,
+    preservePageElements,
     routeManifest: options.routeManifest,
+    variantKey,
   });
+  if (template?.preservePageElements === true) {
+    template = await prepareOptimisticRouteTemplate(template);
+  }
   if (template === null) return false;
 
   optimisticRouteTemplates.set(
@@ -497,6 +523,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       routeId: template.routeId,
+      variantKey: template.variantKey,
     }),
     template,
   );
@@ -1791,6 +1818,12 @@ function bootstrapHydration(
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
             : null;
         const targetPathAndSearch = url.pathname + url.search;
+        const runtimeTemplateVariantKey = isAppPrefetchVaryEnabled()
+          ? encodeAppPrefetchRuntimeTemplateVariantKey(
+              resolveAppPrefetchSharedCacheKey(url.href, "runtime") ?? "",
+              resolveAppPrefetchSharedCacheKey(url.href, "loading-shell"),
+            )
+          : null;
         const additionalPrefetchPathAndSearch =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref
             ? [rewrittenNavigationHref]
@@ -2046,6 +2079,7 @@ function bootstrapHydration(
               mountedSlotsHeader,
               routeManifest,
               templates: optimisticRouteTemplates,
+              variantKey: runtimeTemplateVariantKey,
             });
 
             if (optimisticPayload !== null) {

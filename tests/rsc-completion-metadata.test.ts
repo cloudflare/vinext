@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   appendRscCompletionMetadata,
+  decodePrefetchVaryHeader,
+  encodePrefetchVaryHeader,
   extractRscCompletionMetadata,
+  parsePrefetchVaryMetadata,
   stripRscCompletionMetadata,
   stripRscCompletionMetadataResponse,
 } from "../packages/vinext/src/server/rsc-completion-metadata.js";
@@ -46,6 +49,156 @@ describe("RSC completion metadata", () => {
     const stripped = stripRscCompletionMetadata(body);
 
     await expect(new Response(stripped).text()).resolves.toBe(`${"a".repeat(300)}tail`);
+  });
+
+  it("coarsens oversized completion metadata without failing or under-varying", async () => {
+    const body = appendRscCompletionMetadata(stream(["flight-payload"]), () => ({
+      prefetchVary: {
+        loadingParamNames: Array.from({ length: 64 }, (_, index) => `${index}`.padEnd(128, "x")),
+        metadataParamNames: [],
+        metadataSearchParams: false,
+        pageDynamicSuspenseOrdinals: [],
+        pageParamNames: [],
+        pageSearchParams: false,
+      },
+    }));
+    const encoded = await new Response(body).arrayBuffer();
+
+    const extracted = extractRscCompletionMetadata(encoded);
+
+    expect(decoder.decode(extracted.buffer)).toBe("flight-payload");
+    expect(extracted.metadata?.prefetchVary).toEqual({
+      loadingParamNames: [],
+      metadataParamNames: [],
+      metadataSearchParams: true,
+      pageAllSuspenseDynamic: true,
+      pageDynamicSuspenseOrdinals: [],
+      pageParamNames: [],
+      pageSearchParams: true,
+      varyAllParams: true,
+    });
+  });
+
+  it("coarsens oversized per-element Suspense metadata to its safe global union", async () => {
+    const pageDynamicSuspenseOrdinalsByElementId = Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [`page:${index}:${"x".repeat(230)}`, [index % 4]]),
+    );
+    const prefetchVary = {
+      loadingParamNames: [],
+      metadataParamNames: [],
+      metadataSearchParams: false,
+      pageDynamicSuspenseOrdinals: [0, 1, 2, 3],
+      pageDynamicSuspenseOrdinalsByElementId,
+      pageParamNames: ["itemId"],
+      pageSearchParams: false,
+    };
+    const body = appendRscCompletionMetadata(stream(["flight-payload"]), () => ({
+      prefetchVary,
+    }));
+    const extracted = extractRscCompletionMetadata(await new Response(body).arrayBuffer());
+    const decodedHeader = decodePrefetchVaryHeader(encodePrefetchVaryHeader(prefetchVary));
+
+    expect(decoder.decode(extracted.buffer)).toBe("flight-payload");
+    expect(extracted.metadata?.prefetchVary).toMatchObject({
+      pageDynamicSuspenseOrdinals: [0, 1, 2, 3],
+      pageParamNames: ["itemId"],
+    });
+    expect(extracted.metadata?.prefetchVary).not.toHaveProperty(
+      "pageDynamicSuspenseOrdinalsByElementId",
+    );
+    expect(decodedHeader).toEqual(extracted.metadata?.prefetchVary);
+  });
+
+  it("fails malformed vary headers closed with bounded conservative metadata", () => {
+    const expected = {
+      loadingParamNames: [],
+      metadataParamNames: [],
+      metadataSearchParams: true,
+      pageAllSuspenseDynamic: true,
+      pageDynamicSuspenseOrdinals: [],
+      pageParamNames: [],
+      pageSearchParams: true,
+      varyAllParams: true,
+    };
+    expect(decodePrefetchVaryHeader("%not-valid")).toEqual(expected);
+    expect(
+      decodePrefetchVaryHeader(encodePrefetchVaryHeader({ pageParamNames: null } as never)),
+    ).toEqual(expected);
+    expect(parsePrefetchVaryMetadata({ ...expected, varyAllParams: "yes" })).toBeUndefined();
+    expect(
+      parsePrefetchVaryMetadata({
+        ...expected,
+        pageAllSuspenseDynamic: false,
+        pageDynamicSuspenseOrdinalsByElementId: { page: [1] },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rejects oversized encoded headers before decoding unknown payload fields", () => {
+    const encoded = encodeURIComponent(
+      JSON.stringify({
+        loadingParamNames: [],
+        metadataParamNames: [],
+        metadataSearchParams: false,
+        pageDynamicSuspenseOrdinals: [],
+        pageParamNames: [],
+        pageSearchParams: false,
+        unknown: "x".repeat(4096),
+      }),
+    );
+    expect(encoded.length).toBeGreaterThan(4096);
+    expect(decodePrefetchVaryHeader(encoded)).toEqual({
+      loadingParamNames: [],
+      metadataParamNames: [],
+      metadataSearchParams: true,
+      pageAllSuspenseDynamic: true,
+      pageDynamicSuspenseOrdinals: [],
+      pageParamNames: [],
+      pageSearchParams: true,
+      varyAllParams: true,
+    });
+  });
+
+  it("coarsens sparse producer arrays before emitting a footer", async () => {
+    const sparseParamNames: string[] = [];
+    const sparseOrdinals: number[] = [];
+    sparseParamNames.length = 1;
+    sparseOrdinals.length = 1;
+    const body = appendRscCompletionMetadata(stream(["flight-payload"]), () => ({
+      prefetchVary: {
+        loadingParamNames: sparseParamNames,
+        metadataParamNames: [],
+        metadataSearchParams: false,
+        pageDynamicSuspenseOrdinals: [],
+        pageDynamicSuspenseOrdinalsByElementId: { page: sparseOrdinals },
+        pageParamNames: [],
+        pageSearchParams: false,
+      },
+    }));
+
+    const extracted = extractRscCompletionMetadata(await new Response(body).arrayBuffer());
+    expect(decoder.decode(extracted.buffer)).toBe("flight-payload");
+    expect(extracted.metadata?.prefetchVary).toEqual({
+      loadingParamNames: [],
+      metadataParamNames: [],
+      metadataSearchParams: true,
+      pageAllSuspenseDynamic: true,
+      pageDynamicSuspenseOrdinals: [],
+      pageParamNames: [],
+      pageSearchParams: true,
+      varyAllParams: true,
+    });
+    expect(
+      parsePrefetchVaryMetadata({
+        loadingParamNames: [],
+        metadataParamNames: [],
+        metadataSearchParams: false,
+        pageDynamicSuspenseOrdinals: [],
+        pageDynamicSuspenseOrdinalsByElementId: [],
+        pageParamNames: [],
+        pageSearchParams: false,
+      }),
+    ).toBeUndefined();
   });
 
   it("delivers a small Flight shell before the source stream completes", async () => {
@@ -182,8 +335,41 @@ describe("RSC completion metadata", () => {
     );
   });
 
+  it("rejects semantically malformed vary metadata in buffered and streaming decoders", async () => {
+    const encoded = new Uint8Array(
+      await new Response(
+        appendRscCompletionMetadata(stream(["flight"]), () => ({
+          prefetchVary: {
+            loadingParamNames: [],
+            metadataParamNames: [],
+            metadataSearchParams: false,
+            pageDynamicSuspenseOrdinals: [],
+            pageParamNames: [],
+            pageSearchParams: false,
+          },
+        })),
+      ).arrayBuffer(),
+    );
+    const marker = encoder.encode('"pageParamNames":[]');
+    const markerOffset = encoded.findIndex((_, index) =>
+      marker.every((byte, markerIndex) => encoded[index + markerIndex] === byte),
+    );
+    expect(markerOffset).toBeGreaterThan(-1);
+    const malformed = encoded.slice();
+    const arrayOffset = markerOffset + marker.byteLength - 2;
+    malformed[arrayOffset] = "{".charCodeAt(0);
+    malformed[arrayOffset + 1] = "}".charCodeAt(0);
+
+    expect(() => extractRscCompletionMetadata(malformed.buffer)).toThrow(
+      "Invalid or truncated RSC completion metadata footer",
+    );
+    await expect(
+      new Response(stripRscCompletionMetadata(byteStream([malformed]))).arrayBuffer(),
+    ).rejects.toThrow("Invalid or truncated RSC completion metadata footer");
+  });
+
   it("rejects oversized footer frames in buffered and streaming decoders", async () => {
-    const oversized = new Uint8Array(257);
+    const oversized = new Uint8Array(4097);
     oversized.set([0xff, 0x00]);
 
     expect(() => extractRscCompletionMetadata(oversized.buffer)).toThrow(

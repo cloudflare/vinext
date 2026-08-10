@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { createElement, Fragment, isValidElement, Suspense, type ReactNode } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -11,9 +11,11 @@ import {
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
+  prepareOptimisticRouteTemplate,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
+import { parsePrefetchVaryMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type {
   GraphVersion,
   RouteManifest,
@@ -121,6 +123,24 @@ function createBlogElements(): AppElements {
       createElement("main", null, "Page slot"),
     ),
   };
+}
+
+function elementTreeContainsText(value: unknown, text: string, depth = 0): boolean {
+  if (depth > 200) return false;
+  if (value === text) return true;
+  if (Array.isArray(value)) {
+    return value.some((entry) => elementTreeContainsText(entry, text, depth + 1));
+  }
+  if (!isValidElement<{ children?: unknown }>(value)) return false;
+  return elementTreeContainsText(value.props.children, text, depth + 1);
+}
+
+function nestElement(value: ReactNode, depth: number): ReactNode {
+  let nested: ReactNode = value;
+  for (let index = 0; index < depth; index++) {
+    nested = createElement("div", null, nested);
+  }
+  return nested;
 }
 
 function createBlogLoadingShellElements(): AppElements {
@@ -283,6 +303,481 @@ describe("App Router optimistic routing", () => {
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
   });
 
+  it("preserves runtime-prefetch page content while suspending its innermost boundary", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/runtime/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/runtime/:itemId",
+        patternParts: ["runtime", ":itemId"],
+      }),
+    ]);
+    const layoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/runtime/phone", null);
+    const pageId = AppElementsWire.encodePageId("/runtime/phone", null);
+    const layout = createElement("div", { "data-layout": true }, "Cached layout");
+    const staticContent = createElement("div", { "data-static": true }, "Static content");
+    const innerSuspense = createElement(
+      Suspense,
+      { fallback: createElement("p", { id: "page-loading" }, "Loading item details") },
+      createElement("div", { "data-dynamic": true }, "Stale item"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [layoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [layoutId]: layout,
+      [pageId]: createElement("section", null, staticContent, innerSuspense),
+      [routeId]: createElement("main", null, "Route"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: [0],
+      elements,
+      href: "/runtime/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+      variantKey: "runtime:phone",
+    });
+    expect(template?.pageElementIds).toEqual([pageId]);
+
+    const optimisticElements = createOptimisticRouteElements(template!);
+    expect(optimisticElements[layoutId]).toBe(layout);
+    const pageElement = optimisticElements[pageId];
+    expect(isValidElement(pageElement)).toBe(true);
+    if (!isValidElement(pageElement)) return;
+    const children = (pageElement.props as { children: unknown }).children;
+    expect(Array.isArray(children)).toBe(true);
+    if (!Array.isArray(children)) return;
+    expect(children[0]).toBe(staticContent);
+    expect(children[1]).not.toBe(innerSuspense);
+    const suspense = children[1];
+    expect(isValidElement(suspense)).toBe(true);
+    if (!isValidElement(suspense)) return;
+    expect((suspense.props as { fallback: unknown }).fallback).toBe(
+      (innerSuspense.props as { fallback: unknown }).fallback,
+    );
+  });
+
+  it("resolves static RSC lazy chunks but stops at the observed dynamic boundary", async () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/runtime/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/runtime/:itemId",
+        patternParts: ["runtime", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/runtime/phone", null);
+    const pageId = AppElementsWire.encodePageId("/runtime/phone", null);
+    const loading = createElement("p", { id: "page-loading" }, "Loading item details");
+    const withChildren = <T>(element: T, children: unknown): T => ({
+      ...element,
+      props: { ...(element as { props: object }).props, children },
+    });
+    let dynamicInitCalls = 0;
+    const dynamicLazy = {
+      $$typeof: Symbol.for("react.lazy"),
+      _payload: null,
+      _init() {
+        dynamicInitCalls += 1;
+        throw new Promise<never>(() => {});
+      },
+    };
+    const staticLazy = {
+      $$typeof: Symbol.for("react.lazy"),
+      _payload: null,
+      _init() {
+        const dynamicBoundary = withChildren(
+          createElement(Suspense, { fallback: loading }),
+          dynamicLazy,
+        );
+        return createElement(
+          Fragment,
+          null,
+          createElement("div", { "data-static": true }, "Static content"),
+          dynamicBoundary,
+        );
+      },
+    };
+    const pageLazy = {
+      $$typeof: Symbol.for("react.lazy"),
+      _payload: null,
+      _init() {
+        const outerBoundary = withChildren(
+          createElement(Suspense, { fallback: createElement("p", null, "Loading page") }),
+          staticLazy,
+        );
+        return createElement("section", null, outerBoundary);
+      },
+    };
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: pageLazy as never,
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: [1],
+      elements,
+      href: "/runtime/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+
+    const prepared = await prepareOptimisticRouteTemplate(template!);
+    const page = createOptimisticRouteElements(prepared)[pageId];
+    expect(prepared.pageElementsPrepared).toBe(true);
+    expect(dynamicInitCalls).toBe(0);
+    expect(isValidElement(page)).toBe(true);
+    if (!isValidElement(page)) return;
+    const outer = (page.props as { children: unknown }).children;
+    expect(isValidElement(outer)).toBe(true);
+    if (!isValidElement(outer)) return;
+    const fragment = (outer.props as { children: unknown }).children;
+    expect(isValidElement(fragment)).toBe(true);
+    if (!isValidElement(fragment)) return;
+    const children = (fragment.props as { children: unknown }).children;
+    expect(Array.isArray(children)).toBe(true);
+    if (!Array.isArray(children)) return;
+    const dynamicBoundary = children[1];
+    expect(isValidElement(dynamicBoundary)).toBe(true);
+    if (!isValidElement(dynamicBoundary)) return;
+    expect((dynamicBoundary.props as { fallback: unknown }).fallback).toBe(loading);
+    expect((dynamicBoundary.props as { children: unknown }).children).not.toBe(dynamicLazy);
+  });
+
+  it("preserves cached Suspense siblings and replaces only the observed dynamic hole", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/runtime/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/runtime/:itemId",
+        patternParts: ["runtime", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/runtime/phone", null);
+    const pageId = AppElementsWire.encodePageId("/runtime/phone", null);
+    const cachedSibling = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading cached sibling") },
+      createElement("div", { "data-cached": true }, "Cached sibling"),
+    );
+    const dynamicHole = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading dynamic hole") },
+      createElement("div", { "data-dynamic": true }, "Stale dynamic content"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement("section", null, cachedSibling, dynamicHole),
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: [1],
+      elements,
+      href: "/runtime/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+
+    const optimisticPage = createOptimisticRouteElements(template!)[pageId];
+    expect(isValidElement(optimisticPage)).toBe(true);
+    if (!isValidElement(optimisticPage)) return;
+    const children = (optimisticPage.props as { children: unknown }).children;
+    expect(Array.isArray(children)).toBe(true);
+    if (!Array.isArray(children)) return;
+    expect(children[0]).toBe(cachedSibling);
+    expect(children[1]).not.toBe(dynamicHole);
+    const replacedHole = children[1];
+    expect(isValidElement(replacedHole)).toBe(true);
+    if (!isValidElement(replacedHole)) return;
+    expect((replacedHole.props as { fallback: unknown }).fallback).toBe(
+      (dynamicHole.props as { fallback: unknown }).fallback,
+    );
+  });
+
+  it("scopes dynamic Suspense ordinals to each rendered page element", () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/parallel");
+    const routeManifest = manifest([
+      route({
+        id: "route:/runtime/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/runtime/:itemId",
+        patternParts: ["runtime", ":itemId"],
+        slotIds: [childrenSlotId],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/runtime/phone", null);
+    const pageId = AppElementsWire.encodePageId("/runtime/phone", null);
+    const mainBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading main") },
+      createElement("div", null, "Stale main"),
+    );
+    const slotBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading slot") },
+      createElement("div", null, "Cached slot"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: mainBoundary,
+      [childrenSlotId]: slotBoundary,
+      [routeId]: createElement("main", null, "Route"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: [0],
+      dynamicSuspenseOrdinalsByPageElementId: {
+        [childrenSlotId]: [],
+        [pageId]: [0],
+      },
+      elements,
+      href: "/runtime/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+    const optimistic = createOptimisticRouteElements(template!);
+
+    expect(optimistic[pageId]).not.toBe(mainBoundary);
+    expect(optimistic[childrenSlotId]).toBe(slotBoundary);
+  });
+
+  it("replays dynamic Suspense tails in named parallel-slot page elements", () => {
+    const namedSlotId = AppElementsWire.encodeSlotId("modal", "/dashboard");
+    const routeManifest = manifest([
+      route({
+        id: "route:/dashboard/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/dashboard/:itemId",
+        patternParts: ["dashboard", ":itemId"],
+        slotIds: [namedSlotId],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/dashboard/phone", null);
+    const pageId = AppElementsWire.encodePageId("/dashboard/phone", null);
+    const mainBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading main") },
+      createElement("div", null, "Cached main"),
+    );
+    const namedSlotBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading modal") },
+      createElement("div", null, "Stale modal"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dashboard"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: mainBoundary,
+      [namedSlotId]: namedSlotBoundary,
+      [routeId]: createElement("main", null, "Route"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: [0],
+      dynamicSuspenseOrdinalsByPageElementId: {
+        [namedSlotId]: [0],
+        [pageId]: [],
+      },
+      elements,
+      href: "/dashboard/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+    const optimistic = createOptimisticRouteElements(template!);
+
+    expect(template?.pageElementIds).toEqual([pageId, namedSlotId]);
+    expect(optimistic[pageId]).toBe(mainBoundary);
+    expect(optimistic[namedSlotId]).not.toBe(namedSlotBoundary);
+  });
+
+  it("preserves legacy global dynamic Suspense ordinals after metadata decoding", () => {
+    const legacyMetadata = parsePrefetchVaryMetadata({
+      loadingParamNames: [],
+      metadataSearchParams: false,
+      pageDynamicSuspenseOrdinals: [0],
+      pageParamNames: [],
+      pageSearchParams: false,
+    });
+    expect(legacyMetadata?.pageDynamicSuspenseOrdinalsByElementId).toBeUndefined();
+
+    const routeManifest = manifest([
+      route({
+        id: "route:/legacy/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/legacy/:itemId",
+        patternParts: ["legacy", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/legacy/phone", null);
+    const pageId = AppElementsWire.encodePageId("/legacy/phone", null);
+    const legacyBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading legacy") },
+      createElement("div", null, "Stale legacy content"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: legacyBoundary,
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      dynamicSuspenseOrdinals: legacyMetadata?.pageDynamicSuspenseOrdinals,
+      dynamicSuspenseOrdinalsByPageElementId:
+        legacyMetadata?.pageDynamicSuspenseOrdinalsByElementId,
+      elements,
+      href: "/legacy/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+
+    expect(createOptimisticRouteElements(template!)[pageId]).not.toBe(legacyBoundary);
+  });
+
+  it("replaces every page Suspense child for conservative completion metadata", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/conservative/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/conservative/:itemId",
+        patternParts: ["conservative", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/conservative/phone", null);
+    const pageId = AppElementsWire.encodePageId("/conservative/phone", null);
+    const firstBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading first") },
+      createElement("div", null, "Stale first"),
+    );
+    const secondBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading second") },
+      createElement("div", null, "Stale second"),
+    );
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement("section", null, firstBoundary, secondBoundary),
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/conservative/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      pageAllSuspenseDynamic: true,
+      preservePageElements: true,
+      routeManifest,
+    });
+    const optimistic = createOptimisticRouteElements(template!);
+
+    expect(optimistic[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("discards conservative page subtrees beyond the traversal depth limit", async () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/deep/:itemId",
+        isDynamic: true,
+        paramNames: ["itemId"],
+        pattern: "/deep/:itemId",
+        patternParts: ["deep", ":itemId"],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/deep/phone", null);
+    const pageId = AppElementsWire.encodePageId("/deep/phone", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: nestElement("Stale beyond traversal limit", 105) as never,
+      [routeId]: createElement("main", null, "Route"),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/deep/phone.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      pageAllSuspenseDynamic: true,
+      preservePageElements: true,
+      routeManifest,
+    })!;
+
+    expect(elementTreeContainsText(elements[pageId], "Stale beyond traversal limit")).toBe(true);
+    const synchronous = createOptimisticRouteElements(template);
+    expect(elementTreeContainsText(synchronous[pageId], "Stale beyond traversal limit")).toBe(
+      false,
+    );
+
+    const prepared = await prepareOptimisticRouteTemplate(template);
+    expect(elementTreeContainsText(prepared.elements[pageId], "Stale beyond traversal limit")).toBe(
+      false,
+    );
+  });
+
   it("includes active parallel slot params in optimistic navigation payloads", () => {
     // Mirrors the immediate pre-dynamic-render assertion in Next.js:
     // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
@@ -441,6 +936,22 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
+      }),
+    ).toBeNull();
+
+    expect(
+      createOptimisticRouteTemplate({
+        basePath: "",
+        elements: {
+          ...elements,
+          [AppElementsWire.encodePageId("/blog/post-1", null)]: null,
+        },
+        href: "/blog/post-1.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        preservePageElements: true,
+        routeManifest,
+        variantKey: "runtime\0loading",
       }),
     ).toBeNull();
   });

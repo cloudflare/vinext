@@ -165,6 +165,8 @@ type AppRouterConfig = {
   globalNotFound?: boolean;
   /** Enables Next.js Cache Components semantics for App Router document HTML. */
   cacheComponents?: boolean;
+  /** Enable render-observed segment prefetch variation metadata. */
+  prefetchVaryEnabled?: boolean;
   /** Resolved `experimental.prefetchInlining` thresholds. */
   prefetchInlining?: PrefetchInliningConfig;
   /** Whether the RSC build discovered any server references. Defaults to true. */
@@ -230,6 +232,7 @@ export function generateRscEntry(
   const cacheMaxMemorySize = config?.cacheMaxMemorySize;
   const inlineCss = config?.inlineCss === true;
   const cacheComponents = config?.cacheComponents === true;
+  const prefetchVaryEnabled = cacheComponents && config?.prefetchVaryEnabled === true;
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
   const i18nConfig = config?.i18n ?? null;
@@ -366,10 +369,17 @@ import {
 } from ${JSON.stringify(appElementsPath)};
 import {
   probeAppPageLayoutWithTracking as __probeAppPageLayoutWithTracking,
+  getAppPageSerializedSlotProbeElements as __getAppPageSerializedSlotProbeElements,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
-import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
+import {
+  buildPageElements as __buildPageElements,
+  resolveSlotParamOverrides as __resolveSlotParamOverrides,
+} from ${JSON.stringify(appPageElementBuilderPath)};
+import {
+  buildAppPageProbes as __buildAppPageProbes,
+  resolveAppPageProbeMainElementId as __resolveAppPageProbeMainElementId,
+} from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
@@ -807,7 +817,6 @@ export default createAppRscHandler({
       routePatternParts: route.patternParts,
       routeSegments: route.routeSegments,
     });
-    const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
       ensureRouteLoaded: __ensureRouteLoaded,
@@ -841,6 +850,7 @@ export default createAppRscHandler({
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+      prefetchVaryEnabled: ${JSON.stringify(prefetchVaryEnabled)},
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       findIntercept(pathname) {
@@ -898,7 +908,7 @@ export default createAppRscHandler({
           route,
         });
       },
-      async probePage(probeSearchParams = searchParams) {
+      async probePage(probeSearchParams = searchParams, layoutParamAccess, elements) {
         const __probeIntercept = findIntercept(interceptionPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
@@ -908,15 +918,46 @@ export default createAppRscHandler({
         // observes the page's searchParams/headers access. Shared loader, so
         // the import is isolated from the request context here too.
         if (__probeIntercept) await __loadAppInterceptPage(__probeIntercept);
+        const __probeMainPageElementId = __resolveAppPageProbeMainElementId(
+          route,
+          cleanPathname,
+          interceptionContext,
+        );
         return Promise.all(__buildAppPageProbes({
           route,
+          elements:
+            renderMode === "navigation" || renderMode === "prefetch-dynamic-shell"
+              ? __getAppPageSerializedSlotProbeElements(elements)
+              : undefined,
           pageComponent: PageComponent,
-          asyncRouteParams: _asyncRouteParams,
+          asyncRouteParams: makeThenableParams(
+            params,
+            layoutParamAccess?.createPageParamsObserver(
+              route.params ?? undefined,
+              __probeMainPageElementId,
+            ),
+          ),
+          mainPageElementId: __probeMainPageElementId,
           searchParams: probeSearchParams,
           intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,
-          makeThenableParams,
+          makeThenableParams(value, pageElementId, paramNames) {
+            return makeThenableParams(
+              value,
+              layoutParamAccess?.createPageParamsObserver(
+                paramNames ?? route.params ?? undefined,
+                pageElementId,
+              ),
+            );
+          },
+          onSearchParamsAccess(pageElementId) {
+            layoutParamAccess?.observePageSearchParams(pageElementId);
+          },
+          onDynamicSuspenseBoundary(pageElementId, ordinal) {
+            layoutParamAccess?.observePageDynamicSuspenseBoundary(pageElementId, ordinal);
+          },
+          slotParamOverrides: __resolveSlotParamOverrides(route, cleanPathname),
         }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {

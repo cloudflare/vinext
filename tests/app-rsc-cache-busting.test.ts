@@ -16,7 +16,10 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
-import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_PREFETCH_VARY_REQUEST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
@@ -142,6 +145,20 @@ describe("App Router RSC cache-busting", () => {
     );
 
     expect(feedHash).not.toBe(galleryHash);
+  });
+
+  it("varies render-observation prefetches from ordinary RSC requests", async () => {
+    const ordinaryHeaders = createRscRequestHeaders();
+    const observationHeaders = createRscRequestHeaders();
+    observationHeaders.set(VINEXT_PREFETCH_VARY_REQUEST_HEADER, "1");
+
+    const ordinaryHash = await computeRscCacheBustingSearchParam(ordinaryHeaders);
+    const observationHash = await computeRscCacheBustingSearchParam(observationHeaders);
+
+    expect(observationHash).not.toBe(ordinaryHash);
+    await expect(createRscRequestUrl("/items/one", observationHeaders)).resolves.toBe(
+      `/items/one?_rsc=${observationHash}`,
+    );
   });
 
   it("varies loading-shell prefetch payloads from normal navigations", async () => {
@@ -313,7 +330,7 @@ describe("App Router RSC cache-busting", () => {
     // Mirrors Next.js App Router's base Vary header:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Prefetch-Vary-Request, X-Vinext-Rsc-Render-Mode",
     );
     expect(VINEXT_RSC_VARY_HEADER.split(", ")).not.toContain("Accept");
   });

@@ -55,6 +55,7 @@ import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_REUSE_PAGE,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
@@ -81,6 +82,21 @@ type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
 const DEFAULT_NOT_FOUND_COMPONENT = DefaultNotFound as AppPageComponent;
+const appPageSerializedSlotProbeElements = new WeakMap<
+  AppElements,
+  Readonly<Record<string, AppElementValue>>
+>();
+
+/**
+ * Returns dependency-free named-slot trees in the same flattened shape stored
+ * on the wire. Page entries keep their component probe because their render
+ * dependency wrapper is part of page execution rather than slot serialization.
+ */
+export function getAppPageSerializedSlotProbeElements(
+  elements: AppElements,
+): Readonly<Record<string, AppElementValue>> | undefined {
+  return appPageSerializedSlotProbeElements.get(elements);
+}
 
 function resolveSlotLayoutParams(
   routeSegments: readonly string[],
@@ -856,9 +872,11 @@ export function buildAppPageElements<
   };
   const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+  const isPrefetchReusePage = renderMode === APP_RSC_RENDER_MODE_PREFETCH_REUSE_PAGE;
   // Loading-shell prefetches intentionally omit the page, so they cannot wait
   // on a dependency that only the page invocation can release.
-  const pageRenderDependency = isPrefetchLoadingShell ? null : options.pageRenderDependency;
+  const pageRenderDependency =
+    isPrefetchLoadingShell || isPrefetchReusePage ? null : options.pageRenderDependency;
   const prefetchLoadingEntry = isPrefetchLoadingShell
     ? getPrefetchLoadingEntry(options.route)
     : null;
@@ -995,6 +1013,7 @@ export function buildAppPageElements<
     };
   }
   const elements: Record<string, AppElementValue> = {};
+  const probeElements: Record<string, AppElementValue> = {};
   // Synthetic nested segment entries carry membership independently of the
   // proof map. If identity metadata is absent or rejected atomically, the
   // browser can still discover these ids and mint conservative fresh keys.
@@ -1089,11 +1108,12 @@ export function buildAppPageElements<
   ) : (
     options.element
   );
-  elements[pageElementId] = isPrefetchLoadingShell
-    ? null
-    : pageRenderDependency
-      ? pageElement
-      : renderAfterAppDependencies(pageElement, pageDependencies);
+  elements[pageElementId] =
+    isPrefetchLoadingShell || isPrefetchReusePage
+      ? null
+      : pageRenderDependency
+        ? pageElement
+        : renderAfterAppDependencies(pageElement, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
@@ -1456,6 +1476,7 @@ export function buildAppPageElements<
       );
     }
 
+    probeElements[slotId] = slotElement;
     elements[slotId] = renderAfterAppDependencies(slotElement, [
       ...(pageRenderDependency ? [pageRenderDependency] : []),
       ...(targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : []),
@@ -1798,6 +1819,7 @@ export function buildAppPageElements<
         }
       : {},
   );
+  appPageSerializedSlotProbeElements.set(elements, probeElements);
   registerAppElementRenderDependencies(elements, renderDependenciesByElementId);
   return elements;
 }

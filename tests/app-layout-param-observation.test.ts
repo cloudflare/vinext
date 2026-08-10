@@ -43,6 +43,30 @@ function createObservation(
 }
 
 describe("app layout param observation", () => {
+  it("keeps observing static siblings after a render-observed connection boundary", () => {
+    const tracker = createAppLayoutParamAccessTracker();
+    const pageElementId = "page:/items/one";
+    const observer = tracker.createPageParamsObserver(undefined, pageElementId);
+
+    // These calls model an imported/re-exported helper: the tracker observes
+    // the values read at runtime, independent of which source file performed
+    // the access.
+    observer.observeParamAccess(["category"]);
+    tracker.observePageSearchParams(pageElementId);
+    tracker.observePageDynamicSuspenseBoundary(pageElementId, 1);
+    observer.observeParamAccess(["itemId"]);
+
+    expect(tracker.getPrefetchVaryMetadata()).toEqual({
+      loadingParamNames: [],
+      metadataParamNames: [],
+      metadataSearchParams: false,
+      pageDynamicSuspenseOrdinals: [1],
+      pageDynamicSuspenseOrdinalsByElementId: { [pageElementId]: [1] },
+      pageParamNames: ["category", "itemId"],
+      pageSearchParams: true,
+    });
+  });
+
   it("folds a probe-scoped markDynamicUsage() into the observation as unsafe for static reuse", () => {
     // Regression guard: the probe runs inside an isolated child scope that
     // resets `dynamicUsageDetected`, so a `markDynamicUsage()` with no other

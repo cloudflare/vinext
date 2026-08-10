@@ -10,6 +10,7 @@ export type RootParams = Record<string, string | string[] | undefined>;
 
 export type RootParamsState = {
   rootParams: RootParams | null;
+  rootParamsAccessObserver?: ((name: string) => void) | null;
 };
 
 export type RootParamsUsage =
@@ -72,6 +73,7 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
       `Route ${usage.routePattern} used \`import('next/root-params').${name}()\` inside a Route Handler. Support for this API in Route Handlers is planned for a future version of Next.js.`,
     );
   }
+  getState().rootParamsAccessObserver?.(name);
   _recordUseCacheRootParamRead(name);
   return Promise.resolve(getState().rootParams?.[name]);
 }

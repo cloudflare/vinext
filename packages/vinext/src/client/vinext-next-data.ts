@@ -8,12 +8,53 @@
 import type { NEXT_DATA } from "vinext/shims/internal/utils";
 import { isUnknownRecord } from "../utils/record.js";
 
+declare global {
+  // Window must use interface merging for this browser bootstrap flag.
+  // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
+  interface Window {
+    __VINEXT_PREFETCH_VARY_ENABLED__?: boolean;
+  }
+}
+
+export type VinextPrefetchVaryMetadata = {
+  loadingParamNames: string[];
+  metadataParamNames: string[];
+  metadataSearchParams: boolean;
+  /** Treat every preserved page Suspense child as runtime-only. */
+  pageAllSuspenseDynamic?: boolean;
+  pageDynamicSuspenseOrdinals: number[];
+  pageDynamicSuspenseOrdinalsByElementId?: Record<string, number[]>;
+  pageParamNames: string[];
+  pageSearchParams: boolean;
+  /**
+   * Conservative wire fallback used when the precise dependency set cannot be
+   * represented within the completion-metadata framing limit. The client must
+   * then key every route and parallel-slot param by value.
+   */
+  varyAllParams?: boolean;
+};
+
 export type VinextLinkPrefetchRoute = {
   canPrefetchLoadingShell: boolean;
+  canPrefetchFullStaticRoute?: boolean;
+  canPrefetchRuntimeShell?: boolean;
+  canPrefetchStaticRoute?: boolean;
   documentOnly?: boolean;
   isDynamic: boolean;
+  loadingShellVaryParamNames?: string[];
+  loadingShellVarySearchParams?: boolean;
+  metadataVaryParamNames?: string[];
+  metadataVarySearchParams?: boolean;
   patternParts: string[];
+  prefetchVaryParamNames?: string[];
+  prefetchVarySearchParams?: boolean;
   requiresDynamicNavigationRequest?: boolean;
+  runtimePrefetchVaryParamNames?: string[];
+  runtimePrefetchVarySearchParams?: boolean;
+  slotParamPatterns?: Array<{
+    paramNames: string[];
+    patternParts: string[];
+  }>;
   /** The route has dynamic params above its root layout. */
   hasRootParams?: true;
 };

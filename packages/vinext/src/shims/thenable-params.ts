@@ -69,6 +69,12 @@ export type ThenableParams<T extends Record<string, unknown>> = Promise<T> &
 
 export type ThenableParamsObserver = Readonly<{
   observeParamAccess: (keys: readonly string[]) => void;
+  /** Route-declared keys to observe when the resolved params object is enumerated. */
+  paramKeysOnEnumeration?: readonly string[];
+  /** Observe properties read from the object produced by `await params`. */
+  observeAwaitedProperties?: boolean;
+  /** Notify the observer when the promise is awaited, even before a resolved property is read. */
+  observePromiseContinuation?: boolean;
   observeReactPromiseStatus?: boolean;
 }>;
 
@@ -92,7 +98,12 @@ function observeReadableParamKeys<T extends Record<string, unknown>>(
   observer: ThenableParamsObserver | undefined,
   plain: T,
 ): void {
-  const keys = Object.keys(plain).filter((key) => !isWellKnownProperty(key));
+  const keys = Array.from(
+    new Set([
+      ...Object.keys(plain).filter((key) => !isWellKnownProperty(key)),
+      ...(observer?.paramKeysOnEnumeration ?? []),
+    ]),
+  );
   observeParamKeys(observer, keys);
 }
 
@@ -115,7 +126,10 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
   observer: ThenableParamsObserver | undefined,
   getFallbackShellPromise: () => Promise<T> | null,
 ): T {
-  if (!fallbackParamNames || fallbackParamNames.size === 0) {
+  if (
+    (!fallbackParamNames || fallbackParamNames.size === 0) &&
+    observer?.observeAwaitedProperties !== true
+  ) {
     return plain;
   }
 
@@ -261,10 +275,13 @@ export function makeThenableParams<T extends Record<string, unknown>>(
         const value = Reflect.get(target, prop, receiver);
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
+          if (observer?.observePromiseContinuation === true) {
+            observeParamKeys(observer, []);
+          }
           // Only observe all keys when NOT in fallback-shell mode.
           // In fallback-shell mode, let the resolved params proxy report
           // actual property access lazily.
-          if (!fallbackParamNames) {
+          if (!fallbackParamNames && observer?.observeAwaitedProperties !== true) {
             observeAllParamKeys(observer, plain);
           }
           return Reflect.apply(value, target, args);

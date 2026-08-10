@@ -9,7 +9,11 @@ import {
   peekCacheableFetchObservations,
   peekDynamicFetchObservations,
 } from "vinext/shims/fetch-cache";
-import { peekDynamicUsage, peekRenderRequestApiUsage } from "vinext/shims/headers";
+import {
+  isConnectionProbeActive,
+  peekDynamicUsage,
+  peekRenderRequestApiUsage,
+} from "vinext/shims/headers";
 import {
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
@@ -20,6 +24,7 @@ import type {
   ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
 import { isPromiseLike } from "../utils/promise.js";
+import type { VinextPrefetchVaryMetadata } from "../client/vinext-next-data.js";
 
 export type AppLayoutParamAccessObservation = Readonly<{
   cacheLifeObserved: boolean;
@@ -43,10 +48,20 @@ export type AppLayoutParamAccessObservation = Readonly<{
 }>;
 
 export type AppLayoutParamAccessTracker = Readonly<{
+  createMetadataParamsObserver: () => ThenableParamsObserver;
+  createPageParamsObserver: (
+    paramNames?: readonly string[],
+    pageElementId?: string,
+  ) => ThenableParamsObserver;
   createThenableParamsObserver: (layoutId: string) => ThenableParamsObserver;
+  getPrefetchVaryMetadata: () => VinextPrefetchVaryMetadata;
   getLayoutObservation: (layoutId: string) => AppLayoutParamAccessObservation;
   recordLayoutFiniteRevalidate: (layoutId: string, revalidateSeconds: number) => void;
   recordLayoutParamScope: (layoutId: string, paramScopeKeys: readonly string[]) => void;
+  observeMetadataSearchParams: () => void;
+  observePageDynamicSuspenseBoundary: (pageElementId: string, ordinal: number) => void;
+  observePageSearchParams: (pageElementId?: string) => void;
+  observeRootParamAccess: (name: string) => void;
   runLayoutProbe: (layoutId: string, probe: () => unknown) => unknown;
 }>;
 
@@ -137,12 +152,21 @@ type MutableLayoutParamAccessObservation = {
   observed: boolean;
   paramScopeKeys: Set<string>;
   probeComplete: boolean;
+  prefetchKeys: Set<string>;
+  prefetchProbeDepth: number;
   requestApis: Set<RenderRequestApiKind>;
   unstableCaches: Map<string, UnstableCacheObservation>;
 };
 
 export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker {
   const observations = new Map<string, MutableLayoutParamAccessObservation>();
+  const metadataParamKeys = new Set<string>();
+  const pageDynamicSuspenseOrdinalsByElementId = new Map<string, Set<number>>();
+  const pageParamKeys = new Set<string>();
+  let hasPageParamProbe = false;
+  let metadataSearchParams = false;
+  let pageSearchParams = false;
+  let pageProbeSearchParams = false;
 
   const ensureObservation = (layoutId: string): MutableLayoutParamAccessObservation => {
     const existing = observations.get(layoutId);
@@ -159,6 +183,8 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
       observed: false,
       paramScopeKeys: new Set(),
       probeComplete: false,
+      prefetchKeys: new Set(),
+      prefetchProbeDepth: 0,
       requestApis: new Set(),
       unstableCaches: new Map(),
     };
@@ -225,11 +251,58 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
   };
 
   return {
+    createMetadataParamsObserver() {
+      return {
+        observeParamAccess(keys) {
+          for (const key of keys) metadataParamKeys.add(key);
+        },
+        observeAwaitedProperties: true,
+      };
+    },
+    createPageParamsObserver(paramNames, pageElementId) {
+      hasPageParamProbe ||= pageElementId !== undefined;
+      return {
+        observeParamAccess(keys) {
+          for (const key of keys) pageParamKeys.add(key);
+        },
+        observeAwaitedProperties: true,
+        paramKeysOnEnumeration: paramNames,
+      };
+    },
     createThenableParamsObserver(layoutId) {
       return {
         observeParamAccess(keys) {
           markObserved(layoutId, keys);
+          const observation = ensureObservation(layoutId);
+          if (observation.prefetchProbeDepth > 0 && isConnectionProbeActive()) {
+            for (const key of keys) observation.prefetchKeys.add(key);
+          }
         },
+        observeAwaitedProperties: true,
+      };
+    },
+    getPrefetchVaryMetadata() {
+      const loadingParamNames = new Set(metadataParamKeys);
+      for (const observation of observations.values()) {
+        for (const key of observation.prefetchKeys) loadingParamNames.add(key);
+      }
+      const pageDynamicSuspenseOrdinals = new Set<number>();
+      const pageDynamicSuspenseOrdinalsRecord: Record<string, number[]> = {};
+      for (const [pageElementId, ordinals] of [...pageDynamicSuspenseOrdinalsByElementId].sort(
+        ([left], [right]) => left.localeCompare(right),
+      )) {
+        const sorted = [...ordinals].sort((a, b) => a - b);
+        pageDynamicSuspenseOrdinalsRecord[pageElementId] = sorted;
+        for (const ordinal of sorted) pageDynamicSuspenseOrdinals.add(ordinal);
+      }
+      return {
+        loadingParamNames: [...loadingParamNames].sort(),
+        metadataParamNames: [...metadataParamKeys].sort(),
+        metadataSearchParams,
+        pageDynamicSuspenseOrdinals: [...pageDynamicSuspenseOrdinals].sort((a, b) => a - b),
+        pageDynamicSuspenseOrdinalsByElementId: pageDynamicSuspenseOrdinalsRecord,
+        pageParamNames: [...pageParamKeys].sort(),
+        pageSearchParams: hasPageParamProbe ? pageProbeSearchParams : pageSearchParams,
       };
     },
     getLayoutObservation(layoutId) {
@@ -282,32 +355,66 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
         observation.paramScopeKeys.add(key);
       }
     },
+    observeMetadataSearchParams() {
+      metadataSearchParams = true;
+    },
+    observePageDynamicSuspenseBoundary(pageElementId, ordinal) {
+      let ordinals = pageDynamicSuspenseOrdinalsByElementId.get(pageElementId);
+      if (ordinals === undefined) {
+        ordinals = new Set();
+        pageDynamicSuspenseOrdinalsByElementId.set(pageElementId, ordinals);
+      }
+      ordinals.add(ordinal);
+    },
+    observePageSearchParams(pageElementId) {
+      if (pageElementId === undefined) pageSearchParams = true;
+      else pageProbeSearchParams = true;
+    },
+    observeRootParamAccess(name) {
+      // Root-param access can originate in either the root layout or page. The
+      // API intentionally does not expose that component identity, so vary
+      // both cache families. This is conservative and prevents cross-root
+      // reuse without relying on lexical import analysis.
+      metadataParamKeys.add(name);
+      pageParamKeys.add(name);
+    },
     runLayoutProbe(layoutId, probe) {
-      return runWithIsolatedProbeDependencies(() => {
-        const result = probe();
-        if (!isPromiseLike(result)) {
-          recordProbeDependencies(layoutId);
-          markProbeComplete(layoutId);
-          return result;
-        }
-
-        return Promise.resolve(result).then(
-          (resolved) => {
+      const observation = ensureObservation(layoutId);
+      observation.prefetchProbeDepth += 1;
+      const finish = () => {
+        observation.prefetchProbeDepth = Math.max(0, observation.prefetchProbeDepth - 1);
+      };
+      try {
+        const result = runWithIsolatedProbeDependencies(() => {
+          const result = probe();
+          if (!isPromiseLike(result)) {
             recordProbeDependencies(layoutId);
             markProbeComplete(layoutId);
-            return resolved;
-          },
-          (error: unknown) => {
-            // Record whatever dependencies we observed before the failure
-            // so the layout's dependency snapshot is as complete as possible.
-            // Deliberately do NOT call markProbeComplete here: a failed probe
-            // leaves completeness as "unknown", which makes the planner fall
-            // back to render-and-send — the safe default for any probe error.
-            recordProbeDependencies(layoutId);
-            throw error;
-          },
-        );
-      });
+            return result;
+          }
+
+          return Promise.resolve(result).then(
+            (resolved) => {
+              recordProbeDependencies(layoutId);
+              markProbeComplete(layoutId);
+              return resolved;
+            },
+            (error: unknown) => {
+              // Record whatever dependencies we observed before the failure
+              // so the layout's dependency snapshot is as complete as possible.
+              // Deliberately do NOT call markProbeComplete here: a failed probe
+              // leaves completeness as "unknown", which makes the planner fall
+              // back to render-and-send — the safe default for any probe error.
+              recordProbeDependencies(layoutId);
+              throw error;
+            },
+          );
+        });
+        return isPromiseLike(result) ? Promise.resolve(result).finally(finish) : (finish(), result);
+      } catch (error) {
+        finish();
+        throw error;
+      }
     },
   };
 }

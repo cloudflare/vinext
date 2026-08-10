@@ -1,5 +1,13 @@
-import { createElement, isValidElement, Suspense } from "react";
+import {
+  cloneElement,
+  createElement,
+  isValidElement,
+  Suspense,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { isUnknownRecord } from "../utils/record.js";
+import { isPromiseLike } from "../utils/promise.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
@@ -27,9 +35,15 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
+  pageAllSuspenseDynamic?: boolean;
+  dynamicSuspenseOrdinals?: readonly number[];
+  dynamicSuspenseOrdinalsByPageElementId?: Readonly<Record<string, readonly number[]>>;
   mountedSlotsHeader: string | null;
   pageElementIds: readonly string[];
+  pageElementsPrepared?: boolean;
+  preservePageElements?: boolean;
   routeId: string;
+  variantKey?: string | null;
 };
 
 type OptimisticNavigationPayload = {
@@ -42,13 +56,15 @@ const routeTrieCache = new WeakMap<RouteManifest, OptimisticRouteTrieNode>();
 // Shared never-settling thenable used to suspend optimistic page segments until
 // the real RSC payload replaces them.
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
+const REACT_LAZY_TYPE = Symbol.for("react.lazy");
 
 export function getOptimisticRouteTemplateKey(options: {
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
   routeId: string;
+  variantKey?: string | null;
 }): string {
-  return `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}`;
+  return `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}\0${options.variantKey ?? ""}`;
 }
 
 export function getOptimisticPrefetchSourceKey(options: {
@@ -284,7 +300,7 @@ function getPageElementIds(
   }
   for (const slotId of route.slotIds) {
     const parsed = AppElementsWire.parseElementKey(slotId);
-    if (parsed?.kind === "slot" && parsed.name === "children" && Object.hasOwn(elements, slotId)) {
+    if (parsed?.kind === "slot" && Object.hasOwn(elements, slotId)) {
       pageElementIds.add(slotId);
     }
   }
@@ -300,21 +316,219 @@ function OptimisticRouteSegment(): null {
   throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
 }
 
+type SuspenseReplacementResult = {
+  replaced: boolean;
+  value: AppElementValue;
+};
+
+function replaceObservedDynamicSuspenseChildren(
+  value: AppElementValue,
+  dynamicOrdinals: ReadonlySet<number>,
+  replaceAllSuspense: boolean,
+  nextOrdinal: { value: number },
+  depth = 0,
+): SuspenseReplacementResult {
+  if (depth > 100) {
+    return replaceAllSuspense
+      ? { replaced: true, value: createElement(OptimisticRouteSegment) }
+      : { replaced: false, value };
+  }
+  if (Array.isArray(value)) {
+    let replaced = false;
+    const nextValue = value.map((entry) => {
+      const result = replaceObservedDynamicSuspenseChildren(
+        entry,
+        dynamicOrdinals,
+        replaceAllSuspense,
+        nextOrdinal,
+        depth + 1,
+      );
+      replaced ||= result.replaced;
+      return result.value;
+    });
+    return { replaced, value: replaced ? nextValue : value };
+  }
+  if (!isValidElement(value)) return { replaced: false, value };
+  const props = Reflect.get(value, "props");
+  if (!isUnknownRecord(props)) return { replaced: false, value };
+  const isSuspense = value.type === Suspense;
+  const suspenseOrdinal = isSuspense ? nextOrdinal.value++ : null;
+  if (suspenseOrdinal !== null && (replaceAllSuspense || dynamicOrdinals.has(suspenseOrdinal))) {
+    return {
+      replaced: true,
+      value: cloneElement(value as ReactElement, undefined, createElement(OptimisticRouteSegment)),
+    };
+  }
+  const children = Reflect.get(props, "children") as AppElementValue;
+  const childResult =
+    children === undefined
+      ? { replaced: false, value: children as AppElementValue }
+      : replaceObservedDynamicSuspenseChildren(
+          children,
+          dynamicOrdinals,
+          replaceAllSuspense,
+          nextOrdinal,
+          depth + 1,
+        );
+  if (childResult.replaced) {
+    return {
+      replaced: true,
+      value: cloneElement<{ children?: ReactNode }>(
+        value as ReactElement<{ children?: ReactNode }>,
+        undefined,
+        childResult.value as ReactNode,
+      ) as AppElementValue,
+    };
+  }
+  return { replaced: false, value };
+}
+
+function readReactLazyNode(value: unknown): {
+  init: (payload: unknown) => unknown;
+  payload: unknown;
+} | null {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return null;
+  if (Reflect.get(value, "$$typeof") !== REACT_LAZY_TYPE) return null;
+  const init = Reflect.get(value, "_init");
+  if (typeof init !== "function") return null;
+  return { init: init as (payload: unknown) => unknown, payload: Reflect.get(value, "_payload") };
+}
+
+async function replaceObservedDynamicSuspenseChildrenAsync(
+  value: AppElementValue,
+  dynamicOrdinals: ReadonlySet<number>,
+  replaceAllSuspense: boolean,
+  nextOrdinal: { value: number },
+  depth = 0,
+): Promise<SuspenseReplacementResult> {
+  if (depth > 100) {
+    return replaceAllSuspense
+      ? { replaced: true, value: createElement(OptimisticRouteSegment) }
+      : { replaced: false, value };
+  }
+
+  const lazyNode = readReactLazyNode(value);
+  if (lazyNode !== null) {
+    let resolved: unknown;
+    try {
+      resolved = lazyNode.init(lazyNode.payload);
+    } catch (error) {
+      if (!isPromiseLike(error)) throw error;
+      await error;
+      resolved = lazyNode.init(lazyNode.payload);
+    }
+    return replaceObservedDynamicSuspenseChildrenAsync(
+      resolved as AppElementValue,
+      dynamicOrdinals,
+      replaceAllSuspense,
+      nextOrdinal,
+      depth + 1,
+    );
+  }
+
+  if (Array.isArray(value)) {
+    let replaced = false;
+    const nextValue: AppElementValue[] = [];
+    for (const entry of value) {
+      const result = await replaceObservedDynamicSuspenseChildrenAsync(
+        entry,
+        dynamicOrdinals,
+        replaceAllSuspense,
+        nextOrdinal,
+        depth + 1,
+      );
+      replaced ||= result.replaced;
+      nextValue.push(result.value);
+    }
+    return { replaced, value: replaced ? nextValue : value };
+  }
+  if (!isValidElement(value)) return { replaced: false, value };
+  const props = Reflect.get(value, "props");
+  if (!isUnknownRecord(props)) return { replaced: false, value };
+  const isSuspense = value.type === Suspense;
+  const suspenseOrdinal = isSuspense ? nextOrdinal.value++ : null;
+  if (suspenseOrdinal !== null && (replaceAllSuspense || dynamicOrdinals.has(suspenseOrdinal))) {
+    return {
+      replaced: true,
+      value: cloneElement(value as ReactElement, undefined, createElement(OptimisticRouteSegment)),
+    };
+  }
+  const children = Reflect.get(props, "children") as AppElementValue;
+  if (children === undefined) return { replaced: false, value };
+  const childResult = await replaceObservedDynamicSuspenseChildrenAsync(
+    children,
+    dynamicOrdinals,
+    replaceAllSuspense,
+    nextOrdinal,
+    depth + 1,
+  );
+  if (!childResult.replaced) return { replaced: false, value };
+  return {
+    replaced: true,
+    value: cloneElement<{ children?: ReactNode }>(
+      value as ReactElement<{ children?: ReactNode }>,
+      undefined,
+      childResult.value as ReactNode,
+    ) as AppElementValue,
+  };
+}
+
+/**
+ * Resolve the completed static RSC chunks needed to reach each observed
+ * dynamic Suspense boundary. Resolution stops at those boundaries, so a
+ * runtime-prefetch template never waits for or preserves its dynamic tail.
+ */
+export async function prepareOptimisticRouteTemplate(
+  template: OptimisticRouteTemplate,
+): Promise<OptimisticRouteTemplate> {
+  if (template.preservePageElements !== true || template.pageElementsPrepared === true) {
+    return template;
+  }
+
+  const elements: Record<string, AppElementValue> = { ...template.elements };
+  for (const pageElementId of template.pageElementIds) {
+    const preserved = elements[pageElementId];
+    if (preserved === undefined) continue;
+    const dynamicOrdinals =
+      template.dynamicSuspenseOrdinalsByPageElementId === undefined
+        ? template.dynamicSuspenseOrdinals
+        : template.dynamicSuspenseOrdinalsByPageElementId[pageElementId];
+    const result = await replaceObservedDynamicSuspenseChildrenAsync(
+      preserved,
+      new Set(dynamicOrdinals ?? []),
+      template.pageAllSuspenseDynamic === true,
+      { value: 0 },
+    );
+    elements[pageElementId] = result.value;
+  }
+
+  return { ...template, elements, pageElementsPrepared: true };
+}
+
 export function createOptimisticRouteTemplate(options: {
   allowLoadingShell?: boolean;
   basePath: string;
   elements: AppElements;
+  pageAllSuspenseDynamic?: boolean;
+  dynamicSuspenseOrdinals?: readonly number[];
+  dynamicSuspenseOrdinalsByPageElementId?: Readonly<Record<string, readonly number[]>>;
   href: string;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
+  preservePageElements?: boolean;
   routeManifest: RouteManifest;
+  variantKey?: string | null;
 }): OptimisticRouteTemplate | null {
   const match = matchOptimisticRouteManifestRoute({
     basePath: options.basePath,
     href: options.href,
     routeManifest: options.routeManifest,
   });
-  if (match === null || (!options.allowLoadingShell && !match.route.isDynamic)) return null;
+  if (
+    match === null ||
+    (!options.preservePageElements && !options.allowLoadingShell && !match.route.isDynamic)
+  )
+    return null;
   if (options.interceptionContext !== null) return null;
 
   const metadata = AppElementsWire.readMetadata(options.elements);
@@ -325,7 +539,12 @@ export function createOptimisticRouteTemplate(options: {
   // are accepted only when the serialized route subtree still contains a
   // Suspense fallback. Authoritative loading-shell prefetches use the marker
   // check below instead.
-  if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
+  if (
+    !options.preservePageElements &&
+    !options.allowLoadingShell &&
+    !elementHasSuspenseFallback(routeElement)
+  )
+    return null;
   if (
     options.allowLoadingShell &&
     options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary"
@@ -339,19 +558,54 @@ export function createOptimisticRouteTemplate(options: {
 
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
+  if (
+    options.preservePageElements === true &&
+    pageElementIds.every((pageElementId) => options.elements[pageElementId] == null)
+  ) {
+    return null;
+  }
 
   return {
     elements: options.elements,
+    ...(options.pageAllSuspenseDynamic === true ? { pageAllSuspenseDynamic: true } : {}),
+    ...(options.dynamicSuspenseOrdinals && options.dynamicSuspenseOrdinals.length > 0
+      ? { dynamicSuspenseOrdinals: [...options.dynamicSuspenseOrdinals] }
+      : {}),
+    ...(options.dynamicSuspenseOrdinalsByPageElementId === undefined
+      ? {}
+      : {
+          dynamicSuspenseOrdinalsByPageElementId: options.dynamicSuspenseOrdinalsByPageElementId,
+        }),
     mountedSlotsHeader: options.mountedSlotsHeader,
     pageElementIds,
+    ...(options.preservePageElements ? { preservePageElements: true } : {}),
     routeId: match.route.id,
+    ...(options.variantKey != null ? { variantKey: options.variantKey } : {}),
   };
 }
 
 export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
   for (const pageElementId of template.pageElementIds) {
-    elements[pageElementId] = createElement(OptimisticRouteSegment);
+    if (template.preservePageElements === true) {
+      const preserved = elements[pageElementId];
+      if (preserved !== undefined) {
+        if (template.pageElementsPrepared === true) continue;
+        const dynamicOrdinals =
+          template.dynamicSuspenseOrdinalsByPageElementId === undefined
+            ? template.dynamicSuspenseOrdinals
+            : template.dynamicSuspenseOrdinalsByPageElementId[pageElementId];
+        const result = replaceObservedDynamicSuspenseChildren(
+          preserved,
+          new Set(dynamicOrdinals ?? []),
+          template.pageAllSuspenseDynamic === true,
+          { value: 0 },
+        );
+        elements[pageElementId] = result.value;
+      }
+    } else {
+      elements[pageElementId] = createElement(OptimisticRouteSegment);
+    }
   }
   return elements;
 }
@@ -363,6 +617,7 @@ export function resolveOptimisticNavigationPayload(options: {
   mountedSlotsHeader: string | null;
   routeManifest: RouteManifest;
   templates: ReadonlyMap<string, OptimisticRouteTemplate>;
+  variantKey?: string | null;
 }): OptimisticNavigationPayload | null {
   if (options.interceptionContext !== null) return null;
 
@@ -376,13 +631,26 @@ export function resolveOptimisticNavigationPayload(options: {
   });
   if (match === null) return null;
 
-  const template = options.templates.get(
-    getOptimisticRouteTemplateKey({
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeId: match.route.id,
-    }),
-  );
+  const variantTemplate =
+    options.variantKey == null
+      ? undefined
+      : options.templates.get(
+          getOptimisticRouteTemplateKey({
+            interceptionContext: options.interceptionContext,
+            mountedSlotsHeader: options.mountedSlotsHeader,
+            routeId: match.route.id,
+            variantKey: options.variantKey,
+          }),
+        );
+  const template =
+    variantTemplate ??
+    options.templates.get(
+      getOptimisticRouteTemplateKey({
+        interceptionContext: options.interceptionContext,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+        routeId: match.route.id,
+      }),
+    );
   if (template === undefined) return null;
   if (template.mountedSlotsHeader !== options.mountedSlotsHeader) return null;
 

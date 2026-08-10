@@ -104,6 +104,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
+    connectionProbeBoundaryObserver: null,
+    connectionProbeBoundaryOrdinal: null,
     invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
@@ -138,6 +140,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     ssrHeadChildren: [],
     documentInitialHead: [],
     rootParams: null,
+    rootParamsAccessObserver: null,
     ...opts,
   };
 }

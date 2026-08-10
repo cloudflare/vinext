@@ -355,8 +355,13 @@ export async function buildPageElements<
     ...activeParallelRouteHeadInputs.map((input) => input.head),
   ];
   const metadataSearchParamsObserver = observeMetadataSearchParamsAccess
-    ? createAppPageSearchParamsObserver()
+    ? createAppPageSearchParamsObserver({
+        onAccess() {
+          options.layoutParamAccess?.observeMetadataSearchParams();
+        },
+      })
     : undefined;
+  const metadataParamsObserver = options.layoutParamAccess?.createMetadataParamsObserver();
   const preparedHead = prepareAppPageHead({
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
@@ -364,6 +369,7 @@ export async function buildPageElements<
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
     pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
+    paramsObserver: metadataParamsObserver,
     parallelRoutes,
     params: effectiveParams,
     routePath: route.pattern,
@@ -518,6 +524,7 @@ export async function buildPageElements<
         invocationProps.searchParams = observePageSearchParamsAccess
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
               markDynamic: hasRequestSearchParams,
+              onAccess: () => options.layoutParamAccess?.observePageSearchParams(),
             })
           : makeThenableParams(pageSearchParams);
       }
@@ -528,7 +535,9 @@ export async function buildPageElements<
       const invocationProps = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+              onAccess: () => options.layoutParamAccess?.observePageSearchParams(),
+            })
           : makeThenableParams(pageSearchParams);
       }
 

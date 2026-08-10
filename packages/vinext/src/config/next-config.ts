@@ -412,6 +412,8 @@ export type ResolvedNextConfig = {
   serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  optimisticRouting: boolean;
+  varyParams: boolean;
   appNavFailHandling: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
@@ -1561,6 +1563,8 @@ export async function resolveNextConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      optimisticRouting: false,
+      varyParams: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1926,6 +1930,8 @@ export async function resolveNextConfig(
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
+    optimisticRouting: experimental?.optimisticRouting === true,
+    varyParams: experimental?.varyParams === true,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
