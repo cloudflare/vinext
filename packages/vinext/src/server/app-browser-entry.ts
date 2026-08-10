@@ -918,7 +918,7 @@ function publishEmbeddedCachedNavigationStages(options: {
   const data = readEmbeddedCachedNavigationData(options.elements);
   if (!data) return;
   const fillGeneration = ++cachedNavigationFillGeneration;
-  let runtimeStageConsumed = data.runtimeStage === null;
+  let runtimeStageReadStarted = data.runtimeStage === null;
   void Promise.resolve(data.staticStage)
     .then(async (staticStage) => {
       if (
@@ -964,7 +964,7 @@ function publishEmbeddedCachedNavigationStages(options: {
       });
 
       if (data.runtimeStage === null) return;
-      runtimeStageConsumed = true;
+      runtimeStageReadStarted = true;
       const [runtimeBuffer, runtimePartial, runtimeStaleTimeSeconds] = await Promise.all([
         new Response(data.runtimeStage.readable).arrayBuffer(),
         Promise.resolve(data.runtimeStage.partial),
@@ -1000,7 +1000,7 @@ function publishEmbeddedCachedNavigationStages(options: {
     })
     .catch(() => {})
     .finally(() => {
-      if (!runtimeStageConsumed) cancelCachedNavigationRuntimeStage(data.runtimeStage);
+      if (!runtimeStageReadStarted) cancelCachedNavigationRuntimeStage(data.runtimeStage);
     });
 }
 
