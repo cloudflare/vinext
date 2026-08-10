@@ -807,6 +807,7 @@ describe("prerenderPages — export mode (pages-basic)", () => {
 describe("prerenderApp — default mode (app-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];
+  let nextPhaseAfterPrerender: string | undefined;
 
   beforeAll(async () => {
     const rscBundlePath = await buildAppFixture(APP_FIXTURE);
@@ -820,14 +821,22 @@ describe("prerenderApp — default mode (app-basic)", () => {
     const routes = await appRouter(appDir);
     const config = await resolveNextConfig({});
 
-    const prerenderResult = await prerenderApp({
-      mode: "default",
-      rscBundlePath,
-      routes,
-      outDir,
-      config,
-    });
-    results = prerenderResult.routes;
+    const previousNextPhase = process.env.NEXT_PHASE;
+    process.env.NEXT_PHASE = "phase-production-server";
+    try {
+      const prerenderResult = await prerenderApp({
+        mode: "default",
+        rscBundlePath,
+        routes,
+        outDir,
+        config,
+      });
+      results = prerenderResult.routes;
+      nextPhaseAfterPrerender = process.env.NEXT_PHASE;
+    } finally {
+      if (previousNextPhase === undefined) delete process.env.NEXT_PHASE;
+      else process.env.NEXT_PHASE = previousNextPhase;
+    }
   }, 120_000);
 
   afterAll(() => {
@@ -916,6 +925,18 @@ describe("prerenderApp — default mode (app-basic)", () => {
     const html = fs.readFileSync(path.join(outDir, "use-cache-test.html"), "utf-8");
     expect(html).toContain('"initialCacheKind":"static"');
     expect(html).toContain('"staleTimeSeconds":30');
+  });
+
+  it("renders inline server actions during the production build phase", () => {
+    const r = findRoute(results, "/prerender-inline-server-action");
+    expect(r).toMatchObject({
+      route: "/prerender-inline-server-action",
+      status: "rendered",
+    });
+
+    const html = fs.readFileSync(path.join(outDir, "prerender-inline-server-action.html"), "utf-8");
+    expect(html).toContain('<div id="phase">at buildtime</div>');
+    expect(nextPhaseAfterPrerender).toBe("phase-production-server");
   });
 
   it("records collected App Router cache tags for cache seeding", () => {
