@@ -686,8 +686,14 @@ export async function seedMemoryCacheFromPrerender(serverDir) {
     buildAppPageRscKey(pathname, renderMode) {
       return __isrRscKey(pathname, null, renderMode);
     },
+    buildAppRouteKey(pathname) {
+      return __isrRouteKey(pathname);
+    },
     writeAppPageEntry(key, data, metadata) {
       return __isrSetPrerenderedAppPage(key, data, metadata);
+    },
+    writeAppRouteEntry(key, data, policy) {
+      return __isrSet(key, data, policy);
     },
   });
 }
@@ -1217,13 +1223,35 @@ export default createAppRscHandler({
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   ${
     (metadataRoutes?.length ?? 0) > 0
+      ? `async getPrerenderMetadataRoutePaths() {
+    const { getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths } =
+      await __loadMetadataRouteResponse();
+    return __getPrerenderableMetadataRoutePaths(metadataRoutes);
+  },`
+      : ""
+  }
+  ${
+    (metadataRoutes?.length ?? 0) > 0
+      ? `async isMetadataRoutePath(cleanPathname) {
+    const { isMetadataRouteRequestPath: __isMetadataRouteRequestPath } =
+      await __loadMetadataRouteResponse();
+    return __isMetadataRouteRequestPath(metadataRoutes, cleanPathname);
+  },`
+      : ""
+  }
+  ${
+    (metadataRoutes?.length ?? 0) > 0
       ? `async handleMetadataRouteRequest(cleanPathname) {
     const { handleMetadataRouteRequest: __handleMetadataRouteRequest } =
       await __loadMetadataRouteResponse();
     return __handleMetadataRouteRequest({
       metadataRoutes,
       cleanPathname,
+      isrGet: __isrGet,
+      isrRouteKey: __isrRouteKey,
+      isrSet: __isrSet,
       makeThenableParams,
+      scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
     });
   },`
       : ""

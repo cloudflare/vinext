@@ -411,6 +411,21 @@ export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
 }
 
 /**
+ * Read an exact prefetch entry without allowing a settled stale value to
+ * steer a later request. Timers are an eviction optimization, not a freshness
+ * guarantee: background throttling can leave an expired route-tree entry in
+ * the Map until the next foreground read.
+ */
+export function getFreshPrefetchCacheEntry(cacheKey: string): PrefetchCacheEntry | undefined {
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry === undefined || entry.pending) return entry;
+  if (resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) return entry;
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  return undefined;
+}
+
+/**
  * Get or create the shared set of already-prefetched RSC URLs on window.
  * Keyed by interception-aware cache key so distinct source routes do not alias.
  */
@@ -1266,11 +1281,15 @@ function parseRenderedPathAndSearchHeader(value: string | null): string | null {
  */
 export async function snapshotRscResponse(response: Response): Promise<CachedRscResponse> {
   try {
-    return createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+    const snapshot = createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+    const expiresAt = restoredRscResponseExpiresAt.get(response);
+    return expiresAt === undefined ? snapshot : { ...snapshot, expiresAt };
   } finally {
     releaseAppPrefetchFetchSlot(response);
   }
 }
+
+const restoredRscResponseExpiresAt = new WeakMap<Response, number>();
 
 /**
  * Reconstruct a Response from a cached RSC snapshot.
@@ -1316,10 +1335,14 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
     );
   }
 
-  return new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
+  const response = new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
     status: 200,
     headers,
   });
+  if (isCacheExpiresAt(cached.expiresAt)) {
+    restoredRscResponseExpiresAt.set(response, cached.expiresAt);
+  }
+  return response;
 }
 
 /**
@@ -1336,6 +1359,67 @@ export async function prepareNavigationPrefetchSnapshot(
     throw new Error("App Router prefetch preparation is unavailable");
   }
   return (await preparePrefetchResponse(restoreRscResponse(snapshot))) as AppElements;
+}
+
+/**
+ * Gate a navigation-reusable prefetch behind the route-tree request shared by
+ * `<Link>` and `router.prefetch()`. Callers retain control of fetch scheduling
+ * and request-only options while freshness, deduplication, and alias reuse stay
+ * identical across both entry points.
+ */
+export async function fetchRouteTreeGatedPrefetch(options: {
+  fetchFullRscPayload: () => Promise<Response>;
+  fetchRouteTree: (rscUrl: string, headers: Headers) => Promise<Response>;
+  fullHref: string;
+  headers: Headers;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+}): Promise<Response> {
+  const {
+    fetchFullRscPayload,
+    fetchRouteTree,
+    fullHref,
+    headers,
+    interceptionContext,
+    mountedSlotsHeader,
+  } = options;
+  const routeTreeHeaders = new Headers(headers);
+  routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+  routeTreeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+  const routeTreeRscUrl = await createRscRequestUrl(fullHref, routeTreeHeaders);
+  const routeTreeCacheKey = AppElementsWire.encodeCacheKey(routeTreeRscUrl, interceptionContext);
+  let routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  if (routeTreeEntry === undefined) {
+    getPrefetchedUrls().add(routeTreeCacheKey);
+    prefetchRscResponse(
+      routeTreeRscUrl,
+      fetchRouteTree(routeTreeRscUrl, routeTreeHeaders),
+      interceptionContext,
+      mountedSlotsHeader,
+      undefined,
+      {
+        cacheForNavigation: false,
+        optimisticRouteShell: false,
+        prefetchKind: "route-tree",
+      },
+    );
+    routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  }
+  await routeTreeEntry?.pending?.catch(() => {});
+  routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  const renderedPathAndSearch = routeTreeEntry?.snapshot?.renderedPathAndSearch;
+  if (renderedPathAndSearch) {
+    const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
+    const cachedRenderedResponse = peekPrefetchResponseForNavigation(
+      renderedRscUrl,
+      interceptionContext,
+      mountedSlotsHeader,
+    );
+    if (cachedRenderedResponse) {
+      return restoreRscResponse(cachedRenderedResponse);
+    }
+  }
+  return fetchFullRscPayload();
 }
 
 /**
@@ -2752,10 +2836,12 @@ const _appRouter: AppRouterInstance = {
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
+      const requiresRouteTreePrefetch = policy.requiresRouteTreePrefetch === true;
       if (
         String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
         reusable &&
         kind === "auto" &&
+        !requiresRouteTreePrefetch &&
         (await hasPartialPrerenderForRoute(rewrittenPrefetchHref ?? fullHref))
       ) {
         headers.set(VINEXT_RSC_RENDER_MODE_HEADER, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
@@ -2767,7 +2853,10 @@ const _appRouter: AppRouterInstance = {
       }
       if (reusable && kind === "auto") {
         headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, __prefetchInlining ? "/__PAGE__" : "1");
+        headers.set(
+          NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+          __prefetchInlining || requiresRouteTreePrefetch ? "/__PAGE__" : "1",
+        );
       }
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
@@ -2806,8 +2895,7 @@ const _appRouter: AppRouterInstance = {
         return;
       }
       prefetched.add(cacheKey);
-      prefetchRscResponse(
-        rscUrl,
+      const fetchFullRscPayload = () =>
         scheduleAppPrefetchFetch(
           (signal) =>
             fetch(rscUrl, {
@@ -2817,7 +2905,31 @@ const _appRouter: AppRouterInstance = {
               signal,
             }),
           "low",
-        ),
+        );
+      const fetchPromise =
+        reusable && kind === "auto" && requiresRouteTreePrefetch
+          ? fetchRouteTreeGatedPrefetch({
+              fetchFullRscPayload,
+              fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
+                scheduleAppPrefetchFetch(
+                  (signal) =>
+                    fetch(routeTreeRscUrl, {
+                      headers: routeTreeHeaders,
+                      credentials: "include",
+                      priority: "low" as RequestInit["priority"],
+                      signal,
+                    }),
+                  "low",
+                ),
+              fullHref,
+              headers,
+              interceptionContext,
+              mountedSlotsHeader,
+            })
+          : fetchFullRscPayload();
+      prefetchRscResponse(
+        rscUrl,
+        fetchPromise,
         interceptionContext,
         mountedSlotsHeader,
         options,
