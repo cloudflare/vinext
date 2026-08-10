@@ -2233,7 +2233,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("downgrades explicit full prefetches to runtime instant shells", async () => {
+  it("promotes complete runtime instant shells from explicit full prefetches", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
       href: "/instant-target",
@@ -2252,10 +2252,13 @@ describe("Link prefetch scheduling", () => {
         APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
       );
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
-      expect([...getPrefetchCache().values()][0]).toMatchObject({
-        cacheForNavigation: false,
+      const entry = [...getPrefetchCache().values()][0];
+      await entry?.pending;
+      expect(entry).toMatchObject({
+        cacheForNavigation: true,
         instantShell: true,
         prefetchKind: "instant-shell",
+        retainedLayoutProvider: true,
       });
     } finally {
       result.restoreNodeEnv();
