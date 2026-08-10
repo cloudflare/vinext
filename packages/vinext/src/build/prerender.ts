@@ -1249,23 +1249,32 @@ export async function prerenderApp({
             : false;
 
       if (route.isDynamic) {
-        const queueFallbackShellsWithoutStaticParams = (): boolean => {
+        let parentParamSets: Record<string, string | string[]>[] = [];
+        const queueFallbackShellsWithoutStaticParams = (
+          fallbackParentParamSets: Record<string, string | string[]>[] = parentParamSets,
+        ): boolean => {
           if (config.cacheComponents !== true) return false;
           let queued = false;
-          for (const fallbackShell of createAppPprFallbackShells(route, {})) {
-            urlsToRender.push({
-              urlPath: fallbackShell.pathname,
-              routePattern: route.pattern,
-              prerenderRouteParams: encodePrerenderRouteParams(
-                route.pattern,
-                fallbackShell.params,
-                fallbackShell.fallbackParamNames,
-              ),
-              revalidate,
-              isSpeculative: false,
-              isFallback: true,
-            });
-            queued = true;
+          const queuedPaths = new Set<string>();
+          const baseParamSets = fallbackParentParamSets.length > 0 ? fallbackParentParamSets : [{}];
+          for (const parentParams of baseParamSets) {
+            for (const fallbackShell of createAppPprFallbackShells(route, parentParams)) {
+              if (queuedPaths.has(fallbackShell.pathname)) continue;
+              queuedPaths.add(fallbackShell.pathname);
+              urlsToRender.push({
+                urlPath: fallbackShell.pathname,
+                routePattern: route.pattern,
+                prerenderRouteParams: encodePrerenderRouteParams(
+                  route.pattern,
+                  fallbackShell.params,
+                  fallbackShell.fallbackParamNames,
+                ),
+                revalidate,
+                isSpeculative: false,
+                isFallback: true,
+              });
+              queued = true;
+            }
           }
           return queued;
         };
@@ -1276,6 +1285,7 @@ export async function prerenderApp({
           // For CF Workers builds the map is a Proxy that always returns a function;
           // the function itself returns null when the route has no generateStaticParams.
           const generateStaticParamsFn = staticParamsMap[route.pattern];
+          parentParamSets = await resolveParentParams(route, staticParamsMap);
 
           // Check: no function at all (Node build where map is populated from bundle exports)
           if (typeof generateStaticParamsFn !== "function") {
@@ -1291,8 +1301,8 @@ export async function prerenderApp({
             continue;
           }
 
-          const parentParamSets = await resolveParentParams(route, staticParamsMap);
           let paramSets: Record<string, string | string[]>[] | null;
+          const fallbackOnlyParentParamSets: Record<string, string | string[]>[] = [];
 
           if (parentParamSets.length > 0) {
             paramSets = [];
@@ -1304,6 +1314,9 @@ export async function prerenderApp({
                 break;
               }
               if (Array.isArray(childResults)) {
+                if (childResults.length === 0) {
+                  fallbackOnlyParentParamSets.push(parentParams);
+                }
                 for (const childParams of childResults) {
                   (paramSets as Record<string, string | string[]>[]).push({
                     ...parentParams,
@@ -1318,6 +1331,9 @@ export async function prerenderApp({
           } else {
             const results = await generateStaticParamsFn({ params: {} });
             paramSets = Array.isArray(results) || results === null ? results : [];
+            if (Array.isArray(results) && results.length === 0) {
+              fallbackOnlyParentParamSets.push({});
+            }
           }
 
           // null: route has no generateStaticParams (CF Workers Proxy returned null)
@@ -1335,8 +1351,9 @@ export async function prerenderApp({
           }
 
           if (paramSets.length === 0) {
-            // Empty params — skip with warning
-            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            if (!queueFallbackShellsWithoutStaticParams(fallbackOnlyParentParamSets)) {
+              results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            }
             continue;
           }
 
@@ -1389,6 +1406,9 @@ export async function prerenderApp({
                 });
               }
             }
+          }
+          if (fallbackOnlyParentParamSets.length > 0) {
+            queueFallbackShellsWithoutStaticParams(fallbackOnlyParentParamSets);
           }
         } catch (e) {
           const err = e as Error;

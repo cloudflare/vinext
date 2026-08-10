@@ -3,6 +3,7 @@ import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
+import { runWithResumeDataCache, type ResumeDataCacheEntry } from "vinext/shims/cache-handler";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
@@ -84,8 +85,14 @@ import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-obse
 import { peekDynamicUsage } from "vinext/shims/headers";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
-import { createAppPprPostponedStateMarker } from "./app-ppr-fallback-shell.js";
-import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import {
+  createAppPprPostponedStateMarker,
+  serializeAppPprPostponedState,
+} from "./app-ppr-fallback-shell.js";
+import {
+  isPprFallbackShellAbortError,
+  getPprFallbackShellResumeData,
+} from "vinext/shims/ppr-fallback-shell";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -163,7 +170,14 @@ type RenderAppPageLifecycleOptions = {
   params: Record<string, unknown>;
   pprFallbackShellSignal?: AbortSignal;
   pprFallbackShellHasCacheTask?: boolean;
-  pprResume?: { html: string; postponed: string };
+  pprBlockUseCacheMisses?: boolean;
+  pprResume?: {
+    fallbackParamNames: readonly string[];
+    html: string;
+    postponed: string;
+    resumeDataCache: ResumeDataCacheEntry[];
+  };
+  pprResumeDataCacheActive?: boolean;
   pprFallbackShellReactSignal?: AbortSignal;
   abortPprFallbackShell?: () => void;
   rootParams?: RootParams;
@@ -632,6 +646,21 @@ function wrapRscResponseForDevErrorReporting(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
+  if (
+    (options.pprResume || options.pprBlockUseCacheMisses === true) &&
+    options.pprResumeDataCacheActive !== true
+  ) {
+    return runWithResumeDataCache(
+      options.pprResume?.resumeDataCache ?? [],
+      () => renderAppPageLifecycle({ ...options, pprResumeDataCacheActive: true }),
+      {
+        blockUseCacheMisses: options.pprBlockUseCacheMisses === true,
+        fallbackParamNames: options.pprResume?.fallbackParamNames,
+        useFallbackLayoutKeys: options.pprResume !== undefined,
+      },
+    );
+  }
+
   // Request dynamic state is consumptive, but both cache finalization and the
   // streamed client completion marker need the final answer. Keep the first
   // positive observation for this render so whichever branch drains first
@@ -1087,10 +1116,11 @@ export async function renderAppPageLifecycle(
   }
 
   if (htmlRender.postponed) {
-    htmlStream = appendTextToStream(
-      htmlStream,
-      createAppPprPostponedStateMarker(htmlRender.postponed),
+    const postponed = serializeAppPprPostponedState(
+      htmlRender.postponed,
+      getPprFallbackShellResumeData(),
     );
+    htmlStream = appendTextToStream(htmlStream, createAppPprPostponedStateMarker(postponed));
   }
   if (options.pprResume) {
     htmlStream = prependTextToStream(options.pprResume.html, htmlStream);

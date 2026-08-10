@@ -3,6 +3,12 @@ import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
 } from "../utils/cache-control-metadata.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
+import {
+  getPprFallbackShellState,
+  recordPprFallbackShellResumeData,
+  type PprFallbackShellState,
+} from "./ppr-fallback-shell.js";
 
 export type CacheHandlerValue = {
   lastModified: number;
@@ -107,6 +113,13 @@ export type CacheHandler = {
   releasePendingSet?(key: string): Promise<void>;
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
   resetRequestCache?(): void;
+};
+
+export type ResumeDataCacheEntry = {
+  context?: Record<string, unknown>;
+  key: string;
+  lastModified: number;
+  value: IncrementalCacheValue;
 };
 
 export class NoOpCacheHandler implements CacheHandler {
@@ -467,9 +480,265 @@ export class MemoryCacheHandler implements CacheHandler {
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+const requestDataCacheHandlerAls = getOrCreateAls<CacheHandler>("vinext.cacheHandler.request.als");
+const resumeDataCacheOptionsAls = getOrCreateAls<{
+  fallbackParamNames: ReadonlySet<string> | null;
+}>("vinext.cacheHandler.resume-options.als");
+
+function resumeEntryContext(
+  context: Record<string, unknown> | undefined,
+  cacheControl?: CacheControlMetadata,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (context?.cacheKind === "use-cache") result.cacheKind = "use-cache";
+  if (context?.fetchCache === true) result.fetchCache = true;
+  if (Array.isArray(context?.tags)) {
+    result.tags = context.tags.filter((tag): tag is string => typeof tag === "string");
+  }
+  const effectiveCacheControl = cacheControl ?? context?.cacheControl;
+  if (effectiveCacheControl && typeof effectiveCacheControl === "object") {
+    result.cacheControl = effectiveCacheControl;
+  }
+  return result;
+}
+
+function recordFallbackShellCacheEntry(
+  key: string,
+  entry: CacheHandlerValue,
+  context?: Record<string, unknown>,
+): void {
+  if (entry.value?.kind !== "FETCH") return;
+  recordPprFallbackShellResumeData(key, {
+    context: resumeEntryContext(context, entry.cacheControl),
+    key,
+    lastModified: entry.lastModified,
+    value: entry.value,
+  } satisfies ResumeDataCacheEntry);
+}
+
+/**
+ * Fallback-shell cache fills belong to the route's postponed state, not to the
+ * configured process-wide cache. Keeping the overlay here makes that true for
+ * every CacheHandler implementation (memory, filesystem, KV, or custom).
+ */
+class PprFallbackShellDataCacheHandler implements CacheHandler {
+  private readonly local = new MemoryCacheHandler();
+
+  constructor(private readonly delegate: CacheHandler) {}
+
+  async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    const local = await this.local.get(key, context);
+    if (local) return local;
+
+    const delegated = await this.delegate.get(key, context);
+    if (!delegated) {
+      // A filesystem handler may have waited for another in-process fill that
+      // completed into this overlay. Re-check before reporting the miss.
+      return this.local.get(key, context);
+    }
+    if (delegated.value?.kind === "FETCH") {
+      await this.local.seed(
+        key,
+        delegated.value,
+        resumeEntryContext(context, delegated.cacheControl),
+        {
+          lastModified: delegated.lastModified,
+        },
+      );
+      recordFallbackShellCacheEntry(key, delegated, context);
+    }
+    return delegated;
+  }
+
+  async set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.local.set(key, data, context);
+      const stored = await this.local.get(key, context);
+      if (stored) recordFallbackShellCacheEntry(key, stored, context);
+    } finally {
+      // Build-only handlers claim misses in get(). The speculative result stays
+      // local, but the underlying claim still needs to be released.
+      await this.delegate.releasePendingSet?.(key);
+    }
+  }
+
+  async seed(
+    key: string,
+    data: IncrementalCacheValue | null,
+    context: Record<string, unknown> | undefined,
+    metadata: { lastModified: number },
+  ): Promise<boolean> {
+    const seeded = await this.local.seed(key, data, context, metadata);
+    if (seeded) {
+      const stored = await this.local.get(key, context);
+      if (stored) recordFallbackShellCacheEntry(key, stored, context);
+    }
+    return seeded;
+  }
+
+  async releasePendingSet(key: string): Promise<void> {
+    await this.delegate.releasePendingSet?.(key);
+  }
+
+  revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
+    return this.local.revalidateTag(tags, durations);
+  }
+
+  resetRequestCache(): void {
+    this.local.resetRequestCache?.();
+  }
+}
+
+const fallbackShellHandlers = new WeakMap<
+  PprFallbackShellState,
+  { delegate: CacheHandler; handler: CacheHandler }
+>();
+
+function scopeHandlerToFallbackShell(
+  state: PprFallbackShellState,
+  delegate: CacheHandler,
+): CacheHandler {
+  const existing = fallbackShellHandlers.get(state);
+  if (existing?.delegate === delegate) return existing.handler;
+  const handler = new PprFallbackShellDataCacheHandler(delegate);
+  fallbackShellHandlers.set(state, { delegate, handler });
+  return handler;
+}
+
+class ResumeDataCacheHandler implements CacheHandler {
+  private readonly entries: Map<string, ResumeDataCacheEntry>;
+
+  constructor(
+    entries: readonly ResumeDataCacheEntry[],
+    private readonly delegate: CacheHandler,
+    private readonly blockUseCacheMisses: boolean,
+  ) {
+    this.entries = new Map(entries.map((entry) => [entry.key, entry]));
+  }
+
+  async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    const entry = this.entries.get(key);
+    if (entry) {
+      const cacheControl =
+        entry.context?.cacheControl && typeof entry.context.cacheControl === "object"
+          ? (entry.context.cacheControl as CacheControlMetadata)
+          : undefined;
+      return {
+        cacheControl,
+        lastModified: entry.lastModified,
+        value: entry.value,
+      };
+    }
+    if (this.blockUseCacheMisses && context?.cacheKind === "use-cache") {
+      return null;
+    }
+    return this.delegate.get(key, context);
+  }
+
+  set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    if (this.blockUseCacheMisses && context?.cacheKind === "use-cache") {
+      if (data === null) {
+        this.entries.delete(key);
+        return Promise.resolve();
+      }
+      this.entries.set(key, {
+        context: resumeEntryContext(context),
+        key,
+        lastModified: Date.now(),
+        value: data,
+      });
+      return Promise.resolve();
+    }
+    return this.delegate.set(key, data, context);
+  }
+
+  async seed(
+    key: string,
+    data: IncrementalCacheValue | null,
+    context: Record<string, unknown> | undefined,
+    metadata: { lastModified: number },
+  ): Promise<boolean> {
+    if (this.blockUseCacheMisses && context?.cacheKind === "use-cache") {
+      if (data === null) {
+        this.entries.delete(key);
+        return false;
+      }
+      this.entries.set(key, {
+        context: resumeEntryContext(context),
+        key,
+        ...metadata,
+        value: data,
+      });
+      return true;
+    }
+    if (this.delegate.seed) return this.delegate.seed(key, data, context, metadata);
+    await this.delegate.set(key, data, { ...context, lastModified: metadata.lastModified });
+    return true;
+  }
+
+  async releasePendingSet(key: string): Promise<void> {
+    await this.delegate.releasePendingSet?.(key);
+  }
+
+  revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
+    return this.delegate.revalidateTag(tags, durations);
+  }
+
+  resetRequestCache(): void {
+    this.delegate.resetRequestCache?.();
+  }
+}
 
 function getActiveHandler(): CacheHandler {
-  return globalHandlers[HANDLER_KEY] ?? (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
+  const handler =
+    requestDataCacheHandlerAls.getStore() ??
+    globalHandlers[HANDLER_KEY] ??
+    (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
+  const fallbackShellState = getPprFallbackShellState();
+  return fallbackShellState ? scopeHandlerToFallbackShell(fallbackShellState, handler) : handler;
+}
+
+export function runWithResumeDataCache<T>(
+  entries: readonly ResumeDataCacheEntry[],
+  fn: () => T,
+  options: {
+    blockUseCacheMisses?: boolean;
+    fallbackParamNames?: readonly string[];
+    useFallbackLayoutKeys?: boolean;
+  } = {},
+): T {
+  if (entries.length === 0 && options.blockUseCacheMisses !== true) return fn();
+  return resumeDataCacheOptionsAls.run(
+    {
+      fallbackParamNames:
+        options.useFallbackLayoutKeys === true ? new Set(options.fallbackParamNames ?? []) : null,
+    },
+    () =>
+      requestDataCacheHandlerAls.run(
+        new ResumeDataCacheHandler(
+          entries,
+          getActiveHandler(),
+          options.blockUseCacheMisses === true,
+        ),
+        fn,
+      ),
+  );
+}
+
+export function shouldUseResumeDataCacheLayoutKeys(): boolean {
+  return (resumeDataCacheOptionsAls.getStore()?.fallbackParamNames ?? null) !== null;
+}
+
+export function getResumeDataCacheFallbackParamNames(): ReadonlySet<string> | null {
+  return resumeDataCacheOptionsAls.getStore()?.fallbackParamNames ?? null;
 }
 
 export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {

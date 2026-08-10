@@ -35,6 +35,7 @@ import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -168,7 +169,12 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // the scope here to cover startProdServer / shared-server setup that
   // happens before those phases run. See server/socket-error-backstop.ts.
   const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
+  const previousNextPhase = process.env.NEXT_PHASE;
   process.env.VINEXT_PRERENDER = "1";
+  // User modules rendered during static generation observe the same phase as
+  // Next.js. This also reaches forked prerender workers through their inherited
+  // environment.
+  process.env.NEXT_PHASE = PHASE_PRODUCTION_BUILD;
 
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned with the rest of vinext's build output on rebuild and co-located
@@ -325,6 +331,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     }
     if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
     else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
+    if (previousNextPhase === undefined) delete process.env.NEXT_PHASE;
+    else process.env.NEXT_PHASE = previousNextPhase;
   }
 
   if (allRoutes.length === 0) {

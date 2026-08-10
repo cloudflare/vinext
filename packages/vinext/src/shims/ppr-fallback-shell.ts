@@ -18,6 +18,7 @@ export type PprFallbackShellState = {
   pendingCacheReadyCleanup: (() => void) | null;
   pendingCacheTasks: number;
   phase: "warmup" | "final";
+  resumeDataCache: Map<string, unknown>;
   routePattern: string;
 };
 
@@ -37,6 +38,9 @@ type PprFallbackShellCacheTask = {
 const pprFallbackShellAls = getOrCreateAls<PprFallbackShellState>("vinext.pprFallbackShell.als");
 const pprFallbackShellCacheTaskStackAls = getOrCreateAls<PprFallbackShellCacheTask[]>(
   "vinext.pprFallbackShell.cacheTaskStack.als",
+);
+const pprFallbackShellInputEncodingAbortAls = getOrCreateAls<AbortController>(
+  "vinext.pprFallbackShell.inputEncodingAbort.als",
 );
 
 function noop(): void {}
@@ -157,6 +161,7 @@ export function createPprFallbackShellState(
     pendingCacheReadyCleanup: null,
     pendingCacheTasks: 0,
     phase: "warmup",
+    resumeDataCache: new Map(),
     routePattern: options.routePattern,
   };
 }
@@ -167,6 +172,33 @@ export function runWithPprFallbackShellState<T>(state: PprFallbackShellState, fn
 
 export function getPprFallbackShellState(): PprFallbackShellState | null {
   return pprFallbackShellAls.getStore() ?? null;
+}
+
+export function recordPprFallbackShellResumeData(key: string, entry: unknown): void {
+  getPprFallbackShellState()?.resumeDataCache.set(key, entry);
+}
+
+export function deletePprFallbackShellResumeData(key: string): void {
+  getPprFallbackShellState()?.resumeDataCache.delete(key);
+}
+
+export function getPprFallbackShellResumeData(): unknown[] {
+  return [...(getPprFallbackShellState()?.resumeDataCache.values() ?? [])];
+}
+
+export function runWithPprFallbackShellInputEncodingAbort<T>(
+  controller: AbortController,
+  fn: () => T,
+): T {
+  return pprFallbackShellInputEncodingAbortAls.run(controller, fn);
+}
+
+export function abortPprFallbackShellInputEncoding(): void {
+  pprFallbackShellInputEncodingAbortAls.getStore()?.abort();
+}
+
+export function isPprFallbackShellCacheTaskIgnored(): boolean {
+  return (pprFallbackShellCacheTaskStackAls.getStore() ?? []).some((task) => task.isIgnored);
 }
 
 export function trackPprFallbackShellCacheTask<T>(
@@ -192,14 +224,21 @@ export function trackPprFallbackShellCacheTask<T>(
     promise = pprFallbackShellCacheTaskStackAls.run([...parentStack, task], fn);
   } catch (error) {
     completeCacheTask(state, task);
-    return Promise.reject(error);
+    const rejected = Promise.reject<T>(error);
+    rejected.catch(noop);
+    return rejected;
   }
 
-  return promise.finally(() => {
+  const tracked = promise.finally(() => {
     if (!task.isIgnored) {
       completeCacheTask(state, task);
     }
   });
+  // React may abandon a cache component promise when the fallback render is
+  // aborted. Keep the rejection observable to a real consumer while marking
+  // that abandoned branch handled for Node's unhandled-rejection machinery.
+  tracked.catch(noop);
+  return tracked;
 }
 
 export function createPprFallbackShellSuspensePromiseForState<T>(

@@ -1001,6 +1001,7 @@ describe("app page cache helpers", () => {
     expect(resume).toEqual({
       html: "<html><body>rewritten static shell",
       postponed: '{"nextSegmentId":1}',
+      resumeDataCache: [],
     });
   });
 
@@ -1030,6 +1031,7 @@ describe("app page cache helpers", () => {
     expect(result).toEqual({
       html: "<html><body>rewritten static shell",
       postponed: '{"nextSegmentId":1}',
+      resumeDataCache: [],
     });
     expect(isrGet).toHaveBeenCalledOnce();
   });

@@ -22,3 +22,24 @@ export function isAppLayoutPropsForUseCache(value: unknown): value is Record<str
     typeof value === "object" && value !== null && Reflect.get(value, APP_LAYOUT_MARKER) === true
   );
 }
+
+/**
+ * Build the cache-key view of cached layout props while a PPR fallback shell
+ * is being created or resumed. Only the params owned by the fallback segment
+ * are provisional; known parent params still scope the cached layout.
+ */
+export function prepareAppLayoutPropsForFallbackCacheKey(
+  props: Record<string, unknown> & { $$isLayout: true },
+  fallbackParamNames: ReadonlySet<string>,
+): Record<string, unknown> {
+  const { $$isLayout: _marker, params, ...slots } = props;
+  const knownParams: Record<string, unknown> = {};
+  if (typeof params === "object" && params !== null) {
+    for (const name of Object.keys(params)) {
+      if (!fallbackParamNames.has(name)) {
+        knownParams[name] = Reflect.get(params, name);
+      }
+    }
+  }
+  return { params: knownParams, ...slots };
+}

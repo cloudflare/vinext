@@ -3,6 +3,7 @@ import {
   createPprFallbackShellState,
   preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
+  runWithPprFallbackShellInputEncodingAbort,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
@@ -156,6 +157,34 @@ describe("makeThenableParams", () => {
     expect(observedKeys).toEqual([["slug"]]);
   });
 
+  it("does not abort cache input encoding for ordinary params continuations", async () => {
+    const controller = new AbortController();
+    const continuation = runWithPprFallbackShellInputEncodingAbort(controller, () =>
+      makeThenableParams({ slug: "post" }).then((params) => params.slug),
+    );
+
+    expect(controller.signal.aborted).toBe(false);
+    await expect(continuation).resolves.toBe("post");
+  });
+
+  it("aborts cache input encoding when fallback params are consumed", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/blog/:slug",
+    });
+    const controller = new AbortController();
+    const continuation = runWithPprFallbackShellState(state, () =>
+      runWithPprFallbackShellInputEncodingAbort(controller, () =>
+        makeThenableParams({ slug: "[slug]" }).then((params) => params.slug),
+      ),
+    );
+
+    expect(controller.signal.aborted).toBe(true);
+    const rejected = expect(continuation).rejects.toThrow();
+    state.abortController.abort();
+    await rejected;
+  });
+
   it("suspends only fallback params during cacheComponents fallback-shell prerendering", () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
@@ -180,47 +209,87 @@ describe("makeThenableParams", () => {
     expect(typeof (thrown as Promise<unknown>).then).toBe("function");
   });
 
-  it("awaited params object suspends on fallback param access", async () => {
+  it("keeps awaited fallback params pending instead of rejecting with a Suspense thenable", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
       routePattern: "/:locale/blog/:slug",
     });
 
-    await runWithPprFallbackShellState(state, async () => {
+    const awaited = runWithPprFallbackShellState(state, async () => {
       const params = makeThenableParams({ locale: "en", slug: "[slug]" });
-
-      const result = await params;
-      expect(result.locale).toBe("en");
-
-      expect(() => Reflect.get(result, "slug")).toThrow();
-      expect(state.hasDynamicBoundary).toBe(true);
+      return await params;
     });
+    let settled = false;
+    const rejection = awaited.then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(state.hasDynamicBoundary).toBe(true);
 
     state.abortController.abort();
+    const reason = await rejection;
+
+    expect(reason).toBeInstanceOf(Error);
+    expect(typeof (reason as { then?: unknown }).then).not.toBe("function");
   });
 
-  it("awaiting params during fallback-shell prerender observes only accessed known params", async () => {
-    const observedKeys: string[][] = [];
+  it("keeps then, catch, and finally continuations pending until the shell aborts", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
       routePattern: "/:locale/blog/:slug",
     });
 
-    await runWithPprFallbackShellState(state, async () => {
-      const params = makeThenableParams(
-        { locale: "en", slug: "[slug]" },
-        { observeParamAccess: (keys) => observedKeys.push([...keys]) },
-      );
-
-      const resolved = await params;
-      expect(resolved.locale).toBe("en");
-      // Known-param access must not convert the shell into a
-      // dynamic-boundary shell — only actual fallback-param access does.
-      expect(state.hasDynamicBoundary).toBe(false);
+    const { thenResult, catchResult, finallyResult } = runWithPprFallbackShellState(state, () => {
+      const params = makeThenableParams({ locale: "en", slug: "[slug]" });
+      return {
+        thenResult: params.then((value) => value.slug),
+        catchResult: params.catch(() => "caught"),
+        finallyResult: params.finally(() => undefined),
+      };
     });
+    let settledCount = 0;
+    const thenReason = thenResult.then(
+      () => ++settledCount,
+      (error: unknown) => {
+        ++settledCount;
+        return error;
+      },
+    );
+    const caughtValue = catchResult.then((value) => {
+      ++settledCount;
+      return value;
+    });
+    const finallyReason = finallyResult.then(
+      () => ++settledCount,
+      (error: unknown) => {
+        ++settledCount;
+        return error;
+      },
+    );
 
-    expect(observedKeys).toEqual([["locale"]]);
+    await Promise.resolve();
+    expect(settledCount).toBe(0);
+    expect(state.hasDynamicBoundary).toBe(true);
     state.abortController.abort();
+
+    const [thenError, caught, finallyError] = await Promise.all([
+      thenReason,
+      caughtValue,
+      finallyReason,
+    ]);
+    expect(thenError).toBeInstanceOf(Error);
+    expect(caught).toBe("caught");
+    expect(finallyError).toBeInstanceOf(Error);
+    expect(settledCount).toBe(3);
   });
 
   it("does not mark dynamic boundary until a fallback param is actually accessed", () => {

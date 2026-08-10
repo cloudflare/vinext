@@ -11,6 +11,7 @@ import {
   type AppPagePprRuntime,
   type DispatchAppPageOptions,
 } from "./app-page-dispatch.js";
+import type { ResumeDataCacheEntry } from "vinext/shims/cache-handler";
 
 type PprFallbackShellEligibility =
   | {
@@ -70,7 +71,16 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShells: NonNullable<DispatchAppPageOptions<TRoute>["pprFallbackCacheShells"]>,
   currentRevalidateSeconds: number | null,
-): Promise<Response | { html: string; postponed: string } | null> {
+): Promise<
+  | Response
+  | {
+      fallbackParamNames: readonly string[];
+      html: string;
+      postponed: string;
+      resumeDataCache: ResumeDataCacheEntry[];
+    }
+  | null
+> {
   const { readAppPageFallbackShellCache } = await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
   for (const fallbackShell of fallbackShells) {
@@ -94,7 +104,15 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       rewriteHtml,
     });
-    if (fallbackShellResult) return fallbackShellResult;
+    if (fallbackShellResult instanceof Response) return fallbackShellResult;
+    if (fallbackShellResult) {
+      return {
+        fallbackParamNames: fallbackShell.fallbackParamNames,
+        html: fallbackShellResult.html,
+        postponed: fallbackShellResult.postponed,
+        resumeDataCache: fallbackShellResult.resumeDataCache,
+      };
+    }
   }
   return null;
 }
@@ -113,9 +131,17 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       isForceStatic,
       isForceDynamic,
     );
-    return decision.kind === "probe-fallback-shells"
-      ? probePprFallbackShellCache(options, decision.fallbackShells, currentRevalidateSeconds)
-      : null;
+    if (decision.kind !== "probe-fallback-shells") return null;
+    const result = await probePprFallbackShellCache(
+      options,
+      decision.fallbackShells,
+      currentRevalidateSeconds,
+    );
+    if (result instanceof Response) return result;
+    if (result) {
+      return { ...result, blockUseCacheMisses: true, kind: "resume" };
+    }
+    return { blockUseCacheMisses: true, kind: "eligible-miss" };
   },
   async warm(options) {
     const { warmPprFallbackShellCaches } = await import("./app-ppr-fallback-shell-render.js");

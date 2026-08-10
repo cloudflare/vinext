@@ -1431,7 +1431,10 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
 });
 
 describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => {
-  async function prerenderDynamicRootParamRoute(cacheComponents: boolean) {
+  async function prerenderDynamicRootParamRoute(
+    cacheComponents: boolean,
+    childStaticParams: "values" | "missing" | "empty" | "mixed" = "values",
+  ) {
     const root = tmpDir("vinext-prerender-ppr-shell-");
     const outDir = path.join(root, "out");
     const appDir = path.join(root, "app");
@@ -1451,7 +1454,21 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (url.pathname === "/__vinext/prerender/static-params") {
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify([{ locale: "en", slug: "hello" }]));
+        const pattern = url.searchParams.get("pattern");
+        if (childStaticParams !== "values" && pattern === "/:locale") {
+          res.end(JSON.stringify([{ locale: "en" }, { locale: "fr" }]));
+        } else if (childStaticParams === "missing") {
+          res.end("null");
+        } else if (childStaticParams === "empty") {
+          res.end("[]");
+        } else if (childStaticParams === "mixed") {
+          const parentParams = JSON.parse(url.searchParams.get("parentParams") ?? "{}") as {
+            locale?: string;
+          };
+          res.end(JSON.stringify(parentParams.locale === "en" ? [{ slug: "hello" }] : []));
+        } else {
+          res.end(JSON.stringify([{ locale: "en", slug: "hello" }]));
+        }
         return;
       }
       if (url.pathname === "/__vinext_nonexistent_for_404__") {
@@ -1535,6 +1552,46 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     expect(findRoute(routes, "/en/blog/[slug]")).toBeUndefined();
     expect(renderedPaths).toContain("/en/blog/hello");
     expect(renderedPaths).not.toContain("/en/blog/[slug]");
+  });
+
+  it.each(["missing", "empty"] as const)(
+    "queues one child fallback shell per known root param when child generateStaticParams is %s",
+    async (childStaticParams) => {
+      // Ported from Next.js:
+      // test/e2e/app-dir/partial-fallback-root-blocking/partial-fallback-root-blocking.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/partial-fallback-root-blocking/partial-fallback-root-blocking.test.ts
+      const { renderedPaths, routes } = await prerenderDynamicRootParamRoute(
+        true,
+        childStaticParams,
+      );
+
+      for (const locale of ["en", "fr"]) {
+        expect(findRoute(routes, `/${locale}/blog/[slug]`)).toMatchObject({
+          route: "/:locale/blog/:slug",
+          path: `/${locale}/blog/[slug]`,
+          status: "rendered",
+          fallback: true,
+        });
+        expect(renderedPaths).toContain(`/${locale}/blog/[slug]`);
+      }
+    },
+  );
+
+  it("keeps a fallback for a parent whose child GSP is empty when another parent has concrete children", async () => {
+    const { renderedPaths, routes } = await prerenderDynamicRootParamRoute(true, "mixed");
+
+    expect(findRoute(routes, "/en/blog/hello")).toMatchObject({
+      route: "/:locale/blog/:slug",
+      path: "/en/blog/hello",
+      status: "rendered",
+    });
+    expect(findRoute(routes, "/fr/blog/[slug]")).toMatchObject({
+      route: "/:locale/blog/:slug",
+      path: "/fr/blog/[slug]",
+      status: "rendered",
+      fallback: true,
+    });
+    expect(renderedPaths).toEqual(expect.arrayContaining(["/en/blog/hello", "/fr/blog/[slug]"]));
   });
 });
 

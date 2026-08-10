@@ -142,6 +142,26 @@ describe("buildPrerenderKVPairs", () => {
     });
   });
 
+  it("does not publish speculative data-cache entries to KV", () => {
+    writePrerenderFixture(
+      { buildId: "build-speculative", routes: [] },
+      {
+        ".vinext-resume-data-cache/speculative.json": JSON.stringify({
+          key: "use-cache:build:speculative",
+          lastModified: 4_000,
+          context: { cacheControl: { revalidate: 60 }, speculative: true },
+          value: {
+            kind: "FETCH",
+            data: { body: "discarded", headers: {}, url: "cache" },
+            revalidate: 60,
+          },
+        }),
+      },
+    );
+
+    expect(buildPrerenderKVPairs(serverDir).pairs).toEqual([]);
+  });
+
   it("preserves a non-expiring prerendered data-cache policy", () => {
     writePrerenderFixture(
       { buildId: "build-static-data", routes: [] },

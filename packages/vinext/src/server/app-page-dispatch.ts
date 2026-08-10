@@ -5,6 +5,7 @@ import type { ClassificationReason } from "../build/layout-classification-types.
 import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
+import type { ResumeDataCacheEntry } from "vinext/shims/cache-handler";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
@@ -261,7 +262,19 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isDraftMode: boolean,
     isForceStatic: boolean,
     isForceDynamic: boolean,
-  ): Promise<Response | { html: string; postponed: string } | null>;
+  ): Promise<
+    | Response
+    | {
+        blockUseCacheMisses: true;
+        fallbackParamNames: readonly string[];
+        html: string;
+        kind: "resume";
+        postponed: string;
+        resumeDataCache: ResumeDataCacheEntry[];
+      }
+    | { blockUseCacheMisses: true; kind: "eligible-miss" }
+    | null
+  >;
   warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
 };
 
@@ -889,6 +902,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (fallbackShellResult instanceof Response) {
     return fallbackShellResult;
   }
+  const pprResume = fallbackShellResult?.kind === "resume" ? fallbackShellResult : undefined;
 
   let interceptDynamicConfig: string | null | undefined;
   let interceptDynamicConfigResolved = false;
@@ -1146,7 +1160,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     pprFallbackShellSignal,
     pprFallbackShellHasCacheTask: activeFallbackShellState?.hasCacheTask,
     pprFallbackShellReactSignal,
-    pprResume: fallbackShellResult ?? undefined,
+    pprResume,
+    pprBlockUseCacheMisses: fallbackShellResult?.blockUseCacheMisses === true,
     renderedPathAndSearch: options.renderedPathAndSearch,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {

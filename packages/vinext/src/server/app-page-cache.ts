@@ -1,4 +1,8 @@
-import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache-handler";
+import type {
+  CachedAppPageValue,
+  CacheControlMetadata,
+  ResumeDataCacheEntry,
+} from "vinext/shims/cache-handler";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
@@ -23,6 +27,7 @@ import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
 import {
   isAppPprDynamicFallbackShellHtml,
+  parseAppPprPostponedState,
   stripAppPprDynamicFallbackShellMarker,
 } from "./app-ppr-fallback-shell.js";
 export {
@@ -612,7 +617,9 @@ export async function readAppPageFallbackShellCacheResponse(
  */
 export async function readAppPageFallbackShellCache(
   options: ReadAppPageFallbackShellCacheResponseOptions,
-): Promise<Response | { html: string; postponed: string } | null> {
+): Promise<
+  Response | { html: string; postponed: string; resumeDataCache: ResumeDataCacheEntry[] } | null
+> {
   const isrKey = options.isrHtmlKey(options.fallbackPathname);
 
   try {
@@ -635,9 +642,10 @@ export async function readAppPageFallbackShellCache(
         `${cached?.isStale ? "STALE" : "HIT"} (fallback shell resume)`,
         options.fallbackPathname,
       );
+      const resumeState = parseAppPprPostponedState(cachedValue.postponed);
       return {
         html: options.rewriteHtml(stripAppPprDynamicFallbackShellMarker(cachedValue.html)),
-        postponed: cachedValue.postponed,
+        ...resumeState,
       };
     }
 
@@ -671,26 +679,25 @@ export async function readAppPageFallbackShellCacheResume(
     ReadAppPageFallbackShellCacheResponseOptions,
     "fallbackPathname" | "isrDebug" | "isrGet" | "isrHtmlKey" | "rewriteHtml"
   >,
-): Promise<{ html: string; postponed: string } | null> {
+): Promise<{
+  html: string;
+  postponed: string;
+  resumeDataCache: ResumeDataCacheEntry[];
+} | null> {
   const isrKey = options.isrHtmlKey(options.fallbackPathname);
   try {
     const cached = await options.isrGet(isrKey);
     const cachedValue = getCachedAppPageValue(cached);
     if (
       cached?.isExpired ||
-      !cachedValue ||
-      !cachedValue.postponed ||
+      !cachedValue?.postponed ||
       !isAppPprDynamicFallbackShellHtml(cachedValue.html)
     ) {
       return null;
     }
-    options.isrDebug?.(
-      `${cached?.isStale ? "STALE" : "HIT"} (fallback shell resume)`,
-      options.fallbackPathname,
-    );
     return {
       html: options.rewriteHtml(stripAppPprDynamicFallbackShellMarker(cachedValue.html)),
-      postponed: cachedValue.postponed,
+      ...parseAppPprPostponedState(cachedValue.postponed),
     };
   } catch (isrReadError) {
     options.isrDebug?.("MISS (fallback shell resume read error)", options.fallbackPathname);

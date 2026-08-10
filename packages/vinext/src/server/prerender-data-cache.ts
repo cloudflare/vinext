@@ -7,16 +7,16 @@ import {
   type CacheHandlerValue,
   type CachedFetchValue,
   type IncrementalCacheValue,
+  type ResumeDataCacheEntry,
 } from "vinext/shims/cache-handler";
+import { getHeadersContext } from "vinext/shims/headers";
+import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 
 export const PRERENDER_DATA_CACHE_DIR = ".vinext-resume-data-cache";
 const PENDING_ENTRY_TIMEOUT_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 10;
 
-export type PersistedFetchEntry = {
-  context?: Record<string, unknown>;
-  key: string;
-  lastModified: number;
+export type PersistedFetchEntry = ResumeDataCacheEntry & {
   value: CachedFetchValue;
 };
 
@@ -84,8 +84,30 @@ function persistedContext(context: Record<string, unknown> | undefined): Record<
   if (context.cacheControl && typeof context.cacheControl === "object") {
     result.cacheControl = context.cacheControl;
   }
+  if (context.cacheKind === "use-cache") result.cacheKind = "use-cache";
   if (context.fetchCache === true) result.fetchCache = true;
+  if (context.speculative === true) result.speculative = true;
   return result;
+}
+
+function currentPrerenderContext(
+  context: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  return getHeadersContext()?.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1"
+    ? { ...context, speculative: true }
+    : context;
+}
+
+function isSpeculativeContext(context: Record<string, unknown> | undefined): boolean {
+  return context?.speculative === true;
+}
+
+function withoutRequestedTags(
+  context: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!context || !Array.isArray(context.tags)) return context;
+  const { tags: _tags, ...rest } = context;
+  return rest;
 }
 
 function readEntry(filePath: string): PersistedFetchEntry | null {
@@ -114,19 +136,41 @@ async function persistEntry(prerenderDir: string, entry: PersistedFetchEntry): P
   try {
     const existing = readEntry(destination);
     if (existing) {
+      const existingSpeculative = existing.context?.speculative === true;
+      const entrySpeculative = entry.context?.speculative === true;
+      // A discarded speculative render must never replace a normal value with
+      // the same key. Only normal entries are eligible for runtime publication.
+      const newest =
+        existingSpeculative !== entrySpeculative
+          ? existingSpeculative
+            ? entry
+            : existing
+          : existing.lastModified > entry.lastModified
+            ? existing
+            : entry;
       const tags = [
-        ...new Set([
-          ...(existing.value.tags ?? []),
-          ...(entry.value.tags ?? []),
-          ...((existing.context?.tags as string[] | undefined) ?? []),
-          ...((entry.context?.tags as string[] | undefined) ?? []),
-        ]),
+        ...new Set(
+          existingSpeculative === entrySpeculative
+            ? [
+                ...(existing.value.tags ?? []),
+                ...(entry.value.tags ?? []),
+                ...((existing.context?.tags as string[] | undefined) ?? []),
+                ...((entry.context?.tags as string[] | undefined) ?? []),
+              ]
+            : [
+                ...(newest.value.tags ?? []),
+                ...((newest.context?.tags as string[] | undefined) ?? []),
+              ],
+        ),
       ];
-      const newest = existing.lastModified > entry.lastModified ? existing : entry;
       entry = {
         ...newest,
-        context: { ...newest.context, tags },
-        lastModified: Math.max(existing.lastModified, entry.lastModified),
+        context: {
+          ...newest.context,
+          tags,
+          speculative: existingSpeculative && entrySpeculative,
+        },
+        lastModified: newest.lastModified,
         value: { ...newest.value, tags },
       };
     }
@@ -148,15 +192,35 @@ async function persistEntry(prerenderDir: string, entry: PersistedFetchEntry): P
  */
 export class PrerenderDataCacheHandler implements CacheHandler {
   private readonly memory = new MemoryCacheHandler();
+  private readonly speculativeMemory = new MemoryCacheHandler();
 
   constructor(private readonly prerenderDir: string) {}
 
   async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
-    const memoryEntry = await this.memory.get(key, context);
+    context = currentPrerenderContext(context);
+    const speculativeRequest = isSpeculativeContext(context);
+    let memory = this.memory;
+    let readContext = speculativeRequest ? withoutRequestedTags(context) : context;
+    let memoryEntry = await memory.get(key, readContext);
+    let speculativeEntry = false;
+    if (!memoryEntry && speculativeRequest) {
+      memory = this.speculativeMemory;
+      readContext = context;
+      memoryEntry = await memory.get(key, context);
+      speculativeEntry = memoryEntry !== null;
+    }
     if (memoryEntry) {
-      if (memoryEntry.value?.kind === "FETCH" && Array.isArray(context?.tags)) {
+      if (
+        memoryEntry.value?.kind === "FETCH" &&
+        Array.isArray(context?.tags) &&
+        (!speculativeRequest || speculativeEntry)
+      ) {
         await persistEntry(this.prerenderDir, {
-          context: persistedContext({ ...context, tags: memoryEntry.value.tags ?? context.tags }),
+          context: persistedContext({
+            ...context,
+            speculative: speculativeEntry,
+            tags: memoryEntry.value.tags ?? context.tags,
+          }),
           key,
           lastModified: memoryEntry.lastModified,
           value: memoryEntry.value,
@@ -166,21 +230,30 @@ export class PrerenderDataCacheHandler implements CacheHandler {
         context?.kind === "FETCH" &&
         (memoryEntry.cacheState === "stale" || memoryEntry.cacheState === "expired")
       ) {
-        return this.claimStaleEntry(key, context, memoryEntry);
+        return this.claimStaleEntry(key, readContext ?? context, memoryEntry, memory);
       }
       return memoryEntry;
     }
     if (context?.kind !== "FETCH") return null;
 
     let persisted = readEntry(entryPath(this.prerenderDir, key));
-    if (!persisted || persisted.key !== key) {
+    if (
+      !persisted ||
+      persisted.key !== key ||
+      (persisted.context?.speculative === true && !speculativeRequest)
+    ) {
       const pending = pendingPath(this.prerenderDir, key);
       if (tryCreateLock(pending)) return null;
 
       for (;;) {
         await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_INTERVAL_MS));
         persisted = readEntry(entryPath(this.prerenderDir, key));
-        if (persisted?.key === key) break;
+        if (
+          persisted?.key === key &&
+          (persisted.context?.speculative !== true || speculativeRequest)
+        ) {
+          break;
+        }
         if (lockIsStale(pending)) {
           removeFile(pending);
           if (tryCreateLock(pending)) return null;
@@ -188,13 +261,26 @@ export class PrerenderDataCacheHandler implements CacheHandler {
       }
     }
 
-    await this.memory.seed(key, persisted.value, persisted.context, {
+    memory = persisted.context?.speculative === true ? this.speculativeMemory : this.memory;
+    readContext =
+      speculativeRequest && persisted.context?.speculative !== true
+        ? withoutRequestedTags(context)
+        : context;
+    await memory.seed(key, persisted.value, persisted.context, {
       lastModified: persisted.lastModified,
     });
-    const resumed = await this.memory.get(key, context);
-    if (resumed?.value?.kind === "FETCH" && Array.isArray(context?.tags)) {
+    const resumed = await memory.get(key, readContext);
+    if (
+      resumed?.value?.kind === "FETCH" &&
+      Array.isArray(context?.tags) &&
+      (!speculativeRequest || persisted.context?.speculative === true)
+    ) {
       await persistEntry(this.prerenderDir, {
-        context: persistedContext({ ...context, tags: resumed.value.tags ?? context.tags }),
+        context: persistedContext({
+          ...context,
+          speculative: persisted.context?.speculative === true,
+          tags: resumed.value.tags ?? context.tags,
+        }),
         key,
         lastModified: resumed.lastModified,
         value: resumed.value,
@@ -205,7 +291,7 @@ export class PrerenderDataCacheHandler implements CacheHandler {
       context?.kind === "FETCH" &&
       (resumed.cacheState === "stale" || resumed.cacheState === "expired")
     ) {
-      return this.claimStaleEntry(key, context, resumed);
+      return this.claimStaleEntry(key, readContext ?? context, resumed, memory);
     }
     return resumed;
   }
@@ -214,6 +300,7 @@ export class PrerenderDataCacheHandler implements CacheHandler {
     key: string,
     context: Record<string, unknown>,
     staleEntry: CacheHandlerValue,
+    memory: MemoryCacheHandler,
   ): Promise<CacheHandlerValue | null> {
     const pending = pendingPath(this.prerenderDir, key);
     if (tryCreateLock(pending)) return null;
@@ -226,10 +313,10 @@ export class PrerenderDataCacheHandler implements CacheHandler {
         persisted.lastModified > staleEntry.lastModified &&
         persisted.value.kind === "FETCH"
       ) {
-        await this.memory.seed(key, persisted.value, persisted.context, {
+        await memory.seed(key, persisted.value, persisted.context, {
           lastModified: persisted.lastModified,
         });
-        return this.memory.get(key, context);
+        return memory.get(key, context);
       }
       if (lockIsStale(pending)) {
         removeFile(pending);
@@ -243,17 +330,20 @@ export class PrerenderDataCacheHandler implements CacheHandler {
     value: IncrementalCacheValue | null,
     context?: Record<string, unknown>,
   ): Promise<void> {
+    context = currentPrerenderContext(context);
+    const memory = isSpeculativeContext(context) ? this.speculativeMemory : this.memory;
     try {
-      await this.memory.set(key, value, context);
+      await memory.set(key, value, context);
       if (value?.kind !== "FETCH") return;
-      const stored = await this.memory.get(key);
+      const stored = await memory.get(key);
       if (stored?.value?.kind !== "FETCH") return;
-      await persistEntry(this.prerenderDir, {
+      const entry = {
         context: persistedContext(context),
         key,
         lastModified: stored.lastModified,
         value: stored.value,
-      });
+      } satisfies PersistedFetchEntry;
+      await persistEntry(this.prerenderDir, entry);
     } finally {
       await this.releasePendingSet(key);
     }
@@ -264,11 +354,15 @@ export class PrerenderDataCacheHandler implements CacheHandler {
   }
 
   async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
-    await this.memory.revalidateTag(tags, durations);
+    await Promise.all([
+      this.memory.revalidateTag(tags, durations),
+      this.speculativeMemory.revalidateTag(tags, durations),
+    ]);
   }
 
   resetRequestCache(): void {
     this.memory.resetRequestCache?.();
+    this.speculativeMemory.resetRequestCache?.();
   }
 }
 
@@ -305,6 +399,7 @@ export async function seedPrerenderDataCache(
 ): Promise<number> {
   let seeded = 0;
   for (const entry of readPrerenderDataCacheEntries(prerenderDir)) {
+    if (entry.context?.speculative === true) continue;
     if (handler.seed) {
       if (
         await handler.seed(entry.key, entry.value, entry.context, {
@@ -313,15 +408,6 @@ export async function seedPrerenderDataCache(
       ) {
         seeded++;
       }
-    } else {
-      // Existing custom handlers predate the timestamp-preserving seed hook.
-      // Still hand them the build value, and expose the original timestamp in
-      // context so adapters can preserve it without adopting the new method.
-      await handler.set(entry.key, entry.value, {
-        ...entry.context,
-        lastModified: entry.lastModified,
-      });
-      seeded++;
     }
   }
   return seeded;

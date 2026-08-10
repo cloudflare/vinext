@@ -110,6 +110,7 @@ export function buildPrerenderKVPairs(
   let routeCount = 0;
 
   for (const entry of readPrerenderDataCacheEntries(prerenderDir)) {
+    if (entry.context?.speculative === true) continue;
     const contextCacheControl =
       entry.context?.cacheControl && typeof entry.context.cacheControl === "object"
         ? (entry.context.cacheControl as Record<string, unknown>)

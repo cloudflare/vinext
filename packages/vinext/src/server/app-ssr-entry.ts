@@ -48,7 +48,11 @@ import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
+import {
+  alignBfcacheSegmentIdentitiesForResume,
+  createInitialBfcacheMaps,
+  type BfcacheSegmentIdentityMap,
+} from "./app-bfcache-identity.js";
 import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
@@ -107,6 +111,44 @@ function hasReactPostponedReplayNodes(value: unknown): boolean {
     Array.isArray(value.replayNodes) &&
     value.replayNodes.length > 0
   );
+}
+
+const VINEXT_SSR_POSTPONED_STATE_VERSION = 1;
+
+type VinextSsrPostponedState = {
+  bfcacheSegmentIdentities: BfcacheSegmentIdentityMap;
+  postponed: unknown;
+  version: typeof VINEXT_SSR_POSTPONED_STATE_VERSION;
+};
+
+function parseSsrPostponedState(value: string): VinextSsrPostponedState {
+  const parsed = JSON.parse(value) as unknown;
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "version" in parsed &&
+    parsed.version === VINEXT_SSR_POSTPONED_STATE_VERSION &&
+    "postponed" in parsed &&
+    "bfcacheSegmentIdentities" in parsed &&
+    typeof parsed.bfcacheSegmentIdentities === "object" &&
+    parsed.bfcacheSegmentIdentities !== null &&
+    !Array.isArray(parsed.bfcacheSegmentIdentities) &&
+    Object.values(parsed.bfcacheSegmentIdentities).every((identity) => typeof identity === "string")
+  ) {
+    return parsed as VinextSsrPostponedState;
+  }
+  return { bfcacheSegmentIdentities: {}, postponed: parsed, version: 1 };
+}
+
+function serializeSsrPostponedState(
+  postponed: unknown,
+  bfcacheSegmentIdentities: BfcacheSegmentIdentityMap,
+): string {
+  return JSON.stringify({
+    bfcacheSegmentIdentities,
+    postponed,
+    version: VINEXT_SSR_POSTPONED_STATE_VERSION,
+  } satisfies VinextSsrPostponedState);
 }
 
 function isReactDevelopmentRuntime(): boolean {
@@ -487,6 +529,8 @@ export async function handleSsr(
           );
         }
 
+        const resumeState = options?.postponed ? parseSsrPostponedState(options.postponed) : null;
+        let fallbackBfcacheSegmentIdentities: BfcacheSegmentIdentityMap = {};
         let flightRoot: PromiseLike<AppWireElements> | null = null;
 
         function VinextFlightRoot(): ReactNode {
@@ -502,10 +546,19 @@ export async function handleSsr(
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
           const metadata = AppElementsWire.readMetadata(elements);
+          if (pprFallbackShellSignal) {
+            fallbackBfcacheSegmentIdentities = metadata.bfcacheSegmentIdentities;
+          }
           const bfcacheMaps = createInitialBfcacheMaps({
             elements,
             metadata,
           });
+          const bfcacheSegmentIdentities = resumeState
+            ? alignBfcacheSegmentIdentitiesForResume(
+                bfcacheMaps.identities,
+                resumeState.bfcacheSegmentIdentities,
+              )
+            : bfcacheMaps.identities;
           const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
@@ -513,7 +566,7 @@ export async function handleSsr(
           );
           const identityMapTree = createReactElement(
             BfcacheIdentityMapContext.Provider,
-            { value: bfcacheMaps.identities },
+            { value: bfcacheSegmentIdentities },
             routeTree,
           );
           // During SSR we only provide the id *map*, seeded entirely with the
@@ -671,7 +724,7 @@ export async function handleSsr(
           const edgeRenderer = await loadReactDomEdgeRenderer();
           htmlStream = await edgeRenderer.resume(
             ssrRoot,
-            JSON.parse(options.postponed),
+            resumeState!.postponed as Parameters<SsrResume>[1],
             renderOptions as Parameters<SsrResume>[2],
           );
         } else if (pprFallbackShellSignal) {
@@ -688,7 +741,10 @@ export async function handleSsr(
             options?.pprFallbackShellHasCacheTask === true &&
             hasReactPostponedReplayNodes(prerenderResult.postponed)
           ) {
-            postponed = JSON.stringify(prerenderResult.postponed);
+            postponed = serializeSsrPostponedState(
+              prerenderResult.postponed,
+              fallbackBfcacheSegmentIdentities,
+            );
           }
         } else {
           let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;

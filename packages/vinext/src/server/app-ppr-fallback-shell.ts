@@ -3,10 +3,12 @@ import {
   createNavigationRuntimeRscMetadataScript,
   navigationRuntimeRscBootstrapExpression,
 } from "./app-ssr-stream.js";
+import type { ResumeDataCacheEntry } from "vinext/shims/cache-handler";
 
 const PPR_DYNAMIC_FALLBACK_SHELL_MARKER = "<!--vinext-ppr-dynamic-fallback-shell-->";
 const PPR_POSTPONED_STATE_PREFIX = "<!--vinext-ppr-postponed:";
 const PPR_POSTPONED_STATE_SUFFIX = "-->";
+const PPR_RESUME_DATA_PREFIX = "vinext-rdc-v1:";
 
 type AppPprFallbackShellRoute = {
   params: readonly string[];
@@ -60,6 +62,43 @@ export function prepareAppPprFallbackShellHtmlForResume(html: string): string {
 
 export function createAppPprPostponedStateMarker(postponed: string): string {
   return `${PPR_POSTPONED_STATE_PREFIX}${encodeURIComponent(postponed)}${PPR_POSTPONED_STATE_SUFFIX}`;
+}
+
+export function serializeAppPprPostponedState(
+  postponed: string,
+  resumeDataCache: readonly unknown[],
+): string {
+  return `${PPR_RESUME_DATA_PREFIX}${JSON.stringify({ postponed, resumeDataCache })}`;
+}
+
+export function parseAppPprPostponedState(value: string): {
+  postponed: string;
+  resumeDataCache: ResumeDataCacheEntry[];
+} {
+  if (!value.startsWith(PPR_RESUME_DATA_PREFIX)) {
+    return { postponed: value, resumeDataCache: [] };
+  }
+  try {
+    const parsed = JSON.parse(value.slice(PPR_RESUME_DATA_PREFIX.length)) as {
+      postponed?: unknown;
+      resumeDataCache?: unknown;
+    };
+    if (typeof parsed.postponed !== "string" || !Array.isArray(parsed.resumeDataCache)) {
+      return { postponed: value, resumeDataCache: [] };
+    }
+    const resumeDataCache = parsed.resumeDataCache.filter(
+      (entry): entry is ResumeDataCacheEntry =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as Partial<ResumeDataCacheEntry>).key === "string" &&
+        typeof (entry as Partial<ResumeDataCacheEntry>).lastModified === "number" &&
+        typeof (entry as Partial<ResumeDataCacheEntry>).value === "object" &&
+        (entry as Partial<ResumeDataCacheEntry>).value !== null,
+    );
+    return { postponed: parsed.postponed, resumeDataCache };
+  } catch {
+    return { postponed: value, resumeDataCache: [] };
+  }
 }
 
 export function extractAppPprPostponedState(html: string): {
