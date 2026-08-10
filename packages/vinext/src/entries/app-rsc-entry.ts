@@ -283,7 +283,7 @@ async function __loadPrerenderPagesRoutes() {
   return `
 import ${JSON.stringify(serverGlobalsPath)};
 import {
-  createFromReadableStream as _createFromReadableStream,
+  ${prefetchInlining ? "createFromReadableStream as _createFromReadableStream," : ""}
   renderToReadableStream as _renderToReadableStream,
   ${
     hasServerActions
@@ -374,10 +374,14 @@ import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import {
+${
+  prefetchInlining
+    ? `import {
   createRouteTreePrefetch as __createRouteTreePrefetch,
   measureAppRouteTreePrefetchSizes as __measureAppRouteTreePrefetchSizes,
-} from ${JSON.stringify(appRouteTreePrefetchPath)};
+} from ${JSON.stringify(appRouteTreePrefetchPath)};`
+    : ""
+}
 import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
@@ -639,7 +643,7 @@ function findIntercept(pathname, sourcePathname = null) {
   return __routeMatcher.findIntercept(pathname, sourcePathname);
 }
 
-const __prefetchHeadsByAffinity = new Map();
+${prefetchInlining ? "const __prefetchHeadsByAffinity = new Map();" : ""}
 
 async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
@@ -660,12 +664,15 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
     basePath: __basePath,
     trailingSlash: __trailingSlash,
     htmlLimitedBots: __htmlLimitedBots,
-    capturePrefetchHead:
-      ${JSON.stringify(Boolean(prefetchInlining))} &&
+    ${
+      prefetchInlining
+        ? `capturePrefetchHead:
       process.env.VINEXT_PRERENDER === "1" &&
       pageRequest.prerenderAffinity
         ? (head) => __prefetchHeadsByAffinity.set(pageRequest.prerenderAffinity, head)
-        : undefined,
+        : undefined,`
+        : ""
+    }
     scriptNonce,
   });
 }
@@ -736,7 +743,9 @@ const rootParamNamesMap = {
 ${rootParamNameEntries.join("\n")}
 };
 
-async function __collectPrefetchHints({ affinity, pathname, pattern, rscData }) {
+${
+  prefetchInlining
+    ? `async function __collectPrefetchHints({ affinity, pathname, pattern, rscData }) {
   const head = affinity ? __prefetchHeadsByAffinity.get(affinity) : undefined;
   if (affinity) __prefetchHeadsByAffinity.delete(affinity);
   const match = matchRoute(pathname);
@@ -754,16 +763,22 @@ async function __collectPrefetchHints({ affinity, pathname, pattern, rscData }) 
     measuredSizes,
     prefetchInlining: ${JSON.stringify(prefetchInlining)},
   });
+}`
+    : ""
 }
 
 __setPagesClientAssets(__pagesClientAssets);
 export default createAppRscHandler({
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
-  collectPrefetchHints: __collectPrefetchHints,
+  ${
+    prefetchInlining
+      ? `collectPrefetchHints: __collectPrefetchHints,
   discardPrefetchHead(affinity) {
     __prefetchHeadsByAffinity.delete(affinity);
-  },
+  },`
+      : ""
+  }
   ensureRouteLoaded: __ensureRouteLoaded,
   prefetchInlining: ${JSON.stringify(prefetchInlining)},
   clearRequestContext() {
