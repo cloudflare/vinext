@@ -288,6 +288,10 @@ export const PREFETCH_CACHE_TTL = resolveClientRouterStaleTime(
 const MIN_SERVER_STALE_TIME_SECONDS = 30;
 const MIN_PREFETCH_STALE_TIME_MS = MIN_SERVER_STALE_TIME_SECONDS * 1000;
 
+export function resolveFullPrefetchStaleTimeMs(staleTimeMs: number = PREFETCH_CACHE_TTL): number {
+  return Math.max(staleTimeMs, MIN_PREFETCH_STALE_TIME_MS);
+}
+
 /**
  * The render's `cacheLife` claim about client reuse. The wire treats the two
  * variants as mutually exclusive — a response carries either the resolved
@@ -511,7 +515,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   // No signal: the static prefetch window, floored like Next's
   // `STATIC_STALETIME_MS = getStaleTimeMs(config)`.
   if (seconds === undefined) {
-    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
+    return timestamp + resolveFullPrefetchStaleTimeMs(fallbackTtlMs);
   }
   // An automatic prefetch takes a dynamic render's bound verbatim, including
   // below the 30s floor: Next's `computeDynamicStaleAt` never floors it, so a
@@ -523,7 +527,7 @@ function resolvePrefetchedRscResponseExpiresAt(
     ? timestamp + seconds * 1000
     : timestamp +
         (seconds === 0
-          ? Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS)
+          ? resolveFullPrefetchStaleTimeMs(fallbackTtlMs)
           : Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS));
 }
 
@@ -921,68 +925,25 @@ function notifyPrefetchInvalidated(entry: PrefetchCacheEntry): void {
  */
 type RetainedPrefetchInvalidation = {
   callbacks: Set<() => void>;
-  expiresAt: number;
-  claimCacheKey?: string;
-  timer?: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout>;
 };
 const retainedPrefetchInvalidations = new Set<RetainedPrefetchInvalidation>();
-const retainedClaimPrefetchInvalidations = new Map<string, RetainedPrefetchInvalidation>();
-
-function scheduleRetainedPrefetchInvalidation(retained: RetainedPrefetchInvalidation): void {
-  if (retained.timer !== undefined) clearTimeout(retained.timer);
-  retained.timer = setTimeout(
-    () => fireRetainedPrefetchInvalidation(retained),
-    Math.max(0, retained.expiresAt - Date.now()),
-  );
-}
-
-function retainPrefetchInvalidationUntil(
-  cacheKey: string,
-  onInvalidate: (() => void) | undefined,
-  expiresAt: number,
-): void {
-  if (onInvalidate === undefined) return;
-  const existing = retainedClaimPrefetchInvalidations.get(cacheKey);
-  if (existing !== undefined) {
-    existing.callbacks.add(onInvalidate);
-    if (expiresAt > existing.expiresAt) {
-      existing.expiresAt = expiresAt;
-      scheduleRetainedPrefetchInvalidation(existing);
-    }
-    return;
-  }
-
-  const retained: RetainedPrefetchInvalidation = {
-    callbacks: new Set([onInvalidate]),
-    expiresAt,
-    claimCacheKey: cacheKey,
-  };
-  scheduleRetainedPrefetchInvalidation(retained);
-  retainedPrefetchInvalidations.add(retained);
-  retainedClaimPrefetchInvalidations.set(cacheKey, retained);
-}
 
 function retainPrefetchInvalidationAfterConsume(entry: PrefetchCacheEntry): void {
   const callbacks = entry.onInvalidateCallbacks;
   if (callbacks === undefined || callbacks.size === 0) return;
 
+  const delay = Math.max(0, resolvePrefetchCacheEntryExpiresAt(entry) - Date.now());
   const retained: RetainedPrefetchInvalidation = {
     callbacks,
-    expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
+    timer: setTimeout(() => fireRetainedPrefetchInvalidation(retained), delay),
   };
-  scheduleRetainedPrefetchInvalidation(retained);
   retainedPrefetchInvalidations.add(retained);
 }
 
 function fireRetainedPrefetchInvalidation(retained: RetainedPrefetchInvalidation): void {
   if (!retainedPrefetchInvalidations.delete(retained)) return;
-  if (
-    retained.claimCacheKey !== undefined &&
-    retainedClaimPrefetchInvalidations.get(retained.claimCacheKey) === retained
-  ) {
-    retainedClaimPrefetchInvalidations.delete(retained.claimCacheKey);
-  }
-  if (retained.timer !== undefined) clearTimeout(retained.timer);
+  clearTimeout(retained.timer);
   for (const onInvalidate of retained.callbacks) {
     runInvalidationCallback(onInvalidate);
   }
@@ -2840,11 +2801,7 @@ const _appRouter: AppRouterInstance = {
             claimedVisitedResponseExpiresAt !== null &&
             claimedVisitedResponseExpiresAt !== undefined
           ) {
-            retainPrefetchInvalidationUntil(
-              cacheKey,
-              options?.onInvalidate,
-              claimedVisitedResponseExpiresAt,
-            );
+            attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
             return;
           }
         }

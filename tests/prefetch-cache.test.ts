@@ -1026,7 +1026,25 @@ describe("prefetch cache eviction", () => {
   });
 
   it('reuses a visited response for repeated kind: "full" router.prefetch without fetching', async () => {
-    const claimVisitedResponseForFullPrefetch = vi.fn(() => Date.now() + 60_000);
+    const claimVisitedResponseForFullPrefetch = vi.fn(
+      (rscUrl: string, interceptionContext: string | null, mountedSlotsHeader: string | null) => {
+        const expiresAt = Date.now() + 60_000;
+        seedPrefetchResponseSnapshot(
+          rscUrl,
+          {
+            buffer: new TextEncoder().encode("visited flight").buffer,
+            contentType: "text/x-component",
+            expiresAt,
+            paramsHeader: null,
+            renderedPathAndSearch: "/reports",
+            url: rscUrl,
+          },
+          interceptionContext,
+          mountedSlotsHeader,
+        );
+        return expiresAt;
+      },
+    );
     (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
       bootstrap: { routeManifest: null, rsc: undefined },
       functions: { claimVisitedResponseForFullPrefetch },
@@ -1038,10 +1056,10 @@ describe("prefetch cache eviction", () => {
     appRouterInstance.prefetch("/reports", { kind: "full", onInvalidate });
     await waitForPrefetchSetup(() => claimVisitedResponseForFullPrefetch.mock.calls.length > 0);
     appRouterInstance.prefetch("/reports", { kind: "full", onInvalidate });
-    await waitForPrefetchSetup(() => claimVisitedResponseForFullPrefetch.mock.calls.length > 1);
+    await settlePrefetchSetup();
 
     expect(fetch).not.toHaveBeenCalled();
-    expect(claimVisitedResponseForFullPrefetch).toHaveBeenCalledTimes(2);
+    expect(claimVisitedResponseForFullPrefetch).toHaveBeenCalledOnce();
     expect(onInvalidate).not.toHaveBeenCalled();
 
     invalidatePrefetchCache();
@@ -1051,7 +1069,25 @@ describe("prefetch cache eviction", () => {
   });
 
   it("invalidates a visited-response full prefetch once at its static deadline", async () => {
-    const claimVisitedResponseForFullPrefetch = vi.fn(() => Date.now());
+    const claimVisitedResponseForFullPrefetch = vi.fn(
+      (rscUrl: string, interceptionContext: string | null, mountedSlotsHeader: string | null) => {
+        const expiresAt = Date.now();
+        seedPrefetchResponseSnapshot(
+          rscUrl,
+          {
+            buffer: new TextEncoder().encode("visited flight").buffer,
+            contentType: "text/x-component",
+            expiresAt,
+            paramsHeader: null,
+            renderedPathAndSearch: "/reports",
+            url: rscUrl,
+          },
+          interceptionContext,
+          mountedSlotsHeader,
+        );
+        return expiresAt;
+      },
+    );
     (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
       bootstrap: { routeManifest: null, rsc: undefined },
       functions: { claimVisitedResponseForFullPrefetch },

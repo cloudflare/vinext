@@ -1,6 +1,6 @@
 import {
-  PREFETCH_CACHE_TTL,
   resolveCachedRscResponseExpiresAt,
+  resolveFullPrefetchStaleTimeMs,
   type CachedRscResponse,
 } from "vinext/shims/navigation";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
@@ -16,6 +16,21 @@ export type VisitedResponseCacheEntry = {
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
 };
+
+export type VisitedResponseFullPrefetchClaim = {
+  entry: VisitedResponseCacheEntry;
+  expiresAt: number;
+};
+
+export function createVisitedResponseFullPrefetchSnapshot(
+  claim: VisitedResponseFullPrefetchClaim,
+): CachedRscResponse {
+  return {
+    ...claim.entry.response,
+    expiresAt: claim.expiresAt,
+    ...(claim.entry.elements ? { preparedElements: claim.entry.elements } : {}),
+  };
+}
 
 export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
@@ -128,11 +143,11 @@ function isVisitedResponseCacheEntryCompatibleForFullPrefetch(
 }
 
 /**
- * Promotes a recently visited response into the explicit-full-prefetch stale
- * window. Next.js does the same when a Full Segment Cache prefetch can be
- * fulfilled from BFCache instead of issuing another request. Returns the
- * absolute Full-prefetch expiry so programmatic prefetch invalidation can use
- * the same deadline, or null when no response is claimable.
+ * Claims a recently visited response for an explicit Full prefetch. Next.js
+ * does the same when a Full Segment Cache prefetch can be fulfilled from
+ * BFCache instead of issuing another request. The caller publishes the claimed
+ * response into the Full-prefetch cache; this function deliberately leaves the
+ * visited entry's independent dynamic-navigation deadline unchanged.
  */
 export function claimVisitedResponseCacheEntryForFullPrefetch(
   cache: Map<string, VisitedResponseCacheEntry>,
@@ -140,9 +155,9 @@ export function claimVisitedResponseCacheEntryForFullPrefetch(
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   options: { now?: number; staleTimeMs?: number } = {},
-): number | null {
+): VisitedResponseFullPrefetchClaim | null {
   const now = options.now ?? Date.now();
-  const staleTimeMs = options.staleTimeMs ?? PREFETCH_CACHE_TTL;
+  const staleTimeMs = resolveFullPrefetchStaleTimeMs(options.staleTimeMs);
   const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const normalizedTarget = normalizeVisitedResponseCacheLookupUrl(rscUrl);
   let match: { cacheKey: string; entry: VisitedResponseCacheEntry } | null = null;
@@ -161,7 +176,7 @@ export function claimVisitedResponseCacheEntryForFullPrefetch(
     if (!isVisitedResponseCacheEntryCompatibleForFullPrefetch(entry, mountedSlotsHeader)) {
       continue;
     }
-    if (now >= entry.createdAt + staleTimeMs) continue;
+    if (now > entry.createdAt + staleTimeMs) continue;
     if (match !== null && match.entry.createdAt >= entry.createdAt) continue;
     match = { cacheKey, entry };
   }
@@ -170,11 +185,9 @@ export function claimVisitedResponseCacheEntryForFullPrefetch(
 
   // A Full prefetch uses the static stale time measured from the navigation
   // that produced the BFCache entry. Its regular-navigation dynamic deadline
-  // is independent and may be longer, so promoting the entry must not shorten
-  // that existing BFCache lifetime.
+  // is independent, so do not copy this deadline onto the visited entry.
   const expiresAt = match.entry.createdAt + staleTimeMs;
-  match.entry.expiresAt = Math.max(match.entry.expiresAt, expiresAt);
   cache.delete(match.cacheKey);
   cache.set(match.cacheKey, match.entry);
-  return expiresAt;
+  return { entry: match.entry, expiresAt };
 }

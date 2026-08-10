@@ -3,6 +3,7 @@ import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
   claimVisitedResponseCacheEntryForFullPrefetch,
+  createVisitedResponseFullPrefetchSnapshot,
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
@@ -223,7 +224,7 @@ describe("visited response cache freshness", () => {
     expect(entry.elements).toBe(elements);
   });
 
-  it("promotes a recent BFCache response for an explicit full prefetch", () => {
+  it("claims a recent BFCache response for an explicit full prefetch", () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/force-stale/force-stale.test.ts
     const now = 1_000_000;
@@ -236,13 +237,52 @@ describe("visited response cache freshness", () => {
     const cacheKey = AppElementsWire.encodeCacheKey("/dynamic?_rsc=visited", null);
     const cache = new Map([[cacheKey, entry]]);
 
-    expect(
-      claimVisitedResponseCacheEntryForFullPrefetch(cache, "/dynamic?_rsc=prefetch", null, null, {
+    const claim = claimVisitedResponseCacheEntryForFullPrefetch(
+      cache,
+      "/dynamic?_rsc=prefetch",
+      null,
+      null,
+      {
         now: now + 1,
         staleTimeMs: 30_000,
-      }),
-    ).toBe(now + 30_000);
-    expect(entry.expiresAt).toBe(now + 30_000);
+      },
+    );
+    expect(claim?.expiresAt).toBe(now + 30_000);
+    expect(claim?.entry).toBe(entry);
+    expect(entry.expiresAt).toBe(now);
+    if (claim === null) throw new Error("Expected a Full-prefetch claim");
+    expect(createVisitedResponseFullPrefetchSnapshot(claim)).toEqual({
+      ...entry.response,
+      expiresAt: now + 30_000,
+    });
+  });
+
+  it("publishes prepared visited elements into the claimed Full prefetch", () => {
+    const now = 1_000_000;
+    const elements = { __route: "route:/dynamic" } as unknown as AppElements;
+    const entry = createVisitedResponseCacheEntry({
+      elements,
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 0 }),
+    });
+    const cache = new Map([[AppElementsWire.encodeCacheKey("/dynamic?_rsc=visited", null), entry]]);
+    const claim = claimVisitedResponseCacheEntryForFullPrefetch(
+      cache,
+      "/dynamic?_rsc=prefetch",
+      null,
+      "slot:drawer:/",
+      { now: now + 1, staleTimeMs: 30_000 },
+    );
+
+    if (claim === null) throw new Error("Expected a Full-prefetch claim");
+    expect(createVisitedResponseFullPrefetchSnapshot(claim)).toEqual({
+      ...entry.response,
+      expiresAt: now + 30_000,
+      preparedElements: elements,
+    });
+    expect(entry.response.preparedElements).toBeUndefined();
+    expect(entry.expiresAt).toBe(now);
   });
 
   it("returns the Full-prefetch deadline without shortening a longer dynamic deadline", () => {
@@ -256,14 +296,50 @@ describe("visited response cache freshness", () => {
     const cache = new Map([[cacheKey, entry]]);
 
     expect(entry.expiresAt).toBe(now + 300_000);
-    expect(
-      claimVisitedResponseCacheEntryForFullPrefetch(cache, "/dynamic?_rsc=prefetch", null, null, {
+    const claim = claimVisitedResponseCacheEntryForFullPrefetch(
+      cache,
+      "/dynamic?_rsc=prefetch",
+      null,
+      null,
+      {
         now: now + 1,
         staleTimeMs: 30_000,
-      }),
-    ).toBe(now + 30_000);
+      },
+    );
+    expect(claim?.expiresAt).toBe(now + 30_000);
     expect(entry.expiresAt).toBe(now + 300_000);
   });
+
+  it.each([0, 10_000, 29_999])(
+    "floors a %i ms configured static window for BFCache-backed Full prefetches",
+    (staleTimeMs) => {
+      const now = 1_000_000;
+      const entry = createVisitedResponseCacheEntry({
+        fallbackTtlMs: 0,
+        now,
+        params: {},
+        response: createCachedResponse({ dynamicStaleTimeSeconds: 0 }),
+      });
+      const cache = new Map([
+        [AppElementsWire.encodeCacheKey("/dynamic?_rsc=visited", null), entry],
+      ]);
+
+      const atDeadline = claimVisitedResponseCacheEntryForFullPrefetch(
+        cache,
+        "/dynamic?_rsc=prefetch",
+        null,
+        null,
+        { now: now + 30_000, staleTimeMs },
+      );
+      expect(atDeadline?.expiresAt).toBe(now + 30_000);
+      expect(
+        claimVisitedResponseCacheEntryForFullPrefetch(cache, "/dynamic?_rsc=prefetch", null, null, {
+          now: now + 30_001,
+          staleTimeMs,
+        }),
+      ).toBeNull();
+    },
+  );
 
   it("does not claim mounted-slot-incompatible BFCache responses", () => {
     const now = 1_000_000;
@@ -306,7 +382,7 @@ describe("visited response cache freshness", () => {
         "/dynamic?_rsc=prefetch",
         null,
         null,
-        { now: now + 30_000, staleTimeMs: 30_000 },
+        { now: now + 30_001, staleTimeMs: 30_000 },
       ),
     ).toBeNull();
     expect(expiredCache.get(expiredKey)).toBe(expired);
@@ -338,15 +414,15 @@ describe("visited response cache freshness", () => {
       [newestKey, newestClaimable],
     ]);
 
-    expect(
-      claimVisitedResponseCacheEntryForFullPrefetch(
-        cache,
-        "/dynamic?tab=one&_rsc=prefetch",
-        null,
-        null,
-        { now, staleTimeMs: 30_000 },
-      ),
-    ).toBe(now - 10_000 + 30_000);
+    const claim = claimVisitedResponseCacheEntryForFullPrefetch(
+      cache,
+      "/dynamic?tab=one&_rsc=prefetch",
+      null,
+      null,
+      { now, staleTimeMs: 30_000 },
+    );
+    expect(claim?.expiresAt).toBe(now - 10_000 + 30_000);
+    expect(claim?.entry).toBe(newestClaimable);
     expect(cache.get(expiredKey)).toBe(expired);
     expect(olderClaimable.expiresAt).toBe(now - 20_000 + 120_000);
     expect(newestClaimable.expiresAt).toBe(now - 10_000 + 120_000);
