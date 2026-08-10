@@ -943,10 +943,12 @@ export function buildAppPageElements<
   // Next.js's per-parallel-route pre-PPR component-tree walk.
   const prefetchCutoffTreePosition = isPrefetchLoadingShell
     ? (prefetchLoadingEntry?.treePosition ??
-      prefetchSlotLoadingEntries.reduce(
-        (deepest, entry) => Math.max(deepest, entry.ownerTreePosition),
-        0,
-      ))
+      (prefetchSlotLoadingEntries.length > 0
+        ? prefetchSlotLoadingEntries.reduce(
+            (deepest, entry) => Math.max(deepest, entry.ownerTreePosition),
+            0,
+          )
+        : null))
     : null;
   const includesPrefetchTreePosition = (treePosition: number): boolean =>
     prefetchCutoffTreePosition === null || treePosition <= prefetchCutoffTreePosition;
@@ -1089,7 +1091,7 @@ export function buildAppPageElements<
   ) : (
     options.element
   );
-  elements[pageElementId] = isPrefetchLoadingShell
+  elements[pageElementId] = shouldRenderPrefetchLoadingShell
     ? null
     : pageRenderDependency
       ? pageElement
@@ -1482,9 +1484,7 @@ export function buildAppPageElements<
     // so it intentionally does not mount AppRouterScrollTarget — the scroll/focus
     // effect belongs to the real render that replaces this shell (handled in the
     // else branch below).
-    if (prefetchLoadingComponent === null) {
-      routeChildren = null;
-    } else {
+    if (prefetchLoadingComponent !== null) {
       const PrefetchLoadingComponent = prefetchLoadingComponent;
       routeChildren = <PrefetchLoadingComponent />;
     }

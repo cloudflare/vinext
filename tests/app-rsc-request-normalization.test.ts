@@ -23,6 +23,7 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
@@ -495,6 +496,20 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     expect(prefetchShell.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
     expect(normal.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
     expect(html.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
+  });
+
+  it("preserves the dynamic-after-shell render mode marker", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/dynamic?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+        }),
+        "",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL);
   });
 
   it("normalizes render mode for Next-style RSC header plus _rsc query requests", () => {

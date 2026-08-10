@@ -1,4 +1,11 @@
-import { Fragment, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
+import {
+  Fragment,
+  Suspense,
+  createElement,
+  isValidElement,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
@@ -244,6 +251,27 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
       createElement(Slot, { id: routeId }),
     ),
   );
+}
+
+async function renderRouteEntryFirstChunk(elements: AppElements, routeId: string): Promise<string> {
+  const { renderToReadableStream } = await import("react-dom/server.edge");
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  const stream = await renderToReadableStream(
+    createElement(
+      ElementsContext.Provider,
+      { value: elements },
+      createElement(Slot, { id: routeId }),
+    ),
+    {
+      onError(error: unknown) {
+        throw error instanceof Error ? error : new Error(String(error));
+      },
+    },
+  );
+  const reader = stream.getReader();
+  const { value } = await reader.read();
+  await reader.cancel().catch(() => {});
+  return new TextDecoder().decode(value);
 }
 
 async function renderRouteDocument(elements: AppElements, routeId: string): Promise<string> {
@@ -1528,9 +1556,22 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+  it("renders a page Suspense fallback in loading-shell prefetches without loading.tsx", async () => {
+    function StaticLayout({ children }: { children?: ReactNode }) {
+      return createElement("section", null, "Static content in layout of dynamic page", children);
+    }
+    function DynamicContent(): ReactNode {
+      throw new Promise<never>(() => {});
+    }
+    function SuspensePage() {
+      return createElement(
+        Suspense,
+        { fallback: createElement("div", null, "Loading dynamic data...") },
+        createElement(DynamicContent),
+      );
+    }
     const elements = buildAppPageElements({
-      element: createElement(PageProbe),
+      element: createElement(SuspensePage),
       makeThenableParams(params) {
         return Promise.resolve(params);
       },
@@ -1540,25 +1581,27 @@ describe("app page route wiring helpers", () => {
       route: {
         error: null,
         errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: RootLayout }],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: StaticLayout }],
         loading: null,
         notFound: null,
         notFounds: [null],
-        routeSegments: ["dashboard"],
+        routeSegments: ["dynamic"],
         templateTreePositions: [],
         templates: [],
       },
-      routePath: "/dashboard",
+      routePath: "/dynamic",
       rootNotFoundModule: null,
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements["layout:/dynamic"]).not.toBeUndefined();
+    expect(elements["page:/dynamic"]).not.toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
-    const html = await renderRouteEntry(elements, "route:/dashboard");
+    const html = await renderRouteEntryFirstChunk(elements, "route:/dynamic");
 
-    expect(html).not.toContain("Page");
+    expect(html).toContain("Static content in layout of dynamic page");
+    expect(html).toContain("Loading dynamic data...");
   });
 
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {

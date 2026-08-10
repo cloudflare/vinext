@@ -1,11 +1,14 @@
 export type AppRscRenderMode =
   | "navigation"
   | "prefetch-empty"
+  | "prefetch-dynamic-after-shell"
   | "prefetch-dynamic-shell"
   | "prefetch-loading-shell";
 
 export const APP_RSC_RENDER_MODE_NAVIGATION = "navigation" satisfies AppRscRenderMode;
 export const APP_RSC_RENDER_MODE_PREFETCH_EMPTY = "prefetch-empty" satisfies AppRscRenderMode;
+export const APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL =
+  "prefetch-dynamic-after-shell" satisfies AppRscRenderMode;
 export const APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL =
   "prefetch-dynamic-shell" satisfies AppRscRenderMode;
 export const APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL =
@@ -14,6 +17,10 @@ export const APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL =
 export function getRscRenderModeCacheVariant(mode: AppRscRenderMode): string | null {
   if (mode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY) {
     return "prefetch-empty";
+  }
+
+  if (mode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL) {
+    return "prefetch-dynamic-after-shell";
   }
 
   if (mode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL) {
@@ -30,6 +37,8 @@ export function parseAppRscRenderMode(value: string | null): AppRscRenderMode {
   switch (value) {
     case APP_RSC_RENDER_MODE_PREFETCH_EMPTY:
       return APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
+    case APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL:
+      return APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL;
     case APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL:
       return APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
     case APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL:

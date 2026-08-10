@@ -9,6 +9,7 @@ import {
   type LinkPrefetchRouterMode,
 } from "../packages/vinext/src/shims/link-prefetch.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
@@ -60,6 +61,7 @@ const linkPrefetchRoutes = [
     isDynamic: false,
   },
   { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+  { canPrefetchLoadingShell: false, patternParts: ["dynamic"], isDynamic: false },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
   {
@@ -2485,7 +2487,11 @@ describe("Link prefetch scheduling", () => {
       if (resolveShell === undefined) {
         throw new Error("Expected shell prefetch resolver");
       }
-      resolveShell(new Response(shellBody));
+      resolveShell(
+        new Response(shellBody, {
+          headers: { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" },
+        }),
+      );
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
@@ -2501,7 +2507,9 @@ describe("Link prefetch scheduling", () => {
       if (!(secondInit?.headers instanceof Headers)) {
         throw new Error("Expected full prefetch request headers");
       }
-      expect(secondInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(secondInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+      );
       expect(
         [...getPrefetchCache().values()].some(
           (entry) => entry.cacheForNavigation === false && entry.optimisticRouteShell === true,
@@ -2694,7 +2702,7 @@ describe("Link prefetch scheduling", () => {
       const hoverFetchInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
       expect(
         (hoverFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBeNull();
+      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL);
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
       const entries = Array.from(getPrefetchCache().values());
       expect(entries).toEqual(
@@ -2718,6 +2726,142 @@ describe("Link prefetch scheduling", () => {
         }),
       );
     } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("shell-prefetches static dynamic-on-hover links before the intent payload", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/dynamic-on-hover/dynamic-on-hover.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/dynamic-on-hover/dynamic-on-hover.test.ts
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/dynamic",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/dynamic",
+        expect.objectContaining({ credentials: "include", priority: "low" }),
+      );
+      const viewportHeaders = (result.fetch.mock.calls[0]?.[1] as RequestInit | undefined)
+        ?.headers as Headers | undefined;
+      expect(viewportHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect(viewportHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(viewportHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("1");
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 2);
+
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[1],
+        "/dynamic",
+        expect.objectContaining({ credentials: "include", priority: "high" }),
+      );
+      const hoverHeaders = (result.fetch.mock.calls[1]?.[1] as RequestInit | undefined)?.headers as
+        | Headers
+        | undefined;
+      expect(hoverHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+      );
+
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entries = Array.from(getPrefetchCache().values());
+      expect(entries.some((entry) => entry.cacheForNavigation === false)).toBe(true);
+      expect(entries.some((entry) => entry.cacheForNavigation === true)).toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not fetch dynamic-on-hover data when the prerequisite shell fails", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/dynamic",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+    result.fetch.mockResolvedValue(new Response("failed shell", { status: 500 }));
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 2);
+      await flushPrefetchTasks();
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      for (const [, init] of result.fetch.mock.calls) {
+        expect((init?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+          APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        );
+      }
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("promotes a queued dynamic-on-hover shell ahead of saturated viewport work", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/dynamic",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+    const { releaseAppPrefetchFetchSlot, scheduleAppPrefetchFetch } =
+      await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+    const occupiedResolvers: Array<(response: Response) => void> = [];
+    const occupiedRequests = Array.from({ length: 4 }, () =>
+      scheduleAppPrefetchFetch(
+        () =>
+          new Promise<Response>((resolve) => {
+            occupiedResolvers.push(resolve);
+          }),
+        "low",
+      ),
+    );
+
+    try {
+      await flushPrefetchTasks();
+      expect(occupiedResolvers).toHaveLength(4);
+
+      // The link's viewport shell is queued behind all four occupied slots.
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      // Hover must promote that exact prerequisite shell. Once it settles, the
+      // high-priority dynamic request starts without releasing an unrelated slot.
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 2);
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      expect(
+        (result.fetch.mock.calls[0]?.[1] as (RequestInit & { priority?: string }) | undefined)
+          ?.priority,
+      ).toBe("low");
+      expect(
+        (result.fetch.mock.calls[1]?.[1] as (RequestInit & { priority?: string }) | undefined)
+          ?.priority,
+      ).toBe("high");
+    } finally {
+      for (const resolve of occupiedResolvers) {
+        resolve(new Response("occupied"));
+      }
+      for (const request of occupiedRequests) {
+        releaseAppPrefetchFetchSlot(await request);
+      }
       result.restoreNodeEnv();
     }
   });

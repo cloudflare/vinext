@@ -15,7 +15,10 @@ import {
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
@@ -152,6 +155,19 @@ describe("App Router RSC cache-busting", () => {
 
     expect(navigationHash).toBe("");
     expect(prefetchShellHash).not.toBe("");
+  });
+
+  it("varies dynamic-after-shell payloads from both shells and normal navigations", async () => {
+    const navigationHash = await computeRscCacheBustingSearchParam(createRscRequestHeaders());
+    const shellHash = await computeRscCacheBustingSearchParam(
+      createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL }),
+    );
+    const dynamicHash = await computeRscCacheBustingSearchParam(
+      createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL }),
+    );
+
+    expect(dynamicHash).not.toBe(navigationHash);
+    expect(dynamicHash).not.toBe(shellHash);
   });
 
   it("normalizes invalid render modes to normal navigation for cache-busting", async () => {

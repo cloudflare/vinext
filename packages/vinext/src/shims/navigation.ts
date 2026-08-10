@@ -1072,6 +1072,7 @@ export function seedPrefetchResponseSnapshot(
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    preparedElements: snapshot.preparedElements,
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,

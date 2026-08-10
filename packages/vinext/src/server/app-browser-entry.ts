@@ -2308,7 +2308,16 @@ function bootstrapHydration(
           // The prefetch retains the absolute deadline calculated when its
           // response settled. The visited/BFCache snapshot must not inherit
           // that deadline: it independently applies staleTimes.dynamic.
-          const prefetchSnapshot = preserveCommittedPrefetchExpiry(snapshot, navResponseExpiresAt);
+          const prefetchSnapshot = preserveCommittedPrefetchExpiry(
+            snapshot,
+            navResponseExpiresAt,
+            // A dynamic-on-hover response may omit layouts that were supplied
+            // by its prerequisite shell. Preserve the post-merge elements when
+            // reseeding the explicit-prefetch cache; replaying only the raw
+            // skip-pruned buffer after the visited entry expires would lose
+            // those layouts on a later revisit.
+            prefetchedElements ? renderedElements : undefined,
+          );
           const interceptionContext = resolveVisitedResponseInterceptionContext(
             requestInterceptionContext,
             metadata.interceptionContext,
