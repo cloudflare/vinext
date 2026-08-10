@@ -35,6 +35,11 @@ type NavigationRuntimePrefetchRouterState = {
   routeId: string;
 };
 
+type NavigationRuntimeRetainedLayoutClaim = Readonly<{
+  layoutId: string;
+  provider: unknown;
+}>;
+
 type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
   historyState: unknown;
@@ -75,7 +80,10 @@ export type NavigationRuntimeFunctions = {
    */
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
-  preparePrefetchResponse?: (response: Response) => Promise<unknown>;
+  preparePrefetchResponse?: (
+    response: Response,
+    retainedLayoutClaims?: readonly NavigationRuntimeRetainedLayoutClaim[],
+  ) => Promise<unknown>;
 };
 
 export type NavigationRuntimeBootstrap = {

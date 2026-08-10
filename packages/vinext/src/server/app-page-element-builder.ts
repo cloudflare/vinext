@@ -33,7 +33,12 @@ import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
@@ -46,6 +51,7 @@ import {
   createAppPageRenderDependency,
   invokeAppComponent,
   isAppRenderSuspension,
+  isClientReferenceAppComponent,
   isReactOwnedAppComponent,
   renderAfterAppDependencies,
   type AppPageRenderDependency,
@@ -111,6 +117,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   request: Request;
   /** Normalized x-vinext-mounted-slots header value. */
   mountedSlotsHeader: string | null;
+  /** Layouts supplied by complete cached prefetch responses on the client. */
+  retainedPrefetchLayoutIds?: readonly string[];
   /** Semantic RSC payload mode for this page render. */
   renderMode?: AppRscRenderMode;
   /** Observe page `searchParams` access for cache-safety classification. */
@@ -216,6 +224,7 @@ export async function buildPageElements<
     searchParams,
     isRscRequest,
     mountedSlotsHeader,
+    retainedPrefetchLayoutIds,
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
@@ -233,6 +242,37 @@ export async function buildPageElements<
   const effectivePageModule = isSiblingIntercept
     ? (opts!.interceptPage as AppPageModule | null | undefined)
     : pageModule;
+  let instantPrefetchSegments:
+    | {
+        stages: import("./app-instant-prefetch-segments.js").AppInstantPrefetchSegmentStages;
+        resolveStage: typeof import("./app-instant-prefetch-segments.js").resolveAppInstantPrefetchSegmentStage;
+        wrap: typeof import("./app-instant-prefetch-segments.js").wrapAppInstantPrefetchSegment;
+      }
+    | undefined;
+  if (
+    renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL ||
+    renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
+  ) {
+    const instantSegments = await import("./app-instant-prefetch-segments.js");
+    const retainedLayoutIds = new Set(retainedPrefetchLayoutIds ?? []);
+    const retainedLayouts = new Set<number>();
+    for (let index = 0; index < route.layouts.length; index++) {
+      const treePosition = route.layoutTreePositions?.[index] ?? 0;
+      const layoutId = AppElementsWire.encodeLayoutId(
+        createAppPageTreePath(route.routeSegments, treePosition),
+      );
+      if (retainedLayoutIds.has(layoutId)) retainedLayouts.add(index);
+    }
+    instantPrefetchSegments = {
+      stages: instantSegments.resolveAppInstantPrefetchSegmentStages({
+        layouts: route.layouts,
+        page: isSiblingIntercept ? null : effectivePageModule,
+        retainedLayouts,
+      }),
+      resolveStage: instantSegments.resolveAppInstantPrefetchSegmentStage,
+      wrap: instantSegments.wrapAppInstantPrefetchSegment,
+    };
+  }
   // Resolve the component that will actually render. For a sibling intercept
   // this is the intercepting page's own default export — we deliberately do
   // NOT fall back to the source route's page component. Silently rendering a
@@ -489,7 +529,16 @@ export async function buildPageElements<
       : null;
   void streamingMetadataOutlet?.catch(() => null);
 
-  const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
+  const makeComponentParams = (component: AppPageComponent, params: AppPageParams): unknown =>
+    makeThenableParams(params, undefined, {
+      suspendStaticInstantShell: !(
+        renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL &&
+        isClientReferenceAppComponent(component)
+      ),
+    });
+  const pageProps: Record<string, unknown> = EffectivePageComponent
+    ? { params: makeComponentParams(EffectivePageComponent, effectiveParams) }
+    : {};
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
   const hasPageLoadingBoundary =
@@ -515,11 +564,18 @@ export async function buildPageElements<
     if (isReactOwnedAppComponent(PageComponent)) {
       const invocationProps = { ...props };
       if (searchParams) {
-        invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
-              markDynamic: hasRequestSearchParams,
+        const isStaticInstantClientReference =
+          renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL &&
+          isClientReferenceAppComponent(PageComponent);
+        invocationProps.searchParams = isStaticInstantClientReference
+          ? makeThenableParams(pageSearchParams, undefined, {
+              suspendStaticInstantShell: false,
             })
-          : makeThenableParams(pageSearchParams);
+          : observePageSearchParamsAccess
+            ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+                markDynamic: hasRequestSearchParams,
+              })
+            : makeThenableParams(pageSearchParams);
       }
       return createElement(PageComponent, invocationProps);
     }
@@ -589,10 +645,29 @@ export async function buildPageElements<
   // slot-based path handles this inside buildSlotOverrides/app-page-route-wiring,
   // but sibling intercepts bypass that path entirely. We apply the wrapping here
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
-  let siblingInterceptElement: ReturnType<typeof createElement> | null =
+  let siblingInterceptElement: React.ReactNode =
     isSiblingIntercept && EffectivePageComponent
       ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
       : null;
+  const siblingInterceptLayoutStages: ("runtime" | "static")[] = [];
+  let siblingInterceptPageStage = instantPrefetchSegments?.stages.page ?? "static";
+  if (isSiblingIntercept && instantPrefetchSegments) {
+    let branchStage = instantPrefetchSegments.stages.layouts.at(-1) ?? "static";
+    for (const layoutModule of opts?.interceptLayouts ?? []) {
+      branchStage = instantPrefetchSegments.resolveStage(layoutModule, branchStage);
+      siblingInterceptLayoutStages.push(branchStage);
+    }
+    siblingInterceptPageStage = instantPrefetchSegments.resolveStage(
+      effectivePageModule,
+      branchStage,
+    );
+  }
+  if (siblingInterceptElement !== null && instantPrefetchSegments) {
+    siblingInterceptElement = instantPrefetchSegments.wrap(
+      siblingInterceptElement,
+      siblingInterceptPageStage,
+    );
+  }
   if (isSiblingIntercept && siblingInterceptElement !== null) {
     const layoutIndexesByTreePosition = new Map<number, number[]>();
     for (const [index, layoutModule] of (opts?.interceptLayouts ?? []).entries()) {
@@ -636,21 +711,34 @@ export async function buildPageElements<
           interceptLayoutSegments,
           effectiveParams,
         );
-        siblingInterceptElement = createElement(
+        let interceptLayoutElement: React.ReactNode = createElement(
           LayoutComponent,
-          { params: makeThenableParams(interceptLayoutParams) },
+          { params: makeComponentParams(LayoutComponent, interceptLayoutParams) },
           siblingInterceptElement,
         );
+        if (instantPrefetchSegments) {
+          interceptLayoutElement = instantPrefetchSegments.wrap(
+            interceptLayoutElement,
+            siblingInterceptLayoutStages[layoutIndex] ?? "static",
+          );
+        }
+        siblingInterceptElement = interceptLayoutElement;
       }
     }
   }
 
+  const pageElement = isSiblingIntercept
+    ? siblingInterceptElement
+    : EffectivePageComponent
+      ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
+      : null;
+  const stagedPageElement =
+    !isSiblingIntercept && pageElement !== null && instantPrefetchSegments
+      ? instantPrefetchSegments.wrap(pageElement, instantPrefetchSegments.stages.page)
+      : pageElement;
+
   return buildAppPageElements({
-    element: isSiblingIntercept
-      ? siblingInterceptElement
-      : EffectivePageComponent
-        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
-        : null,
+    element: stagedPageElement,
     createPageElement,
     // Fall back to vinext's built-in default global error module so that
     // uncaught client render errors are caught by the route-level
@@ -685,6 +773,13 @@ export async function buildPageElements<
     searchParams: pageSearchParamsThenable,
     slotOverrides,
     renderMode,
+    instantPrefetchSegments: instantPrefetchSegments
+      ? {
+          layoutStages: instantPrefetchSegments.stages.layouts,
+          resolveStage: instantPrefetchSegments.resolveStage,
+          wrap: instantPrefetchSegments.wrap,
+        }
+      : undefined,
     trailingSlash: options.trailingSlash,
   });
 }

@@ -22,6 +22,7 @@ import { notifyAppRouterTransitionStart } from "../client/instrumentation-client
 import {
   __basePath,
   appRouterInstance,
+  attachPrefetchInvalidationCallback,
   commitClientNavigationState,
   consumePrefetchResponse,
   consumePrefetchResponseForNavigation,
@@ -34,6 +35,8 @@ import {
   getBfcacheIdMapContext,
   getMountedSlotsHeader,
   getPrefetchCache,
+  getLiveRetainedPrefetchLayoutClaims,
+  getRetainedPrefetchLayoutClaims,
   hasPrefetchCacheEntryForNavigation,
   invalidatePrefetchCache,
   preloadHybridClientRouteOwner,
@@ -55,6 +58,7 @@ import {
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
   type PrefetchCacheEntry,
+  type RetainedPrefetchLayoutClaim,
 } from "vinext/shims/navigation";
 import {
   getNavigationRuntime,
@@ -177,6 +181,8 @@ import {
 } from "./app-browser-prefetch-response.js";
 import {
   createOptimisticRouteTemplate,
+  fillRetainedPrefetchLayoutsFromElementSources,
+  getMissingRetainedPrefetchLayoutIds,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
@@ -478,28 +484,51 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   }
   if (options.interceptionContext !== null) return false;
 
-  const elements = await decodeAppElementsPromise(
-    createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
+  const elements = await fillSkippedLayoutsFromPrefetchCache(
+    decodeAppElementsPromise(
+      createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
+    ),
+    options.entry.retainedLayoutClaims,
   );
   const template = createOptimisticRouteTemplate({
-    allowLoadingShell: options.entry.optimisticRouteShell === true,
+    allowLoadingShell:
+      options.entry.optimisticRouteShell === true || options.entry.instantShell === true,
     basePath: __basePath,
     elements,
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    preservePageElements: options.entry.instantShell === true,
     routeManifest: options.routeManifest,
   });
   if (template === null) return false;
 
-  optimisticRouteTemplates.set(
-    getOptimisticRouteTemplateKey({
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeId: template.routeId,
-    }),
-    template,
-  );
+  const templateKey = getOptimisticRouteTemplateKey({
+    concreteHrefKey: template.concreteHrefKey,
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+    routeId: template.routeId,
+  });
+  const sourceKey = getOptimisticPrefetchSourceKey({
+    cacheKey: options.cacheKey,
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+  });
+  if (options.entry.instantShell === true) {
+    const attached = attachPrefetchInvalidationCallback(
+      options.cacheKey,
+      () => {
+        if (optimisticRouteTemplates.get(templateKey) === template) {
+          optimisticRouteTemplates.delete(templateKey);
+        }
+        optimisticRouteTemplateSources.delete(sourceKey);
+      },
+      options.entry,
+    );
+    if (!attached) return false;
+  }
+  optimisticRouteTemplates.set(templateKey, template);
+  optimisticRouteTemplateSources.add(sourceKey);
   return true;
 }
 
@@ -529,9 +558,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
       mountedSlotsHeader: options.mountedSlotsHeader,
       routeManifest: options.routeManifest,
     })
-      .then((learned) => {
-        if (learned) optimisticRouteTemplateSources.add(sourceKey);
-      })
+      .then(() => {})
       .finally(() => {
         optimisticRouteTemplateLearning.delete(sourceKey);
       });
@@ -996,6 +1023,46 @@ function decodeAppElementsPromise(payload: Promise<AppWireElements>): Promise<Ap
   // React Flight thenable whose .then() returns undefined (not a new Promise).
   // Without the wrap, chaining .then() produces undefined → use() crashes.
   return Promise.resolve(payload).then((elements) => AppElementsWire.decode(elements));
+}
+
+async function decodeRetainedLayoutProviderElements(
+  entry: PrefetchCacheEntry,
+): Promise<AppElements | null> {
+  if (entry.preparedElements) return entry.preparedElements;
+  if (
+    entry.retainedLayoutProvider !== true ||
+    entry.cacheForNavigation === false ||
+    !entry.snapshot
+  ) {
+    return null;
+  }
+  try {
+    const elements = await decodeAppElementsPromise(
+      createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(entry.snapshot))),
+    );
+    entry.preparedElements = elements;
+    return elements;
+  } catch {
+    return null;
+  }
+}
+
+async function fillSkippedLayoutsFromPrefetchCache(
+  payload: Promise<AppElements> | AppElements,
+  retainedLayoutClaims: readonly RetainedPrefetchLayoutClaim[] | undefined,
+): Promise<AppElements> {
+  const elements = await payload;
+  const missing = new Set(getMissingRetainedPrefetchLayoutIds(elements));
+  if (missing.size === 0) return elements;
+
+  const sources: AppElements[] = [];
+  for (const claim of getLiveRetainedPrefetchLayoutClaims(retainedLayoutClaims, missing)) {
+    const sourceElements = await decodeRetainedLayoutProviderElements(claim.provider);
+    if (!sourceElements) continue;
+    sources.push(sourceElements);
+    if (Object.hasOwn(sourceElements, claim.layoutId)) missing.delete(claim.layoutId);
+  }
+  return fillRetainedPrefetchLayoutsFromElementSources(elements, sources);
 }
 
 function BrowserRoot({
@@ -1776,6 +1843,15 @@ function bootstrapHydration(
         const shouldBypassNavigationCache =
           earlyIntentDecision?.kind === "flightNavigation" &&
           earlyIntentDecision.bypassNavigationCache;
+        const retainedLayoutClaims = getRetainedPrefetchLayoutClaims({
+          interceptionContext: requestInterceptionContext,
+          mountedSlotsHeader,
+          targetHref: currentHref,
+        });
+        const retainedPrefetchLayoutsHeader =
+          retainedLayoutClaims.length === 0
+            ? null
+            : retainedLayoutClaims.map((claim) => claim.layoutId).join(" ");
         // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
         // it never affects the cache-busting URL. Defer producing it until the
         // visited-response cache miss is confirmed below — its producer iterates
@@ -1785,6 +1861,7 @@ function bootstrapHydration(
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
+          retainedPrefetchLayoutsHeader,
         });
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
@@ -1929,10 +2006,13 @@ function bootstrapHydration(
           );
           const cachedPayload = cachedRoute.elements
             ? Promise.resolve(cachedRoute.elements)
-            : decodeAppElementsPromise(
-                createFromFetch<AppWireElements>(
-                  Promise.resolve(restoreRscResponse(cachedRoute.response)),
+            : fillSkippedLayoutsFromPrefetchCache(
+                decodeAppElementsPromise(
+                  createFromFetch<AppWireElements>(
+                    Promise.resolve(restoreRscResponse(cachedRoute.response)),
+                  ),
                 ),
+                cachedRoute.response.retainedLayoutClaims,
               );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           const cachedRenderOutcome = await renderNavigationPayload({
@@ -2214,8 +2294,11 @@ function bootstrapHydration(
         }
         const rscPayload = prefetchedElements
           ? prefetchedElements
-          : decodeAppElementsPromise(
-              createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
+          : fillSkippedLayoutsFromPrefetchCache(
+              decodeAppElementsPromise(
+                createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
+              ),
+              retainedLayoutClaims,
             );
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -2418,8 +2501,11 @@ function bootstrapHydration(
       };
     },
     navigate: navigateRsc,
-    preparePrefetchResponse: (response) =>
-      decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
+    preparePrefetchResponse: (response, retainedLayoutClaims) =>
+      fillSkippedLayoutsFromPrefetchCache(
+        decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
+        retainedLayoutClaims as readonly RetainedPrefetchLayoutClaim[] | undefined,
+      ),
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).

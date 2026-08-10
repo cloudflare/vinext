@@ -64,6 +64,7 @@ import {
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
 import {
+  analyzeNamedExportObjectStringProperty,
   extractMiddlewareMatcherConfig,
   extractMiddlewareMatcherConfigValue,
   hasExportedName,
@@ -1431,6 +1432,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Production builds leave it null and scan the configured public directory
   // once while generating the RSC entry.
   let devPublicFileRoutes: Set<string> | null = null;
+  // Source modules that currently contribute `unstable_instant` metadata to
+  // this plugin instance's App Router graph. Kept per plugin so concurrent
+  // Vite servers cannot clear or overwrite each other's HMR dependencies.
+  let instantConfigDependencies = new Set<string>();
+  let instantRouteMetadataSignature: string | null = null;
+  const readInstantRouteMetadataSignature = (
+    graph: Awaited<ReturnType<typeof appRouteGraph>>,
+  ): string =>
+    JSON.stringify(
+      graph.routes.map((route) => [
+        route.pattern,
+        route.hasInstant === true,
+        route.hasRuntimeInstant === true,
+        route.hasInstantConfig === true,
+        route.hasInstantConfigInClientModule === true,
+      ]),
+    );
+  const captureInstantRouteMetadata = (graph: Awaited<ReturnType<typeof appRouteGraph>>): void => {
+    instantConfigDependencies = graph.instantConfigDependencies;
+    instantRouteMetadataSignature = readInstantRouteMetadataSignature(graph);
+  };
   let publicDirConflictOptions: Parameters<typeof assertNoPublicDirAssetConflict>[0] | null = null;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
@@ -1518,9 +1540,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `Router.prefetch` can mark App Router targets on `Router.components`
     // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
     // #1526 for the Next.js parity rationale.
-    const appPrefetchRoutes = hasAppDir
-      ? toLinkPrefetchRoutes(await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
-      : [];
+    let appPrefetchRoutes: ReturnType<typeof toLinkPrefetchRoutes> = [];
+    if (hasAppDir) {
+      const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+      captureInstantRouteMetadata(graph);
+      appPrefetchRoutes = toLinkPrefetchRoutes(graph.routes, nextConfig.cacheComponents);
+    }
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
       instrumentationClientPath,
@@ -3861,6 +3886,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
             const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+            captureInstantRouteMetadata(graph);
             // In a hybrid build, the App browser entry also exposes the Pages
             // route manifest so a user who lands on an App page can still
             // see Pages ownership from a `<Link>` click.
@@ -3888,6 +3914,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
+              nextConfig.cacheComponents,
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
@@ -4405,14 +4432,24 @@ export const loadServerActionClient = ${
           }
         }
 
+        function invalidateAppBrowserEntry() {
+          for (const env of Object.values(server.environments)) {
+            const mod = env.moduleGraph.getModuleById(RESOLVED_APP_BROWSER_ENTRY);
+            if (mod) env.moduleGraph.invalidateModule(mod);
+          }
+        }
+
+        function invalidatePagesClientEntry() {
+          for (const env of Object.values(server.environments)) {
+            const mod = env.moduleGraph.getModuleById(RESOLVED_CLIENT_ENTRY);
+            if (mod) env.moduleGraph.invalidateModule(mod);
+          }
+        }
+
         function invalidateHybridClientEntries() {
           if (!hasAppDir || !hasPagesDir) return;
-          for (const env of Object.values(server.environments)) {
-            for (const id of [RESOLVED_CLIENT_ENTRY, RESOLVED_APP_BROWSER_ENTRY]) {
-              const mod = env.moduleGraph.getModuleById(id);
-              if (mod) env.moduleGraph.invalidateModule(mod);
-            }
-          }
+          invalidatePagesClientEntry();
+          invalidateAppBrowserEntry();
           server.ws.send({ type: "full-reload" });
         }
 
@@ -4437,6 +4474,8 @@ export const loadServerActionClient = ${
           invalidateMetadataFileCache();
           invalidateRscEntryModule();
           invalidateRootParamsModule();
+          invalidateAppBrowserEntry();
+          if (hasPagesDir) invalidatePagesClientEntry();
         }
 
         let hybridRouteValidation: Promise<void> = Promise.resolve();
@@ -4596,10 +4635,53 @@ export const loadServerActionClient = ${
           if (hasAppDir) invalidateRscEntryModule();
           if (hasCloudflarePlugin && hasPagesDir && !hasAppDir) invalidatePagesServerEntry();
         };
+        const isTrackedInstantConfigDependency = (filePath: string): boolean =>
+          instantConfigDependencies.has(toSlash(filePath));
+        const routeModuleNowExportsInstantConfig = (filePath: string): boolean => {
+          const canonicalPath = toSlash(filePath);
+          if (
+            !canonicalPath.startsWith(`${appDir}/`) ||
+            (!fileMatcher.isAppRouterPage(filePath) && !fileMatcher.isAppLayoutFile(filePath))
+          ) {
+            return false;
+          }
+          try {
+            return analyzeNamedExportObjectStringProperty(
+              fs.readFileSync(filePath, "utf8"),
+              "unstable_instant",
+              "prefetch",
+            ).hasExport;
+          } catch {
+            return false;
+          }
+        };
+        let instantMetadataRefresh: Promise<void> = Promise.resolve();
+        const refreshInstantMetadataAfterChange = (): void => {
+          instantMetadataRefresh = instantMetadataRefresh
+            .catch(() => {})
+            .then(async () => {
+              const previousSignature = instantRouteMetadataSignature;
+              invalidateAppRouteCache();
+              const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+              const nextSignature = readInstantRouteMetadataSignature(graph);
+              captureInstantRouteMetadata(graph);
+              if (previousSignature !== nextSignature) {
+                invalidateAppRoutingModules();
+              }
+            })
+            .catch((error: unknown) => {
+              const err = error instanceof Error ? error : new Error(String(error));
+              server.ws.send({
+                type: "error",
+                err: { message: err.message, stack: err.stack ?? err.message },
+              });
+            });
+        };
 
         server.watcher.on("add", (filePath: string) => {
           updatePublicFileRoute(filePath, true);
           let routeChanged = false;
+          const instantConfigChanged = hasAppDir && isTrackedInstantConfigDependency(filePath);
           const pagesAppChanged = isPagesAppFile(filePath);
           const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
@@ -4621,6 +4703,8 @@ export const loadServerActionClient = ${
             invalidateAppRoutingModules();
             regenerateAppRouteTypes();
             routeChanged = true;
+          } else if (instantConfigChanged) {
+            invalidateAppRoutingModules();
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
@@ -4638,10 +4722,23 @@ export const loadServerActionClient = ${
           ) {
             invalidatePagesClientAssetsModule();
           }
+          if (
+            hasAppDir &&
+            (isTrackedInstantConfigDependency(filePath) ||
+              routeModuleNowExportsInstantConfig(filePath))
+          ) {
+            // Route metadata such as `unstable_instant` is content-derived and
+            // may also be supplied by a local re-export. Re-scan it first so
+            // ordinary component edits keep their normal fine-grained HMR;
+            // rebuild the virtual route entries only when the derived metadata
+            // actually changed.
+            refreshInstantMetadataAfterChange();
+          }
         });
         server.watcher.on("unlink", (filePath: string) => {
           updatePublicFileRoute(filePath, false);
           let routeChanged = false;
+          const instantConfigChanged = hasAppDir && isTrackedInstantConfigDependency(filePath);
           const pagesAppChanged = isPagesAppFile(filePath);
           const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
@@ -4663,6 +4760,8 @@ export const loadServerActionClient = ${
             invalidateAppRoutingModules();
             regenerateAppRouteTypes();
             routeChanged = true;
+          } else if (instantConfigChanged) {
+            invalidateAppRoutingModules();
           }
           if (routeChanged) {
             invalidatePagesServerEntry();

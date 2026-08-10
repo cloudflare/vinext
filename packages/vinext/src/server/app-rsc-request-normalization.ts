@@ -11,8 +11,10 @@ import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
+import { AppElementsWire } from "./app-elements.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -141,9 +143,29 @@ export type NormalizedRscRequest = {
   renderMode: AppRscRenderMode;
   /** Parsed ClientReuseManifest hint. Verification and skip authorization happen later. */
   clientReuseManifest: ClientReuseManifestParseResult;
+  /** Layout IDs the client can restore from complete prefetch payloads. */
+  retainedPrefetchLayoutIds: readonly string[];
   /** Whether the incoming pathname included the configured basePath. */
   hadBasePath: boolean;
 };
+
+const MAX_RETAINED_PREFETCH_LAYOUT_IDS = 64;
+const MAX_RETAINED_PREFETCH_LAYOUT_ID_LENGTH = 512;
+
+export function parseRetainedPrefetchLayoutIds(rawHeader: string | null): readonly string[] {
+  if (!rawHeader) return [];
+
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const token of rawHeader.trim().split(/\s+/)) {
+    if (!token || ids.length >= MAX_RETAINED_PREFETCH_LAYOUT_IDS) break;
+    if (token.length > MAX_RETAINED_PREFETCH_LAYOUT_ID_LENGTH || seen.has(token)) continue;
+    if (AppElementsWire.parseElementKey(token)?.kind !== "layout") continue;
+    seen.add(token);
+    ids.push(token);
+  }
+  return ids;
+}
 
 /**
  * Normalize an App Router RSC request.
@@ -275,9 +297,13 @@ export function normalizeRscRequest(
   const clientReuseManifest = isRscRequest
     ? parseClientReuseManifestHeader(request.headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER))
     : ({ kind: "absent" } satisfies ClientReuseManifestParseResult);
+  const retainedPrefetchLayoutIds = isRscRequest
+    ? parseRetainedPrefetchLayoutIds(request.headers.get(VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER))
+    : [];
 
   return {
     clientReuseManifest,
+    retainedPrefetchLayoutIds,
     hadBasePath,
     url,
     pathname,

@@ -1,4 +1,4 @@
-import { createElement, isValidElement, Suspense } from "react";
+import { cloneElement, createElement, isValidElement, Suspense, type ReactNode } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
@@ -26,6 +26,7 @@ type OptimisticRouteMatch = {
 };
 
 export type OptimisticRouteTemplate = {
+  concreteHrefKey: string | null;
   elements: AppElements;
   mountedSlotsHeader: string | null;
   pageElementIds: readonly string[];
@@ -44,11 +45,12 @@ const routeTrieCache = new WeakMap<RouteManifest, OptimisticRouteTrieNode>();
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
 
 export function getOptimisticRouteTemplateKey(options: {
+  concreteHrefKey?: string | null;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
   routeId: string;
 }): string {
-  return `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}`;
+  return `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}\0${options.concreteHrefKey ?? ""}`;
 }
 
 export function getOptimisticPrefetchSourceKey(options: {
@@ -198,6 +200,18 @@ function hrefToRouteParts(href: string, basePath: string): string[] | null {
   return splitPathnameForRouteMatch(appPathname === "" ? "/" : appPathname);
 }
 
+function getConcreteOptimisticHrefKey(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href, "https://vinext.local");
+  } catch {
+    return null;
+  }
+  stripRscCacheBustingSearchParam(url);
+  url.pathname = stripRscSuffix(url.pathname);
+  return `${url.pathname}${url.search}`;
+}
+
 export function matchOptimisticRouteManifestRoute(options: {
   basePath: string;
   href: string;
@@ -300,6 +314,54 @@ function OptimisticRouteSegment(): null {
   throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
 }
 
+const REACT_LAZY_TYPE = Symbol.for("react.lazy");
+const SUSPENDED_LAZY_STATUSES = new Set(["pending", "blocked", "halted", "rejected"]);
+
+function sanitizeInstantShellValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeInstantShellValue);
+
+  if (isUnknownRecord(value) && value.$$typeof === REACT_LAZY_TYPE) {
+    const payload = value._payload;
+    const initialize = value._init;
+    if (
+      isUnknownRecord(payload) &&
+      typeof payload.status === "string" &&
+      SUSPENDED_LAZY_STATUSES.has(payload.status)
+    ) {
+      return createElement(OptimisticRouteSegment);
+    }
+    if (typeof initialize === "function") {
+      try {
+        return sanitizeInstantShellValue(Reflect.apply(initialize, undefined, [payload]));
+      } catch (error) {
+        if (error === payload || (isUnknownRecord(error) && typeof error.then === "function")) {
+          return createElement(OptimisticRouteSegment);
+        }
+        throw error;
+      }
+    }
+  }
+
+  if (!isValidElement(value) || !isUnknownRecord(value.props)) return value;
+  const props = Object.fromEntries(
+    Object.entries(value.props).map(([name, propValue]) => [
+      name,
+      sanitizeInstantShellValue(propValue),
+    ]),
+  );
+  return cloneElement(value, props as Record<string, ReactNode>);
+}
+
+function sanitizeInstantShellElements(elements: AppElements): AppElements {
+  const sanitized: Record<string, AppElementValue> = { ...elements };
+  for (const [elementId, value] of Object.entries(elements)) {
+    if (AppElementsWire.parseElementKey(elementId) !== null) {
+      sanitized[elementId] = sanitizeInstantShellValue(value) as AppElementValue;
+    }
+  }
+  return sanitized;
+}
+
 export function createOptimisticRouteTemplate(options: {
   allowLoadingShell?: boolean;
   basePath: string;
@@ -307,6 +369,7 @@ export function createOptimisticRouteTemplate(options: {
   href: string;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
+  preservePageElements?: boolean;
   routeManifest: RouteManifest;
 }): OptimisticRouteTemplate | null {
   const match = matchOptimisticRouteManifestRoute({
@@ -328,6 +391,7 @@ export function createOptimisticRouteTemplate(options: {
   if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
   if (
     options.allowLoadingShell &&
+    options.preservePageElements !== true &&
     options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary"
   ) {
     return null;
@@ -341,9 +405,14 @@ export function createOptimisticRouteTemplate(options: {
   if (pageElementIds.length === 0) return null;
 
   return {
-    elements: options.elements,
+    concreteHrefKey: options.preservePageElements
+      ? getConcreteOptimisticHrefKey(options.href)
+      : null,
+    elements: options.preservePageElements
+      ? sanitizeInstantShellElements(options.elements)
+      : options.elements,
     mountedSlotsHeader: options.mountedSlotsHeader,
-    pageElementIds,
+    pageElementIds: options.preservePageElements ? [] : pageElementIds,
     routeId: match.route.id,
   };
 }
@@ -354,6 +423,50 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
     elements[pageElementId] = createElement(OptimisticRouteSegment);
   }
   return elements;
+}
+
+export function fillRetainedPrefetchLayoutsFromElementSources(
+  elements: AppElements,
+  sources: Iterable<AppElements | null | undefined>,
+): AppElements {
+  const metadata = AppElementsWire.readMetadata(elements);
+  const missingLayoutIds = metadata.retainedOnlySkippedLayoutIds.filter(
+    (layoutId) => !Object.hasOwn(elements, layoutId),
+  );
+  if (missingLayoutIds.length === 0) return elements;
+
+  const missing = new Set(missingLayoutIds);
+  const merged: Record<string, AppElementValue> = { ...elements };
+  for (const sourceElements of sources) {
+    if (missing.size === 0) break;
+    if (!sourceElements) continue;
+    for (const layoutId of missing) {
+      if (!Object.hasOwn(sourceElements, layoutId)) continue;
+      merged[layoutId] = sourceElements[layoutId];
+      missing.delete(layoutId);
+    }
+  }
+
+  if (missing.size > 0) {
+    throw new Error("Retained prefetch layout provider is no longer available");
+  }
+  const retainedOnlySkippedLayoutIds = new Set(metadata.retainedOnlySkippedLayoutIds);
+  const remainingSkippedLayoutIds = metadata.skippedLayoutIds.filter(
+    (layoutId) => !retainedOnlySkippedLayoutIds.has(layoutId),
+  );
+  if (remainingSkippedLayoutIds.length > 0) {
+    merged[AppElementsWire.keys.skippedLayoutIds] = remainingSkippedLayoutIds;
+  } else {
+    delete merged[AppElementsWire.keys.skippedLayoutIds];
+  }
+  delete merged[AppElementsWire.keys.retainedOnlySkippedLayoutIds];
+  return merged as AppElements;
+}
+
+export function getMissingRetainedPrefetchLayoutIds(elements: AppElements): readonly string[] {
+  return AppElementsWire.readMetadata(elements).retainedOnlySkippedLayoutIds.filter(
+    (layoutId) => !Object.hasOwn(elements, layoutId),
+  );
 }
 
 export function resolveOptimisticNavigationPayload(options: {
@@ -376,13 +489,23 @@ export function resolveOptimisticNavigationPayload(options: {
   });
   if (match === null) return null;
 
-  const template = options.templates.get(
+  const exactTemplate = options.templates.get(
     getOptimisticRouteTemplateKey({
+      concreteHrefKey: getConcreteOptimisticHrefKey(options.href),
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       routeId: match.route.id,
     }),
   );
+  const template =
+    exactTemplate ??
+    options.templates.get(
+      getOptimisticRouteTemplateKey({
+        interceptionContext: options.interceptionContext,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+        routeId: match.route.id,
+      }),
+    );
   if (template === undefined) return null;
   if (template.mountedSlotsHeader !== options.mountedSlotsHeader) return null;
 

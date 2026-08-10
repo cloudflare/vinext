@@ -24,11 +24,12 @@ export function generateBrowserEntry(
     beforeFiles: [],
     fallback: [],
   },
+  cacheComponents = false,
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
-  const prefetchRoutes = toLinkPrefetchRoutes(routes);
+  const prefetchRoutes = toLinkPrefetchRoutes(routes, cacheComponents);
   const clientRewrites = toClientRewrites(rewrites);
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
@@ -115,6 +116,8 @@ export function toLinkPrefetchRoute(
 ): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
+    ...(route.hasInstant ? { hasInstant: true } : {}),
+    ...(route.hasRuntimeInstant ? { hasRuntimeInstant: true } : {}),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
@@ -123,7 +126,24 @@ export function toLinkPrefetchRoute(
 }
 
 /** Project App routes together so sibling-intercept loading is applied to its target route. */
-export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPrefetchRoute[] {
+export function toLinkPrefetchRoutes(
+  routes: readonly AppRoute[],
+  cacheComponents = false,
+): VinextLinkPrefetchRoute[] {
+  const clientInstantRoute = routes.find((route) => route.hasInstantConfigInClientModule);
+  if (clientInstantRoute) {
+    throw new Error(
+      `Page "${clientInstantRoute.pattern}" cannot export "unstable_instant" from a Client Component module. To use this API, convert this module to a Server Component by removing the "use client" directive.`,
+    );
+  }
+  if (!cacheComponents) {
+    const instantRoute = routes.find((route) => route.hasInstantConfig);
+    if (instantRoute) {
+      throw new Error(
+        `Page "${instantRoute.pattern}" cannot use \`export const unstable_instant = ...\` without enabling \`cacheComponents\`.`,
+      );
+    }
+  }
   const siblingInterceptLoadingTargets: string[][] = [];
   for (const route of routes) {
     for (const intercept of route.siblingIntercepts) {

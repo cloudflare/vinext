@@ -50,6 +50,10 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
+import {
+  suspendStaticInstantPrefetchPrivateCache,
+  trackInstantPrefetchShellCacheTask,
+} from "./instant-prefetch-shell.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
@@ -540,6 +544,13 @@ export type RegisterCachedFunctionOptions = {
   decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
 };
 
+function trackCacheTaskForShells<T>(fn: () => Promise<T>, cacheVariant: string): Promise<T> {
+  return trackInstantPrefetchShellCacheTask(
+    () => trackPprFallbackShellCacheTask(fn, cacheVariant),
+    cacheVariant,
+  );
+}
+
 /**
  * Register a function as a cached function. This is called by the Vite
  * transform for each "use cache" function.
@@ -566,8 +577,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
-  const cachedFn = (...args: TArgs): Promise<TResult> =>
-    trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+  const cachedFn = async (...args: TArgs): Promise<TResult> => {
+    if (cacheVariant === "private") {
+      const parentCtx = cacheContextStorage.getStore();
+      if (parentCtx && parentCtx.variant !== "private") {
+        throwPrivateUseCacheInsidePublicUseCacheError();
+      }
+      const stagedPrivateCache = suspendStaticInstantPrefetchPrivateCache();
+      if (stagedPrivateCache) return stagedPrivateCache;
+    }
+
+    return trackCacheTaskForShells(async (): Promise<TResult> => {
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
@@ -588,30 +608,32 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // from key). Falls back to stableStringify when RSC is unavailable.
       let cacheKey: string;
       try {
-        const processedArgs =
-          executionArgs.length > 0
-            ? unwrapThenableObjectArray(executionArgs, { omitAppPageSearchParamsFromFirstArg })
-            : [];
-        if (rsc && executionArgs.length > 0) {
-          // Temporary references let encodeReply handle non-serializable values
-          // (like React elements in args) by excluding them from the key.
-          const tempRefs = rsc.createClientTemporaryReferenceSet();
-          // Unwrap Promise-augmented objects before encoding.
-          // Next.js 16 params/searchParams are created via
-          // Object.assign(Promise.resolve(obj), obj) — a Promise with own
-          // enumerable properties. encodeReply treats Promises as temporary
-          // references (excluded from the key), which means different param
-          // values (e.g., section:"sports" vs section:"electronics") produce
-          // identical cache keys. We must extract the plain data so the actual
-          // values are included in the cache key.
-          const encoded = await rsc.encodeReply(processedArgs, {
-            temporaryReferences: tempRefs,
-          });
-          cacheKey = buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
-        } else {
+        const keyContext = cacheContextStorage.getStore() ?? createCacheContext(cacheVariant);
+        cacheKey = await cacheContextStorage.run(keyContext, async () => {
+          const processedArgs =
+            executionArgs.length > 0
+              ? unwrapThenableObjectArray(executionArgs, { omitAppPageSearchParamsFromFirstArg })
+              : [];
+          if (rsc && executionArgs.length > 0) {
+            // Temporary references let encodeReply handle non-serializable values
+            // (like React elements in args) by excluding them from the key.
+            const tempRefs = rsc.createClientTemporaryReferenceSet();
+            // Unwrap Promise-augmented objects before encoding.
+            // Next.js 16 params/searchParams are created via
+            // Object.assign(Promise.resolve(obj), obj) — a Promise with own
+            // enumerable properties. encodeReply treats Promises as temporary
+            // references (excluded from the key), which means different param
+            // values (e.g., section:"sports" vs section:"electronics") produce
+            // identical cache keys. We must extract the plain data so the actual
+            // values are included in the cache key.
+            const encoded = await rsc.encodeReply(processedArgs, {
+              temporaryReferences: tempRefs,
+            });
+            return buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
+          }
           const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
-          cacheKey = buildUseCacheKey(id, keySeed, argsKey);
-        }
+          return buildUseCacheKey(id, keySeed, argsKey);
+        });
       } catch {
         // Non-serializable arguments — run without caching
         return fn(...callArgs);
@@ -619,11 +641,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       // "use cache: private" uses per-request in-memory cache
       if (cacheVariant === "private") {
-        const parentCtx = cacheContextStorage.getStore();
-        if (parentCtx && parentCtx.variant !== "private") {
-          throwPrivateUseCacheInsidePublicUseCacheError();
-        }
-
         if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
           // Next.js treats "use cache: private" as dynamic during prerendering:
           // it is excluded from the static artifact and resolved per request.
@@ -815,6 +832,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       return result;
     }, cacheVariant);
+  };
 
   // Preserve the original function's arity on the wrapper. The wrapper is
   // declared as `(...args)` (arity 0), which hides the original signature.
@@ -980,6 +998,19 @@ type CachedFunctionResult<T, TCollected> = {
   collectedResult: TCollected | undefined;
 };
 
+function createCacheContext(variant: string): CacheContext {
+  return {
+    tags: [],
+    lifeConfigs: [],
+    variant: variant || "default",
+    readRootParamNames: new Set(),
+    hasExplicitRevalidate: false,
+    hasExplicitExpire: false,
+    dynamicNestedCacheError: undefined,
+    invalidDynamicUsageError: undefined,
+  };
+}
+
 async function runCachedFunctionWithContext<
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   T extends (...args: any[]) => Promise<any>,
@@ -1019,16 +1050,7 @@ async function runCachedFunctionWithContext<
     }
   }
 
-  const ctx: CacheContext = {
-    tags: [],
-    lifeConfigs: [],
-    variant: variant || "default",
-    readRootParamNames: new Set(),
-    hasExplicitRevalidate: false,
-    hasExplicitExpire: false,
-    dynamicNestedCacheError: undefined,
-    invalidDynamicUsageError: undefined,
-  };
+  const ctx = createCacheContext(variant);
 
   let collectedResult: TCollected | undefined;
   const result = await cacheContextStorage.run(ctx, async () => {

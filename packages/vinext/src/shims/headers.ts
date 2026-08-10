@@ -24,6 +24,7 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import { suspendStaticInstantPrefetchRequestData } from "./instant-prefetch-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -985,6 +986,10 @@ export function headers(): Promise<Headers> & Headers {
   }
 
   markDynamicUsage();
+  const instantShellPromise = suspendStaticInstantPrefetchRequestData("headers()");
+  if (instantShellPromise) {
+    return _decorateSuspendingRequestApiPromise(instantShellPromise);
+  }
   const fallbackShellPromise = createPprFallbackShellSuspensePromise<Headers>("`headers()`");
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
@@ -1020,6 +1025,10 @@ function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
   }
 
   markDynamicUsage();
+  const instantShellPromise = suspendStaticInstantPrefetchRequestData("cookies()");
+  if (instantShellPromise) {
+    return _decorateSuspendingRequestApiPromise(instantShellPromise);
+  }
   const fallbackShellPromise = createPprFallbackShellSuspensePromise<RequestCookies>("`cookies()`");
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
@@ -1183,6 +1192,10 @@ export async function draftMode(): Promise<DraftModeResult> {
   const context = state.headersContext;
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
+  }
+  const instantShellPromise = suspendStaticInstantPrefetchRequestData("draftMode()");
+  if (instantShellPromise) {
+    await instantShellPromise;
   }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
+import { readFileSync } from "node:fs";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_LAYOUT_FLAGS_KEY,
@@ -32,10 +33,14 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
+  VINEXT_RSC_LAYOUT_IDS_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import type {
+  CachedAppPageValue,
+  IncrementalCacheValue,
+} from "../packages/vinext/src/shims/cache.js";
 import type { IsrWritePolicy } from "../packages/vinext/src/server/isr-cache.js";
 import type { InitialNavigationCacheMetadata } from "../packages/vinext/src/server/app-ssr-stream.js";
 import {
@@ -48,6 +53,15 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  suspendInstantPrefetchConnection,
+  suspendStaticInstantPrefetchRequestData,
+  trackInstantPrefetchShellCacheTask,
+} from "../packages/vinext/src/shims/instant-prefetch-shell.js";
 
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
   if (!isAppElementsRecord(value)) {
@@ -408,6 +422,215 @@ describe("form state rendering", () => {
 });
 
 describe("app page render lifecycle", () => {
+  it("loads the instant-shell runtime only inside the instant render branch", () => {
+    const source = readFileSync(
+      new URL("../packages/vinext/src/server/app-page-render.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).not.toMatch(/from\s+["']vinext\/shims\/instant-prefetch-shell["']/);
+    expect(source).toContain('await import("vinext/shims/instant-prefetch-shell")');
+  });
+
+  it("waits for cold private cache tasks before aborting a runtime instant shell", async () => {
+    const common = createCommonOptions();
+    const cacheFill = createDeferred();
+    let renderCount = 0;
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      renderCount++;
+      if (renderCount === 1) {
+        void trackInstantPrefetchShellCacheTask(() => cacheFill.promise, "private");
+      }
+      void suspendInstantPrefetchConnection();
+
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => {
+          resolve({ prelude: createStream(["instant-shell"]) });
+        };
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      prerenderToReadableStream,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+    });
+    let responseSettled = false;
+    void responsePromise.then(() => {
+      responseSettled = true;
+    });
+
+    await vi.waitFor(() => expect(prerenderToReadableStream).toHaveBeenCalledTimes(1));
+    expect(renderCount).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(responseSettled).toBe(false);
+    cacheFill.resolve();
+
+    const response = await responsePromise;
+    expect(prerenderToReadableStream).toHaveBeenCalledTimes(1);
+    await expect(response.text()).resolves.toBe("instant-shell");
+  });
+
+  it("waits for a cold unstable_cache fill before aborting an instant shell", async () => {
+    // Regression coverage for Next.js:
+    // test/e2e/app-dir/prefetch-true-instant/prefetch-true-instant.test.ts
+    const { MemoryCacheHandler, setCacheHandler, unstable_cache } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const cacheFill = createDeferred();
+    setCacheHandler(new MemoryCacheHandler());
+    const cached = unstable_cache(async () => {
+      await cacheFill.promise;
+      return "filled";
+    }, ["test:instant-shell-unstable-cache"]);
+    let cacheTask: Promise<string> | null = null;
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      cacheTask = cached();
+      void suspendInstantPrefetchConnection();
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => resolve({ prelude: createStream(["unstable-cache-shell"]) });
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    try {
+      const responsePromise = renderAppPageLifecycle({
+        ...common.options,
+        isRscRequest: true,
+        prerenderToReadableStream,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+      });
+      let responseSettled = false;
+      void responsePromise.then(() => {
+        responseSettled = true;
+      });
+
+      await vi.waitFor(() => expect(cacheTask).not.toBeNull());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(responseSettled).toBe(false);
+      cacheFill.resolve();
+
+      await expect(cacheTask).resolves.toBe("filled");
+      const response = await responsePromise;
+      await expect(response.text()).resolves.toBe("unstable-cache-shell");
+    } finally {
+      cacheFill.resolve();
+      await (cacheTask as Promise<string> | null)?.catch(() => {});
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("waits for a cold cached fetch before aborting an instant shell", async () => {
+    // Regression coverage for Next.js:
+    // test/e2e/app-dir/prefetch-true-instant/prefetch-true-instant.test.ts
+    const { MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { runWithFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const cacheWrite = createDeferred();
+    class SlowWriteCacheHandler extends MemoryCacheHandler {
+      override async set(
+        key: string,
+        data: IncrementalCacheValue | null,
+        ctx?: Record<string, unknown>,
+      ) {
+        await cacheWrite.promise;
+        return super.set(key, data, ctx);
+      }
+    }
+    setCacheHandler(new SlowWriteCacheHandler());
+    let fetchTask: Promise<Response> | null = null;
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      fetchTask = fetch("data:text/plain,cold-fetch", { cache: "force-cache" });
+      void suspendInstantPrefetchConnection();
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => resolve({ prelude: createStream(["cached-fetch-shell"]) });
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    try {
+      const responsePromise = runWithFetchCache(() =>
+        renderAppPageLifecycle({
+          ...common.options,
+          isRscRequest: true,
+          prerenderToReadableStream,
+          renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+        }),
+      );
+      let responseSettled = false;
+      void responsePromise.then(() => {
+        responseSettled = true;
+      });
+
+      await vi.waitFor(() => expect(fetchTask).not.toBeNull());
+      await expect(fetchTask).resolves.toBeInstanceOf(Response);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(responseSettled).toBe(false);
+      cacheWrite.resolve();
+
+      const response = await responsePromise;
+      await expect(response.text()).resolves.toBe("cached-fetch-shell");
+    } finally {
+      cacheWrite.resolve();
+      await (fetchTask as Promise<Response> | null)?.catch(() => {});
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("stops static instant shells before request-time data", async () => {
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn((_element, options) => {
+      expect(suspendStaticInstantPrefetchRequestData("headers()")).toBeTruthy();
+      return new Promise<{ prelude: ReadableStream<Uint8Array> }>((resolve) => {
+        const finish = () => resolve({ prelude: createStream(["static-instant-shell"]) });
+        if (options.signal?.aborted) finish();
+        else options.signal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      prerenderToReadableStream,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("static-instant-shell");
+  });
+
+  it("allows request-time data in runtime instant shells", async () => {
+    const common = createCommonOptions();
+    const prerenderToReadableStream: NonNullable<
+      Parameters<typeof renderAppPageLifecycle>[0]["prerenderToReadableStream"]
+    > = vi.fn(() => {
+      expect(suspendStaticInstantPrefetchRequestData("cookies()")).toBeNull();
+      return Promise.resolve({ prelude: createStream(["runtime-instant-shell"]) });
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      prerenderToReadableStream,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+    });
+
+    await expect(response.text()).resolves.toBe("runtime-instant-shell");
+  });
+
   it("returns pre-render special responses before starting the render stream", async () => {
     const common = createCommonOptions();
 
@@ -1702,6 +1925,7 @@ describe("layoutFlags injection into RSC payload", () => {
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
     routePattern?: string;
+    retainedPrefetchLayoutIds?: readonly string[];
     skipDisposition?: ClientReuseManifestSkipDisposition;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
@@ -1747,6 +1971,7 @@ describe("layoutFlags injection into RSC payload", () => {
         return createStream(["flight-data"]);
       },
       routePattern: overrides.routePattern ?? "/test",
+      retainedPrefetchLayoutIds: overrides.retainedPrefetchLayoutIds,
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
@@ -1800,6 +2025,64 @@ describe("layoutFlags injection into RSC payload", () => {
 
     await renderAppPageLifecycle(options);
     expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "d" });
+  });
+
+  it("omits retained dynamic layouts and marks the personalized response no-store", async () => {
+    const sharedLayoutId = "layout:/shared";
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        "layout:/": "root-layout",
+        [sharedLayoutId]: "shared-layout",
+        "page:/shared/two": "page-two",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      retainedPrefetchLayoutIds: [sharedLayoutId],
+      classification: {
+        getLayoutId: (index) => ["layout:/", sharedLayoutId][index],
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: true };
+        },
+      },
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    await response.text();
+
+    expect(Object.hasOwn(getCapturedElement(), sharedLayoutId)).toBe(false);
+    expect(getCapturedElement()[AppElementsWire.keys.skippedLayoutIds]).toEqual([sharedLayoutId]);
+    expect(getCapturedElement()[AppElementsWire.keys.retainedOnlySkippedLayoutIds]).toEqual([
+      sharedLayoutId,
+    ]);
+    expect(response.headers.get(VINEXT_RSC_LAYOUT_IDS_HEADER)).toBe("layout:/");
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+  });
+
+  it("does not require a retained provider when standard reuse also authorizes the omission", async () => {
+    const sharedLayoutId = "layout:/shared";
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        "layout:/": "root-layout",
+        [sharedLayoutId]: "shared-layout",
+        "page:/shared/two": "page-two",
+      },
+      retainedPrefetchLayoutIds: [sharedLayoutId],
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: [sharedLayoutId],
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+
+    expect(getCapturedElement()[AppElementsWire.keys.skippedLayoutIds]).toEqual([sharedLayoutId]);
+    expect(getCapturedElement()[AppElementsWire.keys.retainedOnlySkippedLayoutIds]).toBeUndefined();
   });
 
   it("injects empty __layoutFlags when classification is not provided (backward compat)", async () => {

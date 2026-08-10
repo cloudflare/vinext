@@ -203,6 +203,7 @@ function applyMiddlewareContextToResponse(
 
 type DispatchMatchedPageOptions<TRoute> = {
   clientReuseManifest: ClientReuseManifestParseResult;
+  retainedPrefetchLayoutIds: readonly string[];
   cleanPathname: string;
   displayPathname: string;
   formState: ReactFormState | null;
@@ -593,6 +594,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     mountedSlotsHeader,
     renderMode,
     clientReuseManifest,
+    retainedPrefetchLayoutIds,
     hadBasePath,
   } = normalized;
   const { requestCleanPathname } = normalized;
@@ -1529,6 +1531,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const pageResponse = await options.dispatchMatchedPage({
     clientReuseManifest,
+    retainedPrefetchLayoutIds,
     cleanPathname,
     displayPathname: canonicalPathname,
     formState,

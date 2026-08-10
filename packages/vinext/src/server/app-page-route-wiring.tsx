@@ -36,9 +36,10 @@ import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
 import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
-import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
+import type { ThenableParamsObserver, ThenableParamsOptions } from "vinext/shims/thenable-params";
 import {
   createAppRenderDependency,
+  isClientReferenceAppComponent,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
@@ -55,6 +56,7 @@ import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
@@ -246,9 +248,22 @@ type BuildAppPageRouteElementOptions<
   pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
+  /** Segment-local instant-prefetch staging for the main and parallel branches. */
+  instantPrefetchSegments?: {
+    layoutStages: readonly ("runtime" | "static")[];
+    resolveStage(
+      module: TModule | null | undefined,
+      inheritedStage: "runtime" | "static",
+    ): "runtime" | "static";
+    wrap(element: ReactNode, stage: "runtime" | "static"): ReactNode;
+  };
 };
 
-type MakeThenableParams = (params: AppPageParams, observer?: ThenableParamsObserver) => unknown;
+type MakeThenableParams = (
+  params: AppPageParams,
+  observer?: ThenableParamsObserver,
+  options?: ThenableParamsOptions,
+) => unknown;
 
 type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
@@ -813,6 +828,17 @@ export function buildAppPageElements<
   const interceptionContext =
     renderIdentity?.interceptionContext ?? options.interceptionContext ?? null;
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
+  const makeComponentParams = (
+    component: AppPageComponent,
+    params: AppPageParams,
+    observer?: ThenableParamsObserver,
+  ): unknown =>
+    options.makeThenableParams(params, observer, {
+      suspendStaticInstantShell: !(
+        renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL &&
+        isClientReferenceAppComponent(component)
+      ),
+    });
   const routeSegments = options.route.routeSegments ?? [];
   const routeId =
     renderIdentity?.routeId ??
@@ -1156,7 +1182,8 @@ export function buildAppPageElements<
     });
 
     const layoutProps: Record<string, unknown> = {
-      params: options.makeThenableParams(
+      params: makeComponentParams(
+        layoutComponent,
         layoutParams,
         options.layoutParamAccess?.createThenableParamsObserver(layoutEntry.id),
       ),
@@ -1184,6 +1211,12 @@ export function buildAppPageElements<
         <Children />
       </LayoutComponent>
     );
+    if (options.instantPrefetchSegments) {
+      layoutElement = options.instantPrefetchSegments.wrap(
+        layoutElement,
+        options.instantPrefetchSegments.layoutStages[index],
+      );
+    }
     const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
@@ -1239,9 +1272,14 @@ export function buildAppPageElements<
     if (isPrefetchLoadingShell && prefetchSlotLoadingEntry === null) {
       continue;
     }
-    const overrideOrPageComponent =
-      getDefaultExport(slotOverride?.pageModule) ?? getDefaultExport(slot.page);
-    const defaultComponent = getDefaultExport(slot.default);
+    const overrideOrPageModule = getDefaultExport(slotOverride?.pageModule)
+      ? slotOverride?.pageModule
+      : getDefaultExport(slot.page)
+        ? slot.page
+        : null;
+    const defaultModule = getDefaultExport(slot.default) ? slot.default : null;
+    const overrideOrPageComponent = getDefaultExport(overrideOrPageModule);
+    const defaultComponent = getDefaultExport(defaultModule);
 
     // On soft nav (RSC): omit key when only default.tsx exists and the slot is
     // already mounted on the client. Absent key means the browser retains prior
@@ -1256,7 +1294,8 @@ export function buildAppPageElements<
       continue;
     }
 
-    const slotComponent = overrideOrPageComponent ?? defaultComponent;
+    const slotModule = overrideOrPageModule ?? defaultModule;
+    const slotComponent = getDefaultExport(slotModule);
 
     if (!slotComponent && !isOwnedAtRoutePrefetchCutoff) {
       elements[slotId] = AppElementsWire.unmatchedSlotValue;
@@ -1270,7 +1309,7 @@ export function buildAppPageElements<
       )!;
       slotElement = <PrefetchSlotLoadingComponent />;
     } else {
-      const slotThenableParams = options.makeThenableParams(slotParams);
+      const slotThenableParams = makeComponentParams(slotComponent!, slotParams);
       const slotProps: Record<string, unknown> = {
         params: slotThenableParams,
       };
@@ -1296,11 +1335,20 @@ export function buildAppPageElements<
     }
     const branchLayouts = new Map<
       number,
-      { component: AppPageComponent; params: AppPageParams }[]
+      {
+        component: AppPageComponent;
+        instantStage?: "runtime" | "static";
+        module: TModule | null | undefined;
+        params: AppPageParams;
+      }[]
     >();
     const addBranchLayout = (
       treePosition: number,
-      entry: { component: AppPageComponent; params: AppPageParams },
+      entry: {
+        component: AppPageComponent;
+        module: TModule | null | undefined;
+        params: AppPageParams;
+      },
     ) => {
       const entries = branchLayouts.get(treePosition) ?? [];
       entries.push(entry);
@@ -1315,6 +1363,7 @@ export function buildAppPageElements<
           slotOverride?.layoutSegments?.[layoutIndex]?.length ?? branchSegments.length;
         addBranchLayout(treePosition, {
           component,
+          module: layoutModule,
           params: resolveSlotLayoutParams(branchSegments, treePosition, slotParams),
         });
       }
@@ -1325,6 +1374,7 @@ export function buildAppPageElements<
         const treePosition = slot.configLayoutTreePositions?.[layoutIndex] ?? 0;
         addBranchLayout(treePosition, {
           component,
+          module: layoutModule,
           params: {
             ...slotOwnerParams,
             ...resolveSlotLayoutParams(slotRouteSegments, treePosition, slotParams),
@@ -1337,9 +1387,25 @@ export function buildAppPageElements<
     if (slotLayoutComponent) {
       const rootEntries = branchLayouts.get(0) ?? [];
       branchLayouts.set(0, [
-        { component: slotLayoutComponent, params: slotOwnerParams },
+        { component: slotLayoutComponent, module: slot.layout!, params: slotOwnerParams },
         ...rootEntries,
       ]);
+    }
+
+    if (options.instantPrefetchSegments) {
+      let branchStage = options.instantPrefetchSegments.layoutStages[targetIndex] ?? "static";
+      const layoutTreePositions = [...branchLayouts.keys()].sort((left, right) => left - right);
+      for (const treePosition of layoutTreePositions) {
+        for (const layoutEntry of branchLayouts.get(treePosition) ?? []) {
+          branchStage = options.instantPrefetchSegments.resolveStage(
+            layoutEntry.module,
+            branchStage,
+          );
+          layoutEntry.instantStage = branchStage;
+        }
+      }
+      const pageStage = options.instantPrefetchSegments.resolveStage(slotModule, branchStage);
+      slotElement = options.instantPrefetchSegments.wrap(slotElement, pageStage);
     }
 
     const branchLoadings = new Map<number, AppPageComponent[]>();
@@ -1412,11 +1478,18 @@ export function buildAppPageElements<
       for (let layoutIndex = layoutEntriesAtPosition.length - 1; layoutIndex >= 0; layoutIndex--) {
         const layoutEntry = layoutEntriesAtPosition[layoutIndex];
         const LayoutComponent = layoutEntry.component;
-        slotElement = (
-          <LayoutComponent params={options.makeThenableParams(layoutEntry.params)}>
+        let layoutElement: ReactNode = (
+          <LayoutComponent params={makeComponentParams(LayoutComponent, layoutEntry.params)}>
             {slotElement}
           </LayoutComponent>
         );
+        if (options.instantPrefetchSegments && layoutEntry.instantStage) {
+          layoutElement = options.instantPrefetchSegments.wrap(
+            layoutElement,
+            layoutEntry.instantStage,
+          );
+        }
+        slotElement = layoutElement;
       }
     }
 

@@ -28,6 +28,7 @@ import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server
 import {
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
@@ -682,6 +683,44 @@ describe("app page route wiring helpers", () => {
     ]);
   });
 
+  it("marks client layout params as transport data in static instant shells", () => {
+    // Ported from Next.js Cache Components behavior:
+    // packages/next/src/server/app-render/create-component-tree.tsx
+    const ClientLayout = Object.assign(({ children }: { children?: ReactNode }) => children, {
+      $$typeof: Symbol.for("react.client.reference"),
+    });
+    const suspendStaticInstantShellOptions: Array<boolean | undefined> = [];
+
+    buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params, _observer, options) {
+        suspendStaticInstantShellOptions.push(options?.suspendStaticInstantShell);
+        return Promise.resolve(params);
+      },
+      matchedParams: { slug: "hello" },
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [1],
+        layouts: [{ default: ClientLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["[slug]"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/hello",
+      rootNotFoundModule: null,
+    });
+
+    expect(suspendStaticInstantShellOptions).toEqual([false]);
+  });
+
   it("encodes the active app source page from route segments", () => {
     // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
@@ -993,6 +1032,148 @@ describe("app page route wiring helpers", () => {
       html.indexOf('data-slot-layout="nested"'),
     );
     expect(html.indexOf('data-slot-layout="nested"')).toBeLessThan(html.indexOf("data-slot-page"));
+  });
+
+  it("stages a static parallel-slot layout separately from its runtime page", async () => {
+    function StaticSlotLayout(props: Record<string, unknown>) {
+      return createElement("section", null, readChildren(props.children));
+    }
+    function RuntimeSlotPage() {
+      return createElement("p", null, "runtime slot page");
+    }
+    const staticLayoutModule: AppPageModule = { default: StaticSlotLayout };
+    const runtimePageModule: AppPageModule = {
+      default: RuntimeSlotPage,
+      unstable_instant: { prefetch: "runtime" },
+    };
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      instantPrefetchSegments: {
+        layoutStages: ["static"],
+        resolveStage(module, inheritedStage) {
+          return module?.unstable_instant &&
+            typeof module.unstable_instant === "object" &&
+            Reflect.get(module.unstable_instant, "prefetch") === "runtime"
+            ? "runtime"
+            : inheritedStage;
+        },
+        wrap(element, stage) {
+          return createElement("div", { "data-instant-stage": stage }, element);
+        },
+      },
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            configLayouts: [staticLayoutModule],
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: runtimePageModule,
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html).toContain('<div data-instant-stage="static"><section>');
+    expect(html).toContain('<div data-instant-stage="runtime"><p>runtime slot page</p></div>');
+  });
+
+  it("applies segment-local stages to intercepted slot overrides", async () => {
+    function StaticInterceptLayout(props: Record<string, unknown>) {
+      return createElement("section", null, readChildren(props.children));
+    }
+    function RuntimeInterceptPage() {
+      return createElement("p", null, "runtime intercept page");
+    }
+    const staticInterceptLayoutModule: AppPageModule = { default: StaticInterceptLayout };
+    const runtimeInterceptPageModule: AppPageModule = {
+      default: RuntimeInterceptPage,
+      unstable_instant: { prefetch: "runtime" },
+    };
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      instantPrefetchSegments: {
+        layoutStages: ["static"],
+        resolveStage(module, inheritedStage) {
+          return module?.unstable_instant &&
+            typeof module.unstable_instant === "object" &&
+            Reflect.get(module.unstable_instant, "prefetch") === "runtime"
+            ? "runtime"
+            : inheritedStage;
+        },
+        wrap(element, stage) {
+          return createElement("div", { "data-instant-stage": stage }, element);
+        },
+      },
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["photos"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: null,
+            routeSegments: ["photo"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/photos",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        sidebar: {
+          branchSegments: ["photo"],
+          layoutModules: [staticInterceptLayoutModule],
+          layoutSegments: [["photo"]],
+          pageModule: runtimeInterceptPageModule,
+          routeSegments: ["photo"],
+        },
+      },
+    });
+
+    const html = await renderRouteEntry(elements, "route:/photos");
+    expect(html).toContain('<div data-instant-stage="static"><section>');
+    expect(html).toContain('<div data-instant-stage="runtime"><p>runtime intercept page</p></div>');
   });
 
   it("keeps route loading boundaries in the rendered tree", () => {

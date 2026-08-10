@@ -10,8 +10,11 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import {
+  analyzeNamedExportObjectStringProperty,
+  findNamedExternalReexport,
   hasExportedName,
   hasNamedExport,
+  hasNamedExportObjectStringProperty,
   extractExportConstString,
   extractExportConstNumber,
   extractGetStaticPropsRevalidate,
@@ -105,6 +108,137 @@ describe("hasNamedExport", () => {
 export function getServerSideProps() {}
 */`;
     expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
+  });
+});
+
+describe("hasNamedExportObjectStringProperty", () => {
+  it("recognizes direct and locally aliased runtime instant configs", () => {
+    expect(
+      hasNamedExportObjectStringProperty(
+        "export const unstable_instant = { prefetch: 'runtime', samples: [] };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
+    expect(
+      hasNamedExportObjectStringProperty(
+        "const config = { prefetch: 'runtime' }; export { config as unstable_instant };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
+    expect(
+      hasNamedExportObjectStringProperty(
+        "const base = { prefetch: 'runtime' }; const config = base; export { config as unstable_instant };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
+    expect(
+      hasNamedExportObjectStringProperty(
+        "const mode = 'runtime'; export const unstable_instant = { prefetch: mode };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not classify static, false, or external runtime values", () => {
+    for (const source of [
+      "export const unstable_instant = { prefetch: 'static' };",
+      "export const unstable_instant = false;",
+      "export { config as unstable_instant } from './config';",
+    ]) {
+      expect(
+        hasNamedExportObjectStringProperty(source, "unstable_instant", "prefetch", "runtime"),
+      ).toBe(false);
+    }
+  });
+
+  it("describes external named re-exports without executing their modules", () => {
+    expect(
+      findNamedExternalReexport(
+        "export { config as unstable_instant } from './config';",
+        "unstable_instant",
+      ),
+    ).toEqual({ importedName: "config", source: "./config" });
+    expect(
+      findNamedExternalReexport(
+        "export { unstable_instant } from './config.js';",
+        "unstable_instant",
+      ),
+    ).toEqual({ importedName: "unstable_instant", source: "./config.js" });
+  });
+});
+
+describe("analyzeNamedExportObjectStringProperty", () => {
+  it("reports export presence, client directives, values, and re-exports in one analysis", () => {
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        '"use client"; export const unstable_instant = false;',
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      hasUseClientDirective: true,
+      hasStaticValue: true,
+      staticValue: false,
+      propertyValue: null,
+      reexport: null,
+    });
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        'export { config as unstable_instant } from "./config";',
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      hasStaticValue: false,
+      propertyValue: null,
+      reexport: { importedName: "config", source: "./config" },
+    });
+  });
+
+  it("extracts complete static object values through local const aliases", () => {
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        `const mode = "runtime";
+         const samples = [{ params: { slug: ["one", "two"] } }];
+         const config = { prefetch: mode, samples };
+         export { config as unstable_instant };`,
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      hasStaticValue: true,
+      staticValue: {
+        prefetch: "runtime",
+        samples: [{ params: { slug: ["one", "two"] } }],
+      },
+      propertyValue: "runtime",
+    });
+  });
+
+  it("rejects cyclic local const values without overflowing", () => {
+    expect(
+      analyzeNamedExportObjectStringProperty(
+        `const config = { prefetch: "runtime", samples: [config] };
+         export { config as unstable_instant };`,
+        "unstable_instant",
+        "prefetch",
+      ),
+    ).toMatchObject({
+      hasExport: true,
+      hasStaticValue: false,
+      propertyValue: "runtime",
+    });
   });
 });
 

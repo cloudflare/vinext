@@ -66,6 +66,12 @@ export const VINEXT_PARAMS_HEADER = "X-Vinext-Params";
 /** Deduplicated, sorted list of mounted layout slots for cache keying. */
 export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 
+/** Client hint listing layout entries already held by complete prefetch payloads. */
+export const VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER = "X-Vinext-Retained-Prefetch-Layouts";
+
+/** Layout entries physically present in this RSC response. */
+export const VINEXT_RSC_LAYOUT_IDS_HEADER = "X-Vinext-Rsc-Layout-Ids";
+
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 
@@ -86,6 +92,9 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
+
+/** Marks an RSC prefetch response that contains a partial Suspense shell. */
+export const VINEXT_RSC_PARTIAL_SHELL_HEADER = "X-Vinext-Rsc-Partial-Shell";
 
 /** Disabled-by-default client hint describing already-held App Router payload entries. */
 export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";

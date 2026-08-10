@@ -8,6 +8,8 @@ import {
 import {
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
+  fillRetainedPrefetchLayoutsFromElementSources,
+  getMissingRetainedPrefetchLayoutIds,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
@@ -167,6 +169,130 @@ function createSettingsLoadingShellElements(): AppElements {
 }
 
 describe("App Router optimistic routing", () => {
+  it("fills layouts omitted from a retained-prefetch payload", () => {
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const target: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/"), sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [sharedLayoutId],
+      [AppElementsWire.keys.retainedOnlySkippedLayoutIds]: [sharedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+    const retainedLayout = createElement("section", null, "Shared layout");
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [sharedLayoutId],
+        rootLayoutTreePath: "/shared",
+        routeId: AppElementsWire.encodeRouteId("/shared/one", null),
+      }),
+      [sharedLayoutId]: retainedLayout,
+    };
+
+    const filled = fillRetainedPrefetchLayoutsFromElementSources(target, [source]);
+
+    expect(filled[sharedLayoutId]).toBe(retainedLayout);
+    expect(AppElementsWire.readMetadata(filled).skippedLayoutIds).toEqual([]);
+    expect(AppElementsWire.readMetadata(filled).retainedOnlySkippedLayoutIds).toEqual([]);
+  });
+
+  it("does not fill standard-reuse omissions from a retained-layout provider", () => {
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const standardLayoutId = AppElementsWire.encodeLayoutId("/");
+    const retainedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const target: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [standardLayoutId, retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [standardLayoutId, retainedLayoutId],
+      [AppElementsWire.keys.retainedOnlySkippedLayoutIds]: [retainedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+    const retainedLayout = createElement("section", null, "Shared layout");
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [standardLayoutId, retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/shared/one", null),
+      }),
+      [standardLayoutId]: createElement("html", null, "Stale root layout"),
+      [retainedLayoutId]: retainedLayout,
+    };
+
+    const filled = fillRetainedPrefetchLayoutsFromElementSources(target, [source]);
+
+    expect(Object.hasOwn(filled, standardLayoutId)).toBe(false);
+    expect(filled[retainedLayoutId]).toBe(retainedLayout);
+    expect(AppElementsWire.readMetadata(filled).skippedLayoutIds).toEqual([standardLayoutId]);
+    expect(AppElementsWire.readMetadata(filled).retainedOnlySkippedLayoutIds).toEqual([]);
+  });
+
+  it("does not require providers for standard-reuse-only skipped layouts", () => {
+    const retainedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const visibleLayoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [visibleLayoutId, retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [visibleLayoutId, retainedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+
+    expect(getMissingRetainedPrefetchLayoutIds(elements)).toEqual([]);
+  });
+
+  it("throws when a retained-only skipped layout has no provider", () => {
+    const retainedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [retainedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [retainedLayoutId],
+      [AppElementsWire.keys.retainedOnlySkippedLayoutIds]: [retainedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+
+    expect(getMissingRetainedPrefetchLayoutIds(elements)).toEqual([retainedLayoutId]);
+    expect(() => fillRetainedPrefetchLayoutsFromElementSources(elements, [])).toThrow(
+      "Retained prefetch layout provider is no longer available",
+    );
+  });
+
+  it("does not require a provider for standard-and-retained overlap", () => {
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [sharedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+
+    expect(getMissingRetainedPrefetchLayoutIds(elements)).toEqual([]);
+    expect(fillRetainedPrefetchLayoutsFromElementSources(elements, [])).toBe(elements);
+  });
+
   it("matches dynamic route params while keeping static siblings authoritative", () => {
     const routes = blogManifest();
 
@@ -281,6 +407,58 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("preserves completed instant-shell page content only for the exact href", () => {
+    const routeManifest = blogManifest();
+    const elements = createBlogElements();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc?_rsc=instant",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected instant route template");
+
+    expect(template.concreteHrefKey).toBe("/blog/post-1");
+    expect(template.pageElementIds).toEqual([]);
+    const templates = new Map([
+      [
+        getOptimisticRouteTemplateKey({
+          concreteHrefKey: template.concreteHrefKey,
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          routeId: template.routeId,
+        }),
+        template,
+      ],
+    ]);
+
+    const exact = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: "/blog/post-1",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+      templates,
+    });
+    expect(exact?.elements[AppElementsWire.encodePageId("/blog/post-1", null)]).toEqual(
+      elements[AppElementsWire.encodePageId("/blog/post-1", null)],
+    );
+    expect(
+      resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: "/blog/post-2",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      }),
+    ).toBeNull();
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {

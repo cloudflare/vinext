@@ -38,7 +38,11 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -190,6 +194,7 @@ type RenderAppPageLifecycleOptions = {
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   scriptNonce?: string;
   clientReuseManifest?: ClientReuseManifestParseResult;
+  retainedPrefetchLayoutIds?: readonly string[];
   skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
   renderedPathAndSearch?: string | null;
@@ -553,6 +558,102 @@ function isSkipTransportEnabled(
   return skipDisposition?.enabled === true;
 }
 
+function createRetainedPrefetchLayoutSkipDisposition(input: {
+  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  isRscRequest: boolean;
+  retainedPrefetchLayoutIds: readonly string[] | undefined;
+}): ClientReuseManifestSkipDisposition | undefined {
+  if (
+    !input.isRscRequest ||
+    !input.retainedPrefetchLayoutIds ||
+    input.retainedPrefetchLayoutIds.length === 0 ||
+    !isAppElementsRecord(input.element)
+  ) {
+    return undefined;
+  }
+
+  const skippedEntryIds: string[] = [];
+  const seen = new Set<string>();
+  for (const layoutId of input.retainedPrefetchLayoutIds) {
+    if (seen.has(layoutId)) continue;
+    if (AppElementsWire.parseElementKey(layoutId)?.kind !== "layout") continue;
+    if (!Object.hasOwn(input.element, layoutId)) continue;
+    seen.add(layoutId);
+    skippedEntryIds.push(layoutId);
+  }
+
+  if (skippedEntryIds.length === 0) return undefined;
+  return {
+    code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
+    enabled: true,
+    mode: "skipRetainedPrefetchLayouts",
+    retainedOnlySkippedEntryIds: skippedEntryIds,
+    skippedEntryIds,
+  };
+}
+
+function mergeSkipDispositions(
+  first: ClientReuseManifestSkipDisposition | undefined,
+  second: ClientReuseManifestSkipDisposition | undefined,
+): ClientReuseManifestSkipDisposition | undefined {
+  if (first?.enabled !== true) return second ?? first;
+  if (second?.enabled !== true) return first;
+
+  const skippedEntryIds = [...first.skippedEntryIds];
+  const seen = new Set(skippedEntryIds);
+  for (const id of second.skippedEntryIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    skippedEntryIds.push(id);
+  }
+
+  const standardReuseIds = new Set<string>();
+  for (const disposition of [first, second]) {
+    if (disposition.code !== "SKIP_STATIC_LAYOUT_VERIFIED") continue;
+    for (const id of disposition.skippedEntryIds) standardReuseIds.add(id);
+  }
+
+  const retainedOnlySkippedEntryIds: string[] = [];
+  const seenRetainedOnly = new Set<string>();
+  for (const disposition of [first, second]) {
+    if (disposition.code !== "SKIP_RETAINED_PREFETCH_LAYOUTS") continue;
+    for (const id of disposition.retainedOnlySkippedEntryIds) {
+      if (standardReuseIds.has(id) || seenRetainedOnly.has(id)) continue;
+      seenRetainedOnly.add(id);
+      retainedOnlySkippedEntryIds.push(id);
+    }
+  }
+
+  if (
+    first.code !== "SKIP_RETAINED_PREFETCH_LAYOUTS" &&
+    second.code !== "SKIP_RETAINED_PREFETCH_LAYOUTS"
+  ) {
+    return {
+      code: "SKIP_STATIC_LAYOUT_VERIFIED",
+      enabled: true,
+      mode: "skipStaticLayout",
+      skippedEntryIds,
+    };
+  }
+  return {
+    code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
+    enabled: true,
+    mode: "skipRetainedPrefetchLayouts",
+    retainedOnlySkippedEntryIds,
+    skippedEntryIds,
+  };
+}
+
+function collectResponseLayoutIds(input: {
+  element: ReactNode | AppOutgoingElements;
+  layoutFlags: Readonly<Record<string, "s" | "d">>;
+}): readonly string[] {
+  const layoutIds = Object.keys(input.layoutFlags);
+  if (!isAppElementsRecord(input.element)) return layoutIds;
+  const element = input.element;
+  return layoutIds.filter((layoutId) => Object.hasOwn(element, layoutId));
+}
+
 /**
  * Wraps an RSC response body to report invalid dynamic usage errors after the
  * stream is fully consumed. In dev mode, errors from cookies()/headers() inside
@@ -700,7 +801,7 @@ export async function renderAppPageLifecycle(
     rootBoundaryId,
     routePattern: options.routePattern,
   });
-  const skipDisposition =
+  const clientReuseSkipDisposition =
     options.skipDisposition ??
     createRenderLifecycleSkipDisposition({
       artifactCompatibility,
@@ -711,6 +812,14 @@ export async function renderAppPageLifecycle(
       layoutFlags,
       layoutParamAccess: options.layoutParamAccess,
     });
+  const skipDisposition = mergeSkipDispositions(
+    clientReuseSkipDisposition,
+    createRetainedPrefetchLayoutSkipDisposition({
+      element: options.element,
+      isRscRequest: options.isRscRequest,
+      retainedPrefetchLayoutIds: options.retainedPrefetchLayoutIds,
+    }),
+  );
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
   const dynamicStaleTimeSeconds =
@@ -726,6 +835,10 @@ export async function renderAppPageLifecycle(
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
     skipDisposition: options.isRscRequest ? skipDisposition : undefined,
   });
+  const responseLayoutIds = collectResponseLayoutIds({
+    element: outgoingElement,
+    layoutFlags,
+  });
 
   const compileEnd = options.isProduction ? undefined : performance.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
@@ -737,7 +850,43 @@ export async function renderAppPageLifecycle(
   // standalone call would establish here is only effective if the caller has
   // an outer runWithRequestContext / runWithFetchDedupe scope keeping the ALS
   // store alive across that consumption.
+  let instantPrefetchShellWasAborted = false;
   let rscStream = await runWithFetchDedupe(async () => {
+    if (
+      (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL ||
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL) &&
+      options.prerenderToReadableStream
+    ) {
+      const {
+        beginInstantPrefetchShellFinalRender,
+        createInstantPrefetchShellState,
+        getInstantPrefetchShellReactSignal,
+        runWithInstantPrefetchShellState,
+        wasInstantPrefetchShellAborted,
+      } = await import("vinext/shims/instant-prefetch-shell");
+      const shellState = createInstantPrefetchShellState(
+        options.cleanPathname,
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
+          ? "static"
+          : "runtime",
+      );
+      // Instant shells stay open until every Cache Component already
+      // started by this render settles. The shared fallback-shell tracker then
+      // aborts only after completed branches have flushed, preserving cold
+      // cache fills without allowing request-time content beyond the selected
+      // static/runtime stage into the payload.
+      const pendingResult = runWithInstantPrefetchShellState(shellState, () =>
+        options.prerenderToReadableStream!(outgoingElement, {
+          onError: rscErrorTracker.onRenderError,
+          signal: getInstantPrefetchShellReactSignal(shellState),
+        }),
+      );
+      beginInstantPrefetchShellFinalRender(shellState);
+      const result = await pendingResult;
+      instantPrefetchShellWasAborted = wasInstantPrefetchShellAborted(shellState);
+      return result.prelude;
+    }
+
     if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
       const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
@@ -820,7 +969,9 @@ export async function renderAppPageLifecycle(
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCacheForSkipTransport
+    const shouldBypassRscCache =
+      shouldBypassRscCacheForSkipTransport || instantPrefetchShellWasAborted;
+    const rscResponsePolicy = shouldBypassRscCache
       ? { cacheControl: NO_STORE_CACHE_CONTROL }
       : resolveAppPageRscResponsePolicy({
           dynamicUsedDuringBuild,
@@ -834,6 +985,8 @@ export async function renderAppPageLifecycle(
         });
     if (shouldBypassRscCacheForSkipTransport) {
       options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
+    } else if (instantPrefetchShellWasAborted) {
+      options.isrDebug?.("RSC cache write skipped (partial instant shell)", options.cleanPathname);
     }
     const shouldEmitDynamicStaleTime =
       dynamicStaleTimeSeconds !== undefined &&
@@ -857,9 +1010,11 @@ export async function renderAppPageLifecycle(
       // the conservative pending expiry after decoding.
       dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime ? dynamicStaleTimeSeconds : undefined,
       isEdgeRuntime: options.isEdgeRuntime,
+      layoutIds: responseLayoutIds,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,
+      partialShell: instantPrefetchShellWasAborted,
       policy: rscResponsePolicy,
       renderedPathAndSearch: options.renderedPathAndSearch,
       requestCacheLife: requestCacheLifeForPrerender,
@@ -928,7 +1083,9 @@ export async function renderAppPageLifecycle(
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
-        options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+        options.isProduction && shouldCaptureRscForCacheMetadata && !instantPrefetchShellWasAborted
+          ? capturedRscDataRef.value
+          : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,

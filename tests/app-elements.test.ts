@@ -12,6 +12,7 @@ import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_LAYOUT_FLAGS_KEY,
+  APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
@@ -85,6 +86,7 @@ describe("AppElementsWire", () => {
       rootLayoutTreePath: "/",
       routeId: "route:/photos/42\0/feed",
       bfcacheSegmentIdentities: {},
+      retainedOnlySkippedLayoutIds: [],
       skippedLayoutIds: [],
       slotBindings: [],
       sourcePage: null,
@@ -349,6 +351,7 @@ describe("AppElementsWire", () => {
       rootLayoutTreePath: "/",
       routeId: "route:/dashboard",
       bfcacheSegmentIdentities: {},
+      retainedOnlySkippedLayoutIds: [],
       skippedLayoutIds: [],
       slotBindings: [],
       sourcePage: null,
@@ -682,6 +685,20 @@ describe("app elements payload helpers", () => {
         [APP_SKIPPED_LAYOUT_IDS_KEY]: value,
       }),
     ).toThrow(message);
+  });
+
+  it("rejects retained-only skip metadata outside the complete skip set", () => {
+    expect(() =>
+      readAppElementsMetadata({
+        ...normalizeAppElements({
+          [APP_ROOT_LAYOUT_KEY]: "/",
+          [APP_ROUTE_KEY]: "route:/dashboard",
+        }),
+        [APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/dashboard"],
+      }),
+    ).toThrow(
+      "[vinext] Invalid __retainedOnlySkippedLayoutIds in App Router payload: expected subset of __skippedLayoutIds",
+    );
   });
 
   it.each([
@@ -1063,7 +1080,37 @@ describe("buildOutgoingAppPayload", () => {
       expect(result[APP_ROUTE_KEY]).toBe("route:/dashboard");
       expect(result[APP_ROOT_LAYOUT_KEY]).toBe("/");
       expect(result[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/dashboard"]);
+      expect(result[APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY]).toBeUndefined();
       expect(AppElementsWire.readMetadata(result).skippedLayoutIds).toEqual(["layout:/dashboard"]);
+      expect(AppElementsWire.readMetadata(result).retainedOnlySkippedLayoutIds).toEqual([]);
+    }
+  });
+
+  it("marks retained-only omissions separately from the complete skipped-layout set", () => {
+    const result = buildOutgoingAppPayload({
+      element: {
+        [APP_ROUTE_KEY]: "route:/shared/two",
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        "layout:/shared": "shared-layout",
+        "page:/shared/two": "page-two",
+      },
+      layoutFlags: { "layout:/shared": "d" },
+      skipDisposition: {
+        code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
+        enabled: true,
+        mode: "skipRetainedPrefetchLayouts",
+        retainedOnlySkippedEntryIds: ["layout:/shared"],
+        skippedEntryIds: ["layout:/shared"],
+      },
+    });
+
+    expect(isAppElementsRecord(result)).toBe(true);
+    if (isAppElementsRecord(result)) {
+      expect(result[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/shared"]);
+      expect(result[APP_RETAINED_ONLY_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/shared"]);
+      expect(AppElementsWire.readMetadata(result).retainedOnlySkippedLayoutIds).toEqual([
+        "layout:/shared",
+      ]);
     }
   });
 
