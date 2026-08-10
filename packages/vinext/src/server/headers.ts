@@ -63,6 +63,12 @@ export const VINEXT_PARAMS_HEADER = "X-Vinext-Params";
 /** Deduplicated, sorted list of mounted layout slots for cache keying. */
 export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 
+/** Client hint listing layout entries already held by complete prefetch payloads. */
+export const VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER = "X-Vinext-Retained-Prefetch-Layouts";
+
+/** Layout entries physically present in this RSC response. */
+export const VINEXT_RSC_LAYOUT_IDS_HEADER = "X-Vinext-Rsc-Layout-Ids";
+
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 

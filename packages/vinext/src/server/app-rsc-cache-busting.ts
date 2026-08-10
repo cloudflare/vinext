@@ -14,6 +14,7 @@ import {
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
+  VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
@@ -39,6 +40,7 @@ export const VINEXT_RSC_VARY_HEADER = [
   NEXT_URL_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 ].join(", ");
 
@@ -49,6 +51,7 @@ type CreateRscRequestHeadersOptions = {
   clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  retainedPrefetchLayoutsHeader?: string | null;
   includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
   fetchPriority?: "auto" | "high" | "low";
@@ -174,6 +177,7 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 }
 
 type CreateCacheBustingInputOptions = {
+  includeRetainedPrefetchLayoutsHeader?: boolean;
   includeRenderModeHeader?: boolean;
 };
 
@@ -190,6 +194,9 @@ function createCacheBustingInput(
     headers.get(NEXT_URL_HEADER),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
     headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
+    ...(options.includeRetainedPrefetchLayoutsHeader === false
+      ? []
+      : [headers.get(VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER)]),
     ...(options.includeRenderModeHeader === false
       ? []
       : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
@@ -213,7 +220,10 @@ function computeLegacyRscCacheBustingSearchParam(headers: Headers): string {
 }
 
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeRenderModeHeader: false,
+    includeRetainedPrefetchLayoutsHeader: false,
+  });
   if (input === null) {
     return null;
   }
@@ -222,8 +232,20 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
 }
 
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeRenderModeHeader: false,
+    includeRetainedPrefetchLayoutsHeader: false,
+  });
   return input === null ? null : fnv1a64(input);
+}
+
+async function computePreviousRetainedLayoutlessRscCacheBustingSearchParam(
+  headers: Headers,
+): Promise<string> {
+  const input = createCacheBustingInput(headers, {
+    includeRetainedPrefetchLayoutsHeader: false,
+  });
+  return input === null ? "" : sha256CacheBustingHash(input);
 }
 
 function getSearchPairsWithoutRscCacheBusting(url: URL): string[] {
@@ -325,6 +347,13 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   }
 
   if (
+    options.retainedPrefetchLayoutsHeader !== undefined &&
+    options.retainedPrefetchLayoutsHeader !== null
+  ) {
+    headers.set(VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER, options.retainedPrefetchLayoutsHeader);
+  }
+
+  if (
     options.clientReuseManifestHeader !== undefined &&
     options.clientReuseManifestHeader !== null
   ) {
@@ -398,6 +427,9 @@ export async function resolveInvalidRscCacheBustingRequest(
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
+    acceptedHashes.add(
+      await computePreviousRetainedLayoutlessRscCacheBustingSearchParam(options.request.headers),
+    );
     if (
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
       null

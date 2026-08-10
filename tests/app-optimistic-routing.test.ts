@@ -8,6 +8,7 @@ import {
 import {
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
+  fillSkippedLayoutsFromElementSources,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
@@ -167,6 +168,36 @@ function createSettingsLoadingShellElements(): AppElements {
 }
 
 describe("App Router optimistic routing", () => {
+  it("fills layouts omitted from a retained-prefetch payload", () => {
+    const routeId = AppElementsWire.encodeRouteId("/shared/two", null);
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/shared");
+    const target: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/"), sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [sharedLayoutId],
+      [routeId]: createElement("main", null, "Page two"),
+    };
+    const retainedLayout = createElement("section", null, "Shared layout");
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [sharedLayoutId],
+        rootLayoutTreePath: "/shared",
+        routeId: AppElementsWire.encodeRouteId("/shared/one", null),
+      }),
+      [sharedLayoutId]: retainedLayout,
+    };
+
+    const filled = fillSkippedLayoutsFromElementSources(target, [source]);
+
+    expect(filled[sharedLayoutId]).toBe(retainedLayout);
+    expect(AppElementsWire.readMetadata(filled).skippedLayoutIds).toEqual([]);
+  });
+
   it("matches dynamic route params while keeping static siblings authoritative", () => {
     const routes = blogManifest();
 

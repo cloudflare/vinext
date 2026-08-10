@@ -295,6 +295,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     },
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
+  retainedPrefetchLayoutIds?: readonly string[];
   cleanPathname: string;
   displayPathname?: string;
   clearRequestContext: () => void;
@@ -1100,6 +1101,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     },
     element: pageBuildResult.element,
     clientReuseManifest: options.clientReuseManifest,
+    retainedPrefetchLayoutIds: options.retainedPrefetchLayoutIds,
     getDraftModeCookieHeader,
     getFontLinks: options.getFontLinks,
     getFontPreloads: options.getFontPreloads,

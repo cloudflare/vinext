@@ -744,6 +744,7 @@ export default createAppRscHandler({
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
     clientReuseManifest,
+    retainedPrefetchLayoutIds,
     cleanPathname,
     displayPathname,
     formState,
@@ -814,6 +815,7 @@ export default createAppRscHandler({
           isRscRequest,
           request,
           mountedSlotsHeader,
+          retainedPrefetchLayoutIds,
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
@@ -822,6 +824,7 @@ export default createAppRscHandler({
         }, layoutParamAccess, displayPathname, scriptNonce);
       },
       clientReuseManifest,
+      retainedPrefetchLayoutIds,
       cleanPathname,
       displayPathname,
       clearRequestContext() {

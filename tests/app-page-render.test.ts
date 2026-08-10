@@ -33,6 +33,7 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
+  VINEXT_RSC_LAYOUT_IDS_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
@@ -1924,6 +1925,7 @@ describe("layoutFlags injection into RSC payload", () => {
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
     routePattern?: string;
+    retainedPrefetchLayoutIds?: readonly string[];
     skipDisposition?: ClientReuseManifestSkipDisposition;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
@@ -1969,6 +1971,7 @@ describe("layoutFlags injection into RSC payload", () => {
         return createStream(["flight-data"]);
       },
       routePattern: overrides.routePattern ?? "/test",
+      retainedPrefetchLayoutIds: overrides.retainedPrefetchLayoutIds,
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
@@ -2022,6 +2025,37 @@ describe("layoutFlags injection into RSC payload", () => {
 
     await renderAppPageLifecycle(options);
     expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "d" });
+  });
+
+  it("omits retained dynamic layouts and marks the personalized response no-store", async () => {
+    const sharedLayoutId = "layout:/shared";
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        "layout:/": "root-layout",
+        [sharedLayoutId]: "shared-layout",
+        "page:/shared/two": "page-two",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      retainedPrefetchLayoutIds: [sharedLayoutId],
+      classification: {
+        getLayoutId: (index) => ["layout:/", sharedLayoutId][index],
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: true };
+        },
+      },
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    await response.text();
+
+    expect(Object.hasOwn(getCapturedElement(), sharedLayoutId)).toBe(false);
+    expect(getCapturedElement()[AppElementsWire.keys.skippedLayoutIds]).toEqual([sharedLayoutId]);
+    expect(response.headers.get(VINEXT_RSC_LAYOUT_IDS_HEADER)).toBe("layout:/");
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
   });
 
   it("injects empty __layoutFlags when classification is not provided (backward compat)", async () => {

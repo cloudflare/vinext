@@ -444,6 +444,7 @@ function prefetchUrl(
           getPrefetchInterceptionContext,
           getPrefetchCache,
           getPrefetchedUrls,
+          getRetainedPrefetchLayoutClaims,
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
@@ -487,6 +488,15 @@ function prefetchUrl(
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
+        const retainedLayoutClaims = getRetainedPrefetchLayoutClaims({
+          interceptionContext,
+          mountedSlotsHeader,
+          targetHref: fullHref,
+        });
+        const retainedPrefetchLayoutsHeader =
+          retainedLayoutClaims.length === 0
+            ? null
+            : retainedLayoutClaims.map((claim) => claim.layoutId).join(" ");
         const isInstantShellPrefetch = autoPrefetch.prefetchInstantShell;
         const isOptimisticRouteShellPrefetch =
           !autoPrefetch.cacheForNavigation && !isInstantShellPrefetch;
@@ -504,6 +514,7 @@ function prefetchUrl(
           interceptionContext,
           fetchPriority: priority,
           prefetchKind: mode === "full" ? "full" : "auto",
+          retainedPrefetchLayoutsHeader,
           renderMode: isInstantShellPrefetch
             ? autoPrefetch.prefetchInstantShell === "static"
               ? APP_RSC_RENDER_MODE_PREFETCH_STATIC_INSTANT_SHELL
@@ -561,6 +572,7 @@ function prefetchUrl(
           const shellHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
+            retainedPrefetchLayoutsHeader,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           });
           shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -595,6 +607,7 @@ function prefetchUrl(
                 cacheForNavigation: false,
                 optimisticRouteShell: true,
                 prefetchKind: "loading-shell",
+                retainedLayoutClaims,
               },
             );
             shellEntry = shellCache.get(shellCacheKey);
@@ -605,6 +618,7 @@ function prefetchUrl(
           const probeHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
+            retainedPrefetchLayoutsHeader,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           });
           probeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -675,6 +689,7 @@ function prefetchUrl(
                 const shellHeaders = createAppPrefetchRequestHeaders({
                   interceptionContext,
                   fetchPriority: priority,
+                  retainedPrefetchLayoutsHeader,
                   renderMode: undefined,
                 });
                 shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -712,6 +727,7 @@ function prefetchUrl(
                       cacheForNavigation: false,
                       optimisticRouteShell: false,
                       prefetchKind: "route-tree",
+                      retainedLayoutClaims,
                     },
                   );
                   shellEntry = shellCache.get(shellCacheKey);
@@ -767,6 +783,7 @@ function prefetchUrl(
                 : PREFETCH_CACHE_TTL,
             honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
             instantShell: isInstantShellPrefetch !== undefined,
+            promoteCompleteInstantShell: isInstantShellPrefetch === "runtime",
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isInstantShellPrefetch
               ? "instant-shell"
@@ -776,6 +793,9 @@ function prefetchUrl(
             prepareSnapshot: autoPrefetch.cacheForNavigation
               ? prepareNavigationPrefetchSnapshot
               : undefined,
+            retainedLayoutClaims,
+            retainedLayoutProvider:
+              (mode === "full" || mode === "full-after-shell") && autoPrefetch.cacheForNavigation,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
           },
         );

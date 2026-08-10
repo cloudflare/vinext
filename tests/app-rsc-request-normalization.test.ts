@@ -15,6 +15,7 @@ import { describe, it, expect } from "vite-plus/test";
 import {
   normalizeRscRequest,
   normalizeMountedSlotsHeader,
+  parseRetainedPrefetchLayoutIds,
   type NormalizedRscRequest,
 } from "../packages/vinext/src/server/app-rsc-request-normalization.js";
 import {
@@ -38,7 +39,34 @@ import {
   NEXT_URL_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+
+describe("normalizeRscRequest — retained prefetch layouts", () => {
+  it("accepts only bounded, unique layout IDs from RSC requests", () => {
+    const ids = Array.from({ length: 70 }, (_, index) => `layout:/section-${index}`);
+    const parsed = parseRetainedPrefetchLayoutIds(
+      ["page:/not-a-layout", "layout:/shared", "layout:/shared", ...ids].join(" "),
+    );
+
+    expect(parsed).toHaveLength(64);
+    expect(parsed.slice(0, 3)).toEqual([
+      "layout:/shared",
+      "layout:/section-0",
+      "layout:/section-1",
+    ]);
+  });
+
+  it("ignores retained layout hints on non-RSC requests", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req("/dashboard", { [VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER]: "layout:/shared" }),
+        "",
+      ),
+    );
+    expect(result.retainedPrefetchLayoutIds).toEqual([]);
+  });
+});
 
 function prefetchRouterStateHeader(pathAndSearch: string, routeId = "route:/dashboard"): string {
   return encodeURIComponent(JSON.stringify({ pathAndSearch, routeId }));

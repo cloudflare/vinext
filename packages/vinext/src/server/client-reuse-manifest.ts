@@ -154,6 +154,12 @@ export type ClientReuseManifestSkipDisposition =
       enabled: true;
       mode: "skipStaticLayout";
       skippedEntryIds: readonly string[];
+    }>
+  | Readonly<{
+      code: "SKIP_RETAINED_PREFETCH_LAYOUTS";
+      enabled: true;
+      mode: "skipRetainedPrefetchLayouts";
+      skippedEntryIds: readonly string[];
     }>;
 
 export type ClientReuseManifestParseResult =

@@ -15,6 +15,9 @@ export type InstantPrefetchShellState = {
 const instantPrefetchShellAls = getOrCreateAls<InstantPrefetchShellState>(
   "vinext.instantPrefetchShell.als",
 );
+const instantPrefetchShellStageAls = getOrCreateAls<"runtime" | "static">(
+  "vinext.instantPrefetchShell.stageAls",
+);
 
 const useCacheAlsKey = Symbol.for("vinext.cacheRuntime.contextAls");
 const unstableCacheAlsKey = Symbol.for("vinext.unstableCache.als");
@@ -114,6 +117,11 @@ export function runWithInstantPrefetchShellState<T>(
   return instantPrefetchShellAls.run(state, fn);
 }
 
+/** Scope request-data suspension to the segment currently rendered by React. */
+export function runWithInstantPrefetchShellStage<T>(stage: "runtime" | "static", fn: () => T): T {
+  return instantPrefetchShellStageAls.run(stage, fn);
+}
+
 export function trackInstantPrefetchShellCacheTask<T>(
   fn: () => Promise<T>,
   _cacheVariant: string,
@@ -164,7 +172,8 @@ export function suspendInstantPrefetchConnection(): Promise<never> | null {
  */
 export function suspendStaticInstantPrefetchRequestData(expression: string): Promise<never> | null {
   const state = instantPrefetchShellAls.getStore();
-  if (!state || state.stage !== "static") return null;
+  const stage = instantPrefetchShellStageAls.getStore() ?? state?.stage;
+  if (!state || stage !== "static") return null;
   // Public cache scopes own the request data they admitted into their key.
   // Suspending those reads would leave the tracked cache task waiting for the
   // static-stage abort while the abort itself waits for that task to settle.
@@ -182,7 +191,8 @@ export function suspendStaticInstantPrefetchRequestData(expression: string): Pro
  */
 export function suspendStaticInstantPrefetchPrivateCache(): Promise<never> | null {
   const state = instantPrefetchShellAls.getStore();
-  if (!state || state.stage !== "static") return null;
+  const stage = instantPrefetchShellStageAls.getStore() ?? state?.stage;
+  if (!state || stage !== "static") return null;
   state.hasDynamicBoundary = true;
   scheduleAbortIfReady(state);
   return makeHangingPromise(

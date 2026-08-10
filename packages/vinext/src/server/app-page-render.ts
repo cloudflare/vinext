@@ -194,6 +194,7 @@ type RenderAppPageLifecycleOptions = {
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   scriptNonce?: string;
   clientReuseManifest?: ClientReuseManifestParseResult;
+  retainedPrefetchLayoutIds?: readonly string[];
   skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
   renderedPathAndSearch?: string | null;
@@ -557,6 +558,71 @@ function isSkipTransportEnabled(
   return skipDisposition?.enabled === true;
 }
 
+function createRetainedPrefetchLayoutSkipDisposition(input: {
+  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  isRscRequest: boolean;
+  retainedPrefetchLayoutIds: readonly string[] | undefined;
+}): ClientReuseManifestSkipDisposition | undefined {
+  if (
+    !input.isRscRequest ||
+    !input.retainedPrefetchLayoutIds ||
+    input.retainedPrefetchLayoutIds.length === 0 ||
+    !isAppElementsRecord(input.element)
+  ) {
+    return undefined;
+  }
+
+  const skippedEntryIds: string[] = [];
+  const seen = new Set<string>();
+  for (const layoutId of input.retainedPrefetchLayoutIds) {
+    if (seen.has(layoutId)) continue;
+    if (AppElementsWire.parseElementKey(layoutId)?.kind !== "layout") continue;
+    if (!Object.hasOwn(input.element, layoutId)) continue;
+    seen.add(layoutId);
+    skippedEntryIds.push(layoutId);
+  }
+
+  if (skippedEntryIds.length === 0) return undefined;
+  return {
+    code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
+    enabled: true,
+    mode: "skipRetainedPrefetchLayouts",
+    skippedEntryIds,
+  };
+}
+
+function mergeSkipDispositions(
+  first: ClientReuseManifestSkipDisposition | undefined,
+  second: ClientReuseManifestSkipDisposition | undefined,
+): ClientReuseManifestSkipDisposition | undefined {
+  if (first?.enabled !== true) return second ?? first;
+  if (second?.enabled !== true) return first;
+
+  const skippedEntryIds = [...first.skippedEntryIds];
+  const seen = new Set(skippedEntryIds);
+  for (const id of second.skippedEntryIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    skippedEntryIds.push(id);
+  }
+  return {
+    code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
+    enabled: true,
+    mode: "skipRetainedPrefetchLayouts",
+    skippedEntryIds,
+  };
+}
+
+function collectResponseLayoutIds(input: {
+  element: ReactNode | AppOutgoingElements;
+  layoutFlags: Readonly<Record<string, "s" | "d">>;
+}): readonly string[] {
+  const layoutIds = Object.keys(input.layoutFlags);
+  if (!isAppElementsRecord(input.element)) return layoutIds;
+  const element = input.element;
+  return layoutIds.filter((layoutId) => Object.hasOwn(element, layoutId));
+}
+
 /**
  * Wraps an RSC response body to report invalid dynamic usage errors after the
  * stream is fully consumed. In dev mode, errors from cookies()/headers() inside
@@ -704,7 +770,7 @@ export async function renderAppPageLifecycle(
     rootBoundaryId,
     routePattern: options.routePattern,
   });
-  const skipDisposition =
+  const clientReuseSkipDisposition =
     options.skipDisposition ??
     createRenderLifecycleSkipDisposition({
       artifactCompatibility,
@@ -715,6 +781,14 @@ export async function renderAppPageLifecycle(
       layoutFlags,
       layoutParamAccess: options.layoutParamAccess,
     });
+  const skipDisposition = mergeSkipDispositions(
+    clientReuseSkipDisposition,
+    createRetainedPrefetchLayoutSkipDisposition({
+      element: options.element,
+      isRscRequest: options.isRscRequest,
+      retainedPrefetchLayoutIds: options.retainedPrefetchLayoutIds,
+    }),
+  );
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
   const dynamicStaleTimeSeconds =
@@ -729,6 +803,10 @@ export async function renderAppPageLifecycle(
       : {}),
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
     skipDisposition: options.isRscRequest ? skipDisposition : undefined,
+  });
+  const responseLayoutIds = collectResponseLayoutIds({
+    element: outgoingElement,
+    layoutFlags,
   });
 
   const compileEnd = options.isProduction ? undefined : performance.now();
@@ -901,6 +979,7 @@ export async function renderAppPageLifecycle(
       // the conservative pending expiry after decoding.
       dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime ? dynamicStaleTimeSeconds : undefined,
       isEdgeRuntime: options.isEdgeRuntime,
+      layoutIds: responseLayoutIds,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,

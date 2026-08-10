@@ -16,7 +16,10 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
-import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
@@ -105,6 +108,19 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
       `/photos/42?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
     );
+  });
+
+  it("varies RSC requests by retained prefetch layouts", async () => {
+    const withoutRetained = createRscRequestHeaders();
+    const withRetained = createRscRequestHeaders({
+      retainedPrefetchLayoutsHeader: "layout:/shared",
+    });
+
+    expect(withRetained.get(VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER)).toBe("layout:/shared");
+    await expect(computeRscCacheBustingSearchParam(withRetained)).resolves.not.toBe(
+      await computeRscCacheBustingSearchParam(withoutRetained),
+    );
+    expect(VINEXT_RSC_VARY_HEADER).toContain(VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER);
   });
 
   it("keeps router state but omits the prefetch header for a full prefetch", () => {
@@ -313,7 +329,7 @@ describe("App Router RSC cache-busting", () => {
     // Mirrors Next.js App Router's base Vary header:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Retained-Prefetch-Layouts, X-Vinext-Rsc-Render-Mode",
     );
     expect(VINEXT_RSC_VARY_HEADER.split(", ")).not.toContain("Accept");
   });

@@ -24,6 +24,8 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { INITIAL_BFCACHE_ID, PUBLIC_INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire, type AppElements } from "../server/app-elements.js";
+import type { VinextLinkPrefetchRoute } from "../client/vinext-next-data.js";
+import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { resolveManifestNavigationInterceptionContext } from "../server/app-browser-interception-context.js";
 import {
   createExternalHistoryStatePreservingMetadata,
@@ -47,6 +49,7 @@ import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
+  VINEXT_RSC_LAYOUT_IDS_HEADER,
   VINEXT_RSC_PARTIAL_SHELL_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
@@ -316,9 +319,13 @@ export type CachedRscResponse = {
   contentType: string;
   dynamicStaleTimeSeconds?: number;
   expiresAt?: number;
+  layoutIds?: readonly string[];
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
   preparedElements?: AppElements;
+  /** Exact in-memory providers authorized to fill layouts omitted from this payload. */
+  retainedLayoutClaims?: readonly RetainedPrefetchLayoutClaim[];
+  retainedLayoutProvider?: boolean;
   renderedPathAndSearch: string | null;
   serverStaleTime?: ServerStaleTime;
   url: string;
@@ -348,10 +355,25 @@ export type PrefetchCacheEntry = {
   pending?: Promise<void>;
   preparedElements?: AppElements;
   prefetchKind?: PrefetchCacheKind;
+  /** Complete full/runtime-prefetch payloads whose physical layouts may back later payloads. */
+  retainedLayoutProvider?: boolean;
+  /** Provider entries that own layouts omitted from this payload. */
+  retainedLayoutDependencies?: readonly PrefetchCacheEntry[];
+  /** Layout-to-provider mapping used to reconstruct omitted layouts. */
+  retainedLayoutClaims?: readonly RetainedPrefetchLayoutClaim[];
   searchAgnosticShell?: boolean;
   size?: number;
   timestamp: number;
 };
+
+type RouteParams = Record<string, string | string[]>;
+
+export type RetainedPrefetchLayoutClaim = Readonly<{
+  layoutId: string;
+  provider: PrefetchCacheEntry;
+}>;
+
+const retainedLayoutRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
 export function getCurrentInterceptionContext(): string | null {
   if (isServer) {
@@ -394,6 +416,7 @@ export function createAppPrefetchRequestHeaders(options: {
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   prefetchKind?: "auto" | "full";
+  retainedPrefetchLayoutsHeader?: string | null;
   renderMode?: AppRscRenderMode;
 }): Headers {
   const prefetchRouterState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
@@ -424,6 +447,97 @@ export function getPrefetchedUrls(): Set<string> {
     window.__VINEXT_RSC_PREFETCHED_URLS__ = new Set<string>();
   }
   return window.__VINEXT_RSC_PREFETCHED_URLS__;
+}
+
+function isRouteParams(value: unknown): value is RouteParams {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  for (const entry of Object.values(value)) {
+    if (typeof entry === "string") continue;
+    if (Array.isArray(entry) && entry.every((item) => typeof item === "string")) continue;
+    return false;
+  }
+  return true;
+}
+
+function parseParamsHeader(value: string | null): RouteParams | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(value));
+    return isRouteParams(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function areParamValuesEqual(
+  left: string | string[] | undefined,
+  right: string | string[] | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return false;
+  if (typeof left === "string" || typeof right === "string") return left === right;
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function getLayoutParamNames(layoutId: string): readonly string[] | null {
+  const parsed = AppElementsWire.parseElementKey(layoutId);
+  if (parsed?.kind !== "layout") return null;
+
+  const names: string[] = [];
+  for (const segment of parsed.treePath.split("/")) {
+    if (segment.startsWith("[[...") && segment.endsWith("]]")) {
+      names.push(segment.slice(5, -2));
+    } else if (segment.startsWith("[...") && segment.endsWith("]")) {
+      names.push(segment.slice(4, -1));
+    } else if (segment.startsWith("[") && segment.endsWith("]")) {
+      names.push(segment.slice(1, -1));
+    }
+  }
+  return names;
+}
+
+function resolveTargetParamsFromHref(targetHref: string | undefined): RouteParams | null {
+  if (isServer || !targetHref) return null;
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) return null;
+
+  let url: URL;
+  try {
+    url = new URL(targetHref, window.location.href);
+  } catch {
+    return null;
+  }
+  if (url.origin !== window.location.origin) return null;
+
+  const routeHref = `${stripBasePath(url.pathname, __basePath)}${url.search}`;
+  return matchRouteWithTrie(routeHref, routes, retainedLayoutRouteTrieCache)?.params ?? null;
+}
+
+function canRetainLayoutForTargetParams(
+  layoutId: string,
+  snapshot: CachedRscResponse,
+  targetParams: RouteParams | null,
+): boolean {
+  const paramNames = getLayoutParamNames(layoutId);
+  if (paramNames === null) return false;
+  if (paramNames.length === 0) return true;
+  if (targetParams === null) return false;
+
+  const sourceParams = parseParamsHeader(snapshot.paramsHeader);
+  if (sourceParams === null) return false;
+  return paramNames.every((name) => areParamValuesEqual(sourceParams[name], targetParams[name]));
+}
+
+function parseLayoutIdsHeader(value: string | null): readonly string[] | undefined {
+  if (!value) return undefined;
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const token of value.trim().split(/\s+/)) {
+    if (!token || seen.has(token)) continue;
+    if (AppElementsWire.parseElementKey(token)?.kind !== "layout") continue;
+    seen.add(token);
+    ids.push(token);
+  }
+  return ids.length === 0 ? undefined : ids;
 }
 
 function isStaleTimeSeconds(value: unknown): value is number {
@@ -500,19 +614,22 @@ function resolvePrefetchedRscResponseExpiresAt(
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
   }
-  // Next's runtime-prefetch stale time comes from the completed cacheLife
-  // claim. `staleTimes.dynamic` independently bounds visited/BFCache reuse and
-  // is only the prefetch fallback when the render made no cacheLife claim.
+  // Automatic prefetches must respect the route's dynamic bound even when a
+  // nested cache scope contributed a longer cacheLife claim. Explicit full
+  // prefetches (and complete runtime instant shells) opt into the static floor.
+  const dynamicSeconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
+    ? cached.dynamicStaleTimeSeconds
+    : undefined;
+  if (honorDynamicStaleTime && dynamicSeconds !== undefined) {
+    return timestamp + dynamicSeconds * 1000;
+  }
   const serverSeconds = serverStaleTimeSeconds(cached.serverStaleTime);
   if (serverSeconds !== undefined) {
     return timestamp + serverSeconds * 1000;
   }
-  const seconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
-    ? cached.dynamicStaleTimeSeconds
-    : undefined;
   // No signal: the static prefetch window, floored like Next's
   // `STATIC_STALETIME_MS = getStaleTimeMs(config)`.
-  if (seconds === undefined) {
+  if (dynamicSeconds === undefined) {
     return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
   }
   // An automatic prefetch takes a dynamic render's bound verbatim, including
@@ -521,9 +638,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   // reuse. `prefetch={true}` is an explicit opt-in to caching dynamic content,
   // and Next reuses a `full` prefetch for the floored static window, so it
   // keeps the floor.
-  return honorDynamicStaleTime
-    ? timestamp + seconds * 1000
-    : timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
+  return timestamp + Math.max(dynamicSeconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
@@ -574,6 +689,98 @@ function parsePrefetchCacheKey(cacheKey: string): {
   };
 }
 
+function normalizeRetainedPrefetchTargetUrl(href: string | undefined): string | null {
+  if (isServer || !href) return null;
+  try {
+    const url = new URL(href, window.location.href);
+    stripRscCacheBustingSearchParam(url);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+export function getRetainedPrefetchLayoutClaims(
+  options: {
+    interceptionContext?: string | null;
+    mountedSlotsHeader?: string | null;
+    targetHref?: string;
+    targetParams?: RouteParams | null;
+  } = {},
+): readonly RetainedPrefetchLayoutClaim[] {
+  const claims: RetainedPrefetchLayoutClaim[] = [];
+  const seenLayouts = new Set<string>();
+  const seenEntries = new Set<PrefetchCacheEntry>();
+  const now = Date.now();
+  const targetParams = options.targetParams ?? resolveTargetParamsFromHref(options.targetHref);
+  const normalizedTargetUrl = normalizeRetainedPrefetchTargetUrl(options.targetHref);
+  const interceptionContext = options.interceptionContext ?? null;
+  const mountedSlotsHeader = options.mountedSlotsHeader ?? null;
+
+  for (const [cacheKey, entry] of getPrefetchCache()) {
+    if (seenEntries.has(entry)) continue;
+    seenEntries.add(entry);
+    if (entry.retainedLayoutProvider !== true || entry.cacheForNavigation === false) continue;
+    if (entry.outcome !== "cache-seeded" || !entry.snapshot) continue;
+    if (resolvePrefetchCacheEntryExpiresAt(entry) <= now) continue;
+
+    const source = parsePrefetchCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (
+      normalizedTargetUrl !== null &&
+      normalizeRscCacheLookupUrl(source.rscUrl) === normalizedTargetUrl
+    ) {
+      continue;
+    }
+
+    for (const layoutId of entry.snapshot.layoutIds ?? []) {
+      if (seenLayouts.has(layoutId)) continue;
+      if (!canRetainLayoutForTargetParams(layoutId, entry.snapshot, targetParams)) continue;
+      seenLayouts.add(layoutId);
+      claims.push({ layoutId, provider: entry });
+    }
+  }
+
+  return claims;
+}
+
+export function getLiveRetainedPrefetchLayoutClaims(
+  claims: readonly RetainedPrefetchLayoutClaim[] | undefined,
+  requiredLayoutIds?: ReadonlySet<string>,
+): readonly RetainedPrefetchLayoutClaim[] {
+  if (!claims || claims.length === 0) return [];
+  const liveEntries = new Set(getPrefetchCache().values());
+  const seenLayouts = new Set<string>();
+  const now = Date.now();
+  return claims.filter((claim) => {
+    if (seenLayouts.has(claim.layoutId)) return false;
+    if (requiredLayoutIds && !requiredLayoutIds.has(claim.layoutId)) return false;
+    const provider = claim.provider;
+    if (!liveEntries.has(provider)) return false;
+    if (provider.retainedLayoutProvider !== true || provider.cacheForNavigation === false) {
+      return false;
+    }
+    if (provider.outcome !== "cache-seeded" || !provider.snapshot) return false;
+    if (resolvePrefetchCacheEntryExpiresAt(provider) <= now) return false;
+    if (!provider.snapshot.layoutIds?.includes(claim.layoutId)) return false;
+    seenLayouts.add(claim.layoutId);
+    return true;
+  });
+}
+
+export function getRetainedPrefetchLayoutIdsHeader(
+  options: {
+    interceptionContext?: string | null;
+    mountedSlotsHeader?: string | null;
+    targetHref?: string;
+    targetParams?: RouteParams | null;
+  } = {},
+): string | null {
+  const ids = getRetainedPrefetchLayoutClaims(options).map((claim) => claim.layoutId);
+  return ids.length === 0 ? null : ids.join(" ");
+}
+
 function isPrefetchCacheEntryCompatibleWithMountedSlots(
   entry: PrefetchCacheEntry,
   mountedSlotsHeader: string | null,
@@ -591,6 +798,38 @@ function isPrefetchCacheEntryCompatibleWithMountedSlots(
   return (entry.snapshot?.mountedSlotsHeader ?? null) === mountedSlotsHeader;
 }
 
+function arePrefetchLayoutDependenciesSatisfied(
+  cache: Map<string, PrefetchCacheEntry>,
+  entry: PrefetchCacheEntry,
+): boolean {
+  const dependencies = entry.retainedLayoutDependencies;
+  if (!dependencies || dependencies.length === 0) return true;
+
+  const liveEntries = new Set(cache.values());
+  const now = Date.now();
+  return dependencies.every(
+    (provider) =>
+      liveEntries.has(provider) &&
+      provider.retainedLayoutProvider === true &&
+      provider.cacheForNavigation !== false &&
+      provider.outcome === "cache-seeded" &&
+      provider.snapshot !== undefined &&
+      resolvePrefetchCacheEntryExpiresAt(provider) > now,
+  );
+}
+
+function isPrefetchCacheEntryReusableForNavigation(
+  cache: Map<string, PrefetchCacheEntry>,
+  entry: PrefetchCacheEntry,
+  mountedSlotsHeader: string | null,
+): boolean {
+  return (
+    entry.cacheForNavigation !== false &&
+    isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader) &&
+    arePrefetchLayoutDependenciesSatisfied(cache, entry)
+  );
+}
+
 function findPrefetchCacheEntryForNavigation(
   rscUrl: string,
   interceptionContext: string | null,
@@ -605,8 +844,7 @@ function findPrefetchCacheEntryForNavigation(
     const exactEntry = cache.get(exactCacheKey);
     if (
       exactEntry &&
-      exactEntry.cacheForNavigation !== false &&
-      isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
+      isPrefetchCacheEntryReusableForNavigation(cache, exactEntry, mountedSlotsHeader)
     ) {
       return { cacheKey: exactCacheKey, entry: exactEntry };
     }
@@ -620,13 +858,11 @@ function findPrefetchCacheEntryForNavigation(
   if (normalizedTargets.size === 0) return null;
 
   for (const [cacheKey, entry] of cache) {
-    if (entry.cacheForNavigation === false) continue;
-
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     const normalizedSource = normalizeRscCacheLookupUrl(source.rscUrl);
     if (normalizedSource === null || !normalizedTargets.has(normalizedSource)) continue;
-    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (!isPrefetchCacheEntryReusableForNavigation(cache, entry, mountedSlotsHeader)) continue;
 
     return { cacheKey, entry };
   }
@@ -947,6 +1183,20 @@ function deletePrefetchCacheEntry(
     clearPrefetchInvalidation(entry);
     entry.onInvalidateCallbacks = undefined;
   }
+
+  const dependents: Array<[string, PrefetchCacheEntry]> = [];
+  const seen = new Set<PrefetchCacheEntry>();
+  for (const [dependentKey, dependentEntry] of cache) {
+    if (seen.has(dependentEntry)) continue;
+    seen.add(dependentEntry);
+    if (dependentEntry.retainedLayoutDependencies?.includes(entry)) {
+      dependents.push([dependentKey, dependentEntry]);
+    }
+  }
+  for (const [dependentKey, dependentEntry] of dependents) {
+    if (cache.get(dependentKey) !== dependentEntry) continue;
+    deletePrefetchCacheEntry(cache, prefetched, dependentKey, dependentEntry, notify);
+  }
 }
 
 export function discardLearningOnlyPrefetchCacheEntry(
@@ -1087,6 +1337,12 @@ export function seedPrefetchResponseSnapshot(
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    preparedElements: snapshot.preparedElements,
+    retainedLayoutDependencies: [
+      ...new Set((snapshot.retainedLayoutClaims ?? []).map((claim) => claim.provider)),
+    ],
+    retainedLayoutClaims: snapshot.retainedLayoutClaims,
+    retainedLayoutProvider: snapshot.retainedLayoutProvider === true,
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,
@@ -1208,6 +1464,7 @@ export function createCachedRscResponseSnapshot(
     ...(completedDynamicStaleTimeSeconds !== undefined ? { completedDynamicStaleTimeSeconds } : {}),
     contentType: response.headers.get("content-type") ?? VINEXT_RSC_CONTENT_TYPE,
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
+    layoutIds: parseLayoutIdsHeader(response.headers.get(VINEXT_RSC_LAYOUT_IDS_HEADER)),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
@@ -1288,6 +1545,9 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   if (cached.paramsHeader != null) {
     headers.set(VINEXT_PARAMS_HEADER, cached.paramsHeader);
   }
+  if (cached.layoutIds && cached.layoutIds.length > 0) {
+    headers.set(VINEXT_RSC_LAYOUT_IDS_HEADER, cached.layoutIds.join(" "));
+  }
   if (cached.renderedPathAndSearch != null) {
     headers.set(
       VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
@@ -1309,12 +1569,17 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
  */
 export async function prepareNavigationPrefetchSnapshot(
   snapshot: CachedRscResponse,
+  retainedLayoutClaims: readonly RetainedPrefetchLayoutClaim[] = snapshot.retainedLayoutClaims ??
+    [],
 ): Promise<AppElements> {
   const preparePrefetchResponse = getNavigationRuntime()?.functions.preparePrefetchResponse;
   if (!preparePrefetchResponse) {
     throw new Error("App Router prefetch preparation is unavailable");
   }
-  return (await preparePrefetchResponse(restoreRscResponse(snapshot))) as AppElements;
+  return (await preparePrefetchResponse(
+    restoreRscResponse(snapshot),
+    retainedLayoutClaims,
+  )) as AppElements;
 }
 
 /**
@@ -1335,9 +1600,15 @@ export function prefetchRscResponse(
     fallbackTtlMs?: number;
     honorDynamicStaleTime?: boolean;
     instantShell?: boolean;
+    promoteCompleteInstantShell?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
-    prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
+    prepareSnapshot?: (
+      snapshot: CachedRscResponse,
+      retainedLayoutClaims?: readonly RetainedPrefetchLayoutClaim[],
+    ) => Promise<AppElements>;
+    retainedLayoutClaims?: readonly RetainedPrefetchLayoutClaim[];
+    retainedLayoutProvider?: boolean;
     searchAgnosticShell?: boolean;
   } = {},
 ): void {
@@ -1365,6 +1636,9 @@ export function prefetchRscResponse(
           ? "loading-shell"
           : "navigation"),
     searchAgnosticShell: behavior.searchAgnosticShell === true,
+    retainedLayoutDependencies: [],
+    retainedLayoutClaims: behavior.retainedLayoutClaims ?? [],
+    retainedLayoutProvider: behavior.retainedLayoutProvider === true,
     timestamp: now,
   };
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
@@ -1373,14 +1647,28 @@ export function prefetchRscResponse(
   entry.pending = fetchPromise
     .then(async (response) => {
       if (response.ok) {
-        if (response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER) === "1") {
+        const isPartialInstantShell = response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER) === "1";
+        if (isPartialInstantShell) {
           entry.cacheForNavigation = false;
           entry.partialSuspenseShell = true;
+        } else if (entry.instantShell === true && behavior.promoteCompleteInstantShell === true) {
+          entry.cacheForNavigation = true;
+          entry.retainedLayoutProvider = true;
         }
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
         const previousSize = getPrefetchCacheEntrySize(entry);
-        entry.snapshot = snapshot;
+        const physicallyPresentLayouts = new Set(snapshot.layoutIds ?? []);
+        entry.retainedLayoutClaims = (behavior.retainedLayoutClaims ?? []).filter(
+          (claim) => !physicallyPresentLayouts.has(claim.layoutId),
+        );
+        entry.retainedLayoutDependencies = [];
+        entry.snapshot = {
+          ...snapshot,
+          ...(entry.retainedLayoutClaims.length > 0
+            ? { retainedLayoutClaims: entry.retainedLayoutClaims }
+            : {}),
+        };
         entry.size = snapshot.buffer.byteLength;
         adjustPrefetchCacheByteSize(cache, entry.size - previousSize);
         entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
@@ -1391,14 +1679,60 @@ export function prefetchRscResponse(
           // data and is never navigation-consumable. Keep it on the prefetch
           // freshness lattice so another search string can reuse the shell;
           // the later navigation response still honors dynamicStaleTime.
-          behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
+          behavior.promoteCompleteInstantShell === true && !isPartialInstantShell
+            ? false
+            : behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
         );
-        if (behavior.prepareSnapshot) {
+        const prepareSnapshot =
+          behavior.prepareSnapshot ??
+          (behavior.promoteCompleteInstantShell === true && !isPartialInstantShell
+            ? prepareNavigationPrefetchSnapshot
+            : undefined);
+        if (prepareSnapshot) {
           try {
-            const preparedElements = await behavior.prepareSnapshot(snapshot);
+            const preparedElements = await prepareSnapshot(
+              entry.snapshot,
+              entry.retainedLayoutClaims,
+            );
             if (cache.get(cacheKey) !== entry) return;
             entry.preparedElements = preparedElements;
+            let usedClaims: readonly RetainedPrefetchLayoutClaim[] | null = null;
+            try {
+              const skippedLayoutIds = new Set(
+                AppElementsWire.readMetadata(preparedElements).skippedLayoutIds,
+              );
+              usedClaims = entry.retainedLayoutClaims.filter((claim) =>
+                skippedLayoutIds.has(claim.layoutId),
+              );
+            } catch {
+              // Custom/internal preparation callbacks may return a partial test
+              // value rather than decoded AppElements. Without wire metadata,
+              // do not invent dependencies from the advertised claim superset.
+            }
+            if (usedClaims !== null) {
+              entry.retainedLayoutClaims = usedClaims;
+              entry.retainedLayoutDependencies = [
+                ...new Set(usedClaims.map((claim) => claim.provider)),
+              ];
+              const {
+                retainedLayoutClaims: _advertisedRetainedLayoutClaims,
+                ...snapshotWithoutClaims
+              } = entry.snapshot;
+              entry.snapshot =
+                usedClaims.length > 0
+                  ? { ...snapshotWithoutClaims, retainedLayoutClaims: usedClaims }
+                  : snapshotWithoutClaims;
+            }
           } catch {
+            if ((entry.retainedLayoutClaims?.length ?? 0) > 0) {
+              // A response that omitted layouts is only reusable after those
+              // exact providers have been resolved successfully. If a provider
+              // expired or was evicted during the request, discard the entry so
+              // navigation performs a fresh RSC request instead of consuming an
+              // incomplete payload and falling back to a document reload.
+              deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
+              return;
+            }
             // Preparation is an acceleration only. Keep the buffered response
             // so navigation can decode it through the normal path.
           }
@@ -1552,6 +1886,7 @@ function consumeMatchedPrefetchResponse(
     retainPrefetchInvalidationAfterConsume(entry);
     deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
     const snapshot = entry.snapshot;
+    const retainedLayoutProvider = entry.retainedLayoutProvider === true;
     // Only synthesize `expiresAt` onto the returned snapshot when the entry (or
     // its snapshot) already carried one. Entries that never had an explicit
     // expiry must round-trip unchanged so callers/tests can assert the raw
@@ -1561,10 +1896,15 @@ function consumeMatchedPrefetchResponse(
         ...snapshot,
         expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
         ...(entry.preparedElements ? { preparedElements: entry.preparedElements } : {}),
+        ...(retainedLayoutProvider ? { retainedLayoutProvider: true } : {}),
       };
     }
-    return entry.preparedElements
-      ? { ...snapshot, preparedElements: entry.preparedElements }
+    return entry.preparedElements || retainedLayoutProvider
+      ? {
+          ...snapshot,
+          ...(entry.preparedElements ? { preparedElements: entry.preparedElements } : {}),
+          ...(retainedLayoutProvider ? { retainedLayoutProvider: true } : {}),
+        }
       : snapshot;
   }
 
@@ -2683,10 +3023,20 @@ const _appRouter: AppRouterInstance = {
     // or mounted-slot key.
     const interceptionContext = getPrefetchInterceptionContext(fullHref);
     const mountedSlotsHeader = getMountedSlotsHeader();
+    const retainedLayoutClaims = getRetainedPrefetchLayoutClaims({
+      interceptionContext,
+      mountedSlotsHeader,
+      targetHref: fullHref,
+    });
+    const retainedPrefetchLayoutsHeader =
+      retainedLayoutClaims.length === 0
+        ? null
+        : retainedLayoutClaims.map((claim) => claim.layoutId).join(" ");
     const headers = createAppPrefetchRequestHeaders({
       fetchPriority: "low",
       interceptionContext,
       mountedSlotsHeader: mountedSlotsHeader || null,
+      retainedPrefetchLayoutsHeader,
     });
     const setup = beginPrefetchSetup(fullHref);
     void (async () => {
@@ -2818,12 +3168,16 @@ const _appRouter: AppRouterInstance = {
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
+              retainedLayoutClaims,
+              retainedLayoutProvider: kind === "full",
             }
           : {
               cacheForNavigation: false,
               instantShell: policy.prefetchInstantShell !== undefined,
+              promoteCompleteInstantShell: policy.prefetchInstantShell === "runtime",
               optimisticRouteShell: !policy.prefetchInstantShell,
               prefetchKind: policy.prefetchInstantShell ? "instant-shell" : "navigation",
+              retainedLayoutClaims,
             },
       );
     })()

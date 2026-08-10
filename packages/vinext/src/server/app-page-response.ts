@@ -11,6 +11,7 @@ import {
   VINEXT_PARAMS_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_LAYOUT_IDS_HEADER,
   VINEXT_RSC_PARTIAL_SHELL_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_TIMING_HEADER,
@@ -79,6 +80,7 @@ type BuildAppPageRscResponseOptions = {
   /** The render is being captured for a cache write but streams before its cacheLife resolves. */
   staleTimePending?: boolean;
   isEdgeRuntime?: boolean;
+  layoutIds?: readonly string[];
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
@@ -343,6 +345,9 @@ export function buildAppPageRscResponse(
   }
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
+  }
+  if (options.layoutIds && options.layoutIds.length > 0) {
+    headers.set(VINEXT_RSC_LAYOUT_IDS_HEADER, options.layoutIds.join(" "));
   }
   applyDynamicStaleTimeHeader(headers, options.dynamicStaleTimeSeconds);
   if (options.staleTimePending) {

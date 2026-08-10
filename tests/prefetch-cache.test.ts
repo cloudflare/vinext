@@ -20,8 +20,10 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_PARTIAL_SHELL_HEADER,
+  VINEXT_RSC_LAYOUT_IDS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
@@ -43,6 +45,8 @@ let peekPrefetchResponseForNavigation: Navigation["peekPrefetchResponseForNaviga
 let appRouterInstance: Navigation["appRouterInstance"];
 let consumePrefetchResponseForNavigation: Navigation["consumePrefetchResponseForNavigation"];
 let seedPrefetchResponseSnapshot: Navigation["seedPrefetchResponseSnapshot"];
+let getRetainedPrefetchLayoutClaims: Navigation["getRetainedPrefetchLayoutClaims"];
+let getLiveRetainedPrefetchLayoutClaims: Navigation["getLiveRetainedPrefetchLayoutClaims"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -82,6 +86,8 @@ beforeEach(async () => {
   appRouterInstance = nav.appRouterInstance;
   consumePrefetchResponseForNavigation = nav.consumePrefetchResponseForNavigation;
   seedPrefetchResponseSnapshot = nav.seedPrefetchResponseSnapshot;
+  getRetainedPrefetchLayoutClaims = nav.getRetainedPrefetchLayoutClaims;
+  getLiveRetainedPrefetchLayoutClaims = nav.getLiveRetainedPrefetchLayoutClaims;
 });
 
 afterEach(() => {
@@ -1410,11 +1416,12 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
   });
 
-  it("uses completed cacheLife for prefetch expiry without changing the dynamic BFCache bound", async () => {
+  it("keeps the automatic prefetch expiry within the dynamic BFCache bound", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
-    // Runtime-prefetch freshness comes from cacheLife, while staleTimes.dynamic
-    // independently bounds visited/BFCache reuse.
+    // An automatic prefetch must not outlive staleTimes.dynamic just because a
+    // nested cacheLife claim is longer. Full and complete runtime prefetches
+    // pass honorDynamicStaleTime: false and retain their longer cache window.
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const rscUrl = "/cache-life-prefetch.rsc";
@@ -1449,7 +1456,7 @@ describe("prefetch cache eviction", () => {
     await getPrefetchCache().get(rscUrl)?.pending;
 
     const snapshot = getPrefetchCache().get(rscUrl)?.snapshot;
-    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 240_000);
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
     expect(snapshot?.serverStaleTime).toEqual({ kind: "resolved", seconds: 240 });
     expect(resolveCachedRscResponseTtlMs(snapshot!, 300_000)).toBe(30_000);
   });
@@ -2111,6 +2118,277 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse("/prepared", null, null)?.preparedElements).toBe(
       preparedElements,
     );
+  });
+
+  it("promotes a complete runtime instant shell despite dynamic stale time zero", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/instant-complete?_rsc=instant";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+            [VINEXT_RSC_LAYOUT_IDS_HEADER]: "layout:/runtime",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      {
+        cacheForNavigation: false,
+        instantShell: true,
+        promoteCompleteInstantShell: true,
+      },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(entry?.cacheForNavigation).toBe(true);
+    expect(entry?.retainedLayoutProvider).toBe(true);
+    expect(entry?.expiresAt).toBe(now + 30_000);
+    expect(consumePrefetchResponse("/instant-complete", null, null)).not.toBeNull();
+  });
+
+  it("keeps a partial runtime instant shell learning-only", async () => {
+    const rscUrl = "/instant-partial?_rsc=instant";
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      {
+        cacheForNavigation: false,
+        instantShell: true,
+        promoteCompleteInstantShell: true,
+      },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(getPrefetchCache().get(rscUrl)?.cacheForNavigation).toBe(false);
+    expect(consumePrefetchResponse("/instant-partial", null, null)).toBeNull();
+  });
+
+  it("retains dynamic layouts when their own params match despite differing page params", () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        isDynamic: true,
+        patternParts: ["projects", ":projectId", ":pageId"],
+      },
+    ];
+    const cache = getPrefetchCache();
+    const layoutId = "layout:/projects/[projectId]";
+    const provider: PrefetchCacheEntry = {
+      cacheForNavigation: true,
+      expiresAt: Date.now() + 60_000,
+      outcome: "cache-seeded",
+      retainedLayoutProvider: true,
+      snapshot: {
+        buffer: new ArrayBuffer(1),
+        contentType: "text/x-component",
+        layoutIds: [layoutId],
+        mountedSlotsHeader: null,
+        paramsHeader: encodeURIComponent(JSON.stringify({ projectId: "alpha", pageId: "one" })),
+        renderedPathAndSearch: null,
+        url: "/projects/alpha/one",
+      },
+      timestamp: Date.now(),
+    };
+    cache.set(AppElementsWire.encodeCacheKey("/projects/alpha/one", null), provider);
+
+    expect(
+      getRetainedPrefetchLayoutClaims({ targetHref: "/projects/alpha/two" }).map(
+        (claim) => claim.layoutId,
+      ),
+    ).toEqual([layoutId]);
+    expect(getRetainedPrefetchLayoutClaims({ targetHref: "/projects/beta/two" })).toEqual([]);
+  });
+
+  it("restores retained layouts only from the exact live provider claim", () => {
+    const cache = getPrefetchCache();
+    const layoutId = "layout:/account";
+    const snapshot = {
+      buffer: new ArrayBuffer(1),
+      contentType: "text/x-component",
+      layoutIds: [layoutId],
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: "/account",
+    };
+    const expiredClaimedProvider: PrefetchCacheEntry = {
+      cacheForNavigation: true,
+      expiresAt: Date.now() - 1,
+      outcome: "cache-seeded",
+      retainedLayoutProvider: true,
+      snapshot,
+      timestamp: Date.now() - 60_000,
+    };
+    const freshUnclaimedProvider: PrefetchCacheEntry = {
+      cacheForNavigation: true,
+      expiresAt: Date.now() + 60_000,
+      outcome: "cache-seeded",
+      retainedLayoutProvider: true,
+      snapshot: { ...snapshot, url: "/account/fresh" },
+      timestamp: Date.now(),
+    };
+    cache.set("/account/expired", expiredClaimedProvider);
+    cache.set("/account/fresh", freshUnclaimedProvider);
+
+    expect(
+      getLiveRetainedPrefetchLayoutClaims([{ layoutId, provider: expiredClaimedProvider }]),
+    ).toEqual([]);
+    expect(
+      getLiveRetainedPrefetchLayoutClaims([{ layoutId, provider: freshUnclaimedProvider }]),
+    ).toEqual([{ layoutId, provider: freshUnclaimedProvider }]);
+  });
+
+  it("tracks dependencies only for layouts the server actually skipped", async () => {
+    const cache = getPrefetchCache();
+    const usedLayoutId = "layout:/shared";
+    const ignoredLayoutId = "layout:/unrelated";
+    const createProvider = (layoutId: string): PrefetchCacheEntry => ({
+      cacheForNavigation: true,
+      expiresAt: Date.now() + 60_000,
+      outcome: "cache-seeded",
+      retainedLayoutProvider: true,
+      snapshot: {
+        buffer: new ArrayBuffer(1),
+        contentType: "text/x-component",
+        layoutIds: [layoutId],
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: layoutId,
+      },
+      timestamp: Date.now(),
+    });
+    const usedProvider = createProvider(usedLayoutId);
+    const ignoredProvider = createProvider(ignoredLayoutId);
+    cache.set("/shared-provider", usedProvider);
+    cache.set("/unrelated-provider", ignoredProvider);
+
+    const preparedElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interception: null,
+        interceptionContext: null,
+        layoutIds: [usedLayoutId],
+        rootLayoutTreePath: "/shared",
+        routeId: "route:/target",
+        slotBindings: [],
+        sourcePage: "/target/page",
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: [usedLayoutId],
+    } as never;
+    const targetUrl = "/target?_rsc=target";
+    prefetchRscResponse(
+      targetUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      {
+        prepareSnapshot: async () => preparedElements,
+        retainedLayoutClaims: [
+          { layoutId: usedLayoutId, provider: usedProvider },
+          { layoutId: ignoredLayoutId, provider: ignoredProvider },
+        ],
+      },
+    );
+    await cache.get(targetUrl)?.pending;
+
+    expect(cache.get(targetUrl)?.retainedLayoutClaims).toEqual([
+      { layoutId: usedLayoutId, provider: usedProvider },
+    ]);
+    expect(cache.get(targetUrl)?.retainedLayoutDependencies).toEqual([usedProvider]);
+  });
+
+  it("discards a retained-layout prefetch when provider reconstruction fails", async () => {
+    const cache = getPrefetchCache();
+    const layoutId = "layout:/shared";
+    const provider: PrefetchCacheEntry = {
+      cacheForNavigation: true,
+      expiresAt: Date.now() + 60_000,
+      outcome: "cache-seeded",
+      retainedLayoutProvider: true,
+      snapshot: {
+        buffer: new ArrayBuffer(1),
+        contentType: "text/x-component",
+        layoutIds: [layoutId],
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/provider",
+      },
+      timestamp: Date.now(),
+    };
+    cache.set("/provider", provider);
+    const targetUrl = "/target?_rsc=failed-provider";
+    prefetchRscResponse(
+      targetUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      {
+        prepareSnapshot: async () => {
+          throw new Error("provider expired during preparation");
+        },
+        retainedLayoutClaims: [{ layoutId, provider }],
+      },
+    );
+    await cache.get(targetUrl)?.pending;
+
+    expect(cache.has(targetUrl)).toBe(false);
+  });
+
+  it("evicts payloads that depend on an evicted retained-layout provider", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const snapshot = {
+      buffer: new ArrayBuffer(1),
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: "/provider",
+    };
+    const provider: PrefetchCacheEntry = {
+      cacheForNavigation: true,
+      expiresAt: Date.now() + 60_000,
+      outcome: "cache-seeded",
+      retainedLayoutProvider: true,
+      snapshot: { ...snapshot, layoutIds: ["layout:/shared"] },
+      timestamp: Date.now(),
+    };
+    const dependent: PrefetchCacheEntry = {
+      cacheForNavigation: true,
+      expiresAt: Date.now() + 60_000,
+      outcome: "cache-seeded",
+      retainedLayoutDependencies: [provider],
+      snapshot: { ...snapshot, url: "/dependent" },
+      timestamp: Date.now(),
+    };
+    cache.set("/provider", provider);
+    cache.set("/dependent", dependent);
+    prefetched.add("/provider");
+    prefetched.add("/dependent");
+
+    expect(consumePrefetchResponse("/provider", null, null)).not.toBeNull();
+    expect(cache.has("/dependent")).toBe(false);
   });
 
   it("preserves the original expiry when consuming a prefetched response", () => {

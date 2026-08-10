@@ -425,6 +425,40 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
   return elements;
 }
 
+export function fillSkippedLayoutsFromElementSources(
+  elements: AppElements,
+  sources: Iterable<AppElements | null | undefined>,
+): AppElements {
+  const metadata = AppElementsWire.readMetadata(elements);
+  const missingLayoutIds = metadata.skippedLayoutIds.filter(
+    (layoutId) => !Object.hasOwn(elements, layoutId),
+  );
+  if (missingLayoutIds.length === 0) return elements;
+
+  const missing = new Set(missingLayoutIds);
+  const merged: Record<string, AppElementValue> = { ...elements };
+  for (const sourceElements of sources) {
+    if (missing.size === 0) break;
+    if (!sourceElements) continue;
+    for (const layoutId of missing) {
+      if (!Object.hasOwn(sourceElements, layoutId)) continue;
+      merged[layoutId] = sourceElements[layoutId];
+      missing.delete(layoutId);
+    }
+  }
+
+  if (missing.size === missingLayoutIds.length) return elements;
+  const remainingSkippedLayoutIds = metadata.skippedLayoutIds.filter((layoutId) =>
+    missing.has(layoutId),
+  );
+  if (remainingSkippedLayoutIds.length > 0) {
+    merged[AppElementsWire.keys.skippedLayoutIds] = remainingSkippedLayoutIds;
+  } else {
+    delete merged[AppElementsWire.keys.skippedLayoutIds];
+  }
+  return merged as AppElements;
+}
+
 export function resolveOptimisticNavigationPayload(options: {
   basePath: string;
   href: string;
