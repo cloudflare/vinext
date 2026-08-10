@@ -4,6 +4,7 @@ import {
   beginPprFallbackShellFinalRender,
   createPprFallbackShellState,
   createPprFallbackShellSuspensePromise,
+  delayPprFallbackShellRequestApi,
   isPprFallbackShellAbortError,
   markPprFallbackShellRuntimeEligibleComponent,
   preparePprFallbackShellFinalRender,
@@ -29,6 +30,22 @@ async function waitForCondition(predicate: () => boolean, message: string): Prom
 }
 
 describe("ppr fallback shell cache task tracking", () => {
+  it("does not build request API diagnostics outside fallback-shell renders", () => {
+    let expressionBuilt = false;
+
+    expect(
+      delayPprFallbackShellRequestApi(
+        "fetch",
+        () => {
+          expressionBuilt = true;
+          return 'fetch("https://example.com/data")';
+        },
+        () => Promise.resolve(new Response()),
+      ),
+    ).toBeNull();
+    expect(expressionBuilt).toBe(false);
+  });
+
   it("suspends a private-cache invocation before executing it in the static stage", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: [],

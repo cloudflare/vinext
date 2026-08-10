@@ -288,7 +288,7 @@ export function shouldPprFallbackShellSuspendRequestApi(
 
 export function delayPprFallbackShellRequestApi<T>(
   api: "connection" | "cookies" | "fetch" | "headers" | "searchParams",
-  expression: string,
+  expression: string | (() => string),
   resolveValue: () => T | PromiseLike<T>,
 ): Promise<T> | null {
   const state = getPprFallbackShellState();
@@ -296,7 +296,10 @@ export function delayPprFallbackShellRequestApi<T>(
     return delayCachedNavigationValueForState(state, resolveValue);
   }
   if (!shouldPprFallbackShellSuspendRequestApi(api)) return null;
-  return createPprFallbackShellSuspensePromiseForState<T>(state!, expression);
+  return createPprFallbackShellSuspensePromiseForState<T>(
+    state!,
+    typeof expression === "function" ? expression() : expression,
+  );
 }
 
 export function delayCachedNavigationValueForState<T>(

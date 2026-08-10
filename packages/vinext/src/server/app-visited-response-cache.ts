@@ -32,6 +32,13 @@ export function startAuthoritativeCachedNavigationResponse<T>(
   return startResponse();
 }
 
+export function cancelCachedNavigationRuntimeStage(
+  runtimeStage: { readable: ReadableStream<Uint8Array> } | null,
+): void {
+  if (runtimeStage === null) return;
+  void runtimeStage.readable.cancel().catch(() => {});
+}
+
 export function createVisitedResponseCacheEntry(options: {
   elements?: AppElements;
   fallbackTtlMs?: number;

@@ -640,7 +640,7 @@ function delayUncachedFetchForStaticStage(
 ): Promise<Response> | null {
   return delayPprFallbackShellRequestApi(
     "fetch",
-    `fetch(${JSON.stringify(getFetchObservationUrl(input))})`,
+    () => `fetch(${JSON.stringify(getFetchObservationUrl(input))})`,
     fetchValue,
   );
 }

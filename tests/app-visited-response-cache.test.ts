@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
+  cancelCachedNavigationRuntimeStage,
   canPublishCachedNavigationRuntimeStage,
   createCachedNavigationStageCacheKey,
   createVisitedResponseCacheEntry,
@@ -27,6 +28,19 @@ function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): Cache
 }
 
 describe("visited response cache freshness", () => {
+  it("cancels a discarded cached-navigation runtime stream", async () => {
+    let canceled = false;
+    const readable = new ReadableStream<Uint8Array>({
+      cancel() {
+        canceled = true;
+      },
+    });
+
+    cancelCachedNavigationRuntimeStage({ readable });
+
+    await vi.waitFor(() => expect(canceled).toBe(true));
+  });
+
   it("scopes cached-navigation fills to mounted parallel-slot topology", () => {
     const base = createCachedNavigationStageCacheKey("/target", null, null);
     const modal = createCachedNavigationStageCacheKey("/target", null, "slot:modal:/target");

@@ -128,6 +128,7 @@ import {
 } from "./app-browser-state.js";
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
+  cancelCachedNavigationRuntimeStage,
   canPublishCachedNavigationRuntimeStage,
   createVisitedResponseCacheEntry,
   createCachedNavigationStageCacheKey,
@@ -204,7 +205,8 @@ import {
 import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
 
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
-const HAS_CACHED_NAVIGATIONS = !!process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS;
+const CACHED_NAVIGATIONS_ENV = String(process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS);
+const HAS_CACHED_NAVIGATIONS = CACHED_NAVIGATIONS_ENV === "true" || CACHED_NAVIGATIONS_ENV === "1";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
@@ -916,6 +918,7 @@ function publishEmbeddedCachedNavigationStages(options: {
   const data = readEmbeddedCachedNavigationData(options.elements);
   if (!data) return;
   const fillGeneration = ++cachedNavigationFillGeneration;
+  let runtimeStageConsumed = data.runtimeStage === null;
   void Promise.resolve(data.staticStage)
     .then(async (staticStage) => {
       if (
@@ -961,6 +964,7 @@ function publishEmbeddedCachedNavigationStages(options: {
       });
 
       if (data.runtimeStage === null) return;
+      runtimeStageConsumed = true;
       const [runtimeBuffer, runtimePartial, runtimeStaleTimeSeconds] = await Promise.all([
         new Response(data.runtimeStage.readable).arrayBuffer(),
         Promise.resolve(data.runtimeStage.partial),
@@ -994,7 +998,10 @@ function publishEmbeddedCachedNavigationStages(options: {
         supportsRuntimeStage: true,
       });
     })
-    .catch(() => {});
+    .catch(() => {})
+    .finally(() => {
+      if (!runtimeStageConsumed) cancelCachedNavigationRuntimeStage(data.runtimeStage);
+    });
 }
 
 // Build the absolute current-document href the early-intent planner compares
