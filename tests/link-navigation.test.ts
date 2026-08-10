@@ -11,6 +11,7 @@ import {
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
@@ -1924,7 +1925,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("prefetches a loading shell when a search-agnostic shell already covers another query", async () => {
+  it("probes only route identity when a search-agnostic shell covers another query", async () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
@@ -1963,13 +1964,9 @@ describe("Link prefetch scheduling", () => {
           priority: "low",
         }),
       );
-      const fetchedInput = result.fetch.mock.calls[0]?.[0];
-      expect(typeof fetchedInput).toBe("string");
-      const fetchedUrl = new URL(fetchedInput as string, "https://example.com");
-      expect(fetchedUrl.searchParams.get("searchParam")).toBe("c_PPR");
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
-        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
       );
       const entries = Array.from(getPrefetchCache().values());
       expect(entries.some((entry) => entry.searchAgnosticShell === true)).toBe(true);
@@ -2130,19 +2127,19 @@ describe("Link prefetch scheduling", () => {
         const init = call[1] as RequestInit | undefined;
         return (
           (init?.headers as Headers | undefined)?.get?.(VINEXT_RSC_RENDER_MODE_HEADER) ===
-          APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+          APP_RSC_RENDER_MODE_PREFETCH_EMPTY
         );
       });
       const shellFetchInit = shellFetchCall?.[1] as RequestInit | undefined;
       expect(
         (shellFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
     } finally {
       result.restoreNodeEnv();
     }
   });
 
-  it("uses a loading shell before full-prefetching explicit links with search params", async () => {
+  it("uses an empty route probe before full-prefetching explicit links with search params", async () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
@@ -2168,7 +2165,7 @@ describe("Link prefetch scheduling", () => {
       const shellFetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       expect(
         (shellFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
 
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[1],
@@ -2184,6 +2181,67 @@ describe("Link prefetch scheduling", () => {
       expect(
         (fullFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
       ).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("uses an empty HEAD probe for a reusable client-rewrite alias", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/rewrite-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_CLIENT_REWRITES__: {
+          afterFiles: [],
+          beforeFiles: [
+            {
+              source: "/rewrite-prefetch-target",
+              destination: "/viewport-prefetch-target",
+            },
+          ],
+          fallback: [],
+        },
+      },
+    });
+
+    try {
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const { createRscRequestUrl } =
+        await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+      const cachedHeaders = navigation.createAppPrefetchRequestHeaders({
+        interceptionContext: null,
+        fetchPriority: "low",
+        prefetchKind: "auto",
+      });
+      cachedHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      cachedHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+      const rewrittenRscUrl = await createRscRequestUrl("/viewport-prefetch-target", cachedHeaders);
+      navigation.prefetchRscResponse(
+        rewrittenRscUrl,
+        Promise.resolve(new Response("cached rewritten payload")),
+        null,
+        null,
+      );
+      await navigation.getPrefetchCache().get(rewrittenRscUrl)?.pending;
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/rewrite-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          method: "HEAD",
+          priority: "low",
+        }),
+      );
+      const probeHeaders = result.fetch.mock.calls[0]?.[1]?.headers as Headers | undefined;
+      expect(probeHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+      );
     } finally {
       result.restoreNodeEnv();
     }

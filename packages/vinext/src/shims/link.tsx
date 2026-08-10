@@ -427,6 +427,7 @@ function prefetchUrl(
           {
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+            APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           },
           headersModule,
@@ -519,7 +520,7 @@ function prefetchUrl(
           prefetchKind: mode === "full" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
             ? hasSearchAgnosticShell
-              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+              ? APP_RSC_RENDER_MODE_PREFETCH_EMPTY
               : isAutomaticSearchParamShell
                 ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
                 : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
@@ -574,7 +575,12 @@ function prefetchUrl(
           const shellHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
-            renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            // Ordinary full prefetches only need route/rewrite identity before
+            // the complete response. Reserve the deep loading shell for the
+            // dynamic-on-hover path that actually merges and reuses it.
+            renderMode: requireFresh
+              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+              : APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
           });
           shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
@@ -662,7 +668,10 @@ function prefetchUrl(
           const probeHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
-            renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            // This HEAD only learns the source URL's rewrite identity. Avoid
+            // executing the deeper loading-shell page render whose body would
+            // be discarded anyway.
+            renderMode: APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
           });
           probeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           probeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
