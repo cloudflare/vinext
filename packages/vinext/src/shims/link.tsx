@@ -499,6 +499,7 @@ function prefetchUrl(
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
+          hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
           peekPrefetchResponseForNavigation,
@@ -603,10 +604,11 @@ function prefetchUrl(
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
-            return;
-          }
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+        ) {
+          return;
         }
         const prefetchWasSuperseded = () =>
           navigationEpoch !== linkPrefetchNavigationEpoch || destinationIsCurrent();
@@ -978,7 +980,18 @@ function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boole
   instance.isVisible = isVisible;
   if (isVisible) {
     visibleLinkPrefetches.add(instance);
-    if (instance.viewportPrefetched) return;
+    // Reusable/full viewport prefetches are one-shot for this Link identity;
+    // visible-link pings handle their explicit invalidation path. Automatic
+    // learning-only App prefetches must re-enter the freshness-aware cache
+    // gate so an observer callback can refresh them after response expiry.
+    if (
+      instance.viewportPrefetched &&
+      (instance.routerMode === "pages" ||
+        instance.mode !== "auto" ||
+        canAutoPrefetchFullAppRoute(instance.href))
+    ) {
+      return;
+    }
     if (instance.routerMode === "app") {
       scheduleVisibleAppPrefetch(instance);
     } else {
@@ -1313,7 +1326,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const internalRef = useRef<HTMLAnchorElement | null>(null);
   // React Activity tears down effects while a BFCache entry is hidden but
   // preserves component state and refs. Keep the one-shot viewport-prefetch
-  // bit here so restoring the entry does not treat the same Link as new.
+  // bit here for Pages and reusable App payloads. Automatic learning-only App
+  // payloads may still re-enter their freshness-aware cache gate after expiry.
   const viewportPrefetchedStateRef = useRef<LinkViewportPrefetchState>({
     identity: null,
     prefetched: false,

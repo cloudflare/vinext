@@ -87,6 +87,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   delete (globalThis as any).window;
   delete (globalThis as any).fetch;
 });
@@ -708,7 +709,10 @@ describe("prefetch cache eviction", () => {
       expect(
         fetch.mock.calls.filter(([input]) => toRscUrlString(input).includes("prefetch-policy")),
       ).toHaveLength(1);
-      await settlePrefetchSetup();
+      await waitForPrefetchSetup(() => {
+        const entries = Array.from(getCacheComponentsPrefetchCache().values());
+        return entries.length === 2 && entries.every((entry) => entry.pending === undefined);
+      });
       const entries = Array.from(getCacheComponentsPrefetchCache().entries());
       const partialEntry = entries.find(([key]) => key.startsWith("/partial?"))?.[1];
       const completeEntry = entries.find(([key]) => key.startsWith("/complete?"))?.[1];
@@ -1105,6 +1109,60 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).toBeNull();
   });
 
+  it("dedupes pending and fresh Cache Components encoded dynamic router.prefetch calls but refetches after expiry", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, patternParts: [":slug"], isDynamic: true },
+    ];
+    const firstResponse = createDeferredResponse();
+    const fetch = vi
+      .fn<(input: RequestInfo | URL) => Promise<Response>>()
+      .mockImplementationOnce(() => firstResponse.promise)
+      .mockResolvedValue(
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+      );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    // A concurrent call shares the exact pending learning-only entry.
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await settlePrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    firstResponse.resolve(
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    await waitForPrefetchSetup(() => {
+      const entry = getPrefetchCache().values().next().value;
+      return entry?.outcome === "cache-seeded" && entry.pending === undefined;
+    });
+    const entry = getPrefetchCache().values().next().value;
+    expect(entry?.cacheForNavigation).toBe(false);
+    expect(entry?.expiresAt).toEqual(expect.any(Number));
+
+    // A settled but fresh learning-only entry still suppresses a duplicate.
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await settlePrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    vi.spyOn(Date, "now").mockReturnValue((entry?.expiresAt ?? 0) + 1);
+    appRouterInstance.prefetch("/foo%2Fbar");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // Let the replacement response finish snapshotting so its shared
+    // prefetch-queue slot is released before the next test starts. Merely
+    // observing the fetch call leaves that cleanup in a later microtask.
+    await waitForPrefetchSetup(() => {
+      const refreshedEntry = getPrefetchCache().values().next().value;
+      return refreshedEntry?.outcome === "cache-seeded" && refreshedEntry.pending === undefined;
+    });
+  });
+
   it("promotes a queued prefetch when navigation consumes it (#2722)", async () => {
     // Every route is navigation-reusable, so the queued 5th prefetch is one a
     // navigation will actually try to await.
@@ -1407,7 +1465,7 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
   });
 
-  it("keeps the prefetch floor for an explicit full prefetch of dynamic content", async () => {
+  it("keeps the configured static window for an explicit full prefetch of dynamic content", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
     // "Because the link is prefetched with prefetch={true}, we should be able
@@ -1418,24 +1476,50 @@ describe("prefetch cache eviction", () => {
     vi.spyOn(Date, "now").mockReturnValue(now);
     const rscUrl = "/full-prefetch-dynamic.rsc";
 
+    const staticStaleTimeMs = 180_000;
     prefetchRscResponse(
       rscUrl,
       Promise.resolve(
         new Response("flight", {
           headers: {
             "content-type": "text/x-component",
-            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+            [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
           },
         }),
       ),
       null,
       null,
       undefined,
-      { fallbackTtlMs: PREFETCH_CACHE_TTL, honorDynamicStaleTime: false },
+      { fallbackTtlMs: staticStaleTimeMs, honorDynamicStaleTime: false },
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 
-    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + staticStaleTimeMs);
+  });
+
+  it("keeps a nonzero completed dynamic bound for an explicit full prefetch", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/full-prefetch-dynamic-override.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "60",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: 300_000, honorDynamicStaleTime: false },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 60_000);
   });
 
   it("uses completed cacheLife for prefetch expiry without changing the dynamic BFCache bound", async () => {
