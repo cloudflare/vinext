@@ -57,7 +57,9 @@ import {
   getPprFallbackShellState,
   isPprFallbackShellCacheTaskIgnored,
   runWithPprFallbackShellInputEncodingAbort,
+  throwIfPprFallbackShellCacheTaskStale,
   trackPprFallbackShellCacheTask,
+  trackPprFallbackShellCacheTaskUntil,
 } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { markUseCacheFunction } from "./internal/use-cache-function.js";
@@ -570,10 +572,20 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
   const requestMemoKey = (): void => {};
 
-  const cachedFn = async (...args: TArgs): Promise<TResult> => {
+  const invokeCachedFn = async (releaseSetupTask: () => void, ...args: TArgs): Promise<TResult> => {
+    const fallbackShellState = getPprFallbackShellState();
+    const fallbackShellAbortSignal = fallbackShellState?.abortController.signal;
     const rsc = await getRscModule();
+    throwIfPprFallbackShellCacheTaskStale();
+    fallbackShellAbortSignal?.throwIfAborted();
     const keySeed = getUseCacheKeySeed();
     const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
+    throwIfPprFallbackShellCacheTaskStale();
+    fallbackShellAbortSignal?.throwIfAborted();
+    // Next.js does not begin the main cache read until after the cache key has
+    // been encoded. Tasky arguments may never finish encoding, so only module
+    // loading and capture decryption belong to the synchronous reservation.
+    releaseSetupTask();
     const hasCaptureEnvelope = captures !== undefined;
     const admittedArgs =
       options.argumentCount === undefined
@@ -596,8 +608,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // from key). Falls back to stableStringify when RSC is unavailable.
     let cacheKey: string;
     let inputEncodingAbortController: AbortController | undefined;
-    const fallbackShellState = getPprFallbackShellState();
     try {
+      throwIfPprFallbackShellCacheTaskStale();
+      fallbackShellAbortSignal?.throwIfAborted();
       // During a fallback-shell render, framework params may be hanging values.
       // Exclude them from the provisional layout key so the cached layout gets
       // to execute: an actual params read marks the in-flight cache task
@@ -633,7 +646,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         // values are included in the cache key.
         const encodeInput = () =>
           rsc.encodeReply(processedArgs, {
-            signal: fallbackShellState?.abortController.signal,
+            signal: fallbackShellAbortSignal,
             temporaryReferences: tempRefs,
           });
         // Next.js tracks argument-level dynamic access before beginning a
@@ -650,6 +663,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               encodeInput,
             )
           : await encodeInput();
+        throwIfPprFallbackShellCacheTaskStale();
+        fallbackShellAbortSignal?.throwIfAborted();
         if (inputEncodingAbortController?.signal.aborted) {
           return createPprFallbackShellSuspensePromise<TResult>('dynamic "use cache"')!;
         }
@@ -657,21 +672,26 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           appLayoutClientTemporaryReferences = tempRefs;
           encodedAppLayoutArgs = encoded;
         }
-        cacheKey = buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
+        const encodedKey = await replyToCacheKey(encoded);
+        throwIfPprFallbackShellCacheTaskStale();
+        fallbackShellAbortSignal?.throwIfAborted();
+        cacheKey = buildUseCacheKey(id, keySeed, encodedKey);
       } else {
         const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
         cacheKey = buildUseCacheKey(id, keySeed, argsKey);
       }
     } catch {
-      if (
-        inputEncodingAbortController?.signal.aborted ||
-        fallbackShellState?.abortController.signal.aborted
-      ) {
+      throwIfPprFallbackShellCacheTaskStale();
+      fallbackShellAbortSignal?.throwIfAborted();
+      if (inputEncodingAbortController?.signal.aborted) {
         return createPprFallbackShellSuspensePromise<TResult>('dynamic "use cache"')!;
       }
       // Non-serializable arguments — run without caching
       return fn(...directCallArgs);
     }
+
+    throwIfPprFallbackShellCacheTaskStale();
+    fallbackShellAbortSignal?.throwIfAborted();
 
     return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
       // The JSON fallback cannot represent layout slot holes. Unit-test and
@@ -979,6 +999,16 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       return refreshAndStore();
     }, cacheVariant);
   };
+
+  // Reserve fallback readiness through lazy module loading and capture
+  // decryption. Argument encoding is intentionally untracked, matching Next:
+  // tasky inputs may never settle, and the execution cache task begins only
+  // after a cache key exists.
+  const cachedFn = (...args: TArgs): Promise<TResult> =>
+    trackPprFallbackShellCacheTaskUntil(
+      (releaseSetupTask) => invokeCachedFn(releaseSetupTask, ...args),
+      cacheVariant,
+    );
 
   // Preserve the original function's arity on the wrapper. The wrapper is
   // declared as `(...args)` (arity 0), which hides the original signature.

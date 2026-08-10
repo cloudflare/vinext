@@ -392,6 +392,112 @@ export function readPrerenderDataCacheEntries(prerenderDir: string): PersistedFe
   return entries;
 }
 
+/**
+ * Process-local read-through view of immutable build snapshots for handlers
+ * that cannot atomically seed an entry by timestamp. Runtime data remains
+ * authoritative: snapshots are consulted only after a stable delegate miss
+ * and are never written into the delegate.
+ *
+ * This intentionally does not claim distributed invalidation semantics. A
+ * shared custom handler needs timestamp-aware `seed()` support for that; the
+ * legacy get/set/tag API cannot distinguish an absent value from one invalidated
+ * by another process without risking resurrection of stale build data.
+ */
+class PrerenderDataCacheRuntimeOverlay implements CacheHandler {
+  private readonly snapshot = new MemoryCacheHandler();
+  private readonly runtimeVersions = new Map<string, number>();
+  private readonly pendingWrites = new Map<string, Promise<void>>();
+
+  private constructor(private readonly delegate: CacheHandler) {}
+
+  static async create(
+    entries: readonly PersistedFetchEntry[],
+    delegate: CacheHandler,
+  ): Promise<PrerenderDataCacheRuntimeOverlay> {
+    const overlay = new PrerenderDataCacheRuntimeOverlay(delegate);
+    for (const entry of entries) {
+      await overlay.snapshot.seed(entry.key, entry.value, entry.context, {
+        lastModified: entry.lastModified,
+      });
+    }
+    return overlay;
+  }
+
+  async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    for (;;) {
+      const version = this.runtimeVersions.get(key) ?? 0;
+      const pending = this.pendingWrites.get(key);
+      if (pending) await pending.catch(() => {});
+
+      const runtime = await this.delegate.get(key, context);
+      if (runtime) return runtime;
+
+      // A write may have started while the delegate read was in flight. Wait
+      // for it and retry the delegate instead of exposing the older snapshot.
+      if ((this.runtimeVersions.get(key) ?? 0) !== version || this.pendingWrites.has(key)) {
+        continue;
+      }
+      if (version > 0) return null;
+
+      const snapshot = await this.snapshot.get(key, context);
+      if ((this.runtimeVersions.get(key) ?? 0) !== version) continue;
+      if (snapshot) {
+        // A delegate may claim a miss for single-flight ownership. The caller
+        // observes this snapshot as a hit and will never fill that claim, so
+        // release it here before returning the process-local fallback.
+        await this.delegate.releasePendingSet?.(key);
+        if ((this.runtimeVersions.get(key) ?? 0) !== version) continue;
+      }
+      return snapshot;
+    }
+  }
+
+  set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    this.runtimeVersions.set(key, (this.runtimeVersions.get(key) ?? 0) + 1);
+    const write = Promise.resolve().then(() => this.delegate.set(key, data, context));
+    const tracked = write.finally(() => {
+      if (this.pendingWrites.get(key) === tracked) this.pendingWrites.delete(key);
+    });
+    this.pendingWrites.set(key, tracked);
+    return tracked;
+  }
+
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
+    await Promise.all([
+      this.delegate.revalidateTag(tags, durations),
+      this.snapshot.revalidateTag(tags, durations),
+    ]);
+  }
+
+  async releasePendingSet(key: string): Promise<void> {
+    await this.delegate.releasePendingSet?.(key);
+  }
+
+  resetRequestCache(): void {
+    this.delegate.resetRequestCache?.();
+    this.snapshot.resetRequestCache?.();
+  }
+}
+
+/** Prepare persisted build data for runtime without unsafe custom-handler writes. */
+export async function createPrerenderDataCacheRuntimeHandler(
+  prerenderDir: string,
+  handler: CacheHandler,
+): Promise<CacheHandler> {
+  if (handler.seed) {
+    await seedPrerenderDataCache(prerenderDir, handler);
+    return handler;
+  }
+  const entries = readPrerenderDataCacheEntries(prerenderDir).filter(
+    (entry) => entry.context?.speculative !== true,
+  );
+  return entries.length === 0 ? handler : PrerenderDataCacheRuntimeOverlay.create(entries, handler);
+}
+
 /** Seed persisted prerender FETCH entries into the active runtime handler. */
 export async function seedPrerenderDataCache(
   prerenderDir: string,

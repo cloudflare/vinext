@@ -676,6 +676,9 @@ export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 export const getRenderedConcreteUrlPathsForRoute = __getRenderedConcreteUrlPathsForRoute;
 
 export async function seedMemoryCacheFromPrerender(serverDir) {
+  // Node production seeds before the first request. Register the declarative
+  // data adapter now so a later request cannot replace the snapshot overlay.
+  __registerConfiguredCacheAdapters();
   const { seedMemoryCacheFromPrerender: __seedMemoryCacheFromPrerender } =
     await import(${JSON.stringify(seedCachePath)});
   return __seedMemoryCacheFromPrerender(serverDir, {

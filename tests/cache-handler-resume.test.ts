@@ -20,7 +20,10 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
+  createPprFallbackShellSuspensePromise,
   createPprFallbackShellState,
+  isPprFallbackShellAbortError,
+  preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
   waitForPprFallbackShellCacheReady,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
@@ -56,6 +59,162 @@ afterEach(() => {
 });
 
 describe("resume data cache handler", () => {
+  it("keeps fallback cache work reserved through async key setup and dynamic classification", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/[slug]",
+    });
+    let releaseDecryption!: () => void;
+    const decryptionGate = new Promise<void>((resolve) => {
+      releaseDecryption = resolve;
+    });
+    const cached = registerCachedFunction(
+      async () => {
+        cacheLife({ expire: 120 });
+        return "dynamic";
+      },
+      "test:fallback-readiness",
+      undefined,
+      {
+        decryptCaptures: async () => {
+          await decryptionGate;
+          return undefined;
+        },
+      },
+    );
+
+    const pending = runWithPprFallbackShellState(state, () => cached());
+    let isReady = false;
+    const ready = waitForPprFallbackShellCacheReady(state).then(() => {
+      isReady = true;
+    });
+    expect(state.pendingCacheTasks).toBe(1);
+
+    // Readiness uses two task turns to discover cache work. It must remain
+    // blocked even after that grace period while capture decryption is gated.
+    await new Promise<void>((resolve) => setTimeout(() => setTimeout(resolve, 0), 0));
+    expect(isReady).toBe(false);
+    expect(state.pendingCacheTasks).toBe(1);
+
+    releaseDecryption();
+    await ready;
+    expect(state.hasDynamicBoundary).toBe(true);
+    expect(state.pendingCacheTasks).toBe(0);
+    expect(state.resumeDataCache.size).toBe(0);
+
+    state.abortController.abort();
+    await expect(pending).rejects.toMatchObject({ name: "HangingPromiseRejectionError" });
+  });
+
+  it("stops stale key setup before it can mutate the final fallback render", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/[slug]",
+    });
+    let abandonedDynamicInput!: Promise<unknown>;
+    runWithPprFallbackShellState(state, () => {
+      abandonedDynamicInput = createPprFallbackShellSuspensePromise("params")!;
+      abandonedDynamicInput.catch(() => {});
+    });
+    let abortedDuringKeySetup = false;
+    const taskyInput = {
+      get value(): string {
+        if (!abortedDuringKeySetup) {
+          abortedDuringKeySetup = true;
+          state.abortController.abort();
+        }
+        return "value";
+      },
+    };
+
+    let releaseDecryption!: () => void;
+    let markDecryptionStarted!: () => void;
+    const decryptionStarted = new Promise<void>((resolve) => {
+      markDecryptionStarted = resolve;
+    });
+    const decryptionGate = new Promise<void>((resolve) => {
+      releaseDecryption = resolve;
+    });
+    let originalFunctionRan = false;
+    const cached = registerCachedFunction(
+      async (_input: unknown) => {
+        originalFunctionRan = true;
+        return "late";
+      },
+      "test:fallback-stale-setup",
+      undefined,
+      {
+        decryptCaptures: async () => {
+          markDecryptionStarted();
+          await decryptionGate;
+          return undefined;
+        },
+      },
+    );
+
+    const pending = runWithPprFallbackShellState(state, () => cached(taskyInput));
+    await decryptionStarted;
+    expect(state.pendingCacheTasks).toBe(1);
+
+    releaseDecryption();
+    await expect(pending).rejects.toSatisfy(isPprFallbackShellAbortError);
+    expect(abortedDuringKeySetup).toBe(true);
+    expect(originalFunctionRan).toBe(false);
+    expect(state.pendingCacheTasks).toBe(0);
+    expect(state.phase).toBe("warmup");
+
+    preparePprFallbackShellFinalRender(state);
+    expect(state.hasDynamicBoundary).toBe(false);
+    expect(state.resumeDataCache.size).toBe(0);
+    state.abortController.abort();
+  });
+
+  it("stops private cache setup against the original fallback abort signal", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/[slug]",
+    });
+    let releaseDecryption!: () => void;
+    let markDecryptionStarted!: () => void;
+    const decryptionStarted = new Promise<void>((resolve) => {
+      markDecryptionStarted = resolve;
+    });
+    const decryptionGate = new Promise<void>((resolve) => {
+      releaseDecryption = resolve;
+    });
+    let originalFunctionRan = false;
+    const cached = registerCachedFunction(
+      async () => {
+        originalFunctionRan = true;
+        return "late-private";
+      },
+      "test:fallback-private-stale-setup",
+      "private",
+      {
+        decryptCaptures: async () => {
+          markDecryptionStarted();
+          await decryptionGate;
+          return undefined;
+        },
+      },
+    );
+
+    const pending = runWithPprFallbackShellState(state, () => cached());
+    await decryptionStarted;
+    expect(state.pendingCacheTasks).toBe(0);
+
+    state.abortController.abort();
+    preparePprFallbackShellFinalRender(state);
+    releaseDecryption();
+
+    await expect(pending).rejects.toSatisfy(isPprFallbackShellAbortError);
+    expect(originalFunctionRan).toBe(false);
+    expect(state.pendingCacheTasks).toBe(0);
+    expect(state.hasDynamicBoundary).toBe(false);
+    expect(state.resumeDataCache.size).toBe(0);
+    state.abortController.abort();
+  });
+
   // Ported from Next.js: test/e2e/app-dir/fallback-shells/fallback-shells.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/fallback-shells/fallback-shells.test.ts
   it("returns a resume entry without consulting the global handler", async () => {

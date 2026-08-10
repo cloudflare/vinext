@@ -18,6 +18,7 @@ import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/serv
 import {
   PRERENDER_DATA_CACHE_DIR,
   PrerenderDataCacheHandler,
+  createPrerenderDataCacheRuntimeHandler,
   readPrerenderDataCacheEntries,
   resetPrerenderDataCache,
   seedPrerenderDataCache,
@@ -28,6 +29,14 @@ import {
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
 const tempDirs: string[] = [];
+
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 
 function createTempDir(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prerender-data-cache-"));
@@ -480,6 +489,136 @@ describe("prerender data cache", () => {
     expect(get).not.toHaveBeenCalled();
     expect(set).not.toHaveBeenCalled();
     now.mockRestore();
+  });
+
+  it("exposes build snapshots through a read-through custom-handler overlay", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(4_000);
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "fetch-cache:test:custom-overlay";
+    await buildHandler.set(key, fetchValue(key, "build-value"), { fetchCache: true });
+
+    const shared = new MemoryCacheHandler();
+    const set = vi.fn(shared.set.bind(shared));
+    const releasePendingSet = vi.fn(async () => {});
+    const customHandler: CacheHandler = {
+      get: vi.fn(shared.get.bind(shared)),
+      releasePendingSet,
+      set,
+      revalidateTag: shared.revalidateTag.bind(shared),
+    };
+    const runtimeHandler = await createPrerenderDataCacheRuntimeHandler(
+      prerenderDir,
+      customHandler,
+    );
+
+    await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+      lastModified: 4_000,
+      value: { data: { body: "build-value" } },
+    });
+    expect(set.mock.calls.some(([storedKey]) => storedKey === key)).toBe(false);
+    await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+      value: { data: { body: "build-value" } },
+    });
+    expect(releasePendingSet).toHaveBeenCalledTimes(2);
+    expect(releasePendingSet).toHaveBeenLastCalledWith(key);
+    now.mockRestore();
+  });
+
+  it("keeps an existing custom-handler runtime value ahead of the build snapshot", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(4_000);
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "fetch-cache:test:custom-runtime-freshness";
+    await buildHandler.set(key, fetchValue(key, "build-value"), { fetchCache: true });
+
+    const shared = new MemoryCacheHandler();
+    now.mockReturnValue(5_000);
+    await shared.set(key, fetchValue(key, "runtime-value"), { fetchCache: true });
+    const customHandler: CacheHandler = {
+      get: shared.get.bind(shared),
+      set: shared.set.bind(shared),
+      revalidateTag: shared.revalidateTag.bind(shared),
+    };
+    const runtimeHandler = await createPrerenderDataCacheRuntimeHandler(
+      prerenderDir,
+      customHandler,
+    );
+
+    await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+      value: { data: { body: "runtime-value" } },
+    });
+    now.mockRestore();
+  });
+
+  it("does not expose a build snapshot across a concurrent custom runtime write", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(4_000);
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "fetch-cache:test:custom-runtime-race";
+    await buildHandler.set(key, fetchValue(key, "build-value"), { fetchCache: true });
+
+    const firstReadStarted = createDeferred();
+    const releaseFirstRead = createDeferred();
+    const releaseWrite = createDeferred();
+    const shared = new MemoryCacheHandler();
+    let reads = 0;
+    const customHandler: CacheHandler = {
+      async get(storedKey, context) {
+        const captured = await shared.get(storedKey, context);
+        if (storedKey === key && reads++ === 0) {
+          firstReadStarted.resolve();
+          await releaseFirstRead.promise;
+        }
+        return captured;
+      },
+      async set(storedKey, value, context) {
+        if (storedKey === key) await releaseWrite.promise;
+        await shared.set(storedKey, value, context);
+      },
+      revalidateTag: shared.revalidateTag.bind(shared),
+    };
+    const runtimeHandler = await createPrerenderDataCacheRuntimeHandler(
+      prerenderDir,
+      customHandler,
+    );
+
+    const read = runtimeHandler.get(key, { kind: "FETCH" });
+    await firstReadStarted.promise;
+    const write = runtimeHandler.set(key, fetchValue(key, "runtime-value"), { fetchCache: true });
+    releaseFirstRead.resolve();
+    await Promise.resolve();
+    releaseWrite.resolve();
+
+    await expect(write).resolves.toBeUndefined();
+    await expect(read).resolves.toMatchObject({
+      value: { data: { body: "runtime-value" } },
+    });
+    now.mockRestore();
+  });
+
+  it("invalidates the process-local snapshot with the configured custom handler", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "fetch-cache:test:custom-cross-instance-invalidation";
+    await buildHandler.set(key, fetchValue(key, "build-value"), {
+      fetchCache: true,
+      tags: ["resume-test"],
+    });
+
+    const custom = new MemoryCacheHandler();
+    const legacyHandler: CacheHandler = {
+      get: custom.get.bind(custom),
+      set: custom.set.bind(custom),
+      revalidateTag: custom.revalidateTag.bind(custom),
+    };
+    const runtime = await createPrerenderDataCacheRuntimeHandler(prerenderDir, legacyHandler);
+    await expect(runtime.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+      value: { data: { body: "build-value" } },
+    });
+
+    await runtime.revalidateTag("resume-test");
+    await expect(runtime.get(key, { kind: "FETCH" })).resolves.toBeNull();
   });
 
   it("checks newly requested fetch tags before serving a Memory cache hit", async () => {

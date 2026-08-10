@@ -102,7 +102,13 @@ export type CacheHandler = {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void>;
-  /** Build/runtime hand-off that preserves the original cache-entry timestamp. */
+  /**
+   * Atomically install a build entry only when no canonical entry has
+   * `lastModified >= metadata.lastModified`. Preserve that timestamp and honor
+   * tag invalidations relative to it. Return true iff this call installed the
+   * entry. Shared handlers must perform the compare-and-install in their
+   * backend; a read followed by a write is not sufficient.
+   */
   seed?(
     key: string,
     data: IncrementalCacheValue | null,
@@ -671,6 +677,8 @@ class ResumeDataCacheHandler implements CacheHandler {
         this.entries.delete(key);
         return false;
       }
+      const existing = this.entries.get(key);
+      if (existing && existing.lastModified >= metadata.lastModified) return false;
       this.entries.set(key, {
         context: resumeEntryContext(context),
         key,
@@ -680,8 +688,7 @@ class ResumeDataCacheHandler implements CacheHandler {
       return true;
     }
     if (this.delegate.seed) return this.delegate.seed(key, data, context, metadata);
-    await this.delegate.set(key, data, { ...context, lastModified: metadata.lastModified });
-    return true;
+    return false;
   }
 
   async releasePendingSet(key: string): Promise<void> {

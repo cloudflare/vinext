@@ -201,6 +201,9 @@ describe("generateRscEntry ISR code generation", () => {
     );
     expect(code).toContain("isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage");
     expect(code).toContain("export async function seedMemoryCacheFromPrerender(serverDir)");
+    expect(code.indexOf("__registerConfiguredCacheAdapters();")).toBeLessThan(
+      code.indexOf("await import", code.indexOf("seedMemoryCacheFromPrerender(serverDir)")),
+    );
     expect(code).toContain("buildAppPageHtmlKey(pathname)");
     expect(code).toContain("return __isrHtmlKey(pathname)");
     expect(code).toContain("buildAppPageRscKey(pathname)");

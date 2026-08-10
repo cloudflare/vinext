@@ -29,6 +29,7 @@ type CreatePprFallbackShellStateOptions = {
 };
 
 type PprFallbackShellCacheTask = {
+  abortSignal: AbortSignal;
   // The `cacheEpoch` the task was created in. A task that settles in a later
   // epoch (after a warmup->final transition) must not decrement the counter.
   epoch: number;
@@ -203,27 +204,72 @@ export function isPprFallbackShellCacheTaskIgnored(): boolean {
   return (pprFallbackShellCacheTaskStackAls.getStore() ?? []).some((task) => task.isIgnored);
 }
 
+function getStalePprFallbackShellCacheTask(): PprFallbackShellCacheTask | undefined {
+  const state = getPprFallbackShellState();
+  if (state === null) return undefined;
+  return (pprFallbackShellCacheTaskStackAls.getStore() ?? []).find(
+    (task) => task.abortSignal.aborted || task.epoch !== state.cacheEpoch,
+  );
+}
+
+function getStalePprFallbackShellCacheTaskReason(task: PprFallbackShellCacheTask): unknown {
+  return task.abortSignal.reason ?? new DOMException("Warmup render ended", "AbortError");
+}
+
+/** Stop an abandoned warmup continuation before it can mutate final state. */
+export function throwIfPprFallbackShellCacheTaskStale(): void {
+  const staleTask = getStalePprFallbackShellCacheTask();
+  if (staleTask) throw getStalePprFallbackShellCacheTaskReason(staleTask);
+}
+
 export function trackPprFallbackShellCacheTask<T>(
   fn: () => Promise<T>,
   cacheVariant: string,
 ): Promise<T> {
+  return trackPprFallbackShellCacheTaskUntil((_) => fn(), cacheVariant);
+}
+
+/**
+ * Reserve fallback-shell readiness synchronously, with an explicit handoff for
+ * callers that need to replace setup work with a nested tracked cache task.
+ */
+export function trackPprFallbackShellCacheTaskUntil<T>(
+  fn: (release: () => void) => Promise<T>,
+  cacheVariant: string,
+): Promise<T> {
   const state = getPprFallbackShellState();
-  if (state === null || cacheVariant === "private") {
-    return fn();
+  if (state === null) {
+    return fn(noop);
   }
 
+  // A released warmup continuation can outlive the warmup -> final epoch
+  // transition. Reject it and all descendants using the old render's abort
+  // reason so abandoned work cannot mutate the reused final-render state.
+  const staleParent = getStalePprFallbackShellCacheTask();
+  if (staleParent) {
+    const rejected = Promise.reject<T>(getStalePprFallbackShellCacheTaskReason(staleParent));
+    rejected.catch(noop);
+    return rejected;
+  }
+  if (cacheVariant === "private") {
+    return fn(noop);
+  }
+
+  const parentStack = pprFallbackShellCacheTaskStackAls.getStore() ?? [];
   state.hasCacheTask = true;
   cancelPendingCacheReady(state);
   state.pendingCacheTasks++;
   const task: PprFallbackShellCacheTask = {
+    abortSignal: state.abortController.signal,
     epoch: state.cacheEpoch,
     isIgnored: false,
     isPending: true,
   };
-  const parentStack = pprFallbackShellCacheTaskStackAls.getStore() ?? [];
   let promise: Promise<T>;
   try {
-    promise = pprFallbackShellCacheTaskStackAls.run([...parentStack, task], fn);
+    promise = pprFallbackShellCacheTaskStackAls.run([...parentStack, task], () =>
+      fn(() => completeCacheTask(state, task)),
+    );
   } catch (error) {
     completeCacheTask(state, task);
     const rejected = Promise.reject<T>(error);
