@@ -30,6 +30,7 @@
  */
 
 import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
+import { isUseCacheFunction } from "vinext/shims/internal/use-cache-function";
 
 // Track which provider objects have already been extended so that if the
 // registered provider is swapped out (e.g. during testing or HMR), the new
@@ -37,17 +38,6 @@ import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-stor
 // per-tracer deduplication and is safer than a module-level boolean which
 // would leave a replaced provider unwrapped forever.
 const extendedProviders = new WeakSet<object>();
-
-// Symbol used by registerCachedFunction (cache-runtime.ts) to tag "use cache"
-// wrapper functions.  Keeping the check inline here avoids importing the full
-// cache-runtime module (which carries many heavy deps) into this lightweight
-// server helper.
-const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
-
-function isUseCacheFn(fn: unknown): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return typeof fn === "function" && (fn as any)[USE_CACHE_FUNCTION_SYMBOL] === true;
-}
 
 /**
  * Extend the registered OTel tracer provider so that `startSpan` and
@@ -150,7 +140,7 @@ export function extendTracerProviderForCacheComponents(): void {
           // every invocation which means the argument changes every time the
           // span is created, leading to cache misses on every call.  This
           // mirrors the upstream warning in instrumentation-node-extensions.ts.
-          if (isUseCacheFn(originalFn)) {
+          if (isUseCacheFunction(originalFn)) {
             console.error(
               "A Cache Function (`use cache`) was passed to startActiveSpan which means it will receive a Span argument with a possibly random ID on every invocation leading to cache misses. Provide a wrapping function around the Cache Function that does not forward the Span argument to avoid this issue.",
             );

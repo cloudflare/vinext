@@ -897,6 +897,9 @@ describe("buildPageElements", () => {
     expect(Object.prototype.hasOwnProperty.call(record, "route:/visible")).toBe(false);
   });
 
+  // ESM imports, re-exports, and local aliases preserve the resolved function
+  // identity. The page consumer must therefore apply cache semantics from that
+  // identity rather than from source-file transform provenance.
   it.each([
     ["memo", React.memo(() => React.createElement("div", null, "memo page"))],
     [
@@ -1524,24 +1527,39 @@ describe("buildPageElements", () => {
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
-  it("keeps a cached primary page query-inert through the React render path", async () => {
+  it.each([
+    ["a direct source re-export", (SourcePage: unknown) => SourcePage],
+    [
+      "an imported default alias",
+      (SourcePage: unknown) => {
+        const ImportedPage = SourcePage;
+        return ImportedPage;
+      },
+    ],
+    [
+      "a multi-hop local alias",
+      (SourcePage: unknown) => {
+        const Page = SourcePage;
+        const DefaultPage = Page;
+        return DefaultPage;
+      },
+    ],
+  ])("keeps a cached primary page query-inert through %s", async (_name, resolvePageConsumer) => {
     await resetUseCacheRuntime();
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
 
     let pageCalls = 0;
-    const CachedPage = registerCachedFunction(
+    const SourcePage = registerCachedFunction(
       async ({ params }: { params: Promise<{ slug: string }> }): Promise<string> => {
         pageCalls++;
         const resolvedParams = await params;
         return `primary:${resolvedParams.slug}`;
       },
-      "/fixture/app/cached/page.tsx:default",
-      "",
-      { appPageDefaultExport: true },
+      "/fixture/app/cached/source.tsx:default",
     );
     const route = createSyntheticRoute({
-      page: createSyntheticPageModule(CachedPage),
+      page: createSyntheticPageModule(resolvePageConsumer(SourcePage)),
       loading: { default: () => null },
       layouts: [],
       routeSegments: ["cached"],
@@ -1572,8 +1590,6 @@ describe("buildPageElements", () => {
         return "slot:cached";
       },
       "/fixture/app/cached/@modal/page.tsx:default",
-      "",
-      { appPageDefaultExport: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(MainPage),
@@ -1615,8 +1631,6 @@ describe("buildPageElements", () => {
         return "intercept:cached";
       },
       "/fixture/app/cached/@modal/(.)photo/page.tsx:default",
-      "",
-      { appPageDefaultExport: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(MainPage),

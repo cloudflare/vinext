@@ -52,6 +52,7 @@ import {
 import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
+import { markUseCacheFunction } from "./internal/use-cache-function.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -782,11 +783,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // Function `length` is always `configurable: true` per spec, so this is safe.
   Object.defineProperty(cachedFn, "length", { value: fn.length, configurable: true });
 
-  // Tag the wrapper so callers (e.g. the OTel tracer extension) can detect
-  // that this is a "use cache" function without relying on React server
-  // reference internals.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (cachedFn as any)[USE_CACHE_FUNCTION_SYMBOL] = true;
+  // Tag the wrapper so consumers can apply page/layout argument semantics
+  // after resolving import and re-export chains without relying on React
+  // server-reference internals.
+  markUseCacheFunction(cachedFn);
 
   if (options.acceptsSecondArgument !== undefined) {
     Reflect.set(cachedFn, USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL, options.acceptsSecondArgument);
@@ -795,8 +795,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   return cachedFn;
 }
 
-/** @internal Symbol used to identify "use cache" wrapper functions. */
-const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 /** @internal Symbol carrying transform-derived cached function argument metadata. */
 const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcceptsSecondArgument");
 
