@@ -641,6 +641,22 @@ function prefetchUrl(
           }
           return;
         }
+        // `full-after-shell` is promoted by dynamic-on-hover and represents
+        // explicit navigation intent, so it may claim a visited response too.
+        const claimedVisitedResponseExpiresAt =
+          mode !== "auto"
+            ? getNavigationRuntime()?.functions.claimVisitedResponseForFullPrefetch?.(
+                rscUrl,
+                interceptionContext,
+                mountedSlotsHeader,
+              )
+            : null;
+        if (
+          claimedVisitedResponseExpiresAt !== null &&
+          claimedVisitedResponseExpiresAt !== undefined
+        ) {
+          return;
+        }
         prefetched.add(cacheKey);
         // Next's `prefetchInlining` Segment Cache path fetches a route tree
         // and then one inlined segment payload. Vinext still caches the unified

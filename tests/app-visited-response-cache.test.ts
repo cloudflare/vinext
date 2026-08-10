@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
+  claimVisitedResponseCacheEntryForFullPrefetch,
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
@@ -220,6 +221,136 @@ describe("visited response cache freshness", () => {
     });
 
     expect(entry.elements).toBe(elements);
+  });
+
+  it("promotes a recent BFCache response for an explicit full prefetch", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/force-stale/force-stale.test.ts
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      fallbackTtlMs: 0,
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 0 }),
+    });
+    const cacheKey = AppElementsWire.encodeCacheKey("/dynamic?_rsc=visited", null);
+    const cache = new Map([[cacheKey, entry]]);
+
+    expect(
+      claimVisitedResponseCacheEntryForFullPrefetch(cache, "/dynamic?_rsc=prefetch", null, null, {
+        now: now + 1,
+        staleTimeMs: 30_000,
+      }),
+    ).toBe(now + 30_000);
+    expect(entry.expiresAt).toBe(now + 30_000);
+  });
+
+  it("returns the Full-prefetch deadline without shortening a longer dynamic deadline", () => {
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 300 }),
+    });
+    const cacheKey = AppElementsWire.encodeCacheKey("/dynamic?_rsc=visited", null);
+    const cache = new Map([[cacheKey, entry]]);
+
+    expect(entry.expiresAt).toBe(now + 300_000);
+    expect(
+      claimVisitedResponseCacheEntryForFullPrefetch(cache, "/dynamic?_rsc=prefetch", null, null, {
+        now: now + 1,
+        staleTimeMs: 30_000,
+      }),
+    ).toBe(now + 30_000);
+    expect(entry.expiresAt).toBe(now + 300_000);
+  });
+
+  it("does not claim mounted-slot-incompatible BFCache responses", () => {
+    const now = 1_000_000;
+    const createEntry = () =>
+      createVisitedResponseCacheEntry({
+        now,
+        mountedSlotsHeader: "slot:modal:/",
+        params: {},
+        response: createCachedResponse(),
+      });
+    const incompatible = createEntry();
+    const incompatibleCache = new Map([
+      [AppElementsWire.encodeCacheKey("/dynamic?_rsc=modal", null), incompatible],
+    ]);
+    expect(
+      claimVisitedResponseCacheEntryForFullPrefetch(
+        incompatibleCache,
+        "/dynamic?_rsc=prefetch",
+        null,
+        "slot:drawer:/",
+        { now: now + 1, staleTimeMs: 30_000 },
+      ),
+    ).toBeNull();
+    expect(incompatibleCache.size).toBe(1);
+  });
+
+  it("preserves an old BFCache response for back/forward traversal", () => {
+    const now = 1_000_000;
+    const expired = createVisitedResponseCacheEntry({
+      fallbackTtlMs: 0,
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 0 }),
+    });
+    const expiredKey = AppElementsWire.encodeCacheKey("/dynamic?_rsc=visited", null);
+    const expiredCache = new Map([[expiredKey, expired]]);
+    expect(
+      claimVisitedResponseCacheEntryForFullPrefetch(
+        expiredCache,
+        "/dynamic?_rsc=prefetch",
+        null,
+        null,
+        { now: now + 30_000, staleTimeMs: 30_000 },
+      ),
+    ).toBeNull();
+    expect(expiredCache.get(expiredKey)).toBe(expired);
+    expect(
+      isVisitedResponseCacheEntryFresh(expired, {
+        navigationKind: "traverse",
+        now: now + 30_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("claims the newest reusable RSC alias after scanning expired aliases", () => {
+    const now = 1_000_000;
+    const createEntry = (createdAt: number, dynamicStaleTimeSeconds: number) =>
+      createVisitedResponseCacheEntry({
+        now: createdAt,
+        params: {},
+        response: createCachedResponse({ dynamicStaleTimeSeconds }),
+      });
+    const expired = createEntry(now - 40_000, 0);
+    const olderClaimable = createEntry(now - 20_000, 120);
+    const newestClaimable = createEntry(now - 10_000, 120);
+    const expiredKey = AppElementsWire.encodeCacheKey("/dynamic?tab=one&_rsc=expired", null);
+    const olderKey = AppElementsWire.encodeCacheKey("/dynamic?tab=one&_rsc=older", null);
+    const newestKey = AppElementsWire.encodeCacheKey("/dynamic?tab=one&_rsc=newest", null);
+    const cache = new Map([
+      [expiredKey, expired],
+      [olderKey, olderClaimable],
+      [newestKey, newestClaimable],
+    ]);
+
+    expect(
+      claimVisitedResponseCacheEntryForFullPrefetch(
+        cache,
+        "/dynamic?tab=one&_rsc=prefetch",
+        null,
+        null,
+        { now, staleTimeMs: 30_000 },
+      ),
+    ).toBe(now - 10_000 + 30_000);
+    expect(cache.get(expiredKey)).toBe(expired);
+    expect(olderClaimable.expiresAt).toBe(now - 20_000 + 120_000);
+    expect(newestClaimable.expiresAt).toBe(now - 10_000 + 120_000);
+    expect([...cache.keys()]).toEqual([expiredKey, olderKey, newestKey]);
   });
 
   it("keeps traversal restores independent from dynamic stale expiry", () => {

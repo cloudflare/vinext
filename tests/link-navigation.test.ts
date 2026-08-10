@@ -21,6 +21,7 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
 import type { RouteManifest } from "../packages/vinext/src/routing/app-route-graph.js";
+import { getNavigationRuntime } from "../packages/vinext/src/client/navigation-runtime.js";
 
 type CapturedEffect = () => void | (() => void);
 
@@ -1543,6 +1544,54 @@ describe("Link prefetch scheduling", () => {
           priority: "low",
         }),
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("reuses a visited response before issuing an explicit full prefetch", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/force-stale/force-stale.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/force-stale/force-stale.test.ts
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/products/1",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+    const runtime = getNavigationRuntime();
+    const claimVisitedResponseForFullPrefetch = vi.fn(() => Date.now() + 30_000);
+    if (runtime === null) throw new Error("Expected App navigation runtime");
+    runtime.functions.claimVisitedResponseForFullPrefetch = claimVisitedResponseForFullPrefetch;
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+
+      expect(claimVisitedResponseForFullPrefetch).toHaveBeenCalledOnce();
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not extend visited-response freshness for automatic prefetches", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/products/1",
+      nodeEnv: "production",
+    });
+    const runtime = getNavigationRuntime();
+    const claimVisitedResponseForFullPrefetch = vi.fn(() => Date.now() + 30_000);
+    if (runtime === null) throw new Error("Expected App navigation runtime");
+    runtime.functions.claimVisitedResponseForFullPrefetch = claimVisitedResponseForFullPrefetch;
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(claimVisitedResponseForFullPrefetch).not.toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledOnce();
     } finally {
       result.restoreNodeEnv();
     }

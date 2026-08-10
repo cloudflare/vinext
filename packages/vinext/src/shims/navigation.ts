@@ -889,25 +889,68 @@ function notifyPrefetchInvalidated(entry: PrefetchCacheEntry): void {
  */
 type RetainedPrefetchInvalidation = {
   callbacks: Set<() => void>;
-  timer: ReturnType<typeof setTimeout>;
+  expiresAt: number;
+  claimCacheKey?: string;
+  timer?: ReturnType<typeof setTimeout>;
 };
 const retainedPrefetchInvalidations = new Set<RetainedPrefetchInvalidation>();
+const retainedClaimPrefetchInvalidations = new Map<string, RetainedPrefetchInvalidation>();
+
+function scheduleRetainedPrefetchInvalidation(retained: RetainedPrefetchInvalidation): void {
+  if (retained.timer !== undefined) clearTimeout(retained.timer);
+  retained.timer = setTimeout(
+    () => fireRetainedPrefetchInvalidation(retained),
+    Math.max(0, retained.expiresAt - Date.now()),
+  );
+}
+
+function retainPrefetchInvalidationUntil(
+  cacheKey: string,
+  onInvalidate: (() => void) | undefined,
+  expiresAt: number,
+): void {
+  if (onInvalidate === undefined) return;
+  const existing = retainedClaimPrefetchInvalidations.get(cacheKey);
+  if (existing !== undefined) {
+    existing.callbacks.add(onInvalidate);
+    if (expiresAt > existing.expiresAt) {
+      existing.expiresAt = expiresAt;
+      scheduleRetainedPrefetchInvalidation(existing);
+    }
+    return;
+  }
+
+  const retained: RetainedPrefetchInvalidation = {
+    callbacks: new Set([onInvalidate]),
+    expiresAt,
+    claimCacheKey: cacheKey,
+  };
+  scheduleRetainedPrefetchInvalidation(retained);
+  retainedPrefetchInvalidations.add(retained);
+  retainedClaimPrefetchInvalidations.set(cacheKey, retained);
+}
 
 function retainPrefetchInvalidationAfterConsume(entry: PrefetchCacheEntry): void {
   const callbacks = entry.onInvalidateCallbacks;
   if (callbacks === undefined || callbacks.size === 0) return;
 
-  const delay = Math.max(0, resolvePrefetchCacheEntryExpiresAt(entry) - Date.now());
   const retained: RetainedPrefetchInvalidation = {
     callbacks,
-    timer: setTimeout(() => fireRetainedPrefetchInvalidation(retained), delay),
+    expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
   };
+  scheduleRetainedPrefetchInvalidation(retained);
   retainedPrefetchInvalidations.add(retained);
 }
 
 function fireRetainedPrefetchInvalidation(retained: RetainedPrefetchInvalidation): void {
   if (!retainedPrefetchInvalidations.delete(retained)) return;
-  clearTimeout(retained.timer);
+  if (
+    retained.claimCacheKey !== undefined &&
+    retainedClaimPrefetchInvalidations.get(retained.claimCacheKey) === retained
+  ) {
+    retainedClaimPrefetchInvalidations.delete(retained.claimCacheKey);
+  }
+  if (retained.timer !== undefined) clearTimeout(retained.timer);
   for (const onInvalidate of retained.callbacks) {
     runInvalidationCallback(onInvalidate);
   }
@@ -2753,6 +2796,25 @@ const _appRouter: AppRouterInstance = {
           })
         ) {
           return;
+        }
+        if (kind === "full") {
+          const claimedVisitedResponseExpiresAt =
+            getNavigationRuntime()?.functions.claimVisitedResponseForFullPrefetch?.(
+              rscUrl,
+              interceptionContext,
+              mountedSlotsHeader,
+            );
+          if (
+            claimedVisitedResponseExpiresAt !== null &&
+            claimedVisitedResponseExpiresAt !== undefined
+          ) {
+            retainPrefetchInvalidationUntil(
+              cacheKey,
+              options?.onInvalidate,
+              claimedVisitedResponseExpiresAt,
+            );
+            return;
+          }
         }
       } else if (prefetched.has(cacheKey)) {
         attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
