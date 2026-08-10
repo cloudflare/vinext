@@ -58,6 +58,7 @@ import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import {
   canAutoPrefetchFullAppRoute,
+  requiresSinglePhaseLearningOnlyAppRoutePrefetch,
   resolveAutoAppRoutePrefetch,
   resolveFullAppRoutePrefetch,
 } from "./internal/app-route-prefetch-policy.js";
@@ -461,6 +462,7 @@ function prefetchUrl(
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
+          hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
           peekPrefetchResponseForNavigation,
@@ -577,15 +579,16 @@ function prefetchUrl(
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
-            if (options.segmentCachePhase === "route-tree") {
-              await getPrefetchCache()
-                .get(cacheKey)
-                ?.pending?.catch(() => {});
-            }
-            return;
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+        ) {
+          if (options.segmentCachePhase === "route-tree") {
+            await getPrefetchCache()
+              .get(cacheKey)
+              ?.pending?.catch(() => {});
           }
+          return;
         }
         const fetchFullRscPayload = async () => {
           const response = await scheduleAppPrefetchFetch(
@@ -1006,7 +1009,12 @@ const segmentCacheLinkPrefetchScheduler = CACHE_COMPONENTS_ENABLED
   : null;
 
 function usesSegmentCachePrefetchScheduler(instance: LinkPrefetchInstance): boolean {
-  return instance.routerMode === "app" && segmentCacheLinkPrefetchScheduler !== null;
+  if (instance.routerMode !== "app" || segmentCacheLinkPrefetchScheduler === null) return false;
+  if (instance.fetchStrategy !== "auto") return true;
+  // Main keeps encoded-delimiter and fully dynamic root paths in the
+  // learning-only cache. Preserve their single request instead of
+  // manufacturing a route-tree request ahead of it.
+  return !requiresSinglePhaseLearningOnlyAppRoutePrefetch(instance.href);
 }
 
 function setVisibleLinkPrefetch(
