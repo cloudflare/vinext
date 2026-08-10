@@ -367,6 +367,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: HandleProgressiveActionRequestOptions<TRoute>,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
   handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
+  getPartialPrerenderPaths?: () => readonly string[];
   createPprFallbackShells?: (
     route: Pick<AppRscHandlerRoute, "params" | "pattern" | "rootParamNames">,
     params: AppPageParams,
@@ -605,6 +606,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Matches Next.js: test/e2e/app-dir/hooks/hooks.test.ts —
   //   "should have the canonical url pathname on rewrite"
   const canonicalPathname = cleanPathname;
+
+  if (pathname === "/__vinext/prefetch-policy" && request.method === "GET") {
+    options.clearRequestContext();
+    return Response.json(
+      { partialPrerenderPaths: options.getPartialPrerenderPaths?.() ?? [] },
+      { headers: { "Cache-Control": "public, max-age=0, must-revalidate" } },
+    );
+  }
 
   const basePathState = { basePath: options.basePath, hadBasePath };
   let cleanPathnameIsRequestPathname = true;

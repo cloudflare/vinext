@@ -91,6 +91,10 @@
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"
     },
+    "./internal/server/app-rsc-render-mode": {
+      "types": "./dist/server/app-rsc-render-mode.d.ts",
+      "import": "./dist/server/app-rsc-render-mode.js"
+    },
     "./internal/server/pregenerated-concrete-paths": {
       "types": "./dist/server/pregenerated-concrete-paths.d.ts",
       "import": "./dist/server/pregenerated-concrete-paths.js"

@@ -31,7 +31,20 @@ import {
   buildRenderRequestApiObservations,
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import {
+  createPprFallbackShellState,
+  runWithPprFallbackShellState,
+} from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { after, connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
@@ -205,6 +218,64 @@ function renderPagePayloadToStream(payload: unknown): ReadableStream<Uint8Array>
   });
 }
 
+function renderReactPagePayloadToStream(
+  payload: unknown,
+  options: {
+    onError: (error: unknown, requestInfo?: unknown, errorContext?: unknown) => unknown;
+    signal?: AbortSignal;
+  },
+): ReadableStream<Uint8Array> {
+  const pageElement = React.isValidElement(payload) ? payload : findPageElement(payload);
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      if (!pageElement) {
+        controller.error(new Error("Expected an App page element"));
+        return;
+      }
+      try {
+        const { renderToReadableStream } = await import("react-dom/server.edge");
+        const stream = await renderToReadableStream(pageElement, {
+          onError(error, errorInfo) {
+            options.onError(error, errorInfo);
+          },
+          signal: options.signal,
+        });
+        const reader = stream.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.close();
+      } catch (error) {
+        if (options.signal?.aborted) {
+          controller.close();
+        } else {
+          controller.error(error);
+        }
+      }
+    },
+  });
+}
+
+async function prerenderReactPagePayloadToStream(
+  payload: unknown,
+  options: {
+    onError: (error: unknown, requestInfo?: unknown, errorContext?: unknown) => unknown;
+    signal?: AbortSignal;
+  },
+): Promise<{ prelude: ReadableStream<Uint8Array> }> {
+  const pageElement = React.isValidElement(payload) ? payload : findPageElement(payload);
+  if (!pageElement) throw new Error("Expected an App page element");
+  const { prerender } = await import("react-dom/static.edge");
+  return prerender(pageElement, {
+    onError(error, errorInfo) {
+      options.onError(error, errorInfo);
+    },
+    signal: options.signal,
+  });
+}
+
 function buildISRCacheEntry(value: CachedAppPageValue, isStale = false): ISRCacheEntry {
   return {
     isStale,
@@ -309,6 +380,7 @@ type CreateDispatchOptionsOverrides = {
   pprFallbackCacheShells?: DispatchOptions["pprFallbackCacheShells"];
   pprFallbackShell?: DispatchOptions["pprFallbackShell"];
   pprRuntime?: DispatchOptions["pprRuntime"];
+  prerenderToReadableStream?: DispatchOptions["prerenderToReadableStream"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
@@ -403,6 +475,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     pprFallbackCacheShells: overrides.pprFallbackCacheShells,
     pprFallbackShell: overrides.pprFallbackShell,
     pprRuntime: overrides.pprRuntime,
+    prerenderToReadableStream: overrides.prerenderToReadableStream,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
@@ -644,26 +717,137 @@ describe("app page dispatch", () => {
     });
   });
 
-  it("keeps static metadata placement for ordinary Cache Components prerenders", async () => {
+  it("streams Cache Components prerender metadata and isolates its partial RSC cache", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
       React.createElement("main", null, "page"),
     );
+    const pprState = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/posts",
+    });
+    const pprRuntime: NonNullable<DispatchOptions["pprRuntime"]> = {
+      beginFinalRender() {},
+      getState() {
+        return pprState;
+      },
+      run(_shell, fn) {
+        return runWithPprFallbackShellState(pprState, fn);
+      },
+      async tryServe() {
+        return null;
+      },
+      async warm() {
+        pprState.hasDynamicBoundary = true;
+      },
+    };
     const { options } = createDispatchOptions({
       buildPageElement,
+      isProduction: true,
       pprFallbackShell: {
         fallbackParamNames: [],
         kind: "cache-components-prerender",
         routePattern: "/posts",
       },
+      pprRuntime,
+      revalidateSeconds: 60,
     });
 
     const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
     expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
-      serveStreamingMetadata: false,
+      serveStreamingMetadata: true,
     });
+    expect(response.headers.get(VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER)).toBe(
+      APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    );
+  });
+
+  it("completes a streamed-metadata prerender with connection() and an omitted short cache", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const { MemoryCacheHandler, cacheLife, getCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cookies } = await import("../packages/vinext/src/shims/headers.js");
+    const previousCacheHandler = getCacheHandler();
+    setCacheHandler(new MemoryCacheHandler({ cacheMaxMemorySize: 0 }));
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    let shortCacheCalls = 0;
+    const shortCached = registerCachedFunction(async () => {
+      shortCacheCalls++;
+      cacheLife("seconds");
+      return "short content";
+    }, "test:dispatch-streamed-metadata-short-cache");
+
+    async function StreamedMetadata() {
+      await cookies();
+      return React.createElement("span", { id: "streamed-metadata" }, "metadata");
+    }
+
+    async function ShortCachedContent() {
+      return React.createElement("span", null, await shortCached());
+    }
+
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+      async (_route, _params, _opts, _searchParams, _layoutParamAccess, buildOptions) => {
+        const metadata = React.createElement(StreamedMetadata);
+        return React.createElement(
+          "main",
+          null,
+          buildOptions?.serveStreamingMetadata
+            ? React.createElement(
+                React.Suspense,
+                { fallback: React.createElement("span", null, "metadata fallback") },
+                metadata,
+              )
+            : metadata,
+          React.createElement(
+            React.Suspense,
+            { fallback: React.createElement("span", null, "short fallback") },
+            React.createElement(ShortCachedContent),
+          ),
+        );
+      },
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isProduction: true,
+      pprFallbackShell: {
+        fallbackParamNames: [],
+        kind: "cache-components-prerender",
+        routePattern: "/posts",
+      },
+      pprRuntime: appPagePprRuntime,
+      prerenderToReadableStream: prerenderReactPagePayloadToStream,
+      probePage: connection,
+      renderToReadableStream: renderReactPagePayloadToStream,
+      revalidateSeconds: 60,
+    });
+
+    try {
+      const response = await Promise.race([
+        runWithRequestContext(createRequestContext(), () => dispatchAppPage(options)),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("prerender stream did not complete")), 1_000);
+        }),
+      ]);
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+      expect(response.headers.get(VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect(shortCacheCalls).toBe(1);
+      expect(buildPageElement.mock.calls.every((call) => call[5]?.serveStreamingMetadata)).toBe(
+        true,
+      );
+    } finally {
+      setCacheHandler(previousCacheHandler);
+      setHeadersContext(null);
+    }
   });
 
   it("does not run a speculative connection() page probe for HTML renders", async () => {
@@ -741,6 +925,98 @@ describe("app page dispatch", () => {
     expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
+  });
+
+  it("reads partial prerender RSC only for whole-route prefetch requests", async () => {
+    const readKeys: string[] = [];
+
+    async function request(kind: "navigation" | "segment-prefetch" | "whole-route-prefetch") {
+      const requestHeaders = new Headers();
+      if (kind !== "navigation") requestHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      if (kind === "segment-prefetch") {
+        requestHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
+      }
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw new Error("cache hit should not render the page");
+        },
+        cleanPathname: "/partial",
+        isProduction: true,
+        isRscRequest: true,
+        isrGet: vi.fn(async (key) => {
+          readKeys.push(key);
+          return buildISRCacheEntry(
+            buildCachedAppPageValue(
+              "",
+              new TextEncoder().encode(key).buffer,
+              undefined,
+              buildQueryInvariantRenderObservation(),
+            ),
+          );
+        }),
+        isrRscKey(pathname, _mountedSlotsHeader, renderMode) {
+          return `rsc:${pathname}:${renderMode ?? "navigation"}`;
+        },
+        request: new Request("https://example.test/partial.rsc", {
+          headers: requestHeaders,
+        }),
+        renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+        revalidateSeconds: 60,
+      });
+      return dispatchAppPage(options);
+    }
+
+    const prefetchResponse = await request("whole-route-prefetch");
+    expect(prefetchResponse.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(prefetchResponse.text()).resolves.toBe("rsc:/partial:prefetch-loading-shell");
+
+    const segmentPrefetchResponse = await request("segment-prefetch");
+    expect(segmentPrefetchResponse.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(segmentPrefetchResponse.text()).resolves.toBe("rsc:/partial:navigation");
+
+    const navigationResponse = await request("navigation");
+    expect(navigationResponse.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(navigationResponse.text()).resolves.toBe("rsc:/partial:navigation");
+    expect(readKeys).toEqual([
+      "rsc:/partial:prefetch-loading-shell",
+      "rsc:/partial:navigation",
+      "rsc:/partial:navigation",
+    ]);
+  });
+
+  it("bypasses stale partial prerender RSC without scheduling complete regeneration", async () => {
+    const scheduleBackgroundRegeneration = vi.fn();
+    const { options } = createDispatchOptions({
+      cleanPathname: "/partial",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-partial").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrRscKey(pathname, _mountedSlotsHeader, renderMode) {
+        return `rsc:${pathname}:${renderMode ?? "navigation"}`;
+      },
+      request: new Request("https://example.test/partial.rsc", {
+        headers: { [NEXT_ROUTER_PREFETCH_HEADER]: "1" },
+      }),
+      renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("flight");
+    expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
   });
 
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {

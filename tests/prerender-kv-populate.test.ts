@@ -124,6 +124,35 @@ describe("buildPrerenderKVPairs", () => {
     expect(entry.cacheControl).toBeUndefined();
   });
 
+  it("seeds a partial Cache Components RSC artifact under its render-mode key", () => {
+    writePrerenderFixture(
+      {
+        buildId: "build-partial",
+        routes: [
+          {
+            route: "/partial",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            rscRenderMode: "prefetch-loading-shell",
+          },
+        ],
+      },
+      {
+        "partial.html": "<html>Partial</html>",
+        "partial.rsc": "partial flight",
+      },
+    );
+
+    const { pairs } = buildPrerenderKVPairs(serverDir);
+
+    expect(pairs.map((pair) => pair.key)).toEqual([
+      "cache:app:build-partial:/partial:html",
+      "cache:app:build-partial:/partial:rsc:prefetch-loading-shell",
+    ]);
+    expect(pairs.map((pair) => pair.key)).not.toContain("cache:app:build-partial:/partial:rsc");
+  });
+
   it("uses the shared pregenerated pathname normalizer for KV keys and tags", () => {
     writePrerenderFixture(
       {

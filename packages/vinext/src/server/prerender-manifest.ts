@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -14,6 +15,7 @@ export type PrerenderManifestRoute = {
   path?: string;
   router?: string;
   fallback?: boolean;
+  rscRenderMode?: AppRscRenderMode;
   headers?: Record<string, string>;
   tags?: string[];
 };
@@ -23,6 +25,7 @@ export type PrerenderManifest = {
   trailingSlash?: boolean;
   routes?: PrerenderManifestRoute[];
   pregeneratedConcretePaths?: Array<[string, string[]]>;
+  partialPrerenderPaths?: string[];
 };
 
 export type PrerenderedPathSelectionOptions = {

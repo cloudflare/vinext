@@ -720,6 +720,7 @@ describe("writePrerenderIndex", () => {
           revalidate: 60,
           expire: 300,
           stale: 30,
+          rscRenderMode: "prefetch-loading-shell",
           router: "app",
         },
       ],
@@ -733,7 +734,48 @@ describe("writePrerenderIndex", () => {
       revalidate: 60,
       expire: 300,
       stale: 30,
+      rscRenderMode: "prefetch-loading-shell",
     });
+    expect(index.partialPrerenderPaths).toEqual(["/cached"]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("records only concrete partial App prerenders in the client policy", () => {
+    const dir = tmpDir("vinext-partial-prerender-index-");
+    writePrerenderIndex(
+      [
+        {
+          route: "/partial/:slug",
+          path: "/partial/known",
+          status: "rendered",
+          outputFiles: ["partial/known.html"],
+          revalidate: 60,
+          rscRenderMode: "prefetch-loading-shell",
+          router: "app",
+        },
+        {
+          route: "/complete",
+          status: "rendered",
+          outputFiles: ["complete.html"],
+          revalidate: false,
+          router: "app",
+        },
+        {
+          route: "/partial/:slug",
+          path: "/partial/[slug]",
+          status: "rendered",
+          outputFiles: ["partial/[slug].html"],
+          revalidate: 60,
+          fallback: true,
+          rscRenderMode: "prefetch-loading-shell",
+          router: "app",
+        },
+      ],
+      dir,
+    );
+
+    const index = JSON.parse(fs.readFileSync(path.join(dir, "vinext-prerender.json"), "utf-8"));
+    expect(index.partialPrerenderPaths).toEqual(["/partial/known"]);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -1591,6 +1591,74 @@ describe("Link prefetch scheduling", () => {
     };
   }
 
+  it.each([
+    {
+      name: "listed partial route",
+      href: "/viewport-prefetch-target",
+      partialPrerenderPaths: ["/viewport-prefetch-target"],
+      expected: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      expectedReusable: true,
+    },
+    {
+      name: "listed encoded partial route",
+      href: "/products/hello%20world",
+      partialPrerenderPaths: ["/products/hello world"],
+      expected: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      expectedReusable: true,
+    },
+    {
+      name: "complete route",
+      href: "/viewport-prefetch-target",
+      partialPrerenderPaths: [],
+      expected: null,
+      expectedReusable: true,
+    },
+  ])(
+    "uses the manifest policy for a $name",
+    async ({ href, partialPrerenderPaths, expected, expectedReusable }) => {
+      vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+      const observer = stubIntersectionObserver();
+      const result = await renderIsolatedLink({
+        href,
+        nodeEnv: "production",
+        fetchImplementation: async (input) => {
+          const inputUrl =
+            typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          const url = new URL(inputUrl, "https://example.com");
+          if (url.pathname === "/__vinext/prefetch-policy") {
+            return Response.json({ partialPrerenderPaths });
+          }
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+      });
+
+      try {
+        observer.dispatchIntersectingEntry(result.anchor);
+        const rscCall = await waitForFetchCall(result.fetch, (call) => {
+          const input = call[0];
+          if (typeof input !== "string") return false;
+          return new URL(input, "https://example.com").searchParams.has("_rsc");
+        });
+
+        const headers = new Headers((rscCall[1] as RequestInit | undefined)?.headers);
+        expect(headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(expected);
+        expect(result.fetch).toHaveBeenCalledWith(
+          "/__vinext/prefetch-policy",
+          expect.objectContaining({ credentials: "same-origin" }),
+        );
+        const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+        await flushPrefetchTasks(() =>
+          Array.from(getPrefetchCache().values()).some((entry) => entry.outcome === "cache-seeded"),
+        );
+        const entry = Array.from(getPrefetchCache().values())[0];
+        expect(entry?.cacheForNavigation).toBe(expectedReusable);
+        expect(entry?.optimisticRouteShell).toBe(!expectedReusable);
+      } finally {
+        result.restoreNodeEnv();
+      }
+    },
+  );
+
   it("starts App Router viewport prefetches before browser idle callbacks", async () => {
     const observer = stubIntersectionObserver();
     const requestIdleCallback = vi.fn(() => 1);

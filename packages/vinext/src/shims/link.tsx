@@ -62,6 +62,7 @@ import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import {
   canAutoPrefetchFullAppRoute,
+  hasPartialPrerenderForRoute,
   resolveAutoAppRoutePrefetch,
   resolveFullAppRoutePrefetch,
 } from "./internal/app-route-prefetch-policy.js";
@@ -539,6 +540,11 @@ function prefetchUrl(
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const hasPartialPrerender =
+          String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
+          mode === "auto" &&
+          autoPrefetch.cacheForNavigation &&
+          (await hasPartialPrerenderForRoute(prefetchPolicyHref));
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
@@ -559,7 +565,9 @@ function prefetchUrl(
               : isAutomaticSearchParamShell
                 ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
                 : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-            : undefined,
+            : hasPartialPrerender
+              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+              : undefined,
         });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);

@@ -5,6 +5,7 @@ import { escapeRegExp } from "../utils/regex.js";
 
 declare global {
   var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
+  var __VINEXT_PARTIAL_PRERENDER_PATHS: unknown;
 }
 
 const VINEXT_PREGEN_START = "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */";
@@ -23,16 +24,27 @@ export function injectPregeneratedConcretePaths(root: string): void {
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
   const table = manifest?.pregeneratedConcretePaths ?? [];
+  const partialPaths = manifest?.partialPrerenderPaths ?? [];
+  const assignments: string[] = [];
 
   if (table.length > 0) {
     globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
-    code =
-      `${VINEXT_PREGEN_START}\n` +
-      `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n` +
-      `${VINEXT_PREGEN_END}\n` +
-      code;
+    assignments.push(`globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};`);
   } else {
     delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+  }
+
+  if (partialPaths.length > 0) {
+    globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS = partialPaths;
+    assignments.push(
+      `globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS = ${JSON.stringify(partialPaths)};`,
+    );
+  } else {
+    delete globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS;
+  }
+
+  if (assignments.length > 0) {
+    code = `${VINEXT_PREGEN_START}\n${assignments.join("\n")}\n${VINEXT_PREGEN_END}\n${code}`;
   }
 
   fs.writeFileSync(workerEntry, code);

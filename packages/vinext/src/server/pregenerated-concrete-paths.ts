@@ -3,6 +3,7 @@ import { normalizePath } from "./normalize-path.js";
 
 declare global {
   var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
+  var __VINEXT_PARTIAL_PRERENDER_PATHS: unknown;
 }
 
 export function normalizePregeneratedPathname(pathname: string): string {
@@ -18,9 +19,19 @@ export function normalizePregeneratedPathname(pathname: string): string {
  * injected by `deploy.ts` after prerender (Workers).
  */
 const concreteUrlPathsByRoute = new Map<string, Set<string>>();
+const partialPrerenderPaths = new Set<string>();
 
 export function clearPregeneratedConcretePaths(): void {
   concreteUrlPathsByRoute.clear();
+  partialPrerenderPaths.clear();
+}
+
+export function addPartialPrerenderPath(pathname: string): void {
+  partialPrerenderPaths.add(normalizePregeneratedPathname(pathname));
+}
+
+export function getPartialPrerenderPaths(): readonly string[] {
+  return [...partialPrerenderPaths];
 }
 
 export function addPregeneratedConcretePath(routePattern: string, pathname: string): void {
@@ -44,15 +55,30 @@ export function getRenderedConcreteUrlPathsForRoute(
  * Pathnames are normalised so they match the runtime `cleanPathname`.
  */
 export function initPregeneratedPathsFromGlobals(): void {
-  const raw = globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
-  const data = parsePregeneratedConcretePaths(raw);
-  if (!data) return;
+  const concretePaths = parsePregeneratedConcretePaths(
+    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS,
+  );
+  const partialPaths = parsePartialPrerenderPaths(globalThis.__VINEXT_PARTIAL_PRERENDER_PATHS);
+  if (!concretePaths && !partialPaths) return;
+
   clearPregeneratedConcretePaths();
-  for (const [routePattern, pathnames] of data) {
-    for (const pathname of pathnames) {
-      addPregeneratedConcretePath(routePattern, pathname);
+  if (concretePaths) {
+    for (const [routePattern, pathnames] of concretePaths) {
+      for (const pathname of pathnames) {
+        addPregeneratedConcretePath(routePattern, pathname);
+      }
     }
   }
+  if (partialPaths) {
+    for (const pathname of partialPaths) addPartialPrerenderPath(pathname);
+  }
+}
+
+function parsePartialPrerenderPaths(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.some((pathname) => typeof pathname !== "string")) {
+    return undefined;
+  }
+  return value as string[];
 }
 
 function parsePregeneratedConcretePaths(value: unknown): Array<[string, string[]]> | undefined {

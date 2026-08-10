@@ -75,6 +75,9 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
+/** Prerender-only side channel identifying the captured RSC artifact's render mode. */
+export const VINEXT_PRERENDER_RSC_RENDER_MODE_HEADER = "x-vinext-prerender-rsc-render-mode";
+
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 

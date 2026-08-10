@@ -203,8 +203,8 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("export async function seedMemoryCacheFromPrerender(serverDir)");
     expect(code).toContain("buildAppPageHtmlKey(pathname)");
     expect(code).toContain("return __isrHtmlKey(pathname)");
-    expect(code).toContain("buildAppPageRscKey(pathname)");
-    expect(code).toContain("return __isrRscKey(pathname)");
+    expect(code).toContain("buildAppPageRscKey(pathname, renderMode)");
+    expect(code).toContain("return __isrRscKey(pathname, null, renderMode)");
     expect(code).toContain("writeAppPageEntry(key, data, metadata)");
     expect(code).toContain("return __isrSetPrerenderedAppPage(key, data, metadata)");
   });
