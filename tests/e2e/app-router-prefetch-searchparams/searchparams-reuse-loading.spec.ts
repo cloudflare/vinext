@@ -48,7 +48,7 @@ for (const testCase of [
         !interceptNavigation &&
         url.pathname === targetPath &&
         headers.rsc === "1" &&
-        headers["x-vinext-rsc-render-mode"] === undefined;
+        headers["x-vinext-rsc-render-mode"] === "prefetch-full";
       if (isFullPrefetch) {
         const response = await route.fetch();
         await route.fulfill({ response });
