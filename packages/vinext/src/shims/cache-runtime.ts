@@ -52,6 +52,7 @@ import {
 import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
+import { getCurrentRootParams, type RootParams } from "./root-params.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -129,6 +130,8 @@ export type CacheContext = {
   lifeConfigs: CacheLifeConfig[];
   /** Cache variant: "default" | "remote" | "private" */
   variant: string;
+  /** Root params observed while producing this public cache entry. */
+  readRootParamNames?: Set<string>;
   /** Whether cacheLife() was called with an explicit revalidate value */
   hasExplicitRevalidate: boolean;
   /** Whether cacheLife() was called with an explicit expire value */
@@ -428,6 +431,63 @@ export function clearPrivateCache(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Root-param-aware shared cache keys
+// ---------------------------------------------------------------------------
+
+const ROOT_PARAM_REDIRECT_HEADER = "x-vinext-use-cache-root-params";
+const ROOT_PARAM_TAG_PREFIX = "__vinext_use_cache_root_param__:";
+const _KNOWN_ROOT_PARAMS_KEY = Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId");
+
+const knownRootParamsByFunctionId = (_g[_KNOWN_ROOT_PARAMS_KEY] ??= new Map<
+  string,
+  Set<string>
+>()) as Map<string, Set<string>>;
+
+function addKnownRootParamNames(id: string, names: ReadonlySet<string>): Set<string> {
+  const known = knownRootParamsByFunctionId.get(id);
+  if (known) {
+    for (const name of names) known.add(name);
+    return known;
+  }
+  const created = new Set(names);
+  knownRootParamsByFunctionId.set(id, created);
+  return created;
+}
+
+function computeRootParamsCacheKeySuffix(
+  rootParams: RootParams,
+  paramNames: ReadonlySet<string>,
+): string {
+  if (paramNames.size === 0) return "";
+  return `:root-params:${JSON.stringify(
+    [...paramNames].sort().map((name) => [name, rootParams[name]]),
+  )}`;
+}
+
+function rootParamNamesFromTags(tags: readonly string[] | undefined): Set<string> {
+  const names = new Set<string>();
+  for (const tag of tags ?? []) {
+    if (tag.startsWith(ROOT_PARAM_TAG_PREFIX)) {
+      names.add(tag.slice(ROOT_PARAM_TAG_PREFIX.length));
+    }
+  }
+  return names;
+}
+
+function isRootParamRedirect(entry: CacheHandlerValue | null): boolean {
+  return (
+    entry?.value?.kind === "FETCH" && entry.value.data.headers[ROOT_PARAM_REDIRECT_HEADER] === "1"
+  );
+}
+
+function propagateRootParamNamesToParent(names: ReadonlySet<string> | undefined): void {
+  if (!names || names.size === 0) return;
+  const parent = cacheContextStorage.getStore();
+  if (!parent || parent.variant === "private") return;
+  for (const name of names) parent.readRootParamNames?.add(name);
+}
+
+// ---------------------------------------------------------------------------
 // Core runtime: registerCachedFunction
 // ---------------------------------------------------------------------------
 
@@ -565,6 +625,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       // Shared cache ("use cache" / "use cache: remote")
       const handler = getDataCacheHandler();
+      const rootParams = getCurrentRootParams();
+      const knownRootParamNames = knownRootParamsByFunctionId.get(id);
+      const coarseCacheKey = cacheKey;
+      if (knownRootParamNames && rootParams) {
+        cacheKey += computeRootParamsCacheKeySuffix(rootParams, knownRootParamNames);
+      }
 
       // Check cache — deserialize via RSC stream when available, JSON otherwise.
       // Pass soft tags so that revalidatePath() / revalidateTag() invalidation
@@ -585,6 +651,24 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
         }
       }
+      const redirectValue = existing?.value;
+      if (
+        isRootParamRedirect(existing) &&
+        existing?.cacheState !== "stale" &&
+        rootParams &&
+        redirectValue?.kind === "FETCH" &&
+        !_hasPendingRevalidatedTag([...(redirectValue.tags ?? []), ...softTags])
+      ) {
+        const redirectNames = rootParamNamesFromTags(redirectValue.tags);
+        const combinedNames = addKnownRootParamNames(id, redirectNames);
+        cacheKey = coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, combinedNames);
+        try {
+          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+        } catch (error) {
+          console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
+          existing = null;
+        }
+      }
       if (
         existing?.value &&
         existing.value.kind === "FETCH" &&
@@ -592,6 +676,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
         try {
+          propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
           // Surface the cached entry's tags to the surrounding request so the
           // enclosing page / route-handler ISR entry carries them even on a data
           // cache HIT — otherwise `revalidateTag()` could not evict the rendered
@@ -624,6 +709,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         callArgs,
         cacheVariant,
       );
+
+      const rootParamNames =
+        ctx.readRootParamNames && ctx.readRootParamNames.size > 0
+          ? addKnownRootParamNames(id, ctx.readRootParamNames)
+          : knownRootParamsByFunctionId.get(id);
 
       recordRequestScopedCacheLife(effectiveLife);
       // Bubble the cache scope's tags up to the surrounding request so the
@@ -664,8 +754,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           tags: ctx.tags,
           revalidate: revalidateSeconds,
         } satisfies CachedFetchValue;
-
-        await handler.set(cacheKey, cacheValue, {
+        const cacheContext = {
           fetchCache: true,
           tags: ctx.tags,
           cacheControl: {
@@ -675,7 +764,35 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             // the enclosing render's minimum depends on cache temperature.
             stale: effectiveLife.stale,
           },
-        });
+        };
+
+        if (rootParamNames && rootParamNames.size > 0 && rootParams) {
+          const specificCacheKey =
+            coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
+          cacheValue.data.url = specificCacheKey;
+          await handler.set(specificCacheKey, cacheValue, cacheContext);
+
+          const redirectTags = [
+            ...ctx.tags,
+            ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
+          ];
+          await handler.set(
+            coarseCacheKey,
+            {
+              kind: "FETCH",
+              data: {
+                headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
+                body: "",
+                url: coarseCacheKey,
+              },
+              tags: redirectTags,
+              revalidate: revalidateSeconds,
+            },
+            { ...cacheContext, tags: redirectTags },
+          );
+        } else {
+          await handler.set(cacheKey, cacheValue, cacheContext);
+        }
       } catch {
         // Result not serializable — skip caching, still return the result
       }
@@ -885,6 +1002,7 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
     tags: [],
     lifeConfigs: [],
     variant: variant || "default",
+    readRootParamNames: new Set(),
     hasExplicitRevalidate: false,
     hasExplicitExpire: false,
     dynamicNestedCacheError: undefined,
@@ -940,6 +1058,11 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
     for (const tag of ctx.tags) {
       if (!parentCtx.tags.includes(tag)) {
         parentCtx.tags.push(tag);
+      }
+    }
+    if (parentCtx.variant !== "private") {
+      for (const name of ctx.readRootParamNames ?? []) {
+        parentCtx.readRootParamNames?.add(name);
       }
     }
   }
