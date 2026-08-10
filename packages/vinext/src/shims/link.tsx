@@ -485,12 +485,17 @@ function prefetchUrl(
           ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
           : null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
+        const interceptionContext = getPrefetchInterceptionContext(fullHref);
+        const routePrefetchPolicy = resolveAutoAppRoutePrefetch(
+          prefetchPolicyHref,
+          interceptionContext,
+        );
         const autoPrefetch =
           mode === "auto"
-            ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
+            ? routePrefetchPolicy
             : mode === "auto-shell"
               ? {
-                  ...resolveAutoAppRoutePrefetch(prefetchPolicyHref),
+                  ...routePrefetchPolicy,
                   cacheForNavigation: false,
                   // This response contains only the static shell. A dynamic
                   // page's zero stale time applies to its data, not to the
@@ -501,7 +506,6 @@ function prefetchUrl(
               : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
-        const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
@@ -578,9 +582,10 @@ function prefetchUrl(
             // Ordinary full prefetches only need route/rewrite identity before
             // the complete response. Reserve the deep loading shell for the
             // dynamic-on-hover path that actually merges and reuses it.
-            renderMode: requireFresh
-              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-              : APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+            renderMode:
+              requireFresh || routePrefetchPolicy.canPrefetchLoadingShell
+                ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+                : APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
           });
           shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");

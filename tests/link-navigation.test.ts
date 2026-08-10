@@ -72,7 +72,8 @@ const linkPrefetchRoutes = [
     requiresDynamicNavigationRequest: true,
   },
   {
-    canPrefetchLoadingShell: true,
+    canPrefetchLoadingShell: false,
+    loadingShellInterceptionSourcePatterns: [["slow-intercept"]],
     patternParts: ["slow-intercept", "photo"],
     isDynamic: false,
   },
@@ -2096,7 +2097,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("full-prefetches visible dynamic links when prefetch is explicitly true", async () => {
+  it("keeps a loading shell for explicit full prefetches with a loading boundary", async () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
@@ -2127,13 +2128,13 @@ describe("Link prefetch scheduling", () => {
         const init = call[1] as RequestInit | undefined;
         return (
           (init?.headers as Headers | undefined)?.get?.(VINEXT_RSC_RENDER_MODE_HEADER) ===
-          APP_RSC_RENDER_MODE_PREFETCH_EMPTY
+          APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
         );
       });
       const shellFetchInit = shellFetchCall?.[1] as RequestInit | undefined;
       expect(
         (shellFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
+      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
     } finally {
       result.restoreNodeEnv();
     }
@@ -2143,7 +2144,7 @@ describe("Link prefetch scheduling", () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
-      href: "/blog/hello?searchParam=b_full",
+      href: "/products/1?searchParam=b_full",
       nodeEnv: "production",
       props: { prefetch: true },
     });
@@ -2154,7 +2155,7 @@ describe("Link prefetch scheduling", () => {
 
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[0],
-        "/blog/hello",
+        "/products/1",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -2169,7 +2170,7 @@ describe("Link prefetch scheduling", () => {
 
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[1],
-        "/blog/hello",
+        "/products/1",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -2615,6 +2616,8 @@ describe("Link prefetch scheduling", () => {
   });
 
   it("automatically prefetches intercepted loading shells with their source context", async () => {
+    // Next.js reference: test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
     const observer = stubIntersectionObserver();
     const interception = {
       id: "interception:slot:modal:/slow-intercept->/slow-intercept/photo",
@@ -2673,6 +2676,40 @@ describe("Link prefetch scheduling", () => {
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );
       expect(headers?.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBe("/slow-intercept");
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("uses an empty full-prefetch probe when an interception-only loading boundary is inactive", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/slow-intercept/photo",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+
+      const probeCall = result.fetch.mock.calls.find((call) => {
+        const init = call[1] as RequestInit | undefined;
+        return (
+          (init?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER) ===
+          APP_RSC_RENDER_MODE_PREFETCH_EMPTY
+        );
+      });
+      expect(probeCall).toBeDefined();
+      expect(
+        result.fetch.mock.calls.some((call) => {
+          const init = call[1] as RequestInit | undefined;
+          return (
+            (init?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER) ===
+            APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+          );
+        }),
+      ).toBe(false);
     } finally {
       result.restoreNodeEnv();
     }
