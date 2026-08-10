@@ -407,6 +407,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: true,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -415,6 +416,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa?q=1")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -468,6 +470,7 @@ describe("Link App Router prefetch mode", () => {
 
     try {
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
