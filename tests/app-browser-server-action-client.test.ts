@@ -79,6 +79,7 @@ describe("app browser server action client", () => {
         {
           basePath: "",
           clearClientNavigationCaches: vi.fn(),
+          clearDynamicClientNavigationCaches: vi.fn(),
           clientRscCompatibilityId: null,
           commitSameUrlNavigatePayload: vi.fn(),
           navigationPlanner,
@@ -151,6 +152,7 @@ describe("app browser server action client", () => {
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
       clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
@@ -227,6 +229,7 @@ describe("app browser server action client", () => {
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "/base",
       clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,

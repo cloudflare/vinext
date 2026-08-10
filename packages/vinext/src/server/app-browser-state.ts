@@ -10,10 +10,12 @@ import {
   type LayoutFlags,
 } from "./app-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
+import { createMountedSlotActiveRoutesHeader } from "./app-mounted-slot-active-routes-header.js";
 import {
   NEXT_ACTION_HEADER,
   RSC_ACTION_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
 } from "./headers.js";
 import {
@@ -250,6 +252,7 @@ type ResolveServerActionRequestStateOptions = {
   elements: AppElements;
   interceptionContext?: string | null;
   previousNextUrl: string | null;
+  slotBindings?: readonly AppElementsSlotBinding[];
 };
 
 type ResolveServerActionRequestStateResult = {
@@ -285,6 +288,13 @@ export function resolveServerActionRequestState(
   const mountedSlotsHeader = getMountedSlotIdsHeader(options.elements);
   if (mountedSlotsHeader !== null) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+  }
+
+  const mountedSlotActiveRoutesHeader = createMountedSlotActiveRoutesHeader(
+    options.slotBindings ?? [],
+  );
+  if (mountedSlotActiveRoutesHeader !== null) {
+    headers.set(VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER, mountedSlotActiveRoutesHeader);
   }
 
   return { headers };

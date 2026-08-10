@@ -884,12 +884,14 @@ function findRouteManifestRouteForSnapshot(
 function resolveRouteManifestSlotBindings(
   routeManifest: RouteManifest,
   route: RouteManifestRoute,
+  concreteRouteId: string,
 ): readonly ParallelSlotBindingSnapshot[] {
   const bindings: ParallelSlotBindingSnapshot[] = [];
   for (const slotId of route.slotIds) {
     const binding = routeManifest.segmentGraph.slotBindings.get(`${route.id}::${slotId}`);
     if (!binding) continue;
     bindings.push({
+      ...(binding.state === "active" ? { activeRouteId: concreteRouteId } : {}),
       ownerLayoutId: binding.ownerLayoutId,
       slotId: binding.slotId,
       state: binding.state,
@@ -932,7 +934,7 @@ function resolveRouteTopologySnapshot(options: {
       rootBoundaryId: route.rootBoundaryId,
       rootLayoutTreePath: resolveRouteManifestRootLayoutTreePath(options.routeManifest, route),
       slotBindings: shouldUseManifestSlotBindings
-        ? resolveRouteManifestSlotBindings(options.routeManifest, route)
+        ? resolveRouteManifestSlotBindings(options.routeManifest, route, options.snapshot.routeId)
         : options.snapshot.slotBindings,
     },
   };
@@ -1127,12 +1129,17 @@ function resolveCurrentRootBoundaryCommitSlotPersistence(options: {
 }
 
 /**
- * Default/unmatched slot preservation law:
+ * Parallel-slot preservation law:
  *
- * A target default/unmatched slot may reuse previous content only when:
+ * A target default/unmatched slot may reuse previous content when:
  * - the slot's owner layout is part of the preserved layout ancestor set;
  * - the current visible snapshot proves the same slot had renderable content;
  * - the navigation is not a traversal.
+ *
+ * An active target may also reuse previous content when both snapshots carry
+ * the exact same active route identity. This matches Next.js segment-cache
+ * reuse: returning to a cached static route must not replace a still-mounted
+ * dynamic parallel segment with another render of that same segment.
  *
  * Wire absence and UNMATCHED_SLOT markers are not semantic proof.
  */
@@ -1142,10 +1149,10 @@ export function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
   targetSlotBindings: readonly ParallelSlotBindingSnapshot[];
 }): readonly string[] {
   const preservedLayoutIdSet = new Set(options.preservedLayoutIds);
-  const slotIdsWithContent = new Set<string>();
+  const currentBindingsBySlotId = new Map<string, ParallelSlotBindingSnapshot>();
   for (const binding of options.currentSlotBindings) {
     if (binding.state === "unmatched") continue;
-    slotIdsWithContent.add(binding.slotId);
+    currentBindingsBySlotId.set(binding.slotId, binding);
   }
 
   const preservedSlotIds: string[] = [];
@@ -1153,8 +1160,17 @@ export function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
   for (const binding of options.targetSlotBindings) {
     if (binding.ownerLayoutId === null) continue;
     if (!preservedLayoutIdSet.has(binding.ownerLayoutId)) continue;
-    if (binding.state === "active") continue;
-    if (!slotIdsWithContent.has(binding.slotId)) continue;
+    const currentBinding = currentBindingsBySlotId.get(binding.slotId);
+    if (!currentBinding) continue;
+    if (
+      binding.state === "active" &&
+      (binding.activeRouteId === undefined ||
+        binding.activeRouteId === null ||
+        currentBinding.state !== "active" ||
+        currentBinding.activeRouteId !== binding.activeRouteId)
+    ) {
+      continue;
+    }
     if (seenSlotIds.has(binding.slotId)) continue;
 
     preservedSlotIds.push(binding.slotId);

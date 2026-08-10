@@ -3061,6 +3061,86 @@ describe("app page route wiring helpers", () => {
     expect(innerLayoutPos).toBeLessThan(pagePos);
   });
 
+  it("restores a retained active slot not-found boundary at its branch position", () => {
+    function DefaultNavbar() {
+      return createElement("p", null, "Default navbar");
+    }
+    function RestoredLoading() {
+      return createElement("p", null, "Restored loading");
+    }
+    function RestoredError() {
+      return createElement("p", null, "Restored error");
+    }
+    function RestoredNotFound() {
+      return createElement("p", null, "Restored not found");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "analytics"],
+        slots: {
+          navbar: {
+            default: { default: DefaultNavbar },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "navbar",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/analytics",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        navbar: {
+          activeRouteId: "route:/dashboard",
+          errorModule: { default: RestoredError },
+          layoutModules: [{ default: InterceptOuterLayout }],
+          layoutTreePositions: [1],
+          loadingModules: [{ default: RestoredLoading }],
+          loadingTreePositions: [1],
+          notFoundModule: { default: RestoredNotFound },
+          notFoundTreePosition: 1,
+          pageModule: { default: SlotPage },
+          routeSegments: ["dashboard"],
+          slotLayoutModule: { default: SlotLayout },
+        },
+      },
+    });
+
+    const slotEntry = elements[AppElementsWire.encodeSlotId("navbar", "/")];
+    const notFoundBoundary = findElementByTypeName(slotEntry, "NotFoundBoundary");
+    expect(notFoundBoundary).not.toBeNull();
+    if (!notFoundBoundary) throw new Error("Expected the restored slot not-found boundary");
+    expect(getElementTypeName((notFoundBoundary.props.fallback as ReactElement).type)).toBe(
+      "RestoredNotFound",
+    );
+    expect(
+      findSuspenseWithFallback(notFoundBoundary?.props.children, "RestoredLoading"),
+    ).not.toBeNull();
+    const errorBoundary = findElementByTypeName(slotEntry, "ErrorBoundary");
+    expect(errorBoundary).not.toBeNull();
+    expect(findElementByTypeName(errorBoundary?.props.children, "NotFoundBoundary")).not.toBeNull();
+  });
+
   it("retains slot-root loading outside intercepted branch loading", () => {
     function SlotRootLoading() {
       return createElement("p", null, "Slot root loading");

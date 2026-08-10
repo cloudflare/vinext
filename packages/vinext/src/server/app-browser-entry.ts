@@ -110,6 +110,7 @@ import {
   type AppElements,
   type AppWireElements,
 } from "./app-elements.js";
+import { createMountedSlotActiveRoutesHeader } from "./app-mounted-slot-active-routes-header.js";
 import {
   COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -436,9 +437,13 @@ function clearPrefetchState(): void {
 }
 
 function clearClientNavigationCaches(): void {
+  clearDynamicClientNavigationCaches();
+  clearPrefetchState();
+}
+
+function clearDynamicClientNavigationCaches(): void {
   clientNavigationCacheGeneration += 1;
   clearVisitedResponseCache();
-  clearPrefetchState();
   historyController.invalidateRestorableClientState();
 }
 
@@ -1434,6 +1439,7 @@ function registerServerActionCallback(): void {
         invokeClientServerAction(id, args, actionInitiation, {
           basePath: __basePath,
           clearClientNavigationCaches,
+          clearDynamicClientNavigationCaches,
           clientRscCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
           commitSameUrlNavigatePayload,
           navigationPlanner,
@@ -1728,6 +1734,10 @@ function bootstrapHydration(
       // anchored to the same pre-navigation identity base.
       const navigationInitiationState = getBrowserRouterState();
       const mountedSlotsHeader = getMountedSlotIdsHeader(navigationInitiationState.elements);
+      const mountedSlotActiveRoutesHeader =
+        navigationKind === "refresh"
+          ? createMountedSlotActiveRoutesHeader(navigationInitiationState.slotBindings)
+          : null;
 
       while (true) {
         const url = new URL(currentHref, window.location.origin);
@@ -1784,6 +1794,7 @@ function bootstrapHydration(
         const requestHeaders = createRscRequestHeaders({
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
+          mountedSlotActiveRoutesHeader,
           mountedSlotsHeader,
         });
         const rewrittenNavigationHref =

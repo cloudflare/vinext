@@ -1056,6 +1056,16 @@ describe("App Router generated manifest construction", () => {
 // ── App Router entry template error paths ────────────────────────────
 
 describe("App Router entry templates", () => {
+  it("resolves mounted active routes through a graph-owned slot and hydrates lazy modules", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("async function resolveRouteById(routeId, slotId)");
+    expect(code).toContain("parsed.interceptionContext !== null");
+    expect(code).toContain('candidate.id === slotId && typeof candidate.__loadPage === "function"');
+    expect(code).toContain("await __ensureRouteLoaded(match.route)");
+    expect(code).toContain("if (!slot.page) return null");
+  });
+
   it("promotes interception-only RSC targets before not-found dispatch", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 

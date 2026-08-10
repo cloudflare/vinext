@@ -48,6 +48,7 @@ type ActionRedirectTarget = {
 export type ClientServerActionDeps = {
   basePath: string;
   clearClientNavigationCaches(): void;
+  clearDynamicClientNavigationCaches(): void;
   clientRscCompatibilityId: string | null;
   commitSameUrlNavigatePayload(
     elements: Promise<AppElements>,
@@ -148,6 +149,7 @@ export async function invokeClientServerAction(
         ? actionInitiation.routerState.interceptionContext
         : null,
     previousNextUrl: actionInitiation.routerState.previousNextUrl,
+    slotBindings: actionInitiation.routerState.slotBindings,
   }).headers;
   const fetchResponse = await fetch(createServerActionRequestUrl(actionInitiation.path), {
     method: "POST",
@@ -188,7 +190,11 @@ export async function invokeClientServerAction(
   }
 
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  if (revalidation !== "none") deps.clearClientNavigationCaches();
+  if (revalidation === "staticAndDynamic") {
+    deps.clearClientNavigationCaches();
+  } else if (revalidation === "dynamicOnly") {
+    deps.clearDynamicClientNavigationCaches();
+  }
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,

@@ -184,13 +184,18 @@ export type AppPageRouteWiringRoute<
 };
 
 export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> = {
+  activeRouteId?: string | null;
   branchSegments?: readonly string[] | null;
+  errorModule?: AppPageErrorModule | null;
   /** Route-matcher-resolved semantic branch, aligned with the flattened branch. */
   identitySegments?: readonly AppPageSemanticSegment[] | null;
   layoutSegments?: readonly (readonly string[])[] | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
+  layoutTreePositions?: readonly number[] | null;
   loadingModules?: readonly (TModule | null | undefined)[] | null;
   loadingTreePositions?: readonly number[] | null;
+  notFoundModule?: TModule | null;
+  notFoundTreePosition?: number | null;
   /**
    * The page module to render for this slot. Optional — when omitted, the
    * slot's existing `page` is used (e.g. when the override only changes the
@@ -200,6 +205,7 @@ export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> =
   params?: AppPageParams;
   props?: Readonly<Record<string, unknown>>;
   routeSegments?: readonly string[] | null;
+  slotLayoutModule?: TModule | null;
 };
 
 export type AppPageLayoutEntry<
@@ -616,6 +622,7 @@ function resolveAppPageSlotBindingState(
   slot: AppPageRouteWiringSlot,
   override: AppPageSlotOverride | undefined,
 ): AppElementsSlotBinding["state"] {
+  if (override?.activeRouteId) return "active";
   const pageComponent = getDefaultExport(override?.pageModule) ?? getDefaultExport(slot.page);
   if (pageComponent) return "active";
   if (getDefaultExport(slot.default)) return "default";
@@ -660,9 +667,11 @@ function createAppPageSlotBindings<
     const state = resolveAppPageSlotBindingState(slot, override);
     const activeRouteId =
       state === "active"
-        ? options.interception?.slotId === slotId
-          ? options.interception.targetRouteId
-          : AppElementsWire.encodeRouteId(options.routePath, null)
+        ? override?.activeRouteId !== undefined && override.activeRouteId !== null
+          ? override.activeRouteId
+          : options.interception?.slotId === slotId
+            ? options.interception.targetRouteId
+            : AppElementsWire.encodeRouteId(options.routePath, null)
         : null;
     bindings.push({
       ...(activeRouteId !== null ? { activeRouteId } : {}),
@@ -1312,7 +1321,9 @@ export function buildAppPageElements<
         const component = getDefaultExport(layoutModule);
         if (!component) continue;
         const treePosition =
-          slotOverride?.layoutSegments?.[layoutIndex]?.length ?? branchSegments.length;
+          slotOverride?.layoutTreePositions?.[layoutIndex] ??
+          slotOverride?.layoutSegments?.[layoutIndex]?.length ??
+          branchSegments.length;
         addBranchLayout(treePosition, {
           component,
           params: resolveSlotLayoutParams(branchSegments, treePosition, slotParams),
@@ -1333,7 +1344,9 @@ export function buildAppPageElements<
       }
     }
 
-    const slotLayoutComponent = overrideOrPageComponent ? getDefaultExport(slot.layout) : null;
+    const slotLayoutComponent = overrideOrPageComponent
+      ? getDefaultExport(slotOverride?.slotLayoutModule ?? slot.layout)
+      : null;
     if (slotLayoutComponent) {
       const rootEntries = branchLayouts.get(0) ?? [];
       branchLayouts.set(0, [
@@ -1351,12 +1364,17 @@ export function buildAppPageElements<
       branchLoadings.set(entry.treePosition, components);
     }
 
-    const slotErrorComponent = getErrorBoundaryExport(slot.error);
+    const slotErrorComponent = getErrorBoundaryExport(slotOverride?.errorModule ?? slot.error);
+    const slotNotFoundComponent = getDefaultExport(slotOverride?.notFoundModule ?? slot.notFound);
+    const slotNotFoundTreePosition = slotNotFoundComponent
+      ? (slotOverride?.notFoundTreePosition ?? slot.notFoundTreePosition ?? 0)
+      : null;
     const branchTreePositions = Array.from(
       new Set([
         ...branchLayouts.keys(),
         ...branchLoadings.keys(),
         ...(slotErrorComponent ? [0] : []),
+        ...(slotNotFoundTreePosition === null ? [] : [slotNotFoundTreePosition]),
         ...nestedBfcacheSegments.flatMap((segment) =>
           segment.treePosition === null ? [] : [segment.treePosition],
         ),
@@ -1397,6 +1415,23 @@ export function buildAppPageElements<
           <Suspense key={loadingResetKey || slotResetKey} fallback={<LoadingComponent />}>
             {slotElement}
           </Suspense>
+        );
+      }
+
+      if (treePosition === slotNotFoundTreePosition && slotNotFoundComponent) {
+        const SlotNotFoundComponent = slotNotFoundComponent;
+        const notFoundResetKey = resolveAppPageSegmentStateKey(
+          branchSegments,
+          treePosition,
+          slotParams,
+        );
+        slotElement = (
+          <NotFoundBoundary
+            resetKey={notFoundResetKey || slotResetKey}
+            fallback={<SlotNotFoundComponent />}
+          >
+            {slotElement}
+          </NotFoundBoundary>
         );
       }
 
