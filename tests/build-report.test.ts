@@ -136,6 +136,14 @@ describe("hasNamedExportObjectStringProperty", () => {
         "runtime",
       ),
     ).toBe(true);
+    expect(
+      hasNamedExportObjectStringProperty(
+        "const mode = 'runtime'; export const unstable_instant = { prefetch: mode };",
+        "unstable_instant",
+        "prefetch",
+        "runtime",
+      ),
+    ).toBe(true);
   });
 
   it("does not classify static, false, or external runtime values", () => {

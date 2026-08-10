@@ -1042,6 +1042,8 @@ export async function buildAppRouteGraph(
   appDir: string,
   matcher: ValidFileMatcher,
 ): Promise<{ routes: AppRouteGraphRoute[]; routeManifest: RouteManifest }> {
+  runtimeInstantConfigDependencies.clear();
+
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
   // and _private folders (Next.js convention for colocated non-route files).

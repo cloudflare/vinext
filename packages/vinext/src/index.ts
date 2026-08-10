@@ -4444,6 +4444,7 @@ export const loadServerActionClient = ${
           invalidateMetadataFileCache();
           invalidateRscEntryModule();
           invalidateRootParamsModule();
+          invalidateAppBrowserEntry();
         }
 
         let hybridRouteValidation: Promise<void> = Promise.resolve();
@@ -4648,15 +4649,15 @@ export const loadServerActionClient = ${
           if (
             hasAppDir &&
             ((toSlash(filePath).startsWith(`${appDir}/`) &&
-              (fileMatcher.isPageFile(filePath) || SCRIPT_IMPORT_RE.test(filePath))) ||
+              (fileMatcher.isAppRouterPage(filePath) || fileMatcher.isAppLayoutFile(filePath))) ||
               isRuntimeInstantConfigDependency(filePath))
           ) {
             // Route metadata such as `unstable_instant` is content-derived and
             // may also be supplied by a local re-export. Rebuild both route
-            // entries when any source module under app/ changes so dev
-            // prefetch policy cannot retain the old classification.
+            // entries when a config-bearing route module or a followed config
+            // dependency changes so dev prefetch policy cannot retain the old
+            // classification.
             invalidateAppRoutingModules();
-            invalidateAppBrowserEntry();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {

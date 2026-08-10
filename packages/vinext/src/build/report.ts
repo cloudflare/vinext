@@ -177,7 +177,7 @@ export function hasNamedExportObjectStringProperty(
     ) {
       continue;
     }
-    const value = unwrapStaticExpression(candidate.value);
+    const value = resolveLocalConstExpression(program, candidate.value, new Set());
     return value.type === "Literal" && value.value === expectedValue;
   }
   return false;
