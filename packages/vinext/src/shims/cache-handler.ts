@@ -96,6 +96,15 @@ export type CacheHandler = {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void>;
+  /** Build/runtime hand-off that preserves the original cache-entry timestamp. */
+  seed?(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx: Record<string, unknown> | undefined,
+    metadata: { lastModified: number },
+  ): Promise<boolean>;
+  /** Release build-only single-flight ownership when a cache fill produced no entry. */
+  releasePendingSet?(key: string): Promise<void>;
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
   resetRequestCache?(): void;
 };
@@ -121,6 +130,15 @@ type MemoryEntry = {
   revalidateAt: number | null;
   expireAt: number | null;
   cacheControl?: CacheControlMetadata;
+};
+
+type TagRevalidation = {
+  /** Hard invalidation generation (updateTag / one-argument revalidateTag). */
+  expiredAt?: number;
+  /** Deadline for entries older than staleAt after a profiled revalidation. */
+  expireAt?: number;
+  /** Profiled invalidation generation. */
+  staleAt?: number;
 };
 
 const DEFAULT_MEMORY_CACHE_MAX_SIZE = 50 * 1024 * 1024;
@@ -197,9 +215,10 @@ function readPositiveNumberField(
 
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
-  private tagRevalidatedAt = new Map<string, number>();
+  private tagRevalidations = new Map<string, TagRevalidation>();
   private readonly maxMemoryCacheSize: number;
   private currentMemoryCacheSize = 0;
+  private lastTimestamp = 0;
 
   constructor(options?: number | MemoryCacheHandlerOptions) {
     this.maxMemoryCacheSize = resolveMemoryCacheMaxSize(options);
@@ -233,28 +252,48 @@ export class MemoryCacheHandler implements CacheHandler {
     }
   }
 
+  private nextTimestamp(): number {
+    return (this.lastTimestamp = Math.max(Date.now(), this.lastTimestamp + 1));
+  }
+
+  private currentTimestamp(): number {
+    return Math.max(Date.now(), this.lastTimestamp);
+  }
+
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
+    const now = this.currentTimestamp();
+
+    if (entry.value?.kind === "FETCH") {
+      const requestedTags = readStringArrayField(ctx, "tags");
+      if (requestedTags.some((tag) => !entry.tags.includes(tag))) {
+        const previousSize = this.estimateEntrySize(entry);
+        const tags = [...new Set([...entry.tags, ...requestedTags])];
+        entry.tags = tags;
+        entry.value = { ...entry.value, tags };
+        this.currentMemoryCacheSize += this.estimateEntrySize(entry) - previousSize;
+      }
+    }
 
     for (const tag of entry.tags) {
-      const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+      const revalidation = this.tagRevalidations.get(tag);
+      if (revalidation && this.tagIsExpired(revalidation, entry.lastModified, now)) {
         this.deleteEntry(key);
         return null;
       }
     }
 
     for (const tag of readStringArrayField(ctx, "softTags")) {
-      const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+      const revalidation = this.tagRevalidations.get(tag);
+      if (revalidation && this.tagIsExpired(revalidation, entry.lastModified, now)) {
         return null;
       }
     }
 
     this.touchEntry(key, entry);
+    this.evictLeastRecentlyUsed();
 
-    const now = Date.now();
     if (entry.expireAt !== null && now > entry.expireAt) {
       return {
         lastModified: entry.lastModified,
@@ -267,7 +306,14 @@ export class MemoryCacheHandler implements CacheHandler {
     const requestedRevalidate = readPositiveNumberField(ctx, "revalidate");
     const requestedRevalidateAt =
       requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
+    const invalidatedAsStale = [...entry.tags, ...readStringArrayField(ctx, "softTags")].some(
+      (tag) => {
+        const staleAt = this.tagRevalidations.get(tag)?.staleAt;
+        return staleAt !== undefined && staleAt >= entry.lastModified;
+      },
+    );
     const isStale =
+      invalidatedAsStale ||
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
 
@@ -287,11 +333,47 @@ export class MemoryCacheHandler implements CacheHandler {
     };
   }
 
+  private tagIsExpired(revalidation: TagRevalidation, lastModified: number, now: number): boolean {
+    if (
+      revalidation.expiredAt !== undefined &&
+      (Number.isNaN(revalidation.expiredAt) || revalidation.expiredAt >= lastModified)
+    ) {
+      return true;
+    }
+    return (
+      revalidation.staleAt !== undefined &&
+      revalidation.expireAt !== undefined &&
+      revalidation.expireAt <= now &&
+      revalidation.staleAt >= lastModified
+    );
+  }
+
   async set(
     key: string,
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
+    this.writeEntry(key, data, ctx, this.nextTimestamp());
+  }
+
+  async seed(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx: Record<string, unknown> | undefined,
+    metadata: { lastModified: number },
+  ): Promise<boolean> {
+    const existing = this.store.get(key);
+    if (existing && existing.lastModified >= metadata.lastModified) return false;
+    this.lastTimestamp = Math.max(this.lastTimestamp, metadata.lastModified);
+    return this.writeEntry(key, data, ctx, metadata.lastModified);
+  }
+
+  private writeEntry(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx: Record<string, unknown> | undefined,
+    now: number,
+  ): boolean {
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
       for (const tag of data.tags) tagSet.add(tag);
@@ -311,9 +393,8 @@ export class MemoryCacheHandler implements CacheHandler {
       // but never let it override an explicit `ctx.revalidate: 0` no-store.
       effectiveRevalidate ??= false;
     }
-    if (effectiveRevalidate === 0) return;
+    if (effectiveRevalidate === 0) return false;
 
-    const now = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -334,7 +415,7 @@ export class MemoryCacheHandler implements CacheHandler {
           }
         : undefined;
 
-    if (this.maxMemoryCacheSize === 0) return;
+    if (this.maxMemoryCacheSize === 0) return false;
 
     const entry = {
       value: data,
@@ -347,24 +428,36 @@ export class MemoryCacheHandler implements CacheHandler {
     const entrySize = this.estimateEntrySize(entry);
     if (entrySize > this.maxMemoryCacheSize) {
       this.deleteEntry(key);
-      return;
+      return false;
     }
 
     this.deleteEntry(key);
     this.store.set(key, entry);
     this.currentMemoryCacheSize += entrySize;
     this.evictLeastRecentlyUsed();
+    return this.store.has(key);
   }
 
-  async revalidateTag(tags: string | string[]): Promise<void> {
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
-    const now = Date.now();
+    const now = this.nextTimestamp();
     for (const tag of tagList) {
-      this.tagRevalidatedAt.set(tag, now);
-      while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {
-        const oldest = this.tagRevalidatedAt.keys().next().value;
+      const existing = this.tagRevalidations.get(tag) ?? {};
+      this.tagRevalidations.delete(tag);
+      this.tagRevalidations.set(
+        tag,
+        durations
+          ? {
+              ...existing,
+              staleAt: now,
+              expireAt: durations.expire === undefined ? undefined : now + durations.expire * 1000,
+            }
+          : { ...existing, expiredAt: now },
+      );
+      while (this.tagRevalidations.size > MAX_REVALIDATED_TAG_ENTRIES) {
+        const oldest = this.tagRevalidations.keys().next().value;
         if (oldest === undefined) break;
-        this.tagRevalidatedAt.delete(oldest);
+        this.tagRevalidations.delete(oldest);
       }
     }
   }

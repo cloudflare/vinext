@@ -29,6 +29,7 @@ type CacheContextLike = {
   hasExplicitRevalidate: boolean;
   hasExplicitExpire: boolean;
   dynamicNestedCacheError: Error | undefined;
+  skipPropagation?: boolean;
 };
 
 let getCacheContext: (() => CacheContextLike | null) | null = null;

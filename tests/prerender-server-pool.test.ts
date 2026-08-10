@@ -72,6 +72,34 @@ describe("prerender server pool sizing", () => {
     }
   });
 
+  it("passes the server output and prerender data cache directories separately", async () => {
+    const { dir, entry } = writeWorkerEntry(`
+      const fs = require("node:fs");
+      const path = require("node:path");
+      fs.writeFileSync(
+        path.join(process.env.VINEXT_PRERENDER_DATA_CACHE_DIR, "worker-env.json"),
+        JSON.stringify({ serverOutDir: process.env.VINEXT_PRERENDER_OUTDIR }),
+      );
+      process.send({ type: "ready", port: 4125 });
+      setInterval(() => {}, 1000);
+    `);
+    const dataCacheDir = path.join(dir, "prerendered-routes");
+    fs.mkdirSync(dataCacheDir);
+
+    try {
+      const pool = await startPrerenderServerPool(dir, 1, entry, dataCacheDir);
+      try {
+        expect(
+          JSON.parse(fs.readFileSync(path.join(dataCacheDir, "worker-env.json"), "utf8")),
+        ).toEqual({ serverOutDir: dir });
+      } finally {
+        await pool.close();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails assertHealthy immediately after a worker transport error", async () => {
     const { dir, entry } = writeWorkerEntry(`
       process.send({ type: "ready", port: 4124 });

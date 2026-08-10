@@ -91,6 +91,10 @@
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"
     },
+    "./internal/server/prerender-data-cache": {
+      "types": "./dist/server/prerender-data-cache.d.ts",
+      "import": "./dist/server/prerender-data-cache.js"
+    },
     "./internal/server/pregenerated-concrete-paths": {
       "types": "./dist/server/pregenerated-concrete-paths.d.ts",
       "import": "./dist/server/pregenerated-concrete-paths.js"

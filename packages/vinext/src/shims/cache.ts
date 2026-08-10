@@ -375,7 +375,7 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
       // deliberate, documented design change rather than an incidental one.
       if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
       if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
-      _setRequestScopedCacheLife(resolvedConfig);
+      if (!ctx.skipPropagation) _setRequestScopedCacheLife(resolvedConfig);
       return;
     }
   } catch {
@@ -560,28 +560,40 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   tags: string[],
   revalidateSeconds: number | false | undefined,
 ): Promise<Result> {
-  const result = await _unstableCacheAls.run(true, () => fn(...args));
+  const handler = getDataCacheHandler();
+  let result: Result;
+  try {
+    result = await _unstableCacheAls.run(true, () => fn(...args));
+  } catch (error) {
+    await handler.releasePendingSet?.(cacheKey);
+    throw error;
+  }
 
-  const cacheValue: CachedFetchValue = {
-    kind: "FETCH",
-    data: {
-      headers: {},
-      body: serializeUnstableCacheResult(result),
-      url: cacheKey,
-    },
-    tags,
-    // revalidate: false means "cache indefinitely" (no time-based expiry).
-    // A positive number means time-based revalidation in seconds.
-    // When unset (undefined), default to false (indefinite) matching
-    // Next.js behavior for unstable_cache without explicit revalidate.
-    revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
-  };
+  try {
+    const cacheValue: CachedFetchValue = {
+      kind: "FETCH",
+      data: {
+        headers: {},
+        body: serializeUnstableCacheResult(result),
+        url: cacheKey,
+      },
+      tags,
+      // revalidate: false means "cache indefinitely" (no time-based expiry).
+      // A positive number means time-based revalidation in seconds.
+      // When unset (undefined), default to false (indefinite) matching
+      // Next.js behavior for unstable_cache without explicit revalidate.
+      revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
+    };
 
-  await getDataCacheHandler().set(cacheKey, cacheValue, {
-    fetchCache: true,
-    tags,
-    revalidate: revalidateSeconds,
-  });
+    await handler.set(cacheKey, cacheValue, {
+      fetchCache: true,
+      tags,
+      revalidate: revalidateSeconds,
+    });
+  } catch (error) {
+    await handler.releasePendingSet?.(cacheKey);
+    throw error;
+  }
 
   return result;
 }

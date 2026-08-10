@@ -97,6 +97,77 @@ describe("buildPrerenderKVPairs", () => {
     });
   });
 
+  it("builds KV entries for prerendered use-cache and fetch data", () => {
+    writePrerenderFixture(
+      { buildId: "build-data", routes: [] },
+      {
+        ".vinext-resume-data-cache/data.json": JSON.stringify({
+          key: "use-cache:build:deploy-1:app/page.tsx:getValue",
+          lastModified: 4_000,
+          context: {
+            cacheControl: { revalidate: 60, expire: 300, stale: 30 },
+            fetchCache: true,
+            tags: ["context-tag"],
+          },
+          value: {
+            kind: "FETCH",
+            data: { body: "cached-rsc", headers: { "x-vinext-rsc": "1" }, url: "cache" },
+            tags: ["value-tag"],
+            revalidate: 60,
+          },
+        }),
+      },
+    );
+
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir, {
+      appPrefix: "site-a",
+      ttlSeconds: 123,
+    });
+
+    expect(routeCount).toBe(0);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({
+      key: "site-a:cache:use-cache:build:deploy-1:app/page.tsx:getValue",
+      expiration_ttl: 123,
+      metadata: { tags: ["value-tag", "context-tag"] },
+    });
+    expect(JSON.parse(pairs[0].value)).toMatchObject({
+      lastModified: 4_000,
+      revalidateAt: 64_000,
+      expireAt: 304_000,
+      cacheControl: { revalidate: 60, expire: 300, stale: 30 },
+      value: { kind: "FETCH", data: { body: "cached-rsc" }, tags: ["value-tag"] },
+    });
+  });
+
+  it("preserves a non-expiring prerendered data-cache policy", () => {
+    writePrerenderFixture(
+      { buildId: "build-static-data", routes: [] },
+      {
+        ".vinext-resume-data-cache/data.json": JSON.stringify({
+          key: "use-cache:build:static",
+          lastModified: 5_000,
+          context: { cacheControl: { revalidate: false }, fetchCache: true },
+          value: {
+            kind: "FETCH",
+            data: { body: "static-cache", headers: {}, url: "cache" },
+            revalidate: false,
+          },
+        }),
+      },
+    );
+
+    const { pairs } = buildPrerenderKVPairs(serverDir);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).not.toHaveProperty("expiration_ttl");
+    expect(JSON.parse(pairs[0].value)).toMatchObject({
+      lastModified: 5_000,
+      revalidateAt: null,
+      cacheControl: { revalidate: false },
+      value: { kind: "FETCH", revalidate: false },
+    });
+  });
+
   it("omits KV expiration for static prerendered routes and skips zero revalidate", () => {
     writePrerenderFixture(
       {

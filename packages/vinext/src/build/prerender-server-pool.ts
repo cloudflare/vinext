@@ -126,6 +126,7 @@ export async function startPrerenderServerPool(
   outDir: string,
   size: number,
   entry = WORKER_ENTRY,
+  prerenderDataCacheDir?: string,
 ): Promise<PrerenderServerPool> {
   const children: ChildProcess[] = [];
   let shuttingDown = false;
@@ -145,6 +146,9 @@ export async function startPrerenderServerPool(
           ...process.env,
           VINEXT_PRERENDER: "1",
           VINEXT_PRERENDER_OUTDIR: outDir,
+          ...(prerenderDataCacheDir
+            ? { VINEXT_PRERENDER_DATA_CACHE_DIR: prerenderDataCacheDir }
+            : {}),
         },
         // Inherit stdout/stderr so server-side errors surface; keep IPC.
         stdio: ["ignore", "inherit", "inherit", "ipc"],
