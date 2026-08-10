@@ -264,6 +264,10 @@ declare global {
   // oxlint-disable-next-line no-var
   var __VINEXT_INLINE_CSS__: Record<string, string> | undefined;
 
+  /** Build-time segment-cache prefetch hint trees, keyed by App Router pattern. */
+  // oxlint-disable-next-line no-var
+  var __VINEXT_PREFETCH_HINTS__: Record<string, unknown> | undefined;
+
   /**
    * Current active locale, set on `globalThis` for server-side SSR rendering
    * (Pages Router with i18n).  Mirrors `window.__VINEXT_LOCALE__` for use in

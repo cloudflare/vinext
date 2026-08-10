@@ -1,8 +1,6 @@
 import type { ReactNode } from "react";
 import { NoInline } from "../../../components/no-inline";
 
-export const prefetchSize = "large";
-
 export default async function Layout({
   children,
   params,

@@ -74,6 +74,7 @@ import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_AFFINITY_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_STATIC_FILE_HEADER,
@@ -1137,6 +1138,12 @@ function nodeToWebRequest(
     prerenderSecret !== undefined &&
     rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret &&
     rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
+  const prerenderAffinity =
+    process.env.VINEXT_PRERENDER === "1" &&
+    prerenderSecret !== undefined &&
+    rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret
+      ? rawHeaders.get(VINEXT_PRERENDER_AFFINITY_HEADER)
+      : null;
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
   if (revalidationHostname) headers.set("host", revalidationHostname);
@@ -1148,6 +1155,9 @@ function nodeToWebRequest(
   }
   if (isTrustedSpeculativePrerender) {
     headers.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
+  }
+  if (prerenderAffinity !== null) {
+    headers.set(VINEXT_PRERENDER_AFFINITY_HEADER, prerenderAffinity);
   }
 
   const method = req.method ?? "GET";
@@ -1668,7 +1678,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // is not preserved in the bundle output format.
     if (
       pathname === "/__vinext/prerender/static-params" ||
-      pathname === "/__vinext/prerender/pages-static-paths"
+      pathname === "/__vinext/prerender/pages-static-paths" ||
+      pathname === "/__vinext/prerender/prefetch-hints"
     ) {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {

@@ -2,13 +2,16 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   createRouteTreePrefetchResponse,
   isRouteTreePrefetchRequest,
+  measureAppRouteTreePrefetchSizes,
   type AppRouteTreePrefetchRoute,
   type TreePrefetch,
 } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
+import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 
 const ParentInlinedIntoSelf = 0b100000;
 const InlinedIntoChild = 0b1000000;
 const HeadInlinedIntoSelf = 0b10000000;
+const HeadOutlined = 0b100000000;
 
 type RootTreePrefetch = {
   buildId?: string;
@@ -17,9 +20,13 @@ type RootTreePrefetch = {
 };
 
 const smallModule = { default() {} };
-const largeModule = {
-  prefetchSize: "large",
-};
+const largeModule = { default() {} };
+const measuredSizes = (layouts: (number | null)[], page = 1) => ({
+  head: 1,
+  layouts,
+  page,
+  slots: {},
+});
 const userComponentTrapModule = {
   default({ children: _children }: { children?: unknown }) {
     throw new Error("route-tree prefetch must not execute user components");
@@ -79,6 +86,72 @@ function collectNodes(
 }
 
 describe("App Router route tree prefetch", () => {
+  it("measures decoded concrete Flight entries without invoking route modules", async () => {
+    const layoutId = AppElementsWire.encodeLayoutId("/");
+    const pageId = AppElementsWire.encodePageId("/products", null);
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/products");
+    const rendered: unknown[] = [];
+    const envelopes: Record<string, unknown>[] = [];
+    const sizes = await measureAppRouteTreePrefetchSizes(
+      {
+        __layoutIds: [layoutId],
+        [layoutId]: "layout output",
+        [pageId]: "page output",
+        [slotId]: "slot output",
+      },
+      (model) => {
+        const envelope = model as Record<string, unknown>;
+        const rsc = envelope.rsc;
+        envelopes.push(envelope);
+        rendered.push(rsc);
+        return new Blob([String(rsc)]).stream();
+      },
+      { buildId: "test-build", head: "head output", staleTime: 30 },
+    );
+
+    expect(rendered.sort((a, b) => String(a).localeCompare(String(b)))).toEqual([
+      "head output",
+      "layout output",
+      "page output",
+      "slot output",
+    ]);
+    expect(sizes.head).toBeGreaterThan(0);
+    expect(sizes.layouts[0]).toBeGreaterThan(0);
+    expect(sizes.page).toBeGreaterThan(0);
+    expect(sizes.slots[slotId]).toBeGreaterThan(0);
+    expect(envelopes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          buildId: "test-build",
+          isPartial: false,
+          staleTime: 30,
+          varyParams: null,
+        }),
+      ]),
+    );
+  });
+
+  it("keeps full parallel-slot identities and recognizes children-slot pages", async () => {
+    const firstSidebar = AppElementsWire.encodeSlotId("sidebar", "/products");
+    const secondSidebar = AppElementsWire.encodeSlotId("sidebar", "/products/details");
+    const childrenPage = AppElementsWire.encodeSlotId("children", "/products");
+    const sizes = await measureAppRouteTreePrefetchSizes(
+      {
+        __layoutIds: [],
+        [firstSidebar]: "first sidebar",
+        [secondSidebar]: "second sidebar with more output",
+        [childrenPage]: "children page",
+      },
+      (model) => new Blob([String((model as { rsc: unknown }).rsc)]).stream(),
+    );
+
+    expect(Object.keys(sizes.slots).sort()).toEqual(
+      [childrenPage, firstSidebar, secondSidebar].sort(),
+    );
+    expect(sizes.slots[firstSidebar]).not.toBe(sizes.slots[secondSidebar]);
+    expect(sizes.page).toBe(sizes.slots[childrenPage]);
+  });
+
   it("detects segment-cache route tree prefetch requests", () => {
     expect(
       isRouteTreePrefetchRequest(
@@ -118,12 +191,15 @@ describe("App Router route tree prefetch", () => {
 
   it("breaks the inlining chain around large segments", async () => {
     const data = await readTree(
-      await routeTreeResponse({
-        layoutTreePositions: [0, 1, 2, 3],
-        layouts: [smallModule, smallModule, largeModule, smallModule],
-        page: smallModule,
-        routeSegments: ["test-restart", "large-middle", "after"],
-      }),
+      await routeTreeResponse(
+        {
+          layoutTreePositions: [0, 1, 2, 3],
+          layouts: [smallModule, smallModule, largeModule, smallModule],
+          page: smallModule,
+          routeSegments: ["test-restart", "large-middle", "after"],
+        },
+        { measuredSizes: measuredSizes([1, 1, 4096, 1]) },
+      ),
     );
 
     expect(renderInliningTree(data.tree)).toBe(
@@ -137,6 +213,42 @@ describe("App Router route tree prefetch", () => {
     );
   });
 
+  it("treats an explicit null segment measurement as non-inlineable", async () => {
+    const data = await readTree(
+      await routeTreeResponse(
+        {
+          layoutTreePositions: [0, 1],
+          layouts: [smallModule, smallModule],
+          page: smallModule,
+          routeSegments: ["unknown-child"],
+        },
+        { measuredSizes: measuredSizes([1, null]) },
+      ),
+    );
+
+    const child = data.tree.slots?.children;
+    expect(child).toBeDefined();
+    expect((child!.prefetchHints & InlinedIntoChild) === 0).toBe(true);
+  });
+
+  it("outlines an oversized measured head on the root", async () => {
+    const sizes = { ...measuredSizes([1], 1), head: 20_000 };
+    const data = await readTree(
+      await routeTreeResponse(
+        {
+          layoutTreePositions: [0],
+          layouts: [smallModule],
+          page: smallModule,
+          routeSegments: [],
+        },
+        { measuredSizes: sizes },
+      ),
+    );
+
+    expect(data.tree.prefetchHints & HeadOutlined).toBe(HeadOutlined);
+    expect((data.tree.slots?.children?.prefetchHints ?? 0) & HeadInlinedIntoSelf).toBe(0);
+  });
+
   it("uses configured prefetchInlining thresholds for route-tree hints", async () => {
     const data = await readTree(
       await routeTreeResponse(
@@ -147,6 +259,7 @@ describe("App Router route tree prefetch", () => {
           routeSegments: ["test-max-threshold"],
         },
         {
+          measuredSizes: measuredSizes([1, 4096]),
           prefetchInlining: {
             maxBundleSize: Number.MAX_SAFE_INTEGER,
             maxSize: Number.MAX_SAFE_INTEGER,
@@ -233,12 +346,15 @@ describe("App Router route tree prefetch", () => {
   });
 
   it("leaves dynamic segment siblings unknown until segment-local metadata exists", async () => {
-    const response = await routeTreeResponse({
-      layoutTreePositions: [0, 1],
-      layouts: [smallModule, largeModule],
-      page: smallModule,
-      routeSegments: ["test-dynamic", "[slug]"],
-    });
+    const response = await routeTreeResponse(
+      {
+        layoutTreePositions: [0, 1],
+        layouts: [smallModule, largeModule],
+        page: smallModule,
+        routeSegments: ["test-dynamic", "[slug]"],
+      },
+      { measuredSizes: measuredSizes([1, 4096]) },
+    );
     const data = await readTree(response);
 
     const dynamicSegment = data.tree.slots?.children?.slots?.children;

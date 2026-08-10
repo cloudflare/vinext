@@ -20,7 +20,9 @@ import {
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_AFFINITY_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
+  VINEXT_PRERENDER_PREFETCH_HINTS_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -102,6 +104,7 @@ import {
   isRouteTreePrefetchRequest,
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
+  type TreePrefetch,
 } from "./app-route-tree-prefetch.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -214,6 +217,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   isRscRequest: boolean;
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
+  prerenderAffinity: string | null;
   params: AppPageParams;
   pprFallbackCacheShells?:
     | readonly {
@@ -336,7 +340,14 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   basePath: string;
   buildId: string | null;
   clearRequestContext: () => void;
+  collectPrefetchHints?: (options: {
+    affinity: string | null;
+    pathname: string;
+    pattern: string;
+    rscData: Uint8Array;
+  }) => Promise<TreePrefetch | null>;
   configHeaders: NextHeader[];
+  discardPrefetchHead?: (affinity: string) => void;
   configRedirects: NextRedirect[];
   configRewrites: {
     afterFiles: NextRewrite[];
@@ -558,6 +569,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
   preMiddlewareRequestContext: RequestContext,
+  prerenderAffinity: string | null,
   isDataRequest: boolean,
   isMiddlewareDataRequest: boolean,
   pagesDataRequest: Request | null,
@@ -614,15 +626,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (
     pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
-    pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH
+    pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH ||
+    pathname === VINEXT_PRERENDER_PREFETCH_HINTS_PATH
   ) {
     const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
     const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
       isPrerenderEnabled() {
         return process.env.VINEXT_PRERENDER === "1";
       },
+      collectPrefetchHints: options.collectPrefetchHints,
+      discardPrefetchHead: options.discardPrefetchHead,
       loadPagesRoutes: options.loadPrerenderPagesRoutes,
       pathname,
+      prerenderAffinity,
       rootParamNamesByPattern: options.rootParamNamesByPattern,
       staticParamsMap: options.staticParamsMap,
     });
@@ -1530,6 +1546,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isRscRequest,
     middlewareContext,
     mountedSlotsHeader,
+    prerenderAffinity,
     params: renderParams,
     pprFallbackCacheShells: runtimeFallbackShells,
     pprFallbackShell: isPrerenderFallbackShell
@@ -1674,6 +1691,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       process.env.VINEXT_PRERENDER === "1" &&
       rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null &&
       rawRequest.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
+    const prerenderAffinity =
+      process.env.VINEXT_PRERENDER === "1" &&
+      rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null
+        ? rawRequest.headers.get(VINEXT_PRERENDER_AFFINITY_HEADER)
+        : null;
     const filteredHeaders = executionContext?.isInternalPagesRevalidation
       ? new Headers(rawRequest.headers)
       : filterInternalHeaders(rawRequest.headers);
@@ -1722,6 +1744,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               options,
               request,
               preMiddlewareRequestContext,
+              prerenderAffinity,
               isPagesDataRequest,
               isPagesDataRequest,
               pagesDataRequest,

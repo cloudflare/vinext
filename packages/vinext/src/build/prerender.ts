@@ -40,11 +40,14 @@ import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/rou
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
   NEXT_CACHE_TAGS_HEADER,
+  VINEXT_PRERENDER_AFFINITY_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_PREFETCH_HINTS_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../server/headers.js";
+import type { TreePrefetch } from "../server/app-route-tree-prefetch.js";
 import {
   encodePrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
@@ -161,11 +164,15 @@ export type PrerenderRouteResult =
       tags?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
+      /** Build-time segment-cache route-tree hints (first concrete render wins). */
+      prefetchHints?: TreePrefetch;
     }
   | {
       route: string;
       status: "skipped";
       reason: "ssr" | "dynamic" | "no-static-params" | "api" | "internal";
+      /** Build-time segment-cache hints may still be collected from a no-store render. */
+      prefetchHints?: TreePrefetch;
     }
   | {
       route: string;
@@ -1056,6 +1063,7 @@ export async function prerenderApp({
   // single in-process server; repointed at the forked pool below for large apps.
   let renderPorts: number[] = [];
   let renderRoundRobin = 0;
+  let renderAffinityCounter = 0;
 
   try {
     // Start a local prod server and fetch via HTTP.
@@ -1094,7 +1102,7 @@ export async function prerenderApp({
       ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
       : {};
 
-    rscHandler = (req: Request) => {
+    rscHandler = async (req: Request) => {
       // Forward the request to a prod server (round-robin across the render
       // pool when one was forked; otherwise the single in-process server).
       // `redirect: "manual"` ensures pages that call `redirect()` surface as
@@ -1106,12 +1114,21 @@ export async function prerenderApp({
       // document load. Mirrors the pages-prerender `renderPage` helper above.
       // See: https://github.com/cloudflare/vinext/issues/1530
       const parsed = new URL(req.url);
-      const port = renderPorts[renderRoundRobin++ % renderPorts.length];
+      const affinity = req.headers.get(VINEXT_PRERENDER_AFFINITY_HEADER);
+      const affinityIndex = affinity !== null && /^\d+$/.test(affinity) ? Number(affinity) : null;
+      const port =
+        renderPorts[
+          affinityIndex !== null
+            ? affinityIndex % renderPorts.length
+            : renderRoundRobin++ % renderPorts.length
+        ];
       const url = `http://127.0.0.1:${port}${parsed.pathname}${parsed.search}`;
+      const body =
+        req.method !== "GET" && req.method !== "HEAD" ? await req.arrayBuffer() : undefined;
       return fetch(url, {
         method: req.method,
         headers: { ...secretHeaders, ...Object.fromEntries(req.headers.entries()) },
-        body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+        body,
         redirect: "manual",
       });
     };
@@ -1423,6 +1440,7 @@ export async function prerenderApp({
       isSpeculative,
       isFallback,
     }: UrlToRender): Promise<PrerenderRouteResult> {
+      const renderAffinity = String(renderAffinityCounter++);
       try {
         // Invoke RSC handler directly with a synthetic Request.
         // Each request is wrapped in its own ALS context via runWithHeadersContext
@@ -1436,6 +1454,7 @@ export async function prerenderApp({
         const prerenderRouteParamsHeader =
           serializePrerenderRouteParamsHeader(prerenderRouteParams);
         const htmlHeaders = new Headers();
+        htmlHeaders.set(VINEXT_PRERENDER_AFFINITY_HEADER, renderAffinity);
         if (prerenderRouteParamsHeader !== null) {
           htmlHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
         }
@@ -1451,12 +1470,19 @@ export async function prerenderApp({
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
-            if (!response.ok || cacheControl.includes("no-store")) {
+            if (
+              !response.ok ||
+              (cacheControl.includes("no-store") &&
+                (!config.prefetchInlining ||
+                  !config.cacheComponents ||
+                  (responseCacheLife === null && cacheTags.length === 0)))
+            ) {
               await response.body?.cancel();
               return {
                 cacheControl,
                 linkHeader,
                 html: null,
+                hasCacheComponentData: responseCacheLife !== null || cacheTags.length > 0,
                 ok: response.ok,
                 requestCacheLife: null,
                 tags: [],
@@ -1473,6 +1499,7 @@ export async function prerenderApp({
               cacheControl,
               linkHeader,
               html,
+              hasCacheComponentData: responseCacheLife !== null || cacheTags.length > 0,
               ok: true,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
@@ -1498,7 +1525,10 @@ export async function prerenderApp({
         // as a dynamic skip even for concrete generateStaticParams paths: a
         // generated param decides which URLs are admissible, not that the
         // render output is reusable.
-        if (htmlCacheControl.includes("no-store")) {
+        if (
+          htmlCacheControl.includes("no-store") &&
+          (!config.prefetchInlining || !config.cacheComponents || !htmlRender.hasCacheComponentData)
+        ) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
 
@@ -1525,6 +1555,7 @@ export async function prerenderApp({
         let rscData = extractRscPayloadFromPrerenderedHtml(html);
         if (rscData === null) {
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
+          rscHeaders.set(VINEXT_PRERENDER_AFFINITY_HEADER, renderAffinity);
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
           }
@@ -1544,6 +1575,39 @@ export async function prerenderApp({
             );
           }
           rscData = new Uint8Array(await rscRes.arrayBuffer());
+        }
+
+        let prefetchHints: TreePrefetch | undefined;
+        if (config.prefetchInlining && !isFallback) {
+          const search = new URLSearchParams({ pathname: urlPath, pattern: routePattern });
+          const hintsRequest = new Request(
+            `http://localhost${VINEXT_PRERENDER_PREFETCH_HINTS_PATH}?${search}`,
+            {
+              body: rscData.slice().buffer,
+              headers: {
+                "content-type": "application/octet-stream",
+                [VINEXT_PRERENDER_AFFINITY_HEADER]: renderAffinity,
+              },
+              method: "POST",
+            },
+          );
+          const hintsResponse = await rscHandler(hintsRequest);
+          if (!hintsResponse.ok) {
+            const detail = await hintsResponse.text();
+            throw new Error(
+              `[vinext] prerenderApp: prefetch hint collection returned ${hintsResponse.status} for ${urlPath}: ${detail}`,
+            );
+          }
+          prefetchHints = (await hintsResponse.json()) as TreePrefetch;
+        }
+
+        if (htmlCacheControl.includes("no-store")) {
+          return {
+            route: routePattern,
+            status: "skipped",
+            reason: "dynamic",
+            ...(prefetchHints ? { prefetchHints } : {}),
+          };
         }
 
         const outputFiles: string[] = [];
@@ -1591,6 +1655,7 @@ export async function prerenderApp({
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
+          ...(prefetchHints ? { prefetchHints } : {}),
         };
       } catch (e) {
         renderPool?.recordRenderError(e);
@@ -1601,6 +1666,23 @@ export async function prerenderApp({
         const base = config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message;
         const msg = err.digest ? `${base} (digest: ${err.digest})` : base;
         return { route: routePattern, status: "error", error: msg };
+      } finally {
+        if (config.prefetchInlining) {
+          const cleanupRequest = new Request(
+            `http://localhost${VINEXT_PRERENDER_PREFETCH_HINTS_PATH}`,
+            {
+              headers: { [VINEXT_PRERENDER_AFFINITY_HEADER]: renderAffinity },
+              method: "DELETE",
+            },
+          );
+          try {
+            const cleanupResponse = await rscHandler(cleanupRequest);
+            await cleanupResponse.body?.cancel();
+          } catch {
+            // The render result is already determined; cleanup is best-effort
+            // and the prerender worker is torn down at the end of the build.
+          }
+        }
       }
     }
 
@@ -1818,11 +1900,23 @@ export function writePrerenderIndex(
     return { route: r.route, status: r.status, error: r.error };
   });
 
+  const prefetchHints: Record<string, TreePrefetch> = {};
+  for (const route of routes) {
+    if (
+      "prefetchHints" in route &&
+      route.prefetchHints !== undefined &&
+      !(route.route in prefetchHints)
+    ) {
+      prefetchHints[route.route] = route.prefetchHints;
+    }
+  }
+
   const index = {
     ...(buildId ? { buildId } : {}),
     ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
     routes: indexRoutes,
     pregeneratedConcretePaths: buildPregeneratedConcretePathTable({ routes: indexRoutes }),
+    ...(Object.keys(prefetchHints).length > 0 ? { prefetchHints } : {}),
   };
   fs.writeFileSync(
     path.join(outDir, "vinext-prerender.json"),

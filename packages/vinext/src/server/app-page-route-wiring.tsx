@@ -256,6 +256,7 @@ type BuildAppPageElementsOptions<
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
   interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
+  capturePrefetchHead?: (head: ReactNode) => void;
   isRscRequest?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
   renderIdentity?: AppPageRenderIdentity;
@@ -995,6 +996,27 @@ export function buildAppPageElements<
     };
   }
   const elements: Record<string, AppElementValue> = {};
+  if (options.capturePrefetchHead) {
+    options.capturePrefetchHead(
+      <>
+        {createAppPageRouteHead(
+          options.resolvedMetadata,
+          options.resolvedViewport,
+          options.resolvedMetadataPathname ?? options.routePath,
+          options.metadataPlacement ?? "head",
+          options.trailingSlash,
+        )}
+        {options.streamingMetadata ? (
+          <AppPageStreamingMetadata
+            metadata={options.streamingMetadataTags ?? options.streamingMetadata}
+            pathname={options.resolvedMetadataPathname ?? options.routePath}
+            scriptNonce={options.scriptNonce}
+            trailingSlash={options.trailingSlash}
+          />
+        ) : null}
+      </>,
+    );
+  }
   // Synthetic nested segment entries carry membership independently of the
   // proof map. If identity metadata is absent or rejected atomically, the
   // browser can still discover these ids and mint conservative fresh keys.

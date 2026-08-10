@@ -84,6 +84,10 @@ const appPageElementBuilderPath = resolveEntryPath(
   "../server/app-page-element-builder.js",
   import.meta.url,
 );
+const appRouteTreePrefetchPath = resolveEntryPath(
+  "../server/app-route-tree-prefetch.js",
+  import.meta.url,
+);
 const instrumentationRuntimePath = resolveEntryPath(
   "../server/instrumentation-runtime.js",
   import.meta.url,
@@ -279,6 +283,7 @@ async function __loadPrerenderPagesRoutes() {
   return `
 import ${JSON.stringify(serverGlobalsPath)};
 import {
+  createFromReadableStream as _createFromReadableStream,
   renderToReadableStream as _renderToReadableStream,
   ${
     hasServerActions
@@ -369,6 +374,10 @@ import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
+import {
+  createRouteTreePrefetch as __createRouteTreePrefetch,
+  measureAppRouteTreePrefetchSizes as __measureAppRouteTreePrefetchSizes,
+} from ${JSON.stringify(appRouteTreePrefetchPath)};
 import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
@@ -630,6 +639,8 @@ function findIntercept(pathname, sourcePathname = null) {
   return __routeMatcher.findIntercept(pathname, sourcePathname);
 }
 
+const __prefetchHeadsByAffinity = new Map();
+
 async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
@@ -649,6 +660,12 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
     basePath: __basePath,
     trailingSlash: __trailingSlash,
     htmlLimitedBots: __htmlLimitedBots,
+    capturePrefetchHead:
+      ${JSON.stringify(Boolean(prefetchInlining))} &&
+      process.env.VINEXT_PRERENDER === "1" &&
+      pageRequest.prerenderAffinity
+        ? (head) => __prefetchHeadsByAffinity.set(pageRequest.prerenderAffinity, head)
+        : undefined,
     scriptNonce,
   });
 }
@@ -719,10 +736,34 @@ const rootParamNamesMap = {
 ${rootParamNameEntries.join("\n")}
 };
 
+async function __collectPrefetchHints({ affinity, pathname, pattern, rscData }) {
+  const match = matchRoute(pathname);
+  if (!match || match.route.pattern !== pattern || match.route.routeHandler) return null;
+  await __ensureRouteLoaded(match.route);
+  const head = affinity ? __prefetchHeadsByAffinity.get(affinity) : undefined;
+  if (affinity) __prefetchHeadsByAffinity.delete(affinity);
+  const decoded = await _createFromReadableStream(new Blob([rscData]).stream());
+  const measuredSizes = await __measureAppRouteTreePrefetchSizes(decoded, async (model) => {
+    const result = await _prerender(model, _createClientManifest());
+    return result.prelude;
+  }, {
+    buildId: process.env.__VINEXT_BUILD_ID ?? null,
+    head,
+  });
+  return __createRouteTreePrefetch(match.route, {
+    measuredSizes,
+    prefetchInlining: ${JSON.stringify(prefetchInlining)},
+  });
+}
+
 __setPagesClientAssets(__pagesClientAssets);
 export default createAppRscHandler({
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
+  collectPrefetchHints: __collectPrefetchHints,
+  discardPrefetchHead(affinity) {
+    __prefetchHeadsByAffinity.delete(affinity);
+  },
   ensureRouteLoaded: __ensureRouteLoaded,
   prefetchInlining: ${JSON.stringify(prefetchInlining)},
   clearRequestContext() {
@@ -756,6 +797,7 @@ export default createAppRscHandler({
     isRscRequest,
     middlewareContext,
     mountedSlotsHeader,
+    prerenderAffinity,
     params,
     pprFallbackCacheShells,
     pprFallbackShell,
@@ -814,6 +856,7 @@ export default createAppRscHandler({
           isRscRequest,
           request,
           mountedSlotsHeader,
+          prerenderAffinity,
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,

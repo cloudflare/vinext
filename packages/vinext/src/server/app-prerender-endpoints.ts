@@ -1,10 +1,12 @@
 import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
 import {
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
+  VINEXT_PRERENDER_PREFETCH_HINTS_PATH,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { RootParams } from "vinext/shims/root-params";
+import type { TreePrefetch } from "./app-route-tree-prefetch.js";
 
 type GenerateStaticParams = (args: { params: RootParams }) => unknown;
 
@@ -19,9 +21,17 @@ type AppPrerenderPageRoute = {
 };
 
 type HandleAppPrerenderEndpointOptions = {
+  collectPrefetchHints?: (options: {
+    affinity: string | null;
+    pathname: string;
+    pattern: string;
+    rscData: Uint8Array;
+  }) => Promise<TreePrefetch | null>;
+  discardPrefetchHead?: (affinity: string) => void;
   isPrerenderEnabled?: () => boolean;
   loadPagesRoutes?: () => Promise<unknown>;
   pathname: string;
+  prerenderAffinity?: string | null;
   rootParamNamesByPattern?: AppPrerenderRootParamNamesMap;
   staticParamsMap: AppPrerenderStaticParamsMap;
 };
@@ -41,7 +51,43 @@ export async function handleAppPrerenderEndpoint(
     return handlePagesStaticPathsEndpoint(request, options);
   }
 
+  if (options.pathname === VINEXT_PRERENDER_PREFETCH_HINTS_PATH) {
+    if (!options.collectPrefetchHints) return null;
+    return handlePrefetchHintsEndpoint(request, options);
+  }
+
   return null;
+}
+
+async function handlePrefetchHintsEndpoint(
+  request: Request,
+  options: HandleAppPrerenderEndpointOptions,
+): Promise<Response> {
+  if (!isEnabled(options)) return notFoundResponse();
+
+  if (request.method === "DELETE") {
+    const affinity = options.prerenderAffinity;
+    if (affinity) options.discardPrefetchHead?.(affinity);
+    return new Response(null, { status: 204 });
+  }
+
+  const url = new URL(request.url);
+  const pathname = url.searchParams.get("pathname");
+  const pattern = url.searchParams.get("pattern");
+  if (!pathname || !pattern) return new Response("missing pathname or pattern", { status: 400 });
+
+  try {
+    const rscData = new Uint8Array(await request.arrayBuffer());
+    const tree = await options.collectPrefetchHints!({
+      affinity: options.prerenderAffinity ?? null,
+      pathname,
+      pattern,
+      rscData,
+    });
+    return tree ? jsonResponse(tree) : notFoundResponse();
+  } catch (error) {
+    return jsonResponse({ error: String(error) }, 500);
+  }
 }
 
 async function handleStaticParamsEndpoint(

@@ -111,6 +111,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   request: Request;
   /** Normalized x-vinext-mounted-slots header value. */
   mountedSlotsHeader: string | null;
+  /** Trusted build-only render affinity, stripped from user-visible headers. */
+  prerenderAffinity?: string | null;
   /** Semantic RSC payload mode for this page render. */
   renderMode?: AppRscRenderMode;
   /** Observe page `searchParams` access for cache-safety classification. */
@@ -153,6 +155,8 @@ export type BuildPageElementsOptions<
   trailingSlash?: boolean;
   /** Serialized next.config `htmlLimitedBots` regexp source. */
   htmlLimitedBots?: string;
+  /** Capture the already-resolved head for build-time prefetch measurement. */
+  capturePrefetchHead?: (head: import("react").ReactNode) => void;
   scriptNonce?: string;
 };
 
@@ -658,6 +662,7 @@ export async function buildPageElements<
     // Next.js's behavior when the user has not defined app/global-error.tsx.
     globalErrorModule:
       globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
+    capturePrefetchHead: options.capturePrefetchHead,
     isRscRequest,
     layoutParamAccess: options.layoutParamAccess,
     mountedSlotIds,

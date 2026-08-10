@@ -21,11 +21,29 @@ beforeEach(() => {
 afterEach(() => {
   clearPregeneratedConcretePaths();
   delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+  delete globalThis.__VINEXT_PREFETCH_HINTS__;
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 
 describe("injectPregeneratedConcretePaths", () => {
+  it("injects immutable prefetch hint trees from the prerender manifest", () => {
+    const tree = { name: "", param: null, prefetchHints: 64, slots: null };
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({ prefetchHints: { "/blog/:slug": tree } }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir);
+
+    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    expect(output).toContain("__VINEXT_PREFETCH_HINTS__");
+    expect(globalThis.__VINEXT_PREFETCH_HINTS__).toEqual({ "/blog/:slug": tree });
+    expect(Object.isFrozen(globalThis.__VINEXT_PREFETCH_HINTS__)).toBe(true);
+    expect(Object.isFrozen(globalThis.__VINEXT_PREFETCH_HINTS__?.["/blog/:slug"])).toBe(true);
+  });
+
   it("replaces an earlier injection", () => {
     writeFile("dist/server/index.js", 'import { handler } from "vinext/server/fetch-handler";\n');
     writeFile(
