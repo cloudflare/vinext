@@ -148,6 +148,29 @@ describe("navigationPlanner early navigation intent classification", () => {
     });
   });
 
+  it("refreshes an exact current URL when the committed snapshot is base-stripped", () => {
+    const decision = classify({
+      basePath: "/app",
+      currentHref: "https://example.com/docs?q=1",
+      targetHref: "https://example.com/app/docs?q=1",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/app/docs?q=1",
+    });
+  });
+
+  it("keeps an identical non-empty hash on the same-document scroll path", () => {
+    const decision = classify({
+      basePath: "/app",
+      currentHref: "https://example.com/docs#section",
+      targetHref: "https://example.com/app/docs#section",
+    });
+
+    expect(decision).toMatchObject({ kind: "sameDocumentScroll", hash: "#section" });
+  });
+
   it("treats hash removal as a flight navigation, not a same-document scroll", () => {
     const decision = classify({
       currentHref: "https://example.com/docs#section",

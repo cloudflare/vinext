@@ -654,9 +654,11 @@ function classifyEarlyNavigationIntent(
   }
 
   // A Link to the exact current URL still invalidates the page segment in
-  // Next.js. Re-fetch Flight data instead of replaying the response that
-  // produced the page already on screen.
-  if (current.href === next.href) {
+  // Next.js. The committed App Router snapshot is base-stripped while a Link
+  // target retains basePath, so exact identity compares canonical URL parts
+  // rather than the raw href. Keep raw search/hash equality here: equivalent
+  // query encodings are the same page but not the exact same URL spelling.
+  if (samePathname && current.search === next.search && current.hash === next.hash) {
     return {
       bypassNavigationCache: true,
       kind: "flightNavigation",
