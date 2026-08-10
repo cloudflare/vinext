@@ -317,7 +317,7 @@ function routeModuleExportHasRuntimeInstant(
   }
 }
 
-export function routeModuleHasRuntimeInstant(filePath: string | null): boolean {
+function routeModuleHasRuntimeInstant(filePath: string | null): boolean {
   return (
     filePath !== null && routeModuleExportHasRuntimeInstant(filePath, "unstable_instant", new Set())
   );

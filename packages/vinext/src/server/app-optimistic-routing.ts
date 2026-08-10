@@ -352,7 +352,7 @@ function sanitizeInstantShellValue(value: unknown): unknown {
   return cloneElement(value, props as Record<string, ReactNode>);
 }
 
-export function sanitizeInstantShellElements(elements: AppElements): AppElements {
+function sanitizeInstantShellElements(elements: AppElements): AppElements {
   const sanitized: Record<string, AppElementValue> = { ...elements };
   for (const [elementId, value] of Object.entries(elements)) {
     if (AppElementsWire.parseElementKey(elementId) !== null) {
