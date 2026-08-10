@@ -51,6 +51,9 @@ export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-p
 /** Internal endpoint used to evaluate Pages Router getStaticPaths exports. */
 export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pages-static-paths";
 
+/** Internal endpoint used to enumerate cached dynamic metadata route paths. */
+export const VINEXT_PRERENDER_METADATA_ROUTES_PATH = "/__vinext/prerender/metadata-routes";
+
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
 
@@ -80,6 +83,9 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
+
+/** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
+export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";

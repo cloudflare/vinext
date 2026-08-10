@@ -11,8 +11,13 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
-import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  createRscRequestUrl,
+  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
@@ -47,6 +52,7 @@ let consumePrefetchResponseForNavigation: Navigation["consumePrefetchResponseFor
 let seedPrefetchResponseSnapshot: Navigation["seedPrefetchResponseSnapshot"];
 let getRetainedPrefetchLayoutClaims: Navigation["getRetainedPrefetchLayoutClaims"];
 let getLiveRetainedPrefetchLayoutClaims: Navigation["getLiveRetainedPrefetchLayoutClaims"];
+let createAppPrefetchRequestHeaders: Navigation["createAppPrefetchRequestHeaders"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -88,10 +94,12 @@ beforeEach(async () => {
   seedPrefetchResponseSnapshot = nav.seedPrefetchResponseSnapshot;
   getRetainedPrefetchLayoutClaims = nav.getRetainedPrefetchLayoutClaims;
   getLiveRetainedPrefetchLayoutClaims = nav.getLiveRetainedPrefetchLayoutClaims;
+  createAppPrefetchRequestHeaders = nav.createAppPrefetchRequestHeaders;
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   delete (globalThis as any).window;
   delete (globalThis as any).fetch;
 });
@@ -696,13 +704,242 @@ describe("prefetch cache eviction", () => {
     // A second programmatic prefetch while the entry is fresh must not issue
     // another request.
     appRouterInstance.prefetch("/dashboard");
-    await waitForPrefetchSetup();
+    await settlePrefetchSetup();
     expect(fetch).toHaveBeenCalledTimes(1);
 
     const consumed = consumePrefetchResponse(fetchedUrl, null, null);
     expect(consumed).not.toBeNull();
     if (consumed === null) return;
     await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
+  });
+
+  it("gates Cache Components root-param router.prefetch behind the route tree", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        patternParts: [":rootParam"],
+        isDynamic: true,
+        hasRootParams: true,
+      },
+    ];
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+    expect(resolveAutoAppRoutePrefetch("/aaa").requiresRouteTreePrefetch).toBe(true);
+    const routeTree = createDeferredResponse();
+    const fetch = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockImplementationOnce(() => routeTree.promise)
+      .mockImplementation(() =>
+        Promise.resolve(
+          new Response("concrete root-param page", {
+            headers: { "content-type": "text/x-component" },
+          }),
+        ),
+      );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/aaa");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    const routeTreeHeaders = fetch.mock.calls[0]?.[1]?.headers as Headers | undefined;
+    expect(routeTreeHeaders?.get("Next-Router-Prefetch")).toBe("1");
+    expect(routeTreeHeaders?.get("Next-Router-Segment-Prefetch")).toBe("/_tree");
+
+    routeTree.resolve(new Response("tree", { headers: { "content-type": "text/x-component" } }));
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+
+    const pageUrl = toRscUrlString(fetch.mock.calls[1]![0]);
+    const pageHeaders = fetch.mock.calls[1]?.[1]?.headers as Headers | undefined;
+    expect(pageHeaders?.get("Next-Router-Prefetch")).toBe("1");
+    expect(pageHeaders?.get("Next-Router-Segment-Prefetch")).toBe("/__PAGE__");
+    expect(pageUrl).not.toContain("%5BrootParam%5D");
+
+    const pageCacheKey = AppElementsWire.encodeCacheKey(pageUrl, null);
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(pageCacheKey)?.outcome === "cache-seeded",
+    );
+
+    const navigationEntry = Array.from(getPrefetchCache().values()).find(
+      (entry) => entry.prefetchKind === "navigation",
+    );
+    expect(navigationEntry?.cacheForNavigation).toBe(true);
+    await settlePrefetchSetup();
+  });
+
+  it("reuses a rendered-path prefetch after the root-param route-tree gate", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        patternParts: [":rootParam"],
+        isDynamic: true,
+        hasRootParams: true,
+      },
+    ];
+    const renderedPathAndSearch = "/rendered-aaa";
+    const sourceExpiresAt = now + 100;
+    seedPrefetchResponseSnapshot(
+      `${renderedPathAndSearch}?_rsc=existing`,
+      {
+        buffer: new TextEncoder().encode("cached rendered page").buffer,
+        contentType: "text/x-component",
+        expiresAt: sourceExpiresAt,
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: `${renderedPathAndSearch}?_rsc=existing`,
+      },
+      null,
+      null,
+    );
+    const seededRenderedEntry = Array.from(getPrefetchCache().values()).find(
+      (entry) => entry.outcome === "cache-seeded",
+    );
+    expect(seededRenderedEntry).toBeDefined();
+
+    const fetch = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(() =>
+      Promise.resolve(
+        new Response("tree", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent(renderedPathAndSearch),
+          },
+        }),
+      ),
+    );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/aaa");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    await waitForPrefetchSetup(() =>
+      Array.from(getPrefetchCache().values()).some(
+        (entry) =>
+          entry !== seededRenderedEntry &&
+          entry.prefetchKind === "navigation" &&
+          entry.outcome === "cache-seeded",
+      ),
+    );
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const routeTreeHeaders = fetch.mock.calls[0]?.[1]?.headers as Headers | undefined;
+    expect(routeTreeHeaders?.get("Next-Router-Segment-Prefetch")).toBe("/_tree");
+    const navigationEntry = Array.from(getPrefetchCache().values()).find(
+      (entry) => entry !== seededRenderedEntry && entry.prefetchKind === "navigation",
+    );
+    expect(navigationEntry?.expiresAt).toBe(sourceExpiresAt);
+    if (navigationEntry?.snapshot) {
+      await expect(restoreRscResponse(navigationEntry.snapshot).text()).resolves.toBe(
+        "cached rendered page",
+      );
+    }
+    const navigationCacheKey = Array.from(navigationEntry?.cacheKeys ?? [])[0];
+    expect(navigationCacheKey).toBeDefined();
+    now = sourceExpiresAt + 1;
+    expect(peekPrefetchResponseForNavigation(navigationCacheKey!, null, null)).toBeNull();
+  });
+
+  it("refetches an expired root-param route tree before selecting its rendered path", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        patternParts: [":rootParam"],
+        isDynamic: true,
+        hasRootParams: true,
+      },
+    ];
+
+    const oldRenderedPath = "/old-rendered-bbb";
+    const newRenderedPath = "/new-rendered-bbb";
+    const seedRenderedAlias = (pathAndSearch: string, body: string) =>
+      seedPrefetchResponseSnapshot(
+        `${pathAndSearch}?_rsc=existing`,
+        {
+          buffer: new TextEncoder().encode(body).buffer,
+          contentType: "text/x-component",
+          expiresAt: now + 10_000,
+          mountedSlotsHeader: null,
+          paramsHeader: null,
+          renderedPathAndSearch: null,
+          url: `${pathAndSearch}?_rsc=existing`,
+        },
+        null,
+        null,
+      );
+    seedRenderedAlias(oldRenderedPath, "stale rendered page");
+    seedRenderedAlias(newRenderedPath, "fresh rendered page");
+
+    const routeTreeHeaders = createAppPrefetchRequestHeaders({
+      fetchPriority: "low",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+    });
+    routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    routeTreeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+    const routeTreeRscUrl = await createRscRequestUrl("/bbb", routeTreeHeaders);
+    const routeTreeCacheKey = AppElementsWire.encodeCacheKey(routeTreeRscUrl, null);
+    const expiredRouteTreeEntry: PrefetchCacheEntry = {
+      cacheForNavigation: false,
+      cacheKeys: new Set([routeTreeCacheKey]),
+      expiresAt: now - 1,
+      mountedSlotsHeader: null,
+      outcome: "cache-seeded",
+      prefetchKind: "route-tree",
+      snapshot: {
+        buffer: new TextEncoder().encode("expired tree").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch: oldRenderedPath,
+        url: routeTreeRscUrl,
+      },
+      timestamp: now - PREFETCH_CACHE_TTL,
+    };
+    getPrefetchCache().set(routeTreeCacheKey, expiredRouteTreeEntry);
+    getPrefetchedUrls().add(routeTreeCacheKey);
+
+    const fetch = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(() =>
+      Promise.resolve(
+        new Response("fresh tree", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent(newRenderedPath),
+          },
+        }),
+      ),
+    );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/bbb");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    await waitForPrefetchSetup(() =>
+      Array.from(getPrefetchCache().values()).some(
+        (entry) => entry.prefetchKind === "navigation" && entry.outcome === "cache-seeded",
+      ),
+    );
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(getPrefetchCache().get(routeTreeCacheKey)).not.toBe(expiredRouteTreeEntry);
+    expect(getPrefetchCache().get(routeTreeCacheKey)?.snapshot?.renderedPathAndSearch).toBe(
+      newRenderedPath,
+    );
+    const navigationEntry = Array.from(getPrefetchCache().values()).find(
+      (entry) => entry.prefetchKind === "navigation",
+    );
+    expect(navigationEntry?.snapshot).toBeDefined();
+    if (navigationEntry?.snapshot) {
+      await expect(restoreRscResponse(navigationEntry.snapshot).text()).resolves.toBe(
+        "fresh rendered page",
+      );
+    }
   });
 
   it("shares an in-flight router.prefetch with navigation instead of refetching (#2707)", async () => {
