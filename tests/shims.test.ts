@@ -6690,6 +6690,82 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
+  it("varies shared cache entries by root params read by the cached function", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(async () => {
+      callCount++;
+      return {
+        lang: await getRootParam("lang"),
+        countryCode: await getRootParam("countryCode"),
+        callCount,
+      };
+    }, "test:root-param-key");
+    const invoke = (lang: string, countryCode: string) =>
+      runWithRootParamsScope({ lang, countryCode }, () => cached());
+
+    await expect(invoke("en", "us")).resolves.toEqual({
+      lang: "en",
+      countryCode: "us",
+      callCount: 1,
+    });
+    await expect(invoke("fr", "ca")).resolves.toEqual({
+      lang: "fr",
+      countryCode: "ca",
+      callCount: 2,
+    });
+
+    // A fresh isolate has no in-memory dependency map. The coarse redirect
+    // entry must recover the param names from the shared handler.
+    const knownRootParams = Reflect.get(
+      globalThis,
+      Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId"),
+    ) as Map<string, Set<string>>;
+    knownRootParams.clear();
+
+    await expect(invoke("en", "us")).resolves.toEqual({
+      lang: "en",
+      countryCode: "us",
+      callCount: 1,
+    });
+    expect(callCount).toBe(2);
+  });
+
+  it("propagates nested cache root-param reads into the outer cache key", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let outerCalls = 0;
+    const inner = registerCachedFunction(
+      async () => ({ countryCode: await getRootParam("countryCode") }),
+      "test:nested-root-param-inner",
+    );
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return { ...(await inner()), outerCalls };
+    }, "test:nested-root-param-outer");
+    const invoke = (countryCode: string) => runWithRootParamsScope({ countryCode }, () => outer());
+
+    await expect(invoke("us")).resolves.toEqual({ countryCode: "us", outerCalls: 1 });
+    await expect(invoke("gb")).resolves.toEqual({ countryCode: "gb", outerCalls: 2 });
+    await expect(invoke("us")).resolves.toEqual({ countryCode: "us", outerCalls: 1 });
+    expect(outerCalls).toBe(2);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
   it("bypasses the shared cache in draft mode", async () => {
@@ -7145,6 +7221,55 @@ describe('"use cache" runtime', () => {
     });
     expect(outerCalls).toBe(1);
     expect(warmStale).toBe(30);
+  });
+
+  it("a PPR warmup hit propagates root-param dependencies into the enclosing cache key", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife, _runWithCacheState } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    const {
+      createPprFallbackShellState,
+      preparePprFallbackShellFinalRender,
+      runWithPprFallbackShellState,
+    } = await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let innerCalls = 0;
+    let outerCalls = 0;
+    const inner = registerCachedFunction(async () => {
+      innerCalls++;
+      cacheLife("minutes");
+      return await getRootParam("lang");
+    }, "test:ppr-warmup-root-param-inner");
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return await inner();
+    }, "test:ppr-warmup-root-param-outer");
+    const invoke = (lang: string, fn: () => Promise<unknown>) =>
+      _runWithCacheState(() => runWithRootParamsScope({ lang }, fn));
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/[lang]/cache-life",
+    });
+
+    await invoke("en", () => runWithPprFallbackShellState(state, () => inner()));
+    preparePprFallbackShellFinalRender(state);
+    await expect(
+      invoke("en", () => runWithPprFallbackShellState(state, () => outer())),
+    ).resolves.toBe("en");
+    expect(innerCalls).toBe(1);
+    expect(outerCalls).toBe(1);
+
+    // The final-render outer entry learned `lang` through the inner warmup
+    // handoff. A different root param must miss both entries, while the
+    // original value remains reusable.
+    await expect(invoke("fr", () => outer())).resolves.toBe("fr");
+    await expect(invoke("en", () => outer())).resolves.toBe("en");
+    expect(innerCalls).toBe(2);
+    expect(outerCalls).toBe(2);
   });
 
   it("registerCachedFunction collects cacheTag", async () => {
