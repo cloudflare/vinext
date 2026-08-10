@@ -178,6 +178,7 @@ export async function seedMemoryCacheFromPrerender(
     const cachePathname = normalizePregeneratedPathname(artifactPathname);
     const artifactPath = path.join(prerenderDir, getAppRouteOutputPath(artifactPathname));
     if (!fs.existsSync(artifactPath)) continue;
+    if (typeof route.revalidate === "number" && route.revalidate <= 0) continue;
 
     const body = fs.readFileSync(artifactPath);
     const data: CachedRouteValue = {

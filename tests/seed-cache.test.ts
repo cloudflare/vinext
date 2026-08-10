@@ -182,6 +182,35 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(policies[0].cacheControl).toEqual({ revalidate: 900 });
   });
 
+  it("does not seed metadata responses with zero revalidate", async () => {
+    let writes = 0;
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "metadata-zero-revalidate-build",
+        routes: [
+          {
+            route: "/robots.txt",
+            status: "rendered",
+            revalidate: 0,
+            router: "metadata",
+            responseStatus: 200,
+          },
+        ],
+      },
+      { "robots.txt.route": "User-Agent: *\nAllow: /\n" },
+    );
+
+    const seeded = await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppRouteEntry() {
+        writes++;
+      },
+    });
+
+    expect(seeded).toBe(0);
+    expect(writes).toBe(0);
+  });
+
   it("normalizes metadata keys and preserves route and user invalidation tags", async () => {
     const writes: Array<{ key: string; policy: { tags?: string[] } }> = [];
     setupPrerenderFixture(
