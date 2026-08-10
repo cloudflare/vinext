@@ -51,7 +51,7 @@ export function stripAppPprDynamicFallbackShellMarker(html: string): string {
  * fallback render's terminal `done=true` before those chunks makes the browser
  * close its RSC controller and reject the resumed model.
  */
-export function prepareAppPprFallbackShellHtmlForResume(html: string): string {
+function prepareAppPprFallbackShellHtmlForResume(html: string): string {
   const bootstrap = navigationRuntimeRscBootstrapExpression();
   return html
     .replace(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script\s*>/gi, (script, content: string) =>
