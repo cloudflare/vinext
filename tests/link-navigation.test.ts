@@ -2585,7 +2585,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("skips an exact visited response until its identity is invalidated", async () => {
+  it("does not suppress an ordinary low-priority viewport prefetch for a visited response", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
       href: "/intent-prefetch-target",
@@ -2605,11 +2605,41 @@ describe("Link prefetch scheduling", () => {
           priority: "low" | "high",
         ) => boolean;
       };
-      let visited = true;
-      const hasVisitedResponseForPrefetch = vi.fn(() => visited);
+      const hasVisitedResponseForPrefetch = vi.fn(() => true);
       functions.hasVisitedResponseForPrefetch = hasVisitedResponseForPrefetch;
 
       observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("suppresses high-priority intent prefetch for a traversal-fresh visited response", async () => {
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      const runtime: unknown = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
+      if (typeof runtime !== "object" || runtime === null || !("functions" in runtime)) {
+        throw new Error("Expected navigation runtime functions");
+      }
+      const functions = runtime.functions as {
+        hasVisitedResponseForPrefetch?: (
+          rscUrl: string,
+          interceptionContext: string | null,
+          mountedSlotsHeader: string | null,
+          priority: "low" | "high",
+        ) => boolean;
+      };
+      const hasVisitedResponseForPrefetch = vi.fn(() => true);
+      functions.hasVisitedResponseForPrefetch = hasVisitedResponseForPrefetch;
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
       await flushPrefetchTasks();
 
       expect(result.fetch).not.toHaveBeenCalled();
@@ -2617,13 +2647,8 @@ describe("Link prefetch scheduling", () => {
         expect.stringContaining("/intent-prefetch-target"),
         null,
         null,
-        "low",
+        "high",
       );
-
-      visited = false;
-      pingVisibleLinksFromRuntime();
-      await flushPrefetchTasks();
-      expect(result.fetch).toHaveBeenCalledTimes(1);
     } finally {
       result.restoreNodeEnv();
     }

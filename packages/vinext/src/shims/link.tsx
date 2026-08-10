@@ -576,6 +576,7 @@ function prefetchUrl(
         // request contexts such as /feed vs /gallery or different mounted slots.
         const rscUrl = await createRscRequestUrl(fullHref, headers);
         if (
+          priority === "high" &&
           getNavigationRuntime()?.functions.hasVisitedResponseForPrefetch?.(
             rscUrl,
             interceptionContext,

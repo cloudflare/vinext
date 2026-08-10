@@ -7096,6 +7096,57 @@ describe('"use cache" runtime', () => {
     expect(warmStale).toBe(30);
   });
 
+  it("a PPR warmup hit constrains a cache scope first executed during the final render", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const {
+      setCacheHandler,
+      MemoryCacheHandler,
+      cacheLife,
+      _peekRequestScopedCacheLife,
+      _runWithCacheState,
+    } = await import("../packages/vinext/src/shims/cache.js");
+    const {
+      createPprFallbackShellState,
+      preparePprFallbackShellFinalRender,
+      runWithPprFallbackShellState,
+    } = await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let innerCalls = 0;
+    let outerCalls = 0;
+    const inner = registerCachedFunction(async () => {
+      cacheLife({ stale: 30, revalidate: 300, expire: 600 });
+      innerCalls++;
+      return "inner";
+    }, "test:ppr-warmup-nested-inner");
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return await inner();
+    }, "test:ppr-warmup-nested-outer");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/cache-life",
+    });
+
+    // Only the inner scope executes during warmup. The outer scope first runs
+    // in the final render, where its child is served from the warmup handoff.
+    await _runWithCacheState(() => runWithPprFallbackShellState(state, () => inner()));
+    preparePprFallbackShellFinalRender(state);
+    await _runWithCacheState(() => runWithPprFallbackShellState(state, () => outer()));
+    expect(innerCalls).toBe(1);
+    expect(outerCalls).toBe(1);
+
+    // The final-render outer entry must persist the inner warmup result's
+    // minimum lifetime, so a later outer HIT advertises the same stale claim.
+    const warmStale = await _runWithCacheState(async () => {
+      await outer();
+      return _peekRequestScopedCacheLife()?.stale;
+    });
+    expect(outerCalls).toBe(1);
+    expect(warmStale).toBe(30);
+  });
+
   it("registerCachedFunction collects cacheTag", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

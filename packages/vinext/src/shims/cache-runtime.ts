@@ -591,7 +591,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           );
         }
         propagateCacheTagsToRequest(warmupResult.tags);
-        recordRequestScopedCacheLife(warmupResult.cacheLife);
+        recordCacheHitLife(warmupResult.cacheLife);
         return warmupResult.value as TResult;
       }
       // A handler failure (e.g. a transient KV error, or a key the store
@@ -796,11 +796,14 @@ function isDynamicCacheLife(cacheLife: CacheLifeConfig): boolean {
 
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
+  recordCacheHitLife(cacheControlToCacheLife(cacheControl));
+}
+
+function recordCacheHitLife(life: CacheLifeConfig): void {
   // A hit must contribute the same claim its producing execution did — both to
   // the request scope and, when nested, to the enclosing cache scope (like the
   // MISS path's `parentCtx.lifeConfigs.push`); otherwise the inner claim
   // vanishes once the outer entry goes warm.
-  const life = cacheControlToCacheLife(cacheControl);
   const parentCtx = cacheContextStorage.getStore();
   parentCtx?.lifeConfigs.push(life);
 
@@ -813,12 +816,11 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
   if (
     parentCtx &&
     parentCtx.variant !== "private" &&
-    (cacheControl.revalidate === 0 ||
-      (cacheControl.expire !== undefined && cacheControl.expire < DYNAMIC_EXPIRE))
+    (life.revalidate === 0 || (life.expire !== undefined && life.expire < DYNAMIC_EXPIRE))
   ) {
     const error = new NestedDynamicUseCacheError();
     if (typeof Error.captureStackTrace === "function") {
-      Error.captureStackTrace(error, recordRequestScopedCacheControl);
+      Error.captureStackTrace(error, recordCacheHitLife);
     }
     parentCtx.dynamicNestedCacheError ??= error;
   }
