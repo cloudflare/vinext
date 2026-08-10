@@ -57,6 +57,7 @@ import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import {
   canAutoPrefetchFullAppRoute,
+  encodeAppPrefetchRuntimeTemplateVariantKey,
   isAppPrefetchVaryEnabled,
   learnAppPrefetchVaryMetadata,
   resolveAutoAppRoutePrefetch,
@@ -665,7 +666,10 @@ function prefetchUrl(
             hasPrefetchMetadataVariant(metadataSharedCacheKey, sharedCacheKey, mountedSlotsHeader);
           const targetRuntimeTemplateVariantKey =
             isRuntimePrefetch && sharedCacheKey !== null && loadingShellSharedCacheKey !== null
-              ? `${sharedCacheKey}\0${loadingShellSharedCacheKey}`
+              ? encodeAppPrefetchRuntimeTemplateVariantKey(
+                  sharedCacheKey,
+                  loadingShellSharedCacheKey,
+                )
               : null;
           if (
             targetRuntimeTemplateVariantKey !== null &&
@@ -865,7 +869,10 @@ function prefetchUrl(
                   !renderLoadingShell &&
                   !reusePageSegment &&
                   learnedSharedCacheKey !== null
-                    ? `${learnedSharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
+                    ? encodeAppPrefetchRuntimeTemplateVariantKey(
+                        learnedSharedCacheKey,
+                        resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell"),
+                      )
                     : null,
                 sharedCacheKey: learnedSharedCacheKey,
               };
@@ -879,7 +886,10 @@ function prefetchUrl(
               !renderLoadingShell &&
               !reusePageSegment &&
               sharedCacheKey !== null
-                ? `${sharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
+                ? encodeAppPrefetchRuntimeTemplateVariantKey(
+                    sharedCacheKey,
+                    resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell"),
+                  )
                 : null,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
             sharedCacheKey,

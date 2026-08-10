@@ -2830,6 +2830,7 @@ const _appRouter: AppRouterInstance = {
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
       const {
+        encodeAppPrefetchRuntimeTemplateVariantKey,
         isAppPrefetchVaryEnabled,
         learnAppPrefetchVaryMetadata,
         resolveAppPrefetchSharedCacheKey,
@@ -2963,7 +2964,10 @@ const _appRouter: AppRouterInstance = {
                 return {
                   runtimeTemplateVariantKey:
                     !policy.renderLoadingShell && learnedSharedCacheKey !== null
-                      ? `${learnedSharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
+                      ? encodeAppPrefetchRuntimeTemplateVariantKey(
+                          learnedSharedCacheKey,
+                          resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell"),
+                        )
                       : null,
                   sharedCacheKey: learnedSharedCacheKey,
                 };
@@ -2974,7 +2978,10 @@ const _appRouter: AppRouterInstance = {
               prefetchKind: "navigation",
               runtimeTemplateVariantKey:
                 !policy.renderLoadingShell && sharedCacheKey !== null
-                  ? `${sharedCacheKey}\0${resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell") ?? ""}`
+                  ? encodeAppPrefetchRuntimeTemplateVariantKey(
+                      sharedCacheKey,
+                      resolveAppPrefetchSharedCacheKey(fullHref, "loading-shell"),
+                    )
                   : null,
               sharedCacheKey,
             },

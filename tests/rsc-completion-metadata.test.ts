@@ -48,6 +48,26 @@ describe("RSC completion metadata", () => {
     await expect(new Response(stripped).text()).resolves.toBe(`${"a".repeat(300)}tail`);
   });
 
+  it("omits oversized completion metadata without failing the Flight stream", async () => {
+    const body = appendRscCompletionMetadata(stream(["flight-payload"]), () => ({
+      prefetchVary: {
+        loadingParamNames: Array.from({ length: 64 }, (_, index) => `${index}`.padEnd(128, "x")),
+        metadataParamNames: [],
+        metadataSearchParams: false,
+        pageDynamicSuspenseOrdinals: [],
+        pageParamNames: [],
+        pageSearchParams: false,
+      },
+    }));
+    const encoded = await new Response(body).arrayBuffer();
+
+    expect(extractRscCompletionMetadata(encoded)).toEqual({
+      buffer: encoded,
+      metadata: undefined,
+    });
+    expect(decoder.decode(encoded)).toBe("flight-payload");
+  });
+
   it("delivers a small Flight shell before the source stream completes", async () => {
     let sourceController!: ReadableStreamDefaultController<Uint8Array>;
     const source = new ReadableStream<Uint8Array>({

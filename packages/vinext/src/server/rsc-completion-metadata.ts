@@ -90,11 +90,11 @@ export function decodePrefetchVaryHeader(
   }
 }
 
-function encodeFooter(metadata: RscCompletionMetadata): Uint8Array {
+function encodeFooter(metadata: RscCompletionMetadata): Uint8Array | undefined {
   const payload = encoder.encode(JSON.stringify(metadata));
   const footer = new Uint8Array(payload.byteLength + FOOTER_LENGTH_BYTES + FOOTER_PREFIX_BYTES);
   if (footer.byteLength > MAX_FOOTER_BYTES) {
-    throw new Error("RSC completion metadata exceeded its framing limit");
+    return undefined;
   }
   footer[0] = FRAME_ESCAPE_BYTE;
   footer[1] = FOOTER_TAG_BYTE;
@@ -238,7 +238,10 @@ export function appendRscCompletionMetadata(
         return;
       }
       const metadata = getMetadata();
-      if (metadata) controller.enqueue(encodeFooter(metadata));
+      if (metadata) {
+        const footer = encodeFooter(metadata);
+        if (footer) controller.enqueue(footer);
+      }
       controller.close();
     },
     cancel(reason) {

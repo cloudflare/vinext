@@ -242,6 +242,14 @@ export function resolveAppPrefetchSharedCacheKey(
   return `${route.patternParts.join("/")}\0${keyParts.join("/")}${slotVaryKey ? `\0${slotVaryKey}` : ""}${search}`;
 }
 
+/** Encode the runtime and loading-shell identities without separator ambiguity. */
+export function encodeAppPrefetchRuntimeTemplateVariantKey(
+  runtimeSharedCacheKey: string,
+  loadingShellSharedCacheKey: string | null,
+): string {
+  return JSON.stringify([runtimeSharedCacheKey, loadingShellSharedCacheKey ?? ""]);
+}
+
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }

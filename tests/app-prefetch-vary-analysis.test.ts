@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { toLinkPrefetchRoute } from "../packages/vinext/src/entries/app-browser-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import {
+  encodeAppPrefetchRuntimeTemplateVariantKey,
   learnAppPrefetchVaryMetadata,
   resolveAutoAppRoutePrefetch,
   resolveAppPrefetchSharedCacheKey,
@@ -56,6 +57,28 @@ afterEach(() => {
 });
 
 describe("App Router prefetch vary analysis", () => {
+  it("skips source analysis when prefetch vary is disabled", () => {
+    const readFileSync = vi.spyOn(fs, "readFileSync");
+    try {
+      const route = toLinkPrefetchRoute(createRoute({ pagePath: "/missing/page.tsx" }), {
+        hasSiblingInterceptLoading: false,
+        prefetchVaryEnabled: false,
+      });
+      expect(route.canPrefetchFullStaticRoute).toBeUndefined();
+      expect(route.canPrefetchRuntimeShell).toBeUndefined();
+      expect(route.canPrefetchStaticRoute).toBeUndefined();
+      expect(readFileSync).not.toHaveBeenCalled();
+    } finally {
+      readFileSync.mockRestore();
+    }
+  });
+
+  it("encodes runtime template variants without composite-key collisions", () => {
+    expect(encodeAppPrefetchRuntimeTemplateVariantKey("a\0b", "c")).not.toBe(
+      encodeAppPrefetchRuntimeTemplateVariantKey("a", "b\0c"),
+    );
+  });
+
   it("detects explicit runtime-prefetch capability without inferring dependencies", () => {
     const pagePath = writeSource(
       "page.tsx",

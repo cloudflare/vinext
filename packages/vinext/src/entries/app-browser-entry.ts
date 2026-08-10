@@ -30,7 +30,7 @@ export function generateBrowserEntry(
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
-  const prefetchRoutes = toLinkPrefetchRoutes(routes);
+  const prefetchRoutes = toLinkPrefetchRoutes(routes, { prefetchVaryEnabled });
   const clientRewrites = toClientRewrites(rewrites);
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
@@ -110,13 +110,20 @@ function hasLoadingBoundary(route: AppRoute, hasSiblingInterceptLoading: boolean
 /** Project an `AppRoute` down to the public `VinextLinkPrefetchRoute` shape. */
 export function toLinkPrefetchRoute(
   route: AppRoute,
-  hasSiblingInterceptLoading = route.siblingIntercepts.some(
-    (intercept) =>
-      interceptTargetsRoute(intercept.targetPattern, route) &&
-      (intercept.loadingPaths?.length ?? 0) > 0,
-  ),
+  options: {
+    hasSiblingInterceptLoading?: boolean;
+    prefetchVaryEnabled?: boolean;
+  } = {},
 ): VinextLinkPrefetchRoute {
-  const capabilities = analyzeAppPrefetchCapabilities(route);
+  const hasSiblingInterceptLoading =
+    options.hasSiblingInterceptLoading ??
+    route.siblingIntercepts.some(
+      (intercept) =>
+        interceptTargetsRoute(intercept.targetPattern, route) &&
+        (intercept.loadingPaths?.length ?? 0) > 0,
+    );
+  const capabilities =
+    options.prefetchVaryEnabled !== false ? analyzeAppPrefetchCapabilities(route) : null;
   const slotParamPatterns = route.parallelSlots.flatMap((slot) =>
     slot.slotPatternParts && slot.slotParamNames
       ? [
@@ -129,9 +136,9 @@ export function toLinkPrefetchRoute(
   );
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
-    ...(capabilities.canPrefetchFullStaticRoute ? { canPrefetchFullStaticRoute: true } : {}),
-    ...(capabilities.canPrefetchRuntimeShell ? { canPrefetchRuntimeShell: true } : {}),
-    ...(capabilities.canPrefetchStaticRoute ? { canPrefetchStaticRoute: true } : {}),
+    ...(capabilities?.canPrefetchFullStaticRoute ? { canPrefetchFullStaticRoute: true } : {}),
+    ...(capabilities?.canPrefetchRuntimeShell ? { canPrefetchRuntimeShell: true } : {}),
+    ...(capabilities?.canPrefetchStaticRoute ? { canPrefetchStaticRoute: true } : {}),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
@@ -140,7 +147,10 @@ export function toLinkPrefetchRoute(
 }
 
 /** Project App routes together so sibling-intercept loading is applied to its target route. */
-export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPrefetchRoute[] {
+export function toLinkPrefetchRoutes(
+  routes: readonly AppRoute[],
+  { prefetchVaryEnabled = true }: { prefetchVaryEnabled?: boolean } = {},
+): VinextLinkPrefetchRoute[] {
   const siblingInterceptLoadingTargets: string[][] = [];
   for (const route of routes) {
     for (const intercept of route.siblingIntercepts) {
@@ -152,12 +162,12 @@ export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPre
 
   return routes.map((route) =>
     isLinkPrefetchRoute(route)
-      ? toLinkPrefetchRoute(
-          route,
-          siblingInterceptLoadingTargets.some((targetParts) =>
+      ? toLinkPrefetchRoute(route, {
+          hasSiblingInterceptLoading: siblingInterceptLoadingTargets.some((targetParts) =>
             patternsStructurallyEquivalent(targetParts, route.patternParts),
           ),
-        )
+          prefetchVaryEnabled,
+        })
       : toDocumentOnlyAppRoute(route),
   );
 }

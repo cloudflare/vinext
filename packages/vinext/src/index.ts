@@ -1519,7 +1519,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
     // #1526 for the Next.js parity rationale.
     const appPrefetchRoutes = hasAppDir
-      ? toLinkPrefetchRoutes(await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
+      ? toLinkPrefetchRoutes(await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher), {
+          prefetchVaryEnabled:
+            nextConfig?.cacheComponents === true &&
+            nextConfig?.varyParams === true &&
+            nextConfig?.optimisticRouting === true,
+        })
       : [];
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,

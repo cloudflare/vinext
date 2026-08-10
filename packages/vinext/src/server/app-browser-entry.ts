@@ -162,6 +162,7 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
+  encodeAppPrefetchRuntimeTemplateVariantKey,
   isAppPrefetchVaryEnabled,
   resolveAppPrefetchSharedCacheKey,
 } from "vinext/shims/internal/app-route-prefetch-policy";
@@ -1816,7 +1817,10 @@ function bootstrapHydration(
             : null;
         const targetPathAndSearch = url.pathname + url.search;
         const runtimeTemplateVariantKey = isAppPrefetchVaryEnabled()
-          ? `${resolveAppPrefetchSharedCacheKey(url.href, "runtime") ?? ""}\0${resolveAppPrefetchSharedCacheKey(url.href, "loading-shell") ?? ""}`
+          ? encodeAppPrefetchRuntimeTemplateVariantKey(
+              resolveAppPrefetchSharedCacheKey(url.href, "runtime") ?? "",
+              resolveAppPrefetchSharedCacheKey(url.href, "loading-shell"),
+            )
           : null;
         const additionalPrefetchPathAndSearch =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref
