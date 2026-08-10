@@ -36,6 +36,7 @@ import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
+import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -171,7 +172,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   const config = options.nextConfig
     ? { ...options.nextConfig }
-    : { ...(await resolveNextConfig(await loadNextConfig(root), root)) };
+    : {
+        ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)),
+      };
   // Prerender must reuse the exact BUILD_ID that `vinext build` wrote to disk
   // rather than re-resolving a fresh one. `config.buildId` is consumed when
   // computing prerendered-output identity (prerender.ts), so re-resolving here

@@ -69,4 +69,34 @@ describe("runPrerender concurrency", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("loads functional next config with the production-build phase", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-config-phase-"));
+    fs.mkdirSync(path.join(root, "app"));
+    fs.writeFileSync(
+      path.join(root, "next.config.mjs"),
+      `export default (phase) => ({ env: { OBSERVED_CONFIG_PHASE: phase } });\n`,
+    );
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+
+      await runPrerender({
+        root,
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+      });
+
+      expect(prerenderAppMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            env: expect.objectContaining({
+              OBSERVED_CONFIG_PHASE: "phase-production-build",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
