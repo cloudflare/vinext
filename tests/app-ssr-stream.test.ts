@@ -239,10 +239,12 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     // The getter runs at finalize() time — after the RSC stream drains — so a
     // cacheLife claim registered mid-stream still reaches the done script.
     let staleTimeSeconds: number | undefined;
-    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
-      kind: "static",
-      ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds }),
-    }));
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), {
+      getInitialNavigationCacheMetadata: () => ({
+        kind: "static",
+        ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds }),
+      }),
+    });
 
     staleTimeSeconds = 30;
     const finalScripts = await transform.finalize();
