@@ -42,6 +42,7 @@ let restoreRscResponse: Navigation["restoreRscResponse"];
 let resolveCachedRscResponseTtlMs: Navigation["resolveCachedRscResponseTtlMs"];
 let prefetchRscResponse: Navigation["prefetchRscResponse"];
 let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
+let disableNavigationResponsePrefetchCacheReuse: Navigation["disableNavigationResponsePrefetchCacheReuse"];
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
 let hasSearchAgnosticPrefetchShellForRoute: Navigation["hasSearchAgnosticPrefetchShellForRoute"];
 let peekPrefetchResponseForNavigation: Navigation["peekPrefetchResponseForNavigation"];
@@ -82,6 +83,7 @@ beforeEach(async () => {
   resolveCachedRscResponseTtlMs = nav.resolveCachedRscResponseTtlMs;
   prefetchRscResponse = nav.prefetchRscResponse;
   invalidatePrefetchCache = nav.invalidatePrefetchCache;
+  disableNavigationResponsePrefetchCacheReuse = nav.disableNavigationResponsePrefetchCacheReuse;
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
   hasSearchAgnosticPrefetchShellForRoute = nav.hasSearchAgnosticPrefetchShellForRoute;
   peekPrefetchResponseForNavigation = nav.peekPrefetchResponseForNavigation;
@@ -249,6 +251,42 @@ describe("prefetch cache eviction", () => {
 
     expect(firstInvalidate).toHaveBeenCalledTimes(1);
     expect(secondInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("demotes completed navigation snapshots without discarding explicit prefetches", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const navigationKey = "/departed.rsc";
+    const prefetchKey = "/prefetched.rsc";
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: navigationKey,
+    };
+
+    cache.set(navigationKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      snapshot,
+      timestamp: Date.now(),
+    });
+    cache.set(prefetchKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      prefetchKind: "navigation",
+      snapshot: { ...snapshot, url: prefetchKey },
+      timestamp: Date.now(),
+    });
+    prefetched.add(navigationKey);
+    prefetched.add(prefetchKey);
+
+    disableNavigationResponsePrefetchCacheReuse();
+
+    expect(cache.get(navigationKey)?.cacheForNavigation).toBe(false);
+    expect(cache.get(prefetchKey)?.cacheForNavigation).toBe(true);
+    expect(prefetched).toEqual(new Set([navigationKey, prefetchKey]));
   });
 
   it("reuses a prefetched response only when mounted-slot context matches", () => {

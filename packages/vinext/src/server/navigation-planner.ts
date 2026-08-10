@@ -653,6 +653,17 @@ function classifyEarlyNavigationIntent(
     };
   }
 
+  // A Link to the exact current URL still invalidates the page segment in
+  // Next.js. Re-fetch Flight data instead of replaying the response that
+  // produced the page already on screen.
+  if (current.href === next.href) {
+    return {
+      bypassNavigationCache: true,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.samePageRefresh, facts),
+    };
+  }
+
   if (samePathname && !sameSearch) {
     return {
       bypassNavigationCache: true,

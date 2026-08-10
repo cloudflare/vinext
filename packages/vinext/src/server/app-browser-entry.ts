@@ -28,6 +28,7 @@ import {
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
   deletePrefetchResponseSnapshot,
+  disableNavigationResponsePrefetchCacheReuse,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
@@ -390,6 +391,14 @@ function restoreHistoryStateSnapshot(
   });
   if (!restored) return false;
 
+  // History entries restore their own visible tree, but a later Link click is
+  // a new navigation. Drop response snapshots published by the route we just
+  // left while retaining explicit prefetches. Advance the generation first so
+  // an async publication already waiting on a response body cannot repopulate
+  // the departed response after the maps are cleared.
+  clientNavigationCacheGeneration += 1;
+  clearVisitedResponseCache();
+  disableNavigationResponsePrefetchCacheReuse();
   commitClientNavigationState(navId, { releaseSnapshot: false });
   return true;
 }

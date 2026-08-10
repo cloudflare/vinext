@@ -1099,6 +1099,23 @@ export function invalidatePrefetchCache(): void {
   }
 }
 
+/**
+ * Prevent completed navigation responses from becoming authoritative again
+ * after restoring a history snapshot. Explicit Link/router prefetches remain
+ * consumable, and the demoted responses remain available as optimistic route
+ * template sources.
+ */
+export function disableNavigationResponsePrefetchCacheReuse(): void {
+  for (const entry of new Set(getPrefetchCache().values())) {
+    if (entry.prefetchKind === undefined) {
+      entry.cacheForNavigation = false;
+    }
+  }
+  if (!isServer) {
+    getNavigationRuntime()?.functions.pingVisibleLinks?.();
+  }
+}
+
 export function seedPrefetchResponseSnapshot(
   rscUrl: string,
   snapshot: CachedRscResponse,
