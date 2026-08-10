@@ -69,6 +69,7 @@ import {
   createPrerenderDataCacheHandler,
   resetPrerenderDataCache,
 } from "../server/prerender-data-cache.js";
+import { enterPrerenderPhase } from "./prerender-phase.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
 const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
@@ -628,8 +629,7 @@ export async function prerenderPages({
 
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
-  process.env.VINEXT_PRERENDER = "1";
+  const restorePrerenderPhase = enterPrerenderPhase();
   // ownedProdServerHandle: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
@@ -993,12 +993,14 @@ export async function prerenderPages({
 
     return { routes: results };
   } finally {
-    if (renderPool) await renderPool.close();
-    setCacheHandler(previousHandler);
-    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
-    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
-    if (ownedProdServerHandle) {
-      await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+    try {
+      if (renderPool) await renderPool.close();
+      setCacheHandler(previousHandler);
+      if (ownedProdServerHandle) {
+        await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+      }
+    } finally {
+      restorePrerenderPhase();
     }
   }
 }
@@ -1043,13 +1045,11 @@ export async function prerenderApp({
     mode === "export" ? new NoOpCacheHandler() : createPrerenderDataCacheHandler(outDir),
   );
   // VINEXT_PRERENDER=1 tells the prod server to skip instrumentation.register()
-  // and enable prerender-only endpoints (/__vinext/prerender/*). It also makes
-  // the socket-error backstop (server/socket-error-backstop.ts) re-throw
-  // peer-disconnect errors during prerender. Save the prior value so callers
-  // that already set the flag (run-prerender.ts) aren't clobbered when this
-  // function's finally block restores.
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
-  process.env.VINEXT_PRERENDER = "1";
+  // and enable prerender-only endpoints (/__vinext/prerender/*), while
+  // NEXT_PHASE matches Next's static-worker contract for application code.
+  // The scope is nest-safe because run-prerender.ts also enters it around a
+  // shared hybrid server.
+  const restorePrerenderPhase = enterPrerenderPhase();
 
   const serverDir = path.dirname(rscBundlePath);
 
@@ -1695,12 +1695,14 @@ export async function prerenderApp({
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
     };
   } finally {
-    if (renderPool) await renderPool.close();
-    setCacheHandler(previousHandler);
-    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
-    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
-    if (ownedProdServerHandle) {
-      await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+    try {
+      if (renderPool) await renderPool.close();
+      setCacheHandler(previousHandler);
+      if (ownedProdServerHandle) {
+        await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+      }
+    } finally {
+      restorePrerenderPhase();
     }
   }
 }

@@ -8,9 +8,9 @@
  * vinext production server on an ephemeral port and reports it to the parent
  * over IPC. The parent then load-balances per-route fetches across the pool.
  *
- * `VINEXT_PRERENDER` / `VINEXT_PRERENDER_OUTDIR` are passed via the fork env so
- * they are set before any module loads (some server modules read the flag at
- * import time).
+ * `VINEXT_PRERENDER` / `NEXT_PHASE` / `VINEXT_PRERENDER_OUTDIR` are passed via
+ * the fork env so they are set before any module loads (some server and user
+ * modules read the phase at import time).
  */
 import { startProdServer } from "../server/prod-server.js";
 import { NoOpCacheHandler, setCacheHandler } from "vinext/shims/cache-handler";
