@@ -877,6 +877,68 @@ describe("buildAppPageProbes", () => {
     };
   }
 
+  it("counts named-slot dynamic boundaries in the complete serialized slot tree", async () => {
+    const mainPageElementId = "page:/dashboard";
+    const slotElementId = "slot:modal:/";
+    const observed: Array<[string, number]> = [];
+
+    function SlotLayout({ children }: { children: React.ReactNode }) {
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          React.Suspense,
+          { fallback: React.createElement("p", null, "Loading static sibling") },
+          React.createElement("div", null, "Cached sibling"),
+        ),
+        children,
+      );
+    }
+
+    async function DynamicSlotPage() {
+      await connection();
+      return React.createElement("div", null, "Dynamic modal");
+    }
+
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: {
+            id: slotElementId,
+            page: {
+              default: () => "modal page probe",
+            },
+          },
+        },
+      },
+      elements: {
+        [slotElementId]: React.createElement(
+          SlotLayout,
+          null,
+          React.createElement(
+            React.Suspense,
+            { fallback: React.createElement("p", null, "Loading modal") },
+            React.createElement(DynamicSlotPage),
+          ),
+        ),
+      },
+      pageComponent: () => "main page probe",
+      asyncRouteParams: makeThenableParams({}),
+      mainPageElementId,
+      searchParams: null,
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+      onDynamicSuspenseBoundary(pageElementId, ordinal) {
+        observed.push([pageElementId, ordinal]);
+      },
+    });
+
+    await runWithRequestContext(createRequestContext(), () => Promise.all(probes));
+
+    expect(observed).toEqual([[slotElementId, 1]]);
+  });
+
   it("probes the matched page, every slot page, and the interception page", async () => {
     const probed: string[] = [];
     const probes = buildAppPageProbes({

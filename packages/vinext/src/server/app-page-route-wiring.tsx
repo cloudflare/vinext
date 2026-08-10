@@ -82,6 +82,21 @@ type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
 const DEFAULT_NOT_FOUND_COMPONENT = DefaultNotFound as AppPageComponent;
+const appPageSerializedSlotProbeElements = new WeakMap<
+  AppElements,
+  Readonly<Record<string, AppElementValue>>
+>();
+
+/**
+ * Returns dependency-free named-slot trees in the same flattened shape stored
+ * on the wire. Page entries keep their component probe because their render
+ * dependency wrapper is part of page execution rather than slot serialization.
+ */
+export function getAppPageSerializedSlotProbeElements(
+  elements: AppElements,
+): Readonly<Record<string, AppElementValue>> | undefined {
+  return appPageSerializedSlotProbeElements.get(elements);
+}
 
 function resolveSlotLayoutParams(
   routeSegments: readonly string[],
@@ -998,6 +1013,7 @@ export function buildAppPageElements<
     };
   }
   const elements: Record<string, AppElementValue> = {};
+  const probeElements: Record<string, AppElementValue> = {};
   // Synthetic nested segment entries carry membership independently of the
   // proof map. If identity metadata is absent or rejected atomically, the
   // browser can still discover these ids and mint conservative fresh keys.
@@ -1460,6 +1476,7 @@ export function buildAppPageElements<
       );
     }
 
+    probeElements[slotId] = slotElement;
     elements[slotId] = renderAfterAppDependencies(slotElement, [
       ...(pageRenderDependency ? [pageRenderDependency] : []),
       ...(targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : []),
@@ -1802,6 +1819,7 @@ export function buildAppPageElements<
         }
       : {},
   );
+  appPageSerializedSlotProbeElements.set(elements, probeElements);
   registerAppElementRenderDependencies(elements, renderDependenciesByElementId);
   return elements;
 }

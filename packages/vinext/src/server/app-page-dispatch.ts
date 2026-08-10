@@ -372,6 +372,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   probePage: (
     searchParams?: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
+    elements?: AppPageElement,
   ) => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (
@@ -1182,7 +1183,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.probeLayoutAt(layoutIndex, layoutParamAccess);
     },
     probePage() {
-      return options.probePage(pageSearchParams, layoutParamAccess);
+      return options.probePage(
+        pageSearchParams,
+        layoutParamAccess,
+        pageBuildResult.element ?? undefined,
+      );
     },
     probePageBeforeRender: options.isRscRequest,
     classification: {

@@ -369,6 +369,7 @@ import {
 } from ${JSON.stringify(appElementsPath)};
 import {
   probeAppPageLayoutWithTracking as __probeAppPageLayoutWithTracking,
+  getAppPageSerializedSlotProbeElements as __getAppPageSerializedSlotProbeElements,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
@@ -898,7 +899,7 @@ export default createAppRscHandler({
           route,
         });
       },
-      async probePage(probeSearchParams = searchParams, layoutParamAccess) {
+      async probePage(probeSearchParams = searchParams, layoutParamAccess, elements) {
         const __probeIntercept = findIntercept(interceptionPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
@@ -915,6 +916,10 @@ export default createAppRscHandler({
         );
         return Promise.all(__buildAppPageProbes({
           route,
+          elements:
+            renderMode === "navigation" || renderMode === "prefetch-dynamic-shell"
+              ? __getAppPageSerializedSlotProbeElements(elements)
+              : undefined,
           pageComponent: PageComponent,
           asyncRouteParams: makeThenableParams(
             params,

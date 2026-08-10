@@ -389,6 +389,7 @@ type AppPageProbeIntercept =
  */
 export function buildAppPageProbes(options: {
   route: AppPageProbeRoute;
+  elements?: Readonly<Record<string, unknown>>;
   pageComponent: unknown;
   asyncRouteParams: unknown;
   searchParams: URLSearchParams | null | undefined;
@@ -412,18 +413,40 @@ export function buildAppPageProbes(options: {
   const intercept = options.isRscRequest ? options.intercept : null;
 
   const probes: Promise<unknown>[] = [];
+  const hasSerializedElement = (pageElementId: string): boolean =>
+    options.elements !== undefined &&
+    Object.hasOwn(options.elements, pageElementId) &&
+    options.elements[pageElementId] !== null &&
+    options.elements[pageElementId] !== undefined;
+  const addSerializedElementProbe = (pageElementId: string, awaitResult = true): boolean => {
+    if (!hasSerializedElement(pageElementId)) return false;
+    const element = options.elements?.[pageElementId];
+    const probe = probeReactServerSubtree(element, {
+      onDynamicSuspenseBoundary: (ordinal) =>
+        options.onDynamicSuspenseBoundary?.(pageElementId, ordinal),
+    });
+    if (awaitResult) {
+      probes.push(probe);
+    } else {
+      void probe.catch(() => {});
+      probes.push(Promise.resolve(null));
+    }
+    return true;
+  };
   const addProbe = (
     probePageComponent: unknown,
     probeParams: unknown,
     pageElementId: string,
     awaitResult = true,
+    observeDynamicSuspense = true,
   ) => {
     const probe = Promise.resolve(
       probeAppPage({
         pageComponent: probePageComponent,
         asyncRouteParams: probeParams,
-        onDynamicSuspenseBoundary: (ordinal) =>
-          options.onDynamicSuspenseBoundary?.(pageElementId, ordinal),
+        onDynamicSuspenseBoundary: observeDynamicSuspense
+          ? (ordinal) => options.onDynamicSuspenseBoundary?.(pageElementId, ordinal)
+          : undefined,
         onSearchParamsAccess: () => options.onSearchParamsAccess?.(pageElementId),
         searchParams,
       }),
@@ -437,7 +460,9 @@ export function buildAppPageProbes(options: {
   };
 
   const mainPageElementId = options.mainPageElementId ?? "page";
-  addProbe(pageComponent, asyncRouteParams, mainPageElementId);
+  const hasSerializedMainPage = hasSerializedElement(mainPageElementId);
+  addProbe(pageComponent, asyncRouteParams, mainPageElementId, true, !hasSerializedMainPage);
+  if (hasSerializedMainPage) addSerializedElementProbe(mainPageElementId);
 
   // A slot whose page is replaced by an active interception override does not
   // render its own `page.tsx`; the interception page (probed below) renders in
@@ -448,12 +473,13 @@ export function buildAppPageProbes(options: {
     if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
       continue;
     }
-    addProbe(
-      slot?.page?.default,
-      asyncRouteParams,
-      slot?.id ?? `slot:${slotKey}`,
-      !(slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)),
+    const slotElementId = slot?.id ?? `slot:${slotKey}`;
+    const awaitResult = !(
+      slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)
     );
+    const hasSerializedSlot = hasSerializedElement(slotElementId);
+    addProbe(slot?.page?.default, asyncRouteParams, slotElementId, awaitResult, !hasSerializedSlot);
+    if (hasSerializedSlot) addSerializedElementProbe(slotElementId, awaitResult);
   }
 
   const interceptedSlot = intercept?.slotKey ? route.slots?.[intercept.slotKey] : null;
@@ -472,6 +498,7 @@ export function buildAppPageProbes(options: {
       intercept.slotId ??
       (intercept.slotKey ? route.slots?.[intercept.slotKey]?.id : null) ??
       mainPageElementId;
+    const hasSerializedIntercept = hasSerializedElement(interceptedPageElementId);
     addProbe(
       intercept.page?.default,
       options.makeThenableParams(
@@ -480,7 +507,11 @@ export function buildAppPageProbes(options: {
       ),
       interceptedPageElementId,
       !interceptHasLoadingBoundary,
+      !hasSerializedIntercept,
     );
+    if (hasSerializedIntercept) {
+      addSerializedElementProbe(interceptedPageElementId, !interceptHasLoadingBoundary);
+    }
   }
 
   return probes;
