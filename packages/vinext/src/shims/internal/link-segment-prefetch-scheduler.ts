@@ -1,7 +1,7 @@
 "use client";
 
-export type LinkSegmentPrefetchPhase = "route-tree" | "segment";
-export type LinkSegmentPrefetchPriority = "default" | "intent";
+type LinkSegmentPrefetchPhase = "route-tree" | "segment";
+type LinkSegmentPrefetchPriority = "default" | "intent";
 export type LinkSegmentPrefetchFetchStrategy = "auto" | "full" | "full-after-shell";
 
 export type LinkSegmentPrefetchInstance = {
@@ -82,6 +82,20 @@ export function createLinkSegmentPrefetchScheduler(
 
   function hasRecentUserInteraction(): boolean {
     return Date.now() - lastUserInteractionAt < 1_000;
+  }
+
+  function shouldForceSegmentCacheFetch(
+    instance: LinkSegmentPrefetchInstance,
+    priority: LinkSegmentPrefetchPriority,
+  ): boolean {
+    // This workaround is only for automatic viewport work revealed by an
+    // interaction (the scheduling fixture's "Show more links" path). An
+    // explicit full prefetch may intentionally reuse an equivalent rewrite
+    // target; forcing that request would fetch dynamic content that Next.js
+    // leaves behind the cached loading shell.
+    return (
+      instance.fetchStrategy === "auto" && priority === "default" && hasRecentUserInteraction()
+    );
   }
 
   function registerUserInteractionListeners(): void {
@@ -244,7 +258,7 @@ export function createLinkSegmentPrefetchScheduler(
     if (task === undefined) {
       task = {
         batchId,
-        forceSegmentCacheFetch: priority === "default" && hasRecentUserInteraction(),
+        forceSegmentCacheFetch: shouldForceSegmentCacheFetch(instance, priority),
         instance,
         isCanceled: false,
         isQueued: false,
@@ -261,7 +275,7 @@ export function createLinkSegmentPrefetchScheduler(
       task.sortId = sortIdCounter++;
 
       if (!task.isRunning) {
-        task.forceSegmentCacheFetch = priority === "default" && hasRecentUserInteraction();
+        task.forceSegmentCacheFetch = shouldForceSegmentCacheFetch(instance, priority);
         removeFromQueue(task);
         task.phase = "route-tree";
       }

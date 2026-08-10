@@ -256,6 +256,25 @@ describe("Cache Components Link prefetch scheduling", () => {
         href: "/cancellation/8",
         phase: "segment",
       });
+
+      deferred.shift()?.resolve();
+      await flushScheduler();
+
+      scheduler.schedule(createInstance("/rewrite-to-dynamic", "full"), "default");
+      await flushScheduler();
+      expect(requests[2]).toMatchObject({
+        forceSegmentCacheFetch: false,
+        href: "/rewrite-to-dynamic",
+        phase: "route-tree",
+      });
+
+      deferred.shift()?.resolve();
+      await flushScheduler();
+      expect(requests[3]).toMatchObject({
+        forceSegmentCacheFetch: false,
+        href: "/rewrite-to-dynamic",
+        phase: "segment",
+      });
     } finally {
       now.mockRestore();
       vi.unstubAllGlobals();

@@ -532,7 +532,10 @@ function prefetchUrl(
         const shouldSendSegmentPrefetchHeaders =
           isOptimisticRouteShellPrefetch ||
           mode === "auto" ||
-          options.segmentCachePhase !== undefined;
+          // Without inlining, an explicit full prefetch keeps the legacy
+          // headerless cache key so an equivalent rewrite target can reuse it.
+          // The inlining branch below still assigns /__PAGE__ explicitly.
+          (options.segmentCachePhase !== undefined && mode !== "full");
         if (options.segmentCachePhase === "route-tree") {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
