@@ -49,6 +49,7 @@ describe("buildPrerenderKVPairs", () => {
             stale: 30,
             router: "app",
             headers: { link: "</font.woff2>; rel=preload; as=font" },
+            postponed: '{"replayNodes":[["slug"]]}',
             tags: ["test-update-tag"],
           },
         ],
@@ -78,6 +79,7 @@ describe("buildPrerenderKVPairs", () => {
         kind: "APP_PAGE",
         html: "<html>About</html>",
         headers: { link: "</font.woff2>; rel=preload; as=font" },
+        postponed: '{"replayNodes":[["slug"]]}',
       },
       lastModified: 1_000,
       revalidateAt: 61_000,
@@ -138,6 +140,26 @@ describe("buildPrerenderKVPairs", () => {
       cacheControl: { revalidate: 60, expire: 300, stale: 30 },
       value: { kind: "FETCH", data: { body: "cached-rsc" }, tags: ["value-tag"] },
     });
+  });
+
+  it("does not publish speculative data-cache entries to KV", () => {
+    writePrerenderFixture(
+      { buildId: "build-speculative", routes: [] },
+      {
+        ".vinext-resume-data-cache/speculative.json": JSON.stringify({
+          key: "use-cache:build:speculative",
+          lastModified: 4_000,
+          context: { cacheControl: { revalidate: 60 }, speculative: true },
+          value: {
+            kind: "FETCH",
+            data: { body: "discarded", headers: {}, url: "cache" },
+            revalidate: 60,
+          },
+        }),
+      },
+    );
+
+    expect(buildPrerenderKVPairs(serverDir).pairs).toEqual([]);
   });
 
   it("preserves a non-expiring prerendered data-cache policy", () => {

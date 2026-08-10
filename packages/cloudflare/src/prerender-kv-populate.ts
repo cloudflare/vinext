@@ -118,6 +118,7 @@ export function buildPrerenderKVPairs(
   let routeCount = 0;
 
   for (const entry of readPrerenderDataCacheEntries(prerenderDir)) {
+    if (entry.context?.speculative === true) continue;
     const contextCacheControl =
       entry.context?.cacheControl && typeof entry.context.cacheControl === "object"
         ? (entry.context.cacheControl as Record<string, unknown>)
@@ -181,6 +182,7 @@ export function buildPrerenderKVPairs(
           kind: "APP_PAGE",
           html: fs.readFileSync(htmlPath, "utf-8"),
           headers: route.headers,
+          postponed: route.postponed,
         },
         tags,
         now,

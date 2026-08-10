@@ -5,6 +5,7 @@ import type { ClassificationReason } from "../build/layout-classification-types.
 import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
+import type { ResumeDataCacheEntry } from "vinext/shims/cache-handler";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
@@ -261,7 +262,19 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isDraftMode: boolean,
     isForceStatic: boolean,
     isForceDynamic: boolean,
-  ): Promise<Response | null>;
+  ): Promise<
+    | Response
+    | {
+        blockUseCacheMisses: true;
+        fallbackParamNames: readonly string[];
+        html: string;
+        kind: "resume";
+        postponed: string;
+        resumeDataCache: ResumeDataCacheEntry[];
+      }
+    | { blockUseCacheMisses: true; kind: "eligible-miss" }
+    | null
+  >;
   warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
 };
 
@@ -877,7 +890,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResponse = options.pprRuntime
+  const fallbackShellResult = options.pprRuntime
     ? await options.pprRuntime.tryServe(
         options,
         currentRevalidateSeconds,
@@ -886,9 +899,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isForceDynamic,
       )
     : null;
-  if (fallbackShellResponse) {
-    return fallbackShellResponse;
+  if (fallbackShellResult instanceof Response) {
+    return fallbackShellResult;
   }
+  const pprResume = fallbackShellResult?.kind === "resume" ? fallbackShellResult : undefined;
 
   let interceptDynamicConfig: string | null | undefined;
   let interceptDynamicConfigResolved = false;
@@ -1144,7 +1158,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     navigationParams,
     params: options.params,
     pprFallbackShellSignal,
+    pprFallbackShellHasCacheTask: activeFallbackShellState?.hasCacheTask,
     pprFallbackShellReactSignal,
+    pprResume,
+    pprBlockUseCacheMisses: fallbackShellResult?.blockUseCacheMisses === true,
     renderedPathAndSearch: options.renderedPathAndSearch,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {

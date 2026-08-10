@@ -7,6 +7,7 @@ import {
   preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
   trackPprFallbackShellCacheTask,
+  trackPprFallbackShellCacheTaskUntil,
   waitForPprFallbackShellCacheReady,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
@@ -49,6 +50,20 @@ describe("ppr fallback shell cache task tracking", () => {
     await tracked;
     await ready;
     expect(state.pendingCacheTasks).toBe(0);
+    expect(state.hasCacheTask).toBe(true);
+  });
+
+  it("does not treat private cache work as reusable fallback-shell IO", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    await runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => undefined, "private"),
+    );
+
+    expect(state.hasCacheTask).toBe(false);
   });
 
   it("completes independent child public cache work before cache-ready when parent hits dynamic boundary", async () => {
@@ -296,6 +311,45 @@ describe("ppr fallback shell render lifecycle", () => {
 
     state.abortController.abort();
   });
+
+  it.each(["default", "private"] as const)(
+    "rejects late %s descendants from a released warmup task before they mutate the final epoch",
+    async (variant) => {
+      const state = createPprFallbackShellState({
+        fallbackParamNames: ["slug"],
+        routePattern: "/:locale/blog/:slug",
+      });
+      let continueSetup!: () => void;
+      const setupGate = new Promise<void>((resolve) => {
+        continueSetup = resolve;
+      });
+      let lateChildRan = false;
+
+      const tracked = runWithPprFallbackShellState(state, () =>
+        trackPprFallbackShellCacheTaskUntil(async (releaseSetup) => {
+          releaseSetup();
+          await setupGate;
+          await trackPprFallbackShellCacheTask(async () => {
+            lateChildRan = true;
+          }, variant);
+        }, "default"),
+      );
+      expect(state.pendingCacheTasks).toBe(0);
+
+      state.abortController.abort();
+      continueSetup();
+      await expect(tracked).rejects.toSatisfy(isPprFallbackShellAbortError);
+
+      expect(lateChildRan).toBe(false);
+      expect(state.pendingCacheTasks).toBe(0);
+      expect(state.phase).toBe("warmup");
+
+      preparePprFallbackShellFinalRender(state);
+      expect(state.hasDynamicBoundary).toBe(false);
+      expect(state.resumeDataCache.size).toBe(0);
+      state.abortController.abort();
+    },
+  );
 
   it("multiple suspense promises in the same warmup phase track correctly", async () => {
     const state = createPprFallbackShellState({

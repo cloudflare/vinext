@@ -33,6 +33,7 @@ import fs from "node:fs";
 import path from "pathslash";
 import {
   getDataCacheHandler,
+  setDataCacheHandler,
   type CachedAppPageValue,
   type CachedRouteValue,
 } from "vinext/shims/cache-handler";
@@ -60,7 +61,7 @@ import {
   getRenderedMetadataRoutes,
   isFallbackShellArtifactPath,
 } from "./prerender-manifest.js";
-import { seedPrerenderDataCache } from "./prerender-data-cache.js";
+import { createPrerenderDataCacheRuntimeHandler } from "./prerender-data-cache.js";
 
 type PrerenderCacheSeedMetadata = {
   expireSeconds?: number;
@@ -120,7 +121,14 @@ export async function seedMemoryCacheFromPrerender(
 
   const trailingSlash = manifest.trailingSlash ?? false;
   const prerenderDir = path.join(serverDir, "prerendered-routes");
-  await seedPrerenderDataCache(prerenderDir, getDataCacheHandler());
+  const dataCacheHandler = getDataCacheHandler();
+  const runtimeDataCacheHandler = await createPrerenderDataCacheRuntimeHandler(
+    prerenderDir,
+    dataCacheHandler,
+  );
+  if (runtimeDataCacheHandler !== dataCacheHandler) {
+    setDataCacheHandler(runtimeDataCacheHandler);
+  }
   const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
   const writeAppRouteEntry = options?.writeAppRouteEntry ?? isrSet;
   let seeded = 0;
@@ -159,6 +167,7 @@ export async function seedMemoryCacheFromPrerender(
         artifactPathname,
         trailingSlash,
         route.headers,
+        route.postponed,
         revalidateSeconds,
         expireSeconds,
         staleSeconds,
@@ -230,6 +239,7 @@ async function seedHtml(
   pathname: string,
   trailingSlash: boolean,
   headers: Record<string, string | string[]> | undefined,
+  postponed: string | undefined,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
@@ -244,7 +254,7 @@ async function seedHtml(
     html: fs.readFileSync(fullPath, "utf-8"),
     rscData: undefined,
     headers,
-    postponed: undefined,
+    postponed,
     status: undefined,
   };
 

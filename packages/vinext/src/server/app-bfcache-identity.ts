@@ -13,6 +13,57 @@ export type InitialBfcacheMaps = Readonly<{
   identities: BfcacheSegmentIdentityMap;
 }>;
 
+function replayIdentitySignature(identity: BfcacheSegmentIdentity): string | null {
+  try {
+    const tuple = JSON.parse(identity) as unknown;
+    if (!Array.isArray(tuple) || typeof tuple[0] !== "string") return null;
+    switch (tuple[0]) {
+      case "page":
+      case "layout":
+      case "template":
+      case "slot-shell":
+        return JSON.stringify(tuple.slice(0, 3));
+      case "slot":
+        return JSON.stringify(tuple.slice(0, 6));
+      case "sibling-interception":
+        return JSON.stringify(tuple.slice(0, 4));
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Re-key a concrete request's BFCache identities with the values captured by
+ * the matching fallback-shell render. React Fizz replay matches Activity keys
+ * exactly; dynamic param bindings differ between the placeholder shell and the
+ * concrete request even though they describe the same route-graph segments.
+ */
+export function alignBfcacheSegmentIdentitiesForResume(
+  current: BfcacheSegmentIdentityMap,
+  fallback: BfcacheSegmentIdentityMap,
+): BfcacheSegmentIdentityMap {
+  const fallbackBySignature = new Map<string, BfcacheSegmentIdentity>();
+  for (const identity of Object.values(fallback)) {
+    const signature = replayIdentitySignature(identity);
+    if (signature !== null) fallbackBySignature.set(signature, identity);
+  }
+
+  const aligned: Record<string, BfcacheSegmentIdentity> = {};
+  for (const [id, identity] of Object.entries(current)) {
+    const exact = fallback[id];
+    if (exact !== undefined) {
+      aligned[id] = exact;
+      continue;
+    }
+    const signature = replayIdentitySignature(identity);
+    aligned[id] = (signature === null ? undefined : fallbackBySignature.get(signature)) ?? identity;
+  }
+  return aligned;
+}
+
 // Monotonic within a single browser document. Full reloads reset the counter,
 // while the document-scoped version gate prevents old history ids from
 // colliding with freshly minted ids.

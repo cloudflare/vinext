@@ -70,6 +70,7 @@ import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type { PrerenderableMetadataRoute } from "../server/metadata-route-response.js";
 import {
   createAppPprFallbackShells,
+  extractAppPprPostponedState,
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
 import {
@@ -80,14 +81,6 @@ import { enterPrerenderPhase } from "./prerender-phase.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
 import { isMetadataResponseCacheable } from "../server/metadata-route-cache-policy.js";
 export { readPrerenderSecret } from "./server-manifest.js";
-
-const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
-
-function isExperimentalPprFallbackShellGenerationEnabled(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  return env[EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV] === "1";
-}
 
 function getErrorMessageWithStack(err: Error): string {
   // Include the full stack trace for sourcemap-aware error reporting during
@@ -180,6 +173,8 @@ export type PrerenderRouteResult =
       routeSegments?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
+      /** React HTML resume state for a partial PPR fallback shell. */
+      postponed?: string;
     }
   | {
       route: string;
@@ -1269,6 +1264,35 @@ export async function prerenderApp({
             : false;
 
       if (route.isDynamic) {
+        let parentParamSets: Record<string, string | string[]>[] = [];
+        const queueFallbackShellsWithoutStaticParams = (
+          fallbackParentParamSets: Record<string, string | string[]>[] = parentParamSets,
+        ): boolean => {
+          if (config.cacheComponents !== true) return false;
+          let queued = false;
+          const queuedPaths = new Set<string>();
+          const baseParamSets = fallbackParentParamSets.length > 0 ? fallbackParentParamSets : [{}];
+          for (const parentParams of baseParamSets) {
+            for (const fallbackShell of createAppPprFallbackShells(route, parentParams)) {
+              if (queuedPaths.has(fallbackShell.pathname)) continue;
+              queuedPaths.add(fallbackShell.pathname);
+              urlsToRender.push({
+                urlPath: fallbackShell.pathname,
+                routePattern: route.pattern,
+                prerenderRouteParams: encodePrerenderRouteParams(
+                  route.pattern,
+                  fallbackShell.params,
+                  fallbackShell.fallbackParamNames,
+                ),
+                revalidate,
+                isSpeculative: false,
+                isFallback: true,
+              });
+              queued = true;
+            }
+          }
+          return queued;
+        };
         // Dynamic URL — needs generateStaticParams
         // (also handles isImplicitlyDynamic case: dynamic URL with no explicit config)
         try {
@@ -1276,6 +1300,7 @@ export async function prerenderApp({
           // For CF Workers builds the map is a Proxy that always returns a function;
           // the function itself returns null when the route has no generateStaticParams.
           const generateStaticParamsFn = staticParamsMap[route.pattern];
+          parentParamSets = await resolveParentParams(route, staticParamsMap);
 
           // Check: no function at all (Node build where map is populated from bundle exports)
           if (typeof generateStaticParamsFn !== "function") {
@@ -1285,14 +1310,14 @@ export async function prerenderApp({
                 status: "error",
                 error: `Dynamic route requires generateStaticParams() with output: 'export'`,
               });
-            } else {
+            } else if (!queueFallbackShellsWithoutStaticParams()) {
               results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
             }
             continue;
           }
 
-          const parentParamSets = await resolveParentParams(route, staticParamsMap);
           let paramSets: Record<string, string | string[]>[] | null;
+          const fallbackOnlyParentParamSets: Record<string, string | string[]>[] = [];
 
           if (parentParamSets.length > 0) {
             paramSets = [];
@@ -1304,6 +1329,9 @@ export async function prerenderApp({
                 break;
               }
               if (Array.isArray(childResults)) {
+                if (childResults.length === 0) {
+                  fallbackOnlyParentParamSets.push(parentParams);
+                }
                 for (const childParams of childResults) {
                   (paramSets as Record<string, string | string[]>[]).push({
                     ...parentParams,
@@ -1318,6 +1346,9 @@ export async function prerenderApp({
           } else {
             const results = await generateStaticParamsFn({ params: {} });
             paramSets = Array.isArray(results) || results === null ? results : [];
+            if (Array.isArray(results) && results.length === 0) {
+              fallbackOnlyParentParamSets.push({});
+            }
           }
 
           // null: route has no generateStaticParams (CF Workers Proxy returned null)
@@ -1328,15 +1359,16 @@ export async function prerenderApp({
                 status: "error",
                 error: `Dynamic route requires generateStaticParams() with output: 'export'`,
               });
-            } else {
+            } else if (!queueFallbackShellsWithoutStaticParams()) {
               results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
             }
             continue;
           }
 
           if (paramSets.length === 0) {
-            // Empty params — skip with warning
-            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            if (!queueFallbackShellsWithoutStaticParams(fallbackOnlyParentParamSets)) {
+              results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            }
             continue;
           }
 
@@ -1369,14 +1401,9 @@ export async function prerenderApp({
               isSpeculative: false,
             });
 
-            // These artifacts contain a partial HTML/RSC shell that requires
-            // request-time resume. Keep generation internal-only until vinext
-            // implements that resume lifecycle; serving one as complete HTML
-            // causes hydration to fall into the global error boundary.
-            if (
-              config.cacheComponents === true &&
-              isExperimentalPprFallbackShellGenerationEnabled()
-            ) {
+            // Cache Components fallback artifacts carry React's postponed
+            // state and are completed by the request-time resume path.
+            if (config.cacheComponents === true) {
               for (const fallbackShell of createAppPprFallbackShells(route, params)) {
                 if (queuedRouteUrls.has(fallbackShell.pathname)) continue;
                 queuedRouteUrls.add(fallbackShell.pathname);
@@ -1394,6 +1421,9 @@ export async function prerenderApp({
                 });
               }
             }
+          }
+          if (fallbackOnlyParentParamSets.length > 0) {
+            queueFallbackShellsWithoutStaticParams(fallbackOnlyParentParamSets);
           }
         } catch (e) {
           const err = e as Error;
@@ -1639,9 +1669,20 @@ export async function prerenderApp({
             error: "RSC handler returned no prerender HTML",
           };
         }
+        const extractedShell = isFallback
+          ? extractAppPprPostponedState(htmlRender.html)
+          : { html: htmlRender.html, postponed: undefined };
+        // A root-level suspension without an enclosing Suspense boundary cannot
+        // produce a useful fallback shell. Avoid writing an artifact that
+        // request-time dispatch could mistake for a complete static response.
+        // Replay nodes are sufficient even when a hanging param prevents nested
+        // cache work from starting during the shell render.
+        if (isFallback && !extractedShell.postponed) {
+          return { route: routePattern, status: "skipped", reason: "dynamic" };
+        }
         const html = isFallback
-          ? markAppPprDynamicFallbackShellHtml(htmlRender.html)
-          : htmlRender.html;
+          ? markAppPprDynamicFallbackShellHtml(extractedShell.html)
+          : extractedShell.html;
 
         // Reconstruct the RSC payload from the inline bootstrap chunks already
         // streamed into the HTML body. The generated RSC entry performs
@@ -1721,6 +1762,7 @@ export async function prerenderApp({
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
+          ...(extractedShell.postponed ? { postponed: extractedShell.postponed } : {}),
         };
       } catch (e) {
         renderPool?.recordRenderError(e);
@@ -1811,7 +1853,6 @@ export async function prerenderApp({
         buildId: config.buildId,
         trailingSlash: config.trailingSlash,
       });
-
     return {
       routes: results,
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
@@ -1948,6 +1989,7 @@ export function writePrerenderIndex(
         ...(typeof r.responseStatus === "number" ? { responseStatus: r.responseStatus } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
+        ...(r.postponed ? { postponed: r.postponed } : {}),
       };
     }
     if (r.status === "skipped") {

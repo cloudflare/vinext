@@ -51,6 +51,9 @@ import {
   type AppPageRenderDependency,
 } from "./app-render-dependency.js";
 import { isPromiseLike } from "../utils/promise.js";
+import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
+import { isUseCacheFunction } from "vinext/shims/internal/use-cache-function";
+import { prepareAppLayoutPropsForUseCache } from "vinext/shims/internal/app-layout-props-cache-key";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -531,6 +534,14 @@ export async function buildPageElements<
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }
+      // Next.js classifies the resolved component at the page consumer and
+      // marks its props, rather than trying to infer every import/re-export
+      // path from the cached function's source module. This preserves the
+      // special page cache-key contract across arbitrary ESM alias chains.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+      if (isUseCacheFunction(PageComponent)) {
+        markAppPagePropsForUseCache(invocationProps);
+      }
 
       try {
         const result = invokeAppComponent(PageComponent, invocationProps);
@@ -638,7 +649,9 @@ export async function buildPageElements<
         );
         siblingInterceptElement = createElement(
           LayoutComponent,
-          { params: makeThenableParams(interceptLayoutParams) },
+          prepareAppLayoutPropsForUseCache(LayoutComponent, {
+            params: makeThenableParams(interceptLayoutParams),
+          }),
           siblingInterceptElement,
         );
       }

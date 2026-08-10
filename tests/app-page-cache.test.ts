@@ -6,6 +6,8 @@ import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
   readAppPageCacheResponse,
+  readAppPageFallbackShellCache,
+  readAppPageFallbackShellCacheResume,
   readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
@@ -975,6 +977,96 @@ describe("app page cache helpers", () => {
       "MISS (dynamic fallback shell requires resume)",
       "/en/blog/[slug]",
     ]);
+  });
+
+  it("returns the cached prelude and postponed state for request-time resume", async () => {
+    const resume = await readAppPageFallbackShellCacheResume({
+      async isrGet() {
+        return buildISRCacheEntry({
+          ...buildCachedAppPageValue(
+            markAppPprDynamicFallbackShellHtml("<html><body>static shell"),
+          ),
+          postponed: '{"nextSegmentId":1}',
+        });
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      rewriteHtml(html) {
+        return html.replace("static shell", "rewritten static shell");
+      },
+    });
+
+    expect(resume).toEqual({
+      html: "<html><body>rewritten static shell",
+      postponed: '{"nextSegmentId":1}',
+      resumeDataCache: [],
+    });
+  });
+
+  it.each([
+    "vinext-rdc-v1:{broken",
+    'vinext-rdc-v1:{"postponed":42,"resumeDataCache":[]}',
+    'vinext-rdc-v1:{"postponed":"not-json","resumeDataCache":[]}',
+    "not-json",
+  ])("rejects malformed fallback resume state as a cache miss", async (postponed) => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const resume = await readAppPageFallbackShellCacheResume({
+      async isrGet() {
+        return buildISRCacheEntry({
+          ...buildCachedAppPageValue(
+            markAppPprDynamicFallbackShellHtml("<html><body>corrupt shell"),
+          ),
+          postponed,
+        });
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      rewriteHtml(html) {
+        return html;
+      },
+    });
+
+    expect(resume).toBeNull();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] ISR fallback shell resume read error:",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("classifies a resumable fallback shell with one cache read", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry({
+        ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<html><body>static shell")),
+        postponed: '{"nextSegmentId":1}',
+      }),
+    );
+
+    const result = await readAppPageFallbackShellCache({
+      clearRequestContext() {
+        throw new Error("resume must not clear the request context");
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      isrGet,
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      revalidateSeconds: 60,
+      rewriteHtml(html) {
+        return html.replace("static shell", "rewritten static shell");
+      },
+    });
+
+    expect(result).toEqual({
+      html: "<html><body>rewritten static shell",
+      postponed: '{"nextSegmentId":1}',
+      resumeDataCache: [],
+    });
+    expect(isrGet).toHaveBeenCalledOnce();
   });
 
   it("still schedules stale regeneration when the stale payload is unusable for this request", async () => {

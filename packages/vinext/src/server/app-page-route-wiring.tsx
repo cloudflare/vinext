@@ -66,6 +66,7 @@ import {
 } from "./app-page-segment-state.js";
 import { createAppPageSegmentPlan } from "./app-page-segment-plan.js";
 import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
+import { prepareAppLayoutPropsForUseCache } from "vinext/shims/internal/app-layout-props-cache-key";
 
 export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
 
@@ -366,10 +367,12 @@ export function probeAppPageLayoutWithTracking<TModule extends AppPageModule>(op
     );
     return probeReactServerSubtree(
       <LayoutComponent
-        params={options.makeThenableParams(
-          layoutParams,
-          options.layoutParamAccess?.createThenableParamsObserver(layoutId),
-        )}
+        {...prepareAppLayoutPropsForUseCache(LayoutComponent, {
+          params: options.makeThenableParams(
+            layoutParams,
+            options.layoutParamAccess?.createThenableParamsObserver(layoutId),
+          ),
+        })}
       >
         {APP_PAGE_LAYOUT_PROBE_CHILD}
       </LayoutComponent>,
@@ -1105,16 +1108,13 @@ export function buildAppPageElements<
     }
     const TemplateComponent = templateComponent;
     const templateDependency = templateDependenciesById.get(templateEntry.id);
+    const templateProps = prepareAppLayoutPropsForUseCache(TemplateComponent, {
+      children: <Children />,
+    });
     let templateElement: ReactNode = templateDependency ? (
-      renderAppComponentWithDependencyBarrier(
-        TemplateComponent,
-        { children: <Children /> },
-        templateDependency,
-      )
+      renderAppComponentWithDependencyBarrier(TemplateComponent, templateProps, templateDependency)
     ) : (
-      <TemplateComponent>
-        <Children />
-      </TemplateComponent>
+      <TemplateComponent {...templateProps} />
     );
     const ancestorLoadingEntry = findNearestAncestorLoadingEntry(templateEntry.treePosition);
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
@@ -1173,16 +1173,18 @@ export function buildAppPageElements<
 
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
+    const invocationLayoutProps = prepareAppLayoutPropsForUseCache(LayoutComponent, {
+      ...layoutProps,
+      children: <Children />,
+    });
     let layoutElement: ReactNode = layoutDependency ? (
       renderAppComponentWithDependencyBarrier(
         LayoutComponent,
-        { ...layoutProps, children: <Children /> },
+        invocationLayoutProps,
         layoutDependency,
       )
     ) : (
-      <LayoutComponent {...layoutProps}>
-        <Children />
-      </LayoutComponent>
+      <LayoutComponent {...invocationLayoutProps} />
     );
     const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
@@ -1412,11 +1414,11 @@ export function buildAppPageElements<
       for (let layoutIndex = layoutEntriesAtPosition.length - 1; layoutIndex >= 0; layoutIndex--) {
         const layoutEntry = layoutEntriesAtPosition[layoutIndex];
         const LayoutComponent = layoutEntry.component;
-        slotElement = (
-          <LayoutComponent params={options.makeThenableParams(layoutEntry.params)}>
-            {slotElement}
-          </LayoutComponent>
-        );
+        const layoutProps = prepareAppLayoutPropsForUseCache(LayoutComponent, {
+          children: slotElement,
+          params: options.makeThenableParams(layoutEntry.params),
+        });
+        slotElement = <LayoutComponent {...layoutProps} />;
       }
     }
 

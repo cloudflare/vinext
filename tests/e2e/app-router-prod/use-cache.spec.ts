@@ -2,6 +2,18 @@ import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 test.describe('production "use cache" server function references', () => {
+  test("replays a cached layout with the current route children through a re-export", async ({
+    page,
+  }) => {
+    await page.goto("/use-cache-layout-replay/first");
+    await expect(page.getByTestId("cached-layout-child")).toHaveText("first");
+    const cachedLayoutValue = await page.getByTestId("cached-layout-value").innerText();
+
+    await page.goto("/use-cache-layout-replay/second");
+    await expect(page.getByTestId("cached-layout-child")).toHaveText("second");
+    await expect(page.getByTestId("cached-layout-value")).toHaveText(cachedLayoutValue);
+  });
+
   test("separates arguments for file-level cached exports imported by a Client Component", async ({
     page,
   }) => {

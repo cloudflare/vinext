@@ -1,4 +1,5 @@
 import {
+  abortPprFallbackShellInputEncoding,
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
 } from "./ppr-fallback-shell.js";
@@ -221,7 +222,9 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     // diverge between the `get` and `getOwnPropertyDescriptor` traps).
     // Promise creation stays lazy so the dynamic-boundary side effects only
     // fire on first actual fallback-key access.
-    if (!fallbackParamNames || !fallbackShellState) return null;
+    if (!fallbackParamNames || !fallbackShellState || fallbackShellState.isCacheWarmupActive) {
+      return null;
+    }
     // `preparePprFallbackShellFinalRender` swaps in a fresh `AbortController`
     // on the warmup->final transition. Re-derive the hanging promise whenever
     // the live controller has changed so suspension always tracks the
@@ -251,6 +254,27 @@ export function makeThenableParams<T extends Record<string, unknown>>(
 
   const promise = Promise.resolve(resolvedParams);
 
+  function wrapFallbackContinuation<TResult>(continuation: Promise<TResult>): Promise<TResult> {
+    if (!fallbackShellState) return continuation;
+
+    // The render may abandon a user-created continuation after the fallback
+    // shell aborts. Preserve its rejection for real consumers while marking it
+    // handled, just as makeHangingPromise does for the source suspension.
+    continuation.catch(() => {});
+
+    const wrapped = new Proxy(continuation, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (!isPromiseContinuation(prop) || typeof value !== "function") {
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (...args: unknown[]) =>
+          wrapFallbackContinuation(Reflect.apply(value, target, args) as Promise<unknown>);
+      },
+    });
+    return wrapped;
+  }
+
   function isFallbackParam(prop: PropertyKey): boolean {
     return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
   }
@@ -258,7 +282,20 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   const handler: ProxyHandler<Promise<T>> = {
     get(target, prop, receiver) {
       if (isPromiseContinuation(prop)) {
-        const value = Reflect.get(target, prop, receiver);
+        const shouldSuspendFallbackParams =
+          fallbackParamNames !== null && fallbackShellState?.isCacheWarmupActive !== true;
+        if (shouldSuspendFallbackParams) abortPprFallbackShellInputEncoding();
+        // Cache Components fallback params match Next.js's `makeHangingParams`:
+        // awaiting the params object itself must stay pending. Resolving first
+        // and throwing a Suspense thenable from a later property read turns an
+        // async consumer into a rejected Promise whose rejection reason is the
+        // thenable, which can escape as an unhandled rejection during an
+        // abandoned prerender. Synchronous known-param reads still use the
+        // resolved proxy below and remain available to the fallback shell.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/params.ts
+        const continuationTarget = shouldSuspendFallbackParams ? getFallbackShellPromise() : target;
+        if (!continuationTarget) return undefined;
+        const value = Reflect.get(continuationTarget, prop, continuationTarget);
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
           // Only observe all keys when NOT in fallback-shell mode.
@@ -267,7 +304,10 @@ export function makeThenableParams<T extends Record<string, unknown>>(
           if (!fallbackParamNames) {
             observeAllParamKeys(observer, plain);
           }
-          return Reflect.apply(value, target, args);
+          const result = Reflect.apply(value, continuationTarget, args);
+          return shouldSuspendFallbackParams
+            ? wrapFallbackContinuation(result as Promise<unknown>)
+            : result;
         };
       }
 

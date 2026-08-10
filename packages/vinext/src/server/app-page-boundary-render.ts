@@ -8,6 +8,7 @@ import {
   type SerializedBoundaryError,
 } from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
+import { prepareAppLayoutPropsForUseCache } from "vinext/shims/internal/app-layout-props-cache-key";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
@@ -269,11 +270,15 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
       });
     },
     renderLayout(LayoutComponent, children, asyncParams) {
-      return createElement(LayoutComponent as AppPageComponent, {
-        // oxlint-disable-next-line react/no-children-prop
-        children,
-        params: asyncParams,
-      });
+      const Component = LayoutComponent as AppPageComponent;
+      return createElement(
+        Component,
+        prepareAppLayoutPropsForUseCache(Component, {
+          // oxlint-disable-next-line react/no-children-prop
+          children,
+          params: asyncParams,
+        }),
+      );
     },
     renderLayoutSegmentProvider(segmentMap, children) {
       return createElement(

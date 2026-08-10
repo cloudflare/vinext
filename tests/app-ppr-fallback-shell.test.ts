@@ -2,10 +2,30 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   createAppPprFallbackShell,
   createAppPprFallbackShells,
+  createAppPprPostponedStateMarker,
+  extractAppPprPostponedState,
+  hasAppPprPostponedReplayNodes,
   isAppPprDynamicFallbackShellHtml,
   markAppPprDynamicFallbackShellHtml,
   rewriteAppPprFallbackShellHtmlNavigation,
 } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
+
+describe("PPR postponed state transport", () => {
+  it("recognizes React postponed state with replayable Suspense nodes", () => {
+    expect(hasAppPprPostponedReplayNodes({ replayNodes: [["slug", "fallback"]] })).toBe(true);
+    expect(hasAppPprPostponedReplayNodes({ replayNodes: [] })).toBe(false);
+  });
+
+  it("round trips React resume state without leaving it in the HTML artifact", () => {
+    const postponed = JSON.stringify({ nextSegmentId: 3, replayNodes: [["slug", "✓"]] });
+    const html = "<html><body>shell" + createAppPprPostponedStateMarker(postponed);
+
+    expect(extractAppPprPostponedState(html)).toEqual({
+      html: "<html><body>shell",
+      postponed,
+    });
+  });
+});
 
 describe("createAppPprFallbackShell", () => {
   it("builds a cacheComponents fallback shell from known root params and missing child params", () => {
@@ -83,7 +103,7 @@ describe("createAppPprFallbackShell", () => {
     ]);
   });
 
-  it("does not create a fallback shell without a known root-param boundary", () => {
+  it("creates a root fallback shell when there are no root params", () => {
     expect(
       createAppPprFallbackShell(
         {
@@ -93,7 +113,11 @@ describe("createAppPprFallbackShell", () => {
         },
         { locale: "en", slug: "new-post" },
       ),
-    ).toBeNull();
+    ).toEqual({
+      fallbackParamNames: ["locale", "slug"],
+      pathname: "/[locale]/blog/[slug]",
+      params: { locale: "[locale]", slug: "[slug]" },
+    });
   });
 
   it("does not create a fallback shell when the matched request lacks a root param", () => {
@@ -129,9 +153,11 @@ describe("rewriteAppPprFallbackShellHtmlNavigation", () => {
     expect(paramsIndex).toBeLessThan(headCloseIndex);
   });
 
-  it("appends actual request metadata after cached placeholder metadata", () => {
+  it("replaces cached Flight bootstrap data with concrete request metadata", () => {
     const placeholderHtml = rewriteAppPprFallbackShellHtmlNavigation({
-      html: "<html><head><title>x</title></head><body>shell</body></html>",
+      html:
+        '<html><head><script type="module" src="/bootstrap.js"></script><title>x</title></head>' +
+        "<body>shell</body></html>",
       params: { locale: "en", slug: "[slug]" },
       pathname: "/en/blog/[slug]",
       searchParams: new URLSearchParams(),
@@ -147,9 +173,11 @@ describe("rewriteAppPprFallbackShellHtmlNavigation", () => {
     const actualIndex = html.indexOf('params:{"locale":"en","slug":"new-post"}');
     const headCloseIndex = html.indexOf("</head>");
 
-    expect(placeholderIndex).toBeGreaterThanOrEqual(0);
-    expect(actualIndex).toBeGreaterThan(placeholderIndex);
+    expect(placeholderIndex).toBe(-1);
+    expect(actualIndex).toBeGreaterThanOrEqual(0);
     expect(actualIndex).toBeLessThan(headCloseIndex);
+    expect(html).toContain('<script type="module" src="/bootstrap.js"></script>');
+    expect(html).not.toMatch(/<\/body>\s*<\/html>\s*$/);
     expect(html).toContain('"pathname":"/en/blog/new-post"');
     expect(html).toContain('"searchParams":[["preview","1"]]');
   });

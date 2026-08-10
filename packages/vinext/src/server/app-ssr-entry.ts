@@ -2,6 +2,7 @@
 
 import "./server-globals.js";
 import type { ReactNode } from "react";
+import * as ReactRuntime from "react";
 import type { ReactFormState } from "react-dom/client";
 import { preinitModule } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
@@ -47,12 +48,17 @@ import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
+import {
+  alignBfcacheSegmentIdentitiesForResume,
+  createInitialBfcacheMaps,
+  type BfcacheSegmentIdentityMap,
+} from "./app-bfcache-identity.js";
 import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import { hasAppPprPostponedReplayNodes } from "./app-ppr-fallback-shell.js";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
@@ -91,74 +97,142 @@ export type FontData = {
 };
 
 type StaticPrerender = typeof import("react-dom/static.edge").prerender;
+type SsrResume = typeof import("react-dom/server.edge").resume;
 
-function isReactDevelopmentRuntime(): boolean {
-  if (process.env.NODE_ENV === "production") {
-    return false;
+type ReactDomEdgeRenderer = {
+  prerender: StaticPrerender;
+  resume: SsrResume;
+};
+
+const VINEXT_SSR_POSTPONED_STATE_VERSION = 1;
+
+type VinextSsrPostponedState = {
+  bfcacheSegmentIdentities: BfcacheSegmentIdentityMap;
+  postponed: unknown;
+  version: typeof VINEXT_SSR_POSTPONED_STATE_VERSION;
+};
+
+function parseSsrPostponedState(value: string): VinextSsrPostponedState {
+  const parsed = JSON.parse(value) as unknown;
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "version" in parsed &&
+    parsed.version === VINEXT_SSR_POSTPONED_STATE_VERSION &&
+    "postponed" in parsed &&
+    "bfcacheSegmentIdentities" in parsed &&
+    typeof parsed.bfcacheSegmentIdentities === "object" &&
+    parsed.bfcacheSegmentIdentities !== null &&
+    !Array.isArray(parsed.bfcacheSegmentIdentities) &&
+    Object.values(parsed.bfcacheSegmentIdentities).every((identity) => typeof identity === "string")
+  ) {
+    return parsed as VinextSsrPostponedState;
   }
-  if (process.env.NODE_ENV === "development") {
-    return true;
-  }
-  return Function.prototype.toString.call(createReactElement).includes("getOwner");
+  return { bfcacheSegmentIdentities: {}, postponed: parsed, version: 1 };
 }
 
-function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPrerender } {
+function serializeSsrPostponedState(
+  postponed: unknown,
+  bfcacheSegmentIdentities: BfcacheSegmentIdentityMap,
+): string {
+  return JSON.stringify({
+    bfcacheSegmentIdentities,
+    postponed,
+    version: VINEXT_SSR_POSTPONED_STATE_VERSION,
+  } satisfies VinextSsrPostponedState);
+}
+
+function isReactDevelopmentRuntime(): boolean {
+  // React only exports captureOwnerStack from its development runtime. The RSC
+  // plugin can select that runtime independently of the process-level NODE_ENV,
+  // so inspecting React itself is more reliable than inspecting the environment
+  // or a minified function body.
+  return typeof (ReactRuntime as { captureOwnerStack?: unknown }).captureOwnerStack === "function";
+}
+
+function isReactDomEdgeRenderer(value: unknown): value is ReactDomEdgeRenderer {
   return (
     typeof value === "object" &&
     value !== null &&
     "prerender" in value &&
-    typeof value.prerender === "function"
+    typeof value.prerender === "function" &&
+    "resume" in value &&
+    typeof value.resume === "function"
   );
 }
 
-async function loadStaticPrerender(): Promise<StaticPrerender> {
-  // Prefer the stable ESM entry in all environments. Future React dev builds
-  // may export prerender() here, so this is the first path we attempt.
-  const staticRenderer: unknown = await import("react-dom/static.edge");
-  if (isStaticPrerenderModule(staticRenderer)) {
-    return staticRenderer.prerender;
-  }
+let developmentEdgeRenderer: Promise<ReactDomEdgeRenderer> | undefined;
 
-  // Fallback: React development builds historically did not export prerender()
-  // from the ESM entry, so reach into the CJS artifact. The path is fragile
-  // because it depends on React's internal file layout, but it is only used
-  // when the stable ESM entry does not provide prerender().
+async function loadDevelopmentEdgeRenderer(): Promise<ReactDomEdgeRenderer> {
+  developmentEdgeRenderer ??= (async () => {
+    const [{ createRequire }, path] = await Promise.all([
+      import("node:module"),
+      // Native node:path is fine here: the resolved path is fed straight into
+      // require() and never compared against pathslash-normalized ids.
+      // oxlint-disable-next-line no-restricted-imports
+      import("node:path"),
+    ]);
+    const nodeRequire = createRequire(import.meta.url);
+    const reactDomPackageJson = nodeRequire.resolve("react-dom/package.json");
+    const devRendererPath = path.join(
+      path.dirname(reactDomPackageJson),
+      "cjs/react-dom-server.edge.development.js",
+    );
+
+    // The CJS development artifact guards all of its exports behind this
+    // runtime check and requires React while it initializes. Keep that small,
+    // synchronous require section aligned with the development React instance
+    // selected by Vite, then restore the caller's environment immediately.
+    const previousNodeEnv = process.env.NODE_ENV;
+    let devRenderer: unknown;
+    try {
+      Reflect.set(process.env, "NODE_ENV", "development");
+      devRenderer = nodeRequire(devRendererPath);
+    } finally {
+      if (previousNodeEnv === undefined) {
+        Reflect.deleteProperty(process.env, "NODE_ENV");
+      } else {
+        Reflect.set(process.env, "NODE_ENV", previousNodeEnv);
+      }
+    }
+
+    if (isReactDomEdgeRenderer(devRenderer)) return devRenderer;
+    throw new Error("react-dom development renderer did not expose prerender() and resume().");
+  })();
+  return developmentEdgeRenderer;
+}
+
+async function loadReactDomEdgeRenderer(): Promise<ReactDomEdgeRenderer> {
   if (isReactDevelopmentRuntime()) {
     try {
-      const [{ createRequire }, path] = await Promise.all([
-        import("node:module"),
-        // Native node:path is fine here: the resolved path is fed straight into
-        // a dynamic import() and never compared against pathslash-normalized
-        // ids, so forward-slash canonicalization buys nothing.
-        // oxlint-disable-next-line no-restricted-imports
-        import("node:path"),
-      ]);
-      const require = createRequire(import.meta.url);
-      const reactDomPackageJson = require.resolve("react-dom/package.json");
-      const reactDomDir = path.dirname(reactDomPackageJson);
-      const devRendererPath = path.join(reactDomDir, "cjs/react-dom-server.edge.development.js");
-      const devRenderer: unknown = await import(/* @vite-ignore */ devRendererPath);
-      if (isStaticPrerenderModule(devRenderer)) {
-        return devRenderer.prerender;
-      }
-      // Node.js ESM import of a CJS module wraps the exports in `default`.
-      const devRendererDefault =
-        typeof devRenderer === "object" &&
-        devRenderer !== null &&
-        "default" in devRenderer &&
-        devRenderer.default;
-      if (isStaticPrerenderModule(devRendererDefault)) {
-        return devRendererDefault.prerender;
-      }
-      throw new Error("react-dom development renderer did not expose prerender().");
+      return await loadDevelopmentEdgeRenderer();
     } catch (error) {
-      throw new Error("[vinext] Failed to load React static development renderer.", {
+      throw new Error("[vinext] Failed to load React DOM development renderer.", {
         cause: error,
       });
     }
   }
 
-  throw new Error("[vinext] react-dom/static.edge did not expose prerender().");
+  const [staticRenderer, serverRenderer]: [unknown, unknown] = await Promise.all([
+    import("react-dom/static.edge"),
+    import("react-dom/server.edge"),
+  ]);
+  if (
+    typeof staticRenderer === "object" &&
+    staticRenderer !== null &&
+    "prerender" in staticRenderer &&
+    typeof staticRenderer.prerender === "function" &&
+    typeof serverRenderer === "object" &&
+    serverRenderer !== null &&
+    "resume" in serverRenderer &&
+    typeof serverRenderer.resume === "function"
+  ) {
+    return {
+      prerender: staticRenderer.prerender as StaticPrerender,
+      resume: serverRenderer.resume as SsrResume,
+    };
+  }
+  throw new Error("[vinext] React DOM edge renderer did not expose prerender() and resume().");
 }
 
 function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
@@ -373,6 +447,10 @@ export async function handleSsr(
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
     pprFallbackShellSignal?: AbortSignal;
+    /** Whether the cache warmup discovered reusable `use cache` work. */
+    pprFallbackShellHasCacheTask?: boolean;
+    /** Serialized React postponed state captured by a fallback-shell prerender. */
+    postponed?: string;
     formState?: ReactFormState | null;
     basePath?: string;
     /**
@@ -442,6 +520,8 @@ export async function handleSsr(
           );
         }
 
+        const resumeState = options?.postponed ? parseSsrPostponedState(options.postponed) : null;
+        let fallbackBfcacheSegmentIdentities: BfcacheSegmentIdentityMap = {};
         let flightRoot: PromiseLike<AppWireElements> | null = null;
 
         function VinextFlightRoot(): ReactNode {
@@ -457,10 +537,19 @@ export async function handleSsr(
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
           const metadata = AppElementsWire.readMetadata(elements);
+          if (pprFallbackShellSignal) {
+            fallbackBfcacheSegmentIdentities = metadata.bfcacheSegmentIdentities;
+          }
           const bfcacheMaps = createInitialBfcacheMaps({
             elements,
             metadata,
           });
+          const bfcacheSegmentIdentities = resumeState
+            ? alignBfcacheSegmentIdentitiesForResume(
+                bfcacheMaps.identities,
+                resumeState.bfcacheSegmentIdentities,
+              )
+            : bfcacheMaps.identities;
           const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
@@ -468,7 +557,7 @@ export async function handleSsr(
           );
           const identityMapTree = createReactElement(
             BfcacheIdentityMapContext.Provider,
-            { value: bfcacheMaps.identities },
+            { value: bfcacheSegmentIdentities },
             routeTree,
           );
           // During SSR we only provide the id *map*, seeded entirely with the
@@ -595,7 +684,10 @@ export async function handleSsr(
             : undefined,
           maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
           onError(error: unknown) {
-            if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
+            if (
+              pprFallbackShellSignal &&
+              (pprFallbackShellSignal.aborted || isPprFallbackShellAbortError(error))
+            ) {
               return undefined;
             }
 
@@ -618,15 +710,33 @@ export async function handleSsr(
         let htmlStream: ReadableStream<Uint8Array>;
         let shellErrorRecovered = false;
         let shouldDelayInitialHtmlPull = false;
-        if (pprFallbackShellSignal) {
-          const prerender = await loadStaticPrerender();
+        let postponed: string | undefined;
+        if (options?.postponed) {
+          const edgeRenderer = await loadReactDomEdgeRenderer();
+          htmlStream = await edgeRenderer.resume(
+            ssrRoot,
+            resumeState!.postponed as Parameters<SsrResume>[1],
+            renderOptions as Parameters<SsrResume>[2],
+          );
+        } else if (pprFallbackShellSignal) {
+          const { prerender } = await loadReactDomEdgeRenderer();
           const htmlAbortController = new AbortController();
           const pendingHtml = prerender(ssrRoot, {
             ...renderOptions,
             signal: htmlAbortController.signal,
           });
           setTimeout(() => htmlAbortController.abort(), 0);
-          htmlStream = (await pendingHtml).prelude;
+          const prerenderResult = await pendingHtml;
+          htmlStream = prerenderResult.prelude;
+          if (
+            options?.pprFallbackShellHasCacheTask === true &&
+            hasAppPprPostponedReplayNodes(prerenderResult.postponed)
+          ) {
+            postponed = serializeSsrPostponedState(
+              prerenderResult.postponed,
+              fallbackBfcacheSegmentIdentities,
+            );
+          }
         } else {
           let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
           try {
@@ -746,6 +856,7 @@ export async function handleSsr(
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
           shellErrorRecovered,
           linkHeader: reactLinkHeader,
+          postponed,
         };
       } catch (error) {
         cleanup();

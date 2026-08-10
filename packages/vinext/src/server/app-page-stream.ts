@@ -34,6 +34,8 @@ export type AppSsrRenderResult = {
    * emitted no preload headers (or emission was disabled with `0`).
    */
   linkHeader?: string;
+  /** React's serializable HTML postponed state for a PPR fallback shell. */
+  postponed?: string;
 };
 
 export function isAppSsrRenderResult(value: unknown): value is AppSsrRenderResult {
@@ -137,6 +139,8 @@ export type AppPageSsrHandler = {
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
+      pprFallbackShellHasCacheTask?: boolean;
+      postponed?: string;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
       /** Dev-only: original server error to surface in the browser overlay. */
@@ -181,6 +185,9 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
+  pprFallbackShellHasCacheTask?: boolean;
+  /** Serialized React postponed state from a cached PPR fallback shell. */
+  postponed?: string;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
   /** Override the default shell-error recovery decision passed to handleSsr. */
@@ -209,6 +216,7 @@ type AppPageHtmlStreamRecoveryResult = {
   shellErrorRecovered: boolean;
   /** React-emitted preload `Link` header (already capped). */
   linkHeader?: string;
+  postponed?: string;
 };
 
 type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
@@ -252,6 +260,8 @@ export async function renderAppPageHtmlStream(
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
+    pprFallbackShellHasCacheTask: options.pprFallbackShellHasCacheTask,
+    postponed: options.postponed,
     waitForAllReady: options.waitForAllReady,
     initialDevServerError: options.initialDevServerError,
     // Only when the caller affirmatively knows there is no custom
@@ -310,8 +320,14 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
 ): Promise<AppPageHtmlStreamRecoveryResult> {
   try {
     const rawResult = await options.renderHtmlStream();
-    const { htmlStream, metadataReady, capturedRscData, linkHeader, shellErrorRecovered } =
-      normalizeAppSsrRenderResult(rawResult);
+    const {
+      htmlStream,
+      metadataReady,
+      capturedRscData,
+      linkHeader,
+      postponed,
+      shellErrorRecovered,
+    } = normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
     return {
       htmlStream,
@@ -320,6 +336,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
       capturedRscData,
       shellErrorRecovered: shellErrorRecovered === true,
       linkHeader,
+      postponed,
     };
   } catch (error) {
     const specialError = options.resolveSpecialError(error);

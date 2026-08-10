@@ -660,6 +660,30 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result?.code).toContain('"appPageDefaultExport":true');
   });
 
+  it.each(["layout", "template"])(
+    "wraps a file-level cached App %s default export",
+    async (fileName) => {
+      const plugins = await getPlugins();
+      await configureVinext(plugins);
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const moduleId = path.join(APP_FIXTURE_DIR, "app", `${fileName}.tsx`);
+      const result = await unwrapHook(plugin.transform)!.call(
+        { environment: { name: "rsc", mode: "build" } },
+        [
+          `"use cache";`,
+          `export default async function Segment({ children }) { return children; }`,
+        ].join("\n"),
+        moduleId,
+      );
+
+      expect(result?.code).toContain("registerCachedFunction");
+      expect(result?.code).toContain("registerServerReference");
+    },
+  );
+
   it.each(["ssr", "client"])(
     "emits server-reference proxies for file-level cache exports in the %s graph",
     async (environmentName) => {

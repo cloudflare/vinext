@@ -7,22 +7,22 @@ import {
   type CacheHandlerValue,
   type CachedFetchValue,
   type IncrementalCacheValue,
+  type ResumeDataCacheEntry,
 } from "vinext/shims/cache-handler";
+import { getHeadersContext } from "vinext/shims/headers";
 import {
   getRequestContext,
   isInsideUnifiedScope,
   queueAfterCallback,
   type UnifiedRequestContext,
 } from "vinext/shims/unified-request-context";
+import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 
 export const PRERENDER_DATA_CACHE_DIR = ".vinext-resume-data-cache";
 const PENDING_ENTRY_TIMEOUT_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 10;
 
-export type PersistedFetchEntry = {
-  context?: Record<string, unknown>;
-  key: string;
-  lastModified: number;
+export type PersistedFetchEntry = ResumeDataCacheEntry & {
   value: CachedFetchValue;
 };
 
@@ -117,8 +117,30 @@ function persistedContext(context: Record<string, unknown> | undefined): Record<
   if (context.cacheControl && typeof context.cacheControl === "object") {
     result.cacheControl = context.cacheControl;
   }
+  if (context.cacheKind === "use-cache") result.cacheKind = "use-cache";
   if (context.fetchCache === true) result.fetchCache = true;
+  if (context.speculative === true) result.speculative = true;
   return result;
+}
+
+function currentPrerenderContext(
+  context: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  return getHeadersContext()?.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1"
+    ? { ...context, speculative: true }
+    : context;
+}
+
+function isSpeculativeContext(context: Record<string, unknown> | undefined): boolean {
+  return context?.speculative === true;
+}
+
+function withoutRequestedTags(
+  context: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!context || !Array.isArray(context.tags)) return context;
+  const { tags: _tags, ...rest } = context;
+  return rest;
 }
 
 function isPersistedFetchEntry(value: unknown): value is PersistedFetchEntry {
@@ -217,10 +239,29 @@ function committedPublicVersion(entry: PersistedFetchVersion): PersistedFetchVer
   return { ...publicEntry(entry), version: entry.version };
 }
 
+function publishedTransactionVersion(entry: PersistedFetchVersion): PersistedFetchVersion {
+  const committed = committedPublicVersion(entry);
+  if (committed.context?.speculative !== true) return committed;
+  const { speculative: _speculative, ...context } = committed.context;
+  return { ...committed, context };
+}
+
 function committedEntry(record: PersistedFetchRecord | null): PersistedFetchEntry | null {
   if (!record) return null;
   if (record.committed !== false) return publicEntry(record);
   return record.previousCommitted ? publicEntry(record.previousCommitted) : null;
+}
+
+function readableEntry(
+  record: PersistedFetchRecord | null,
+  speculativeRequest: boolean,
+): PersistedFetchEntry | null {
+  if (!record) return null;
+  if (speculativeRequest || record.context?.speculative !== true) {
+    return publicEntry(record);
+  }
+  const committed = committedEntry(record);
+  return committed?.context?.speculative === true ? null : committed;
 }
 
 function committedVersion(record: PersistedFetchRecord): PersistedFetchVersion | null {
@@ -310,7 +351,32 @@ async function persistEntry(
     const existing = readEntry(destination);
     let entry: PersistedFetchRecord;
 
-    if (!existing) {
+    const existingSpeculative = existing?.context?.speculative === true;
+    const incomingSpeculative = incomingVersion.context?.speculative === true;
+
+    if (existing && existingSpeculative !== incomingSpeculative) {
+      if (incomingSpeculative) {
+        // A speculative render can consume a normal value, but its private
+        // observations and replacement value must never alter the normal
+        // persisted record. Returning the speculative version lets a request
+        // transaction track/finalize it as a no-op.
+        return incomingVersion.version;
+      }
+
+      // Normal values always supersede speculative records, independent of
+      // write order and timestamp. If the speculative record was itself a
+      // provisional refresh over a committed normal value, retain that normal
+      // fallback until this normal write commits.
+      const previousCommitted =
+        existing.committed === false && existing.previousCommitted?.context?.speculative !== true
+          ? existing.previousCommitted
+          : undefined;
+      entry = {
+        ...incomingVersion,
+        committed: mode === "provisional" ? false : true,
+        ...(mode === "provisional" && previousCommitted ? { previousCommitted } : {}),
+      };
+    } else if (!existing) {
       entry = {
         ...incomingVersion,
         committed: mode === "provisional" ? false : true,
@@ -388,7 +454,7 @@ async function finalizeEntryVersion(
       if (currentMatches) {
         if (existing.committed !== false) return;
         writeEntry(destination, {
-          ...committedPublicVersion(existing),
+          ...publishedTransactionVersion(existing),
           committed: true,
         });
         return;
@@ -412,7 +478,7 @@ async function finalizeEntryVersion(
       );
       writeEntry(destination, {
         ...existing,
-        previousCommitted: committedPublicVersion(candidate),
+        previousCommitted: publishedTransactionVersion(candidate),
         provisionalVersions: provisionalVersions?.length ? provisionalVersions : undefined,
       });
       return;
@@ -468,6 +534,7 @@ async function finalizeEntryVersion(
  */
 export class PrerenderDataCacheHandler implements CacheHandler {
   private readonly memory = new MemoryCacheHandler();
+  private readonly speculativeMemory = new MemoryCacheHandler();
   private readonly requestEntries = new WeakMap<UnifiedRequestContext, RequestEntryTracker>();
 
   constructor(private readonly prerenderDir: string) {}
@@ -619,32 +686,54 @@ export class PrerenderDataCacheHandler implements CacheHandler {
   }
 
   async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    context = currentPrerenderContext(context);
     const tracker = this.startRequestOperation();
     try {
-      const memoryEntry = await this.memory.get(key, context);
+      const speculativeRequest = isSpeculativeContext(context);
+      let memory = this.memory;
+      let readContext = speculativeRequest ? withoutRequestedTags(context) : context;
+      let memoryEntry = await memory.get(key, readContext);
+      let speculativeEntry = false;
+      if (!memoryEntry && speculativeRequest) {
+        memory = this.speculativeMemory;
+        readContext = context;
+        memoryEntry = await memory.get(key, context);
+        speculativeEntry = memoryEntry !== null;
+      }
       if (memoryEntry) {
         if (
           context?.kind === "FETCH" &&
           (memoryEntry.cacheState === "stale" || memoryEntry.cacheState === "expired")
         ) {
-          const claimed = await this.claimStaleEntry(key, context, memoryEntry);
-          if (claimed) await this.observeEntry(tracker, key, claimed, context);
+          const claimed = await this.claimStaleEntry(
+            key,
+            readContext ?? context,
+            memoryEntry,
+            memory,
+          );
+          if (claimed && (!speculativeRequest || speculativeEntry)) {
+            await this.observeEntry(tracker, key, claimed, context);
+          }
           return claimed;
         }
-        await this.observeEntry(tracker, key, memoryEntry, context);
+        if (!speculativeRequest || speculativeEntry) {
+          await this.observeEntry(tracker, key, memoryEntry, context);
+        }
         return memoryEntry;
       }
       if (context?.kind !== "FETCH") return null;
 
-      let persisted = readEntry(entryPath(this.prerenderDir, key));
-      if (!persisted || persisted.key !== key) {
+      let record = readEntry(entryPath(this.prerenderDir, key));
+      let persisted = record?.key === key ? readableEntry(record, speculativeRequest) : null;
+      if (!persisted) {
         const pending = pendingPath(this.prerenderDir, key);
         if (tryCreateLock(pending)) return null;
 
         for (;;) {
           await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_INTERVAL_MS));
-          persisted = readEntry(entryPath(this.prerenderDir, key));
-          if (persisted?.key === key) break;
+          record = readEntry(entryPath(this.prerenderDir, key));
+          persisted = record?.key === key ? readableEntry(record, speculativeRequest) : null;
+          if (persisted) break;
           if (lockIsStale(pending)) {
             removeFile(pending);
             if (tryCreateLock(pending)) return null;
@@ -652,20 +741,28 @@ export class PrerenderDataCacheHandler implements CacheHandler {
         }
       }
 
-      await this.memory.seed(key, persisted.value, persisted.context, {
+      const persistedIsSpeculative = persisted.context?.speculative === true;
+      memory = persistedIsSpeculative ? this.speculativeMemory : this.memory;
+      readContext =
+        speculativeRequest && !persistedIsSpeculative ? withoutRequestedTags(context) : context;
+      await memory.seed(key, persisted.value, persisted.context, {
         lastModified: persisted.lastModified,
       });
-      const resumed = await this.memory.get(key, context);
+      const resumed = await memory.get(key, readContext);
       if (
         resumed &&
         context?.kind === "FETCH" &&
         (resumed.cacheState === "stale" || resumed.cacheState === "expired")
       ) {
-        const claimed = await this.claimStaleEntry(key, context, resumed);
-        if (claimed) await this.observeEntry(tracker, key, claimed, context);
+        const claimed = await this.claimStaleEntry(key, readContext ?? context, resumed, memory);
+        if (claimed && (!speculativeRequest || persistedIsSpeculative)) {
+          await this.observeEntry(tracker, key, claimed, context);
+        }
         return claimed;
       }
-      if (resumed) await this.observeEntry(tracker, key, resumed, context);
+      if (resumed && (!speculativeRequest || persistedIsSpeculative)) {
+        await this.observeEntry(tracker, key, resumed, context);
+      }
       return resumed;
     } finally {
       this.finishRequestOperation(tracker);
@@ -676,22 +773,26 @@ export class PrerenderDataCacheHandler implements CacheHandler {
     key: string,
     context: Record<string, unknown>,
     staleEntry: CacheHandlerValue,
+    memory: MemoryCacheHandler,
   ): Promise<CacheHandlerValue | null> {
     const pending = pendingPath(this.prerenderDir, key);
     if (tryCreateLock(pending)) return null;
 
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_INTERVAL_MS));
-      const persisted = readEntry(entryPath(this.prerenderDir, key));
+      const persisted = readableEntry(
+        readEntry(entryPath(this.prerenderDir, key)),
+        isSpeculativeContext(context),
+      );
       if (
         persisted?.key === key &&
         persisted.lastModified > staleEntry.lastModified &&
         persisted.value.kind === "FETCH"
       ) {
-        await this.memory.seed(key, persisted.value, persisted.context, {
+        await memory.seed(key, persisted.value, persisted.context, {
           lastModified: persisted.lastModified,
         });
-        return this.memory.get(key, context);
+        return memory.get(key, context);
       }
       if (lockIsStale(pending)) {
         removeFile(pending);
@@ -705,11 +806,13 @@ export class PrerenderDataCacheHandler implements CacheHandler {
     value: IncrementalCacheValue | null,
     context?: Record<string, unknown>,
   ): Promise<void> {
+    context = currentPrerenderContext(context);
+    const memory = isSpeculativeContext(context) ? this.speculativeMemory : this.memory;
     const tracker = this.startRequestOperation();
     try {
-      await this.memory.set(key, value, context);
+      await memory.set(key, value, context);
       if (value?.kind !== "FETCH") return;
-      const stored = await this.memory.get(key);
+      const stored = await memory.get(key);
       if (stored?.value?.kind !== "FETCH") return;
       const version = await persistEntry(
         this.prerenderDir,
@@ -740,11 +843,15 @@ export class PrerenderDataCacheHandler implements CacheHandler {
   }
 
   async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
-    await this.memory.revalidateTag(tags, durations);
+    await Promise.all([
+      this.memory.revalidateTag(tags, durations),
+      this.speculativeMemory.revalidateTag(tags, durations),
+    ]);
   }
 
   resetRequestCache(): void {
     this.memory.resetRequestCache?.();
+    this.speculativeMemory.resetRequestCache?.();
   }
 }
 
@@ -774,6 +881,112 @@ export function readPrerenderDataCacheEntries(prerenderDir: string): PersistedFe
   return entries;
 }
 
+/**
+ * Process-local read-through view of immutable build snapshots for handlers
+ * that cannot atomically seed an entry by timestamp. Runtime data remains
+ * authoritative: snapshots are consulted only after a stable delegate miss
+ * and are never written into the delegate.
+ *
+ * This intentionally does not claim distributed invalidation semantics. A
+ * shared custom handler needs timestamp-aware `seed()` support for that; the
+ * legacy get/set/tag API cannot distinguish an absent value from one invalidated
+ * by another process without risking resurrection of stale build data.
+ */
+class PrerenderDataCacheRuntimeOverlay implements CacheHandler {
+  private readonly snapshot = new MemoryCacheHandler();
+  private readonly runtimeVersions = new Map<string, number>();
+  private readonly pendingWrites = new Map<string, Promise<void>>();
+
+  private constructor(private readonly delegate: CacheHandler) {}
+
+  static async create(
+    entries: readonly PersistedFetchEntry[],
+    delegate: CacheHandler,
+  ): Promise<PrerenderDataCacheRuntimeOverlay> {
+    const overlay = new PrerenderDataCacheRuntimeOverlay(delegate);
+    for (const entry of entries) {
+      await overlay.snapshot.seed(entry.key, entry.value, entry.context, {
+        lastModified: entry.lastModified,
+      });
+    }
+    return overlay;
+  }
+
+  async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    for (;;) {
+      const version = this.runtimeVersions.get(key) ?? 0;
+      const pending = this.pendingWrites.get(key);
+      if (pending) await pending.catch(() => {});
+
+      const runtime = await this.delegate.get(key, context);
+      if (runtime) return runtime;
+
+      // A write may have started while the delegate read was in flight. Wait
+      // for it and retry the delegate instead of exposing the older snapshot.
+      if ((this.runtimeVersions.get(key) ?? 0) !== version || this.pendingWrites.has(key)) {
+        continue;
+      }
+      if (version > 0) return null;
+
+      const snapshot = await this.snapshot.get(key, context);
+      if ((this.runtimeVersions.get(key) ?? 0) !== version) continue;
+      if (snapshot) {
+        // A delegate may claim a miss for single-flight ownership. The caller
+        // observes this snapshot as a hit and will never fill that claim, so
+        // release it here before returning the process-local fallback.
+        await this.delegate.releasePendingSet?.(key);
+        if ((this.runtimeVersions.get(key) ?? 0) !== version) continue;
+      }
+      return snapshot;
+    }
+  }
+
+  set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    this.runtimeVersions.set(key, (this.runtimeVersions.get(key) ?? 0) + 1);
+    const write = Promise.resolve().then(() => this.delegate.set(key, data, context));
+    const tracked = write.finally(() => {
+      if (this.pendingWrites.get(key) === tracked) this.pendingWrites.delete(key);
+    });
+    this.pendingWrites.set(key, tracked);
+    return tracked;
+  }
+
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
+    await Promise.all([
+      this.delegate.revalidateTag(tags, durations),
+      this.snapshot.revalidateTag(tags, durations),
+    ]);
+  }
+
+  async releasePendingSet(key: string): Promise<void> {
+    await this.delegate.releasePendingSet?.(key);
+  }
+
+  resetRequestCache(): void {
+    this.delegate.resetRequestCache?.();
+    this.snapshot.resetRequestCache?.();
+  }
+}
+
+/** Prepare persisted build data for runtime without unsafe custom-handler writes. */
+export async function createPrerenderDataCacheRuntimeHandler(
+  prerenderDir: string,
+  handler: CacheHandler,
+): Promise<CacheHandler> {
+  if (handler.seed) {
+    await seedPrerenderDataCache(prerenderDir, handler);
+    return handler;
+  }
+  const entries = readPrerenderDataCacheEntries(prerenderDir).filter(
+    (entry) => entry.context?.speculative !== true,
+  );
+  return entries.length === 0 ? handler : PrerenderDataCacheRuntimeOverlay.create(entries, handler);
+}
+
 /** Seed persisted prerender FETCH entries into the active runtime handler. */
 export async function seedPrerenderDataCache(
   prerenderDir: string,
@@ -781,6 +994,7 @@ export async function seedPrerenderDataCache(
 ): Promise<number> {
   let seeded = 0;
   for (const entry of readPrerenderDataCacheEntries(prerenderDir)) {
+    if (entry.context?.speculative === true) continue;
     if (handler.seed) {
       if (
         await handler.seed(entry.key, entry.value, entry.context, {
@@ -789,15 +1003,6 @@ export async function seedPrerenderDataCache(
       ) {
         seeded++;
       }
-    } else {
-      // Existing custom handlers predate the timestamp-preserving seed hook.
-      // Still hand them the build value, and expose the original timestamp in
-      // context so adapters can preserve it without adopting the new method.
-      await handler.set(entry.key, entry.value, {
-        ...entry.context,
-        lastModified: entry.lastModified,
-      });
-      seeded++;
     }
   }
   return seeded;

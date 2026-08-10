@@ -3285,6 +3285,36 @@ describe("app page dispatch", () => {
     expect(buildPageElement).toHaveBeenCalled();
   });
 
+  it("blocks runtime use-cache misses when no fallback artifact exists", async () => {
+    const { options } = createPprBlogDispatchOptions({
+      isrGet: vi.fn(async () => null),
+    });
+
+    await expect(appPagePprRuntime.tryServe(options, 60, false, false, false)).resolves.toEqual({
+      blockUseCacheMisses: true,
+      kind: "eligible-miss",
+    });
+  });
+
+  it("blocks runtime use-cache misses while resuming a fallback artifact", async () => {
+    const fallback = buildCachedAppPageValue(
+      markAppPprDynamicFallbackShellHtml("<html><body>fallback</body></html>"),
+    );
+    fallback.postponed = '{"nextSegmentId":1}';
+    const { options } = createPprBlogDispatchOptions({
+      isrGet: vi.fn(async (key: string) =>
+        key === "html:/en/blog/[slug]" ? buildISRCacheEntry(fallback) : null,
+      ),
+    });
+
+    await expect(appPagePprRuntime.tryServe(options, 60, false, false, false)).resolves.toEqual(
+      expect.objectContaining({
+        blockUseCacheMisses: true,
+        kind: "resume",
+      }),
+    );
+  });
+
   it("does not serve the fallback shell for a known pregenerated route whose exact cache is absent", async () => {
     const buildPageElement = createParamTextPageElement("fresh");
     const isrGet = createPprBlogFallbackShellGetter(false);

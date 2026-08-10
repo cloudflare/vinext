@@ -11,6 +11,7 @@ import {
   type AppPagePprRuntime,
   type DispatchAppPageOptions,
 } from "./app-page-dispatch.js";
+import type { ResumeDataCacheEntry } from "vinext/shims/cache-handler";
 
 type PprFallbackShellEligibility =
   | {
@@ -70,11 +71,27 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShells: NonNullable<DispatchAppPageOptions<TRoute>["pprFallbackCacheShells"]>,
   currentRevalidateSeconds: number | null,
-): Promise<Response | null> {
-  const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
+): Promise<
+  | Response
+  | {
+      fallbackParamNames: readonly string[];
+      html: string;
+      postponed: string;
+      resumeDataCache: ResumeDataCacheEntry[];
+    }
+  | null
+> {
+  const { readAppPageFallbackShellCache } = await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
   for (const fallbackShell of fallbackShells) {
-    const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
+    const rewriteHtml = (html: string) =>
+      rewriteAppPprFallbackShellHtmlNavigation({
+        html,
+        params: options.params,
+        pathname: options.cleanPathname,
+        searchParams: options.searchParams,
+      });
+    const fallbackShellResult = await readAppPageFallbackShellCache({
       clearRequestContext: options.clearRequestContext,
       expireSeconds: options.expireSeconds,
       fallbackPathname: fallbackShell.pathname,
@@ -85,16 +102,17 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       revalidateSeconds: currentRevalidateSeconds ?? 0,
-      rewriteHtml(html) {
-        return rewriteAppPprFallbackShellHtmlNavigation({
-          html,
-          params: options.params,
-          pathname: options.cleanPathname,
-          searchParams: options.searchParams,
-        });
-      },
+      rewriteHtml,
     });
-    if (fallbackShellResponse) return fallbackShellResponse;
+    if (fallbackShellResult instanceof Response) return fallbackShellResult;
+    if (fallbackShellResult) {
+      return {
+        fallbackParamNames: fallbackShell.fallbackParamNames,
+        html: fallbackShellResult.html,
+        postponed: fallbackShellResult.postponed,
+        resumeDataCache: fallbackShellResult.resumeDataCache,
+      };
+    }
   }
   return null;
 }
@@ -113,9 +131,17 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       isForceStatic,
       isForceDynamic,
     );
-    return decision.kind === "probe-fallback-shells"
-      ? probePprFallbackShellCache(options, decision.fallbackShells, currentRevalidateSeconds)
-      : null;
+    if (decision.kind !== "probe-fallback-shells") return null;
+    const result = await probePprFallbackShellCache(
+      options,
+      decision.fallbackShells,
+      currentRevalidateSeconds,
+    );
+    if (result instanceof Response) return result;
+    if (result) {
+      return { ...result, blockUseCacheMisses: true, kind: "resume" };
+    }
+    return { blockUseCacheMisses: true, kind: "eligible-miss" };
   },
   async warm(options) {
     const { warmPprFallbackShellCaches } = await import("./app-ppr-fallback-shell-render.js");
