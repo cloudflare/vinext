@@ -86,6 +86,7 @@ export function parseAppPprPostponedState(value: string): {
   resumeDataCache: ResumeDataCacheEntry[];
 } {
   if (!value.startsWith(PPR_RESUME_DATA_PREFIX)) {
+    JSON.parse(value);
     return { postponed: value, resumeDataCache: [] };
   }
   try {
@@ -94,8 +95,9 @@ export function parseAppPprPostponedState(value: string): {
       resumeDataCache?: unknown;
     };
     if (typeof parsed.postponed !== "string" || !Array.isArray(parsed.resumeDataCache)) {
-      return { postponed: value, resumeDataCache: [] };
+      throw new TypeError("Invalid fallback-shell resume-data envelope");
     }
+    JSON.parse(parsed.postponed);
     const resumeDataCache = parsed.resumeDataCache.filter(
       (entry): entry is ResumeDataCacheEntry =>
         typeof entry === "object" &&
@@ -106,8 +108,8 @@ export function parseAppPprPostponedState(value: string): {
         (entry as Partial<ResumeDataCacheEntry>).value !== null,
     );
     return { postponed: parsed.postponed, resumeDataCache };
-  } catch {
-    return { postponed: value, resumeDataCache: [] };
+  } catch (error) {
+    throw new Error("Invalid fallback-shell resume-data envelope", { cause: error });
   }
 }
 

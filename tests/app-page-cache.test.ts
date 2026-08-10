@@ -1005,6 +1005,39 @@ describe("app page cache helpers", () => {
     });
   });
 
+  it.each([
+    "vinext-rdc-v1:{broken",
+    'vinext-rdc-v1:{"postponed":42,"resumeDataCache":[]}',
+    'vinext-rdc-v1:{"postponed":"not-json","resumeDataCache":[]}',
+    "not-json",
+  ])("rejects malformed fallback resume state as a cache miss", async (postponed) => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const resume = await readAppPageFallbackShellCacheResume({
+      async isrGet() {
+        return buildISRCacheEntry({
+          ...buildCachedAppPageValue(
+            markAppPprDynamicFallbackShellHtml("<html><body>corrupt shell"),
+          ),
+          postponed,
+        });
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      rewriteHtml(html) {
+        return html;
+      },
+    });
+
+    expect(resume).toBeNull();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] ISR fallback shell resume read error:",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
+  });
+
   it("classifies a resumable fallback shell with one cache read", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry({

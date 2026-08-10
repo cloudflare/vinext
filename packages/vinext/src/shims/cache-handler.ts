@@ -529,31 +529,69 @@ function recordFallbackShellCacheEntry(
  */
 class PprFallbackShellDataCacheHandler implements CacheHandler {
   private readonly local = new MemoryCacheHandler();
+  private readonly pendingLocalFills = new Map<
+    string,
+    {
+      promise: Promise<void>;
+      resolve: () => void;
+    }
+  >();
 
   constructor(private readonly delegate: CacheHandler) {}
 
-  async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
-    const local = await this.local.get(key, context);
-    if (local) return local;
+  private beginLocalFill(key: string) {
+    let resolve!: () => void;
+    const fill = {
+      promise: new Promise<void>((promiseResolve) => {
+        resolve = promiseResolve;
+      }),
+      resolve: () => resolve(),
+    };
+    this.pendingLocalFills.set(key, fill);
+    return fill;
+  }
 
-    const delegated = await this.delegate.get(key, context);
-    if (!delegated) {
-      // A filesystem handler may have waited for another in-process fill that
-      // completed into this overlay. Re-check before reporting the miss.
-      return this.local.get(key, context);
+  private completeLocalFill(key: string): void {
+    const fill = this.pendingLocalFills.get(key);
+    if (!fill) return;
+    this.pendingLocalFills.delete(key);
+    fill.resolve();
+  }
+
+  async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    for (;;) {
+      const local = await this.local.get(key, context);
+      if (local) return local;
+
+      const pending = this.pendingLocalFills.get(key);
+      if (pending) {
+        await pending.promise;
+        continue;
+      }
+
+      this.beginLocalFill(key);
+      // Keep ownership after a read error. Cache consumers recover by filling
+      // or releasing, either of which resolves siblings.
+      const delegated = await this.delegate.get(key, context);
+      if (!delegated) {
+        // Keep the local fill gate owned until the caller stores a result or
+        // explicitly releases the delegate's single-flight claim.
+        return null;
+      }
+      if (delegated.value?.kind === "FETCH") {
+        await this.local.seed(
+          key,
+          delegated.value,
+          resumeEntryContext(context, delegated.cacheControl),
+          {
+            lastModified: delegated.lastModified,
+          },
+        );
+        recordFallbackShellCacheEntry(key, delegated, context);
+      }
+      this.completeLocalFill(key);
+      return delegated;
     }
-    if (delegated.value?.kind === "FETCH") {
-      await this.local.seed(
-        key,
-        delegated.value,
-        resumeEntryContext(context, delegated.cacheControl),
-        {
-          lastModified: delegated.lastModified,
-        },
-      );
-      recordFallbackShellCacheEntry(key, delegated, context);
-    }
-    return delegated;
   }
 
   async set(
@@ -561,6 +599,7 @@ class PprFallbackShellDataCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     context?: Record<string, unknown>,
   ): Promise<void> {
+    const ownsDelegateClaim = this.pendingLocalFills.has(key);
     try {
       await this.local.set(key, data, context);
       const stored = await this.local.get(key, context);
@@ -568,7 +607,11 @@ class PprFallbackShellDataCacheHandler implements CacheHandler {
     } finally {
       // Build-only handlers claim misses in get(). The speculative result stays
       // local, but the underlying claim still needs to be released.
-      await this.delegate.releasePendingSet?.(key);
+      try {
+        if (ownsDelegateClaim) await this.delegate.releasePendingSet?.(key);
+      } finally {
+        this.completeLocalFill(key);
+      }
     }
   }
 
@@ -578,16 +621,30 @@ class PprFallbackShellDataCacheHandler implements CacheHandler {
     context: Record<string, unknown> | undefined,
     metadata: { lastModified: number },
   ): Promise<boolean> {
-    const seeded = await this.local.seed(key, data, context, metadata);
-    if (seeded) {
-      const stored = await this.local.get(key, context);
-      if (stored) recordFallbackShellCacheEntry(key, stored, context);
+    const ownsDelegateClaim = this.pendingLocalFills.has(key);
+    try {
+      const seeded = await this.local.seed(key, data, context, metadata);
+      if (seeded) {
+        const stored = await this.local.get(key, context);
+        if (stored) recordFallbackShellCacheEntry(key, stored, context);
+      }
+      return seeded;
+    } finally {
+      try {
+        if (ownsDelegateClaim) await this.delegate.releasePendingSet?.(key);
+      } finally {
+        this.completeLocalFill(key);
+      }
     }
-    return seeded;
   }
 
   async releasePendingSet(key: string): Promise<void> {
-    await this.delegate.releasePendingSet?.(key);
+    if (!this.pendingLocalFills.has(key)) return;
+    try {
+      await this.delegate.releasePendingSet?.(key);
+    } finally {
+      this.completeLocalFill(key);
+    }
   }
 
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {

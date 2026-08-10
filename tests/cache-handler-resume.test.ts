@@ -7,6 +7,7 @@ import {
   setCacheHandler,
   shouldUseResumeDataCacheLayoutKeys,
   type CacheHandler,
+  type CacheHandlerValue,
   type CachedFetchValue,
   type ResumeDataCacheEntry,
 } from "../packages/vinext/src/shims/cache-handler.js";
@@ -355,6 +356,192 @@ describe("resume data cache handler", () => {
 
     await expect(globalHandler.get(key, { cacheKind: "use-cache" })).resolves.toBeNull();
     expect([...state.resumeDataCache.values()]).toMatchObject([{ key }]);
+  });
+
+  it("single-flights concurrent fallback-shell fills through the local overlay", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/[slug]",
+    });
+    const key = "use-cache:fallback-concurrent";
+    const get = vi.fn(async () => null);
+    const releasePendingSet = vi.fn(async () => {});
+    setCacheHandler({
+      get,
+      releasePendingSet,
+      set: vi.fn(async () => {}),
+      revalidateTag: vi.fn(async () => {}),
+    });
+
+    await runWithPprFallbackShellState(state, async () => {
+      const handler = getCacheHandler();
+      await expect(handler.get(key, { cacheKind: "use-cache" })).resolves.toBeNull();
+
+      let siblingSettled = false;
+      const sibling = handler.get(key, { cacheKind: "use-cache" }).then((value) => {
+        siblingSettled = true;
+        return value;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(siblingSettled).toBe(false);
+      expect(get).toHaveBeenCalledOnce();
+
+      await handler.set(key, fetchValue(key, "fallback"), { cacheKind: "use-cache" });
+      await expect(sibling).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: "fallback" } },
+      });
+    });
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(releasePendingSet).toHaveBeenCalledOnce();
+    expect([...state.resumeDataCache.values()]).toMatchObject([{ key }]);
+  });
+
+  it("keeps fill ownership after a delegate read error until the owner stores", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/[slug]",
+    });
+    const key = "use-cache:fallback-read-error";
+    const failure = new Error("delegate read failed");
+    const get = vi.fn(async () => {
+      throw failure;
+    });
+    const releasePendingSet = vi.fn(async () => {});
+    setCacheHandler({
+      get,
+      releasePendingSet,
+      set: vi.fn(async () => {}),
+      revalidateTag: vi.fn(async () => {}),
+    });
+
+    await runWithPprFallbackShellState(state, async () => {
+      const handler = getCacheHandler();
+      await expect(handler.get(key, { cacheKind: "use-cache" })).rejects.toBe(failure);
+
+      let siblingSettled = false;
+      const sibling = handler.get(key, { cacheKind: "use-cache" }).then((value) => {
+        siblingSettled = true;
+        return value;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(siblingSettled).toBe(false);
+      expect(get).toHaveBeenCalledOnce();
+
+      await handler.set(key, fetchValue(key, "recovered"), { cacheKind: "use-cache" });
+      await expect(sibling).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: "recovered" } },
+      });
+    });
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(releasePendingSet).toHaveBeenCalledOnce();
+  });
+
+  it("completes a claimed fallback fill through atomic seed without releasing direct writes", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/[slug]",
+    });
+    const key = "use-cache:fallback-seed";
+    const get = vi.fn(async () => null);
+    const releasePendingSet = vi.fn(async () => {});
+    setCacheHandler({
+      get,
+      releasePendingSet,
+      set: vi.fn(async () => {}),
+      revalidateTag: vi.fn(async () => {}),
+    });
+
+    await runWithPprFallbackShellState(state, async () => {
+      const handler = getCacheHandler();
+      await expect(handler.get(key, { cacheKind: "use-cache" })).resolves.toBeNull();
+      const sibling = handler.get(key, { cacheKind: "use-cache" });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(get).toHaveBeenCalledOnce();
+
+      await expect(
+        handler.seed?.(
+          key,
+          fetchValue(key, "seeded"),
+          { cacheKind: "use-cache" },
+          {
+            lastModified: 1_000,
+          },
+        ),
+      ).resolves.toBe(true);
+      await expect(sibling).resolves.toMatchObject({
+        lastModified: 1_000,
+        value: { kind: "FETCH", data: { body: "seeded" } },
+      });
+
+      await expect(
+        handler.seed?.(
+          "use-cache:direct-seed",
+          fetchValue("use-cache:direct-seed", "direct"),
+          { cacheKind: "use-cache" },
+          { lastModified: 2_000 },
+        ),
+      ).resolves.toBe(true);
+    });
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(releasePendingSet).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks a waiting fallback fill with the waiter's soft tags", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(2_000);
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/[slug]",
+    });
+    const key = "use-cache:fallback-waiter-context";
+    let resolveDelegate!: (value: CacheHandlerValue | null) => void;
+    const delegated = new Promise<CacheHandlerValue | null>((resolve) => {
+      resolveDelegate = resolve;
+    });
+    const get = vi
+      .fn<CacheHandler["get"]>()
+      .mockImplementationOnce(async () => delegated)
+      .mockResolvedValueOnce(null);
+    const releasePendingSet = vi.fn(async () => {});
+    setCacheHandler({
+      get,
+      releasePendingSet,
+      set: vi.fn(async () => {}),
+      revalidateTag: vi.fn(async () => {}),
+    });
+
+    await runWithPprFallbackShellState(state, async () => {
+      const handler = getCacheHandler();
+      const owner = handler.get(key, { cacheKind: "use-cache" });
+      const sibling = handler.get(key, {
+        cacheKind: "use-cache",
+        softTags: ["invalidated-while-waiting"],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(get).toHaveBeenCalledOnce();
+
+      await handler.revalidateTag("invalidated-while-waiting");
+      resolveDelegate({
+        lastModified: 1_000,
+        value: fetchValue(key, "delegated"),
+      });
+
+      await expect(owner).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: "delegated" } },
+      });
+      await expect(sibling).resolves.toBeNull();
+      expect(get).toHaveBeenCalledTimes(2);
+      await handler.releasePendingSet?.(key);
+    });
+
+    expect(releasePendingSet).toHaveBeenCalledOnce();
+    now.mockRestore();
   });
 
   it.each([
