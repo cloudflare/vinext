@@ -2042,6 +2042,66 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("keeps Cache Components encoded dynamic paths learning-only across Link re-prefetches", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/products/foo%2Fbar",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/products/foo%2Fbar",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers as Headers | undefined;
+      expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect(headers?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(headers?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("1");
+
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(false);
+      expect(entry?.optimisticRouteShell).toBe(true);
+
+      // A Link remount after back navigation asks to prefetch the same href
+      // again. Preserve the encoded pathname identity and reuse the existing
+      // learning-only route entry instead of issuing another route-tree fetch.
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      await entry?.pending;
+      expect(entry?.expiresAt).toEqual(expect.any(Number));
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      vi.spyOn(Date, "now").mockReturnValue((entry?.expiresAt ?? 0) + 1);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("uses the static stale time for reusable automatic dynamic full prefetches", async () => {
     vi.stubEnv("__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME", "0");
     vi.stubEnv("__NEXT_CLIENT_ROUTER_STATIC_STALETIME", "300");
@@ -2660,6 +2720,71 @@ describe("Link prefetch scheduling", () => {
       expect(fullHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
       expect(fullHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(fullHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
+    } finally {
+      await flushPrefetchTasks();
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches root-param routes through a concrete route tree before the page segment", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/root-param/aaa",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          {
+            canPrefetchLoadingShell: true,
+            patternParts: ["root-param", ":value"],
+            isDynamic: true,
+            hasRootParams: true,
+          },
+        ],
+      },
+    });
+
+    try {
+      let releaseRouteTree: ((response: Response) => void) | undefined;
+      const routeTreeResponse = new Promise<Response>((resolve) => {
+        releaseRouteTree = resolve;
+      });
+      result.fetch
+        .mockImplementationOnce(() => routeTreeResponse)
+        .mockImplementation(() => Promise.resolve(new Response("concrete root-param page")));
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const routeTreeInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const routeTreeHeaders = routeTreeInit?.headers as Headers | undefined;
+      expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
+
+      releaseRouteTree?.(new Response(""));
+      await waitForFetchCalls(result.fetch, 2);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[1],
+        "/root-param/aaa",
+        expect.objectContaining({ credentials: "include", priority: "low" }),
+      );
+      const pageInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
+      const pageHeaders = pageInit?.headers as Headers | undefined;
+      expect(pageHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(pageHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
+      const pageRequestUrl = result.fetch.mock.calls[1]?.[0];
+      expect(typeof pageRequestUrl).toBe("string");
+      expect(pageRequestUrl as string).not.toContain("%5Bvalue%5D");
+
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const navigationEntry = Array.from(getPrefetchCache().values()).find(
+        (entry) => entry.prefetchKind === "navigation",
+      );
+      expect(navigationEntry?.cacheForNavigation).toBe(true);
     } finally {
       await flushPrefetchTasks();
       result.restoreNodeEnv();

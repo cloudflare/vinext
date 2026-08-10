@@ -9,11 +9,20 @@ import {
   type CacheHandler,
   type CachedFetchValue,
 } from "../packages/vinext/src/shims/cache-handler.js";
-import { unstable_cache } from "../packages/vinext/src/shims/cache.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import {
+  consumeDynamicUsage,
   headersContextFromRequest,
   runWithHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
+import {
+  closeAfterResponse,
+  closeAfterResponseWithBody,
+  createRequestContext,
+  queueAfterCallback,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import { unstable_cache } from "../packages/vinext/src/shims/cache.js";
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import {
   PRERENDER_DATA_CACHE_DIR,
@@ -179,24 +188,60 @@ describe("prerender data cache", () => {
     const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
     const runtimeHandler = new MemoryCacheHandler();
     const key = "use-cache:test:static-probe";
-    await runAsSpeculativePrerender(() =>
-      buildHandler.set(key, fetchValue(key, "static-value"), { fetchCache: true }),
-    );
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
 
-    expect(readPrerenderDataCacheEntries(prerenderDir)).toMatchObject([
-      { context: { speculative: true }, key },
-    ]);
-    await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(0);
-    await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toBeNull();
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        await runAsSpeculativePrerender(() =>
+          buildHandler.set(key, fetchValue(key, "discarded-value"), { fetchCache: true }),
+        );
+        requestContext.prerenderDataCacheState.commit = false;
+        await closeAfterResponse(requestContext);
+      });
 
-    const set = vi.fn(async () => {});
-    const customHandler: CacheHandler = {
-      get: vi.fn(async () => null),
-      set,
-      revalidateTag: vi.fn(async () => {}),
-    };
-    await expect(seedPrerenderDataCache(prerenderDir, customHandler)).resolves.toBe(0);
-    expect(set).not.toHaveBeenCalled();
+      expect(readPrerenderDataCacheEntries(prerenderDir)).toEqual([]);
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(0);
+      await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toBeNull();
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("publishes cache entries from a successful speculative render", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "use-cache:test:successful-static-probe";
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        await runAsSpeculativePrerender(() =>
+          buildHandler.set(key, fetchValue(key, "committed-value"), { fetchCache: true }),
+        );
+        requestContext.prerenderDataCacheState.commit = true;
+        await closeAfterResponse(requestContext);
+      });
+
+      const [persisted] = readPrerenderDataCacheEntries(prerenderDir);
+      expect(persisted).toMatchObject({
+        key,
+        value: { data: { body: "committed-value" } },
+      });
+      expect(persisted?.context?.speculative).toBeUndefined();
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+        value: { data: { body: "committed-value" } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
   });
 
   it("does not add speculative request tags to a normal cache entry", async () => {
@@ -254,18 +299,15 @@ describe("prerender data cache", () => {
         await writeNormal();
       }
 
-      expect(readPrerenderDataCacheEntries(prerenderDir)).toMatchObject([
-        {
-          context: {
-            tags: ["normal-value-tag", "normal-context-tag"],
-            speculative: false,
-          },
-          value: {
-            data: { body: "normal" },
-            tags: ["normal-value-tag", "normal-context-tag"],
-          },
+      const [persisted] = readPrerenderDataCacheEntries(prerenderDir);
+      expect(persisted).toMatchObject({
+        context: { tags: ["normal-context-tag"] },
+        value: {
+          data: { body: "normal" },
+          tags: ["normal-value-tag"],
         },
-      ]);
+      });
+      expect(persisted?.context?.speculative).not.toBe(true);
     },
   );
 
@@ -329,6 +371,530 @@ describe("prerender data cache", () => {
       });
     },
   );
+
+  // Ported from Next.js: test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+  it("does not seed public cache entries from a prerender discarded by a private cache", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    setCacheHandler(buildHandler);
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        const publicCached = registerCachedFunction(
+          async () => "buildtime",
+          "test:private-prerender-public",
+        );
+        const privateCached = registerCachedFunction(
+          async () => "private",
+          "test:private-prerender-private",
+          "private",
+        );
+
+        await expect(publicCached()).resolves.toBe("buildtime");
+        await expect(privateCached()).resolves.toBe("private");
+        expect(consumeDynamicUsage()).toBe(true);
+        expect(requestContext.prerenderDataCacheState.privateCacheUsed).toBe(true);
+
+        // The App Router response finalizer records whether the completed
+        // prerender produced a cacheable artifact before after() work drains.
+        requestContext.prerenderDataCacheState.commit = false;
+        await closeAfterResponse(requestContext);
+      });
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(0);
+      await expect(
+        runtimeHandler.get("use-cache:test:private-prerender-public"),
+      ).resolves.toBeNull();
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("commits public cache entries from a cacheable prerender", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    setCacheHandler(buildHandler);
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        const publicCached = registerCachedFunction(
+          async () => "buildtime",
+          "test:cacheable-prerender-public",
+        );
+        await expect(publicCached()).resolves.toBe("buildtime");
+        requestContext.prerenderDataCacheState.commit = true;
+        await closeAfterResponse(requestContext);
+      });
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(
+        runtimeHandler.get("use-cache:test:cacheable-prerender-public"),
+      ).resolves.toMatchObject({ value: { kind: "FETCH", data: { body: '"buildtime"' } } });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("retains an older committed value when a refresh prerender is discarded", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "use-cache:test:discarded-refresh";
+    await buildHandler.set(key, fetchValue(key, '"committed"'));
+
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        await buildHandler.set(key, fetchValue(key, '"provisional"'));
+        requestContext.prerenderDataCacheState.commit = false;
+        await closeAfterResponse(requestContext);
+      });
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: '"committed"' } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("commits a provisional value consumed by another cacheable prerender worker", async () => {
+    const prerenderDir = createTempDir();
+    const producer = new PrerenderDataCacheHandler(prerenderDir);
+    const consumer = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "use-cache:test:cross-worker-commit";
+    const producerContext = createRequestContext();
+    const consumerContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(producerContext, () =>
+        producer.set(key, fetchValue(key, '"shared"')),
+      );
+      await runWithRequestContext(consumerContext, async () => {
+        await expect(consumer.get(key, { kind: "FETCH" })).resolves.toMatchObject({
+          value: { kind: "FETCH", data: { body: '"shared"' } },
+        });
+        consumerContext.prerenderDataCacheState.commit = true;
+        await closeAfterResponse(consumerContext);
+      });
+      producerContext.prerenderDataCacheState.commit = false;
+      await closeAfterResponse(producerContext);
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: '"shared"' } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("commits the exact provisional version after a newer provisional write arrives", async () => {
+    const now = vi.spyOn(Date, "now");
+    const prerenderDir = createTempDir();
+    const firstWorker = new PrerenderDataCacheHandler(prerenderDir);
+    const secondWorker = new PrerenderDataCacheHandler(prerenderDir);
+    const thirdWorker = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "use-cache:test:overlapping-provisional-versions";
+    const secondContext = createRequestContext();
+    const thirdContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+
+    now.mockReturnValue(1_000);
+    await firstWorker.set(key, fetchValue(key, '"v1"'));
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      now.mockReturnValue(2_000);
+      await runWithRequestContext(secondContext, () =>
+        secondWorker.set(key, fetchValue(key, '"v2"')),
+      );
+
+      now.mockReturnValue(3_000);
+      await runWithRequestContext(thirdContext, () =>
+        thirdWorker.set(key, fetchValue(key, '"v3"')),
+      );
+
+      // The v2 request succeeds after v3 has become the newest provisional
+      // value. It must advance the committed fallback to v2 without replacing
+      // v3; discarding v3 should therefore seed v2, not stale v1 or unsafe v3.
+      secondContext.prerenderDataCacheState.commit = true;
+      await closeAfterResponse(secondContext);
+      thirdContext.prerenderDataCacheState.commit = false;
+      await closeAfterResponse(thirdContext);
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: '"v2"' } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("does not transfer an older provisional write's owner to a newer version", async () => {
+    const now = vi.spyOn(Date, "now");
+    const prerenderDir = createTempDir();
+    const olderWorker = new PrerenderDataCacheHandler(prerenderDir);
+    const newerWorker = new PrerenderDataCacheHandler(prerenderDir);
+    const consumer = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "use-cache:test:out-of-order-provisional-writes";
+    const olderContext = createRequestContext();
+    const newerContext = createRequestContext();
+    const consumerContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    const olderMemory = Reflect.get(olderWorker, "memory") as MemoryCacheHandler;
+    const originalGet = olderMemory.get.bind(olderMemory);
+    let releaseOlderWrite!: () => void;
+    const olderWriteGate = new Promise<void>((resolve) => {
+      releaseOlderWrite = resolve;
+    });
+    let enteredOlderWrite!: () => void;
+    const olderWriteEntered = new Promise<void>((resolve) => {
+      enteredOlderWrite = resolve;
+    });
+    vi.spyOn(olderMemory, "get").mockImplementation(async (storedKey, context) => {
+      enteredOlderWrite();
+      await olderWriteGate;
+      return originalGet(storedKey, context);
+    });
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      now.mockReturnValue(2_000);
+      const olderWrite = runWithRequestContext(olderContext, () =>
+        olderWorker.set(key, fetchValue(key, '"older"')),
+      );
+      await olderWriteEntered;
+
+      now.mockReturnValue(3_000);
+      await runWithRequestContext(newerContext, () =>
+        newerWorker.set(key, fetchValue(key, '"newer"')),
+      );
+
+      // Finish the older write after the newer value has become current. Both
+      // requests are discarded. The older request must not keep the newer
+      // value alive under its owner, where a later worker could consume and
+      // commit a value from a discarded prerender.
+      releaseOlderWrite();
+      await olderWrite;
+      newerContext.prerenderDataCacheState.commit = false;
+      await closeAfterResponse(newerContext);
+      olderContext.prerenderDataCacheState.commit = false;
+      await closeAfterResponse(olderContext);
+
+      await runWithRequestContext(consumerContext, async () => {
+        await expect(consumer.get(key, { kind: "FETCH" })).resolves.toBeNull();
+        consumerContext.prerenderDataCacheState.commit = true;
+        await closeAfterResponse(consumerContext);
+      });
+
+      const files = fs
+        .readdirSync(path.join(prerenderDir, ".vinext-resume-data-cache"))
+        .filter((file) => file.endsWith(".json"));
+      expect(files).toEqual([]);
+    } finally {
+      releaseOlderWrite();
+      await olderWriteGate;
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("distinguishes exact versions with different persisted cache policies", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const prerenderDir = createTempDir();
+    const firstWorker = new PrerenderDataCacheHandler(prerenderDir);
+    const secondWorker = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "fetch-cache:test:policy-version";
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+
+    await firstWorker.set(key, fetchValue(key, '"same-data"'), {
+      cacheControl: { expire: 3600, revalidate: 900, stale: 300 },
+      fetchCache: true,
+    });
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, () =>
+        secondWorker.set(key, fetchValue(key, '"same-data"'), {
+          cacheControl: { expire: 60, revalidate: 30, stale: 10 },
+          fetchCache: true,
+        }),
+      );
+      requestContext.prerenderDataCacheState.commit = true;
+      await closeAfterResponse(requestContext);
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        cacheControl: { expire: 60, revalidate: 900, stale: 10 },
+      });
+    } finally {
+      now.mockRestore();
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("includes cache writes started by after callbacks before finalizing", async () => {
+    const now = vi.spyOn(Date, "now");
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const afterHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "fetch-cache:test:after-fill";
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        now.mockReturnValue(1_000);
+        await buildHandler.set(key, fetchValue(key, '"render"'));
+        queueAfterCallback(requestContext, async () => {
+          now.mockReturnValue(2_000);
+          await afterHandler.set(key, fetchValue(key, '"after"'));
+        });
+        requestContext.prerenderDataCacheState.commit = true;
+        await closeAfterResponse(requestContext);
+      });
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: '"after"' } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("drains an unawaited fetch write before discarding its provisional entry", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "fetch-cache:test:unawaited-write-close-race";
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    const memory = Reflect.get(buildHandler, "memory") as MemoryCacheHandler;
+    const originalSet = memory.set.bind(memory);
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let enteredWrite!: () => void;
+    const writeEntered = new Promise<void>((resolve) => {
+      enteredWrite = resolve;
+    });
+    vi.spyOn(memory, "set").mockImplementation(async (storedKey, value, context) => {
+      if (storedKey === key) {
+        enteredWrite();
+        await writeGate;
+      }
+      return originalSet(storedKey, value, context);
+    });
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        const write = buildHandler.set(key, fetchValue(key, '"discarded"'));
+        await writeEntered;
+        requestContext.prerenderDataCacheState.commit = false;
+
+        let closeSettled = false;
+        const close = closeAfterResponse(requestContext).then(() => {
+          closeSettled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(closeSettled).toBe(false);
+
+        releaseWrite();
+        await Promise.all([write, close]);
+      });
+
+      const files = fs
+        .readdirSync(path.join(prerenderDir, ".vinext-resume-data-cache"))
+        .filter((file) => file.endsWith(".json"));
+      expect(files).toEqual([]);
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("drains a post-close fetch write through the execution context lifecycle", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const key = "fetch-cache:test:post-close-write";
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      },
+    });
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    const memory = Reflect.get(buildHandler, "memory") as MemoryCacheHandler;
+    const originalSet = memory.set.bind(memory);
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let enteredWrite!: () => void;
+    const writeEntered = new Promise<void>((resolve) => {
+      enteredWrite = resolve;
+    });
+    vi.spyOn(memory, "set").mockImplementation(async (storedKey, value, context) => {
+      if (storedKey === key) {
+        enteredWrite();
+        await writeGate;
+      }
+      return originalSet(storedKey, value, context);
+    });
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, async () => {
+        requestContext.prerenderDataCacheState.commit = false;
+        await closeAfterResponse(requestContext);
+
+        const write = buildHandler.set(key, fetchValue(key, '"discarded"'));
+        await writeEntered;
+        expect(waitUntilPromises).toHaveLength(1);
+
+        let lifecycleSettled = false;
+        void waitUntilPromises[0].then(() => {
+          lifecycleSettled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(lifecycleSettled).toBe(false);
+
+        releaseWrite();
+        await write;
+        await Promise.all(waitUntilPromises);
+      });
+
+      const files = fs
+        .readdirSync(path.join(prerenderDir, ".vinext-resume-data-cache"))
+        .filter((file) => file.endsWith(".json"));
+      expect(files).toEqual([]);
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("retires discarded provisional versions instead of accumulating history", async () => {
+    const now = vi.spyOn(Date, "now");
+    const prerenderDir = createTempDir();
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "fetch-cache:test:discard-history";
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+
+    now.mockReturnValue(1_000);
+    await new PrerenderDataCacheHandler(prerenderDir).set(key, fetchValue(key, '"committed"'));
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      for (let index = 2; index <= 8; index++) {
+        const requestContext = createRequestContext();
+        const handler = new PrerenderDataCacheHandler(prerenderDir);
+        now.mockReturnValue(index * 1_000);
+        await runWithRequestContext(requestContext, async () => {
+          await handler.set(key, fetchValue(key, `"discard-${index}-a"`));
+          now.mockReturnValue(index * 1_000 + 500);
+          await handler.set(key, fetchValue(key, `"discard-${index}-b"`));
+        });
+        requestContext.prerenderDataCacheState.commit = false;
+        await closeAfterResponse(requestContext);
+      }
+
+      const files = fs
+        .readdirSync(path.join(prerenderDir, ".vinext-resume-data-cache"))
+        .filter((file) => file.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      const persisted = JSON.parse(
+        fs.readFileSync(path.join(prerenderDir, ".vinext-resume-data-cache", files[0]), "utf8"),
+      );
+      expect(persisted).toMatchObject({ committed: true });
+      expect(persisted.previousCommitted).toBeUndefined();
+      expect(persisted.provisionalVersions).toBeUndefined();
+      expect(persisted.owners).toBeUndefined();
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: '"committed"' } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  // Next.js writes completed FETCH fills to both its prerender resume data
+  // cache and CacheHandler inside IncrementalCache.set(), before the outer
+  // response stream is consumed. A later body error therefore does not roll
+  // that completed data-cache fill back.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/index.ts
+  it("keeps a completed data-cache fill when the outer response body errors", async () => {
+    const prerenderDir = createTempDir();
+    const buildHandler = new PrerenderDataCacheHandler(prerenderDir);
+    const runtimeHandler = new MemoryCacheHandler();
+    const key = "fetch-cache:test:errored-response-body";
+    const requestContext = createRequestContext();
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(requestContext, () =>
+        buildHandler.set(key, fetchValue(key, '"completed"')),
+      );
+      requestContext.prerenderDataCacheState.commit = true;
+      const response = closeAfterResponseWithBody(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("body failed"));
+            },
+          }),
+        ),
+        requestContext,
+      );
+      await expect(response.arrayBuffer()).rejects.toThrow("body failed");
+      await closeAfterResponse(requestContext);
+
+      await expect(seedPrerenderDataCache(prerenderDir, runtimeHandler)).resolves.toBe(1);
+      await expect(runtimeHandler.get(key)).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: '"completed"' } },
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
 
   it("preserves every tag observed for a shared fetch key", async () => {
     const prerenderDir = createTempDir();
