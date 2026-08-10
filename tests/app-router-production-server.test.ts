@@ -2223,12 +2223,18 @@ describe("App Router Production server (startProdServer)", () => {
     // never the plaintext capture, into the Flight payload.
     const capturedScopeValue = "closure-captured-bound-arg-vinext";
     expect(html).not.toContain(capturedScopeValue);
-    const encryptedBoundArg = html.match(/rsc\.push\("[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/)?.[1];
-    expect(encryptedBoundArg).toBeDefined();
-    const encryptedCaptureEnvelope = {
+    const encryptedBoundArgs = [
+      ...new Set(
+        [...html.matchAll(/rsc\.push\("[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map(
+          (match) => match[1],
+        ),
+      ),
+    ];
+    expect(encryptedBoundArgs).toHaveLength(2);
+    const encryptedCaptureEnvelopes = encryptedBoundArgs.map((encrypted) => ({
       type: "use-cache-captures",
-      encrypted: encryptedBoundArg,
-    };
+      encrypted,
+    }));
 
     const invokeAction = async (actionId: string, args: unknown[] = []): Promise<string> => {
       const actionRes = await fetch(`${baseUrl}/use-cache-nested-fn-props.rsc`, {
@@ -2264,10 +2270,19 @@ describe("App Router Production server (startProdServer)", () => {
     // cached function, so plaintext values still determine the cache key.
     const messageRegExpFor = (boundArg: string): RegExp =>
       new RegExp(`message:${boundArg}:[0-9.e+-]+`);
-    const message1 = (await invokeAction(getMessageRefId, [encryptedCaptureEnvelope])).match(
-      messageRegExpFor(capturedScopeValue),
-    )?.[0];
-    expect(message1).toBeDefined();
+    const resolveCapturedMessage = async () => {
+      for (const envelope of encryptedCaptureEnvelopes) {
+        const response = await invokeAction(getMessageRefId, [envelope]);
+        const message = response.match(messageRegExpFor(capturedScopeValue))?.[0];
+        if (message) {
+          return { envelope, message };
+        }
+      }
+    };
+    const capturedMessage = await resolveCapturedMessage();
+    if (!capturedMessage) {
+      throw new Error(`No encrypted binding resolved to ${capturedScopeValue}`);
+    }
 
     // Cached-invoke semantics for the closure-BOUND path, mirroring the
     // getDate assertion above so caching is pinned across both paths
@@ -2275,10 +2290,10 @@ describe("App Router Production server (startProdServer)", () => {
     // Math.random() suffix, so a second invocation with the same bound arg
     // can only return the identical value if the bound arg produced the same
     // cache key and the entry was hit (a recompute would change the suffix).
-    const message2 = (await invokeAction(getMessageRefId, [encryptedCaptureEnvelope])).match(
+    const message2 = (await invokeAction(getMessageRefId, [capturedMessage.envelope])).match(
       messageRegExpFor(capturedScopeValue),
     )?.[0];
-    expect(message2).toBe(message1);
+    expect(message2).toBe(capturedMessage.message);
   });
 
   it("middleware request header overrides still apply after middleware calls headers() first", async () => {
