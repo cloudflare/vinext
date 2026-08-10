@@ -557,19 +557,18 @@ function prefetchUrl(
         ) {
           return;
         }
-        if (!autoPrefetch.cacheForNavigation && prefetched.has(cacheKey)) {
-          const entry = getPrefetchCache().get(cacheKey);
-          // Runtime instant shells start as learning-only entries, but a
-          // complete response is promoted for navigation reuse. Once
-          // promoted, apply the same freshness-aware gate as a regular
-          // reusable prefetch so an expired shell does not remain pinned by
-          // the learning-only `prefetched` marker forever.
-          if (
-            entry?.cacheForNavigation === true &&
-            hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
-          ) {
-            return;
-          }
+        // A learning-only policy does not make an independently completed
+        // navigation response weaker. If a fresh reusable snapshot already
+        // covers this href, avoid racing a redundant partial prefetch against
+        // the click that will consume it. This also covers complete runtime
+        // instant shells promoted under a normalized `_rsc` variant.
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
+            additionalRscUrls,
+          })
+        ) {
+          return;
         }
         const fetchFullRscPayload = () =>
           scheduleAppPrefetchFetch(

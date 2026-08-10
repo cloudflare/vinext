@@ -2118,6 +2118,43 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("does not replace a fresh completed navigation with a learning-only Link prefetch", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+    });
+    const { createRscRequestHeaders, createRscRequestUrl } =
+      await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const { getPrefetchCache, getPrefetchedUrls } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const rscUrl = await createRscRequestUrl("/blog/hello", createRscRequestHeaders());
+
+    try {
+      getPrefetchCache().set(rscUrl, {
+        cacheForNavigation: true,
+        outcome: "cache-seeded",
+        snapshot: {
+          buffer: new TextEncoder().encode("completed navigation").buffer,
+          contentType: "text/x-component",
+          mountedSlotsHeader: null,
+          paramsHeader: null,
+          renderedPathAndSearch: null,
+          url: rscUrl,
+        },
+        timestamp: Date.now(),
+      });
+      getPrefetchedUrls().add(rscUrl);
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("uses the static stale time for reusable automatic dynamic full prefetches", async () => {
     vi.stubEnv("__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME", "0");
     vi.stubEnv("__NEXT_CLIENT_ROUTER_STATIC_STALETIME", "300");

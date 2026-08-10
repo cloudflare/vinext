@@ -3171,9 +3171,19 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
-      } else if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
-        attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
-        return;
+      } else {
+        if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
+          attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
+          return;
+        }
+        if (
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
+            additionalRscUrls,
+            onInvalidate: options?.onInvalidate,
+          })
+        ) {
+          return;
+        }
       }
       prefetched.add(cacheKey);
       prefetchRscResponse(
