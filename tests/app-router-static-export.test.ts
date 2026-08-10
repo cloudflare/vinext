@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, buildAppFixture } from "./helpers.js";
 
 describe("App Router Static export", () => {

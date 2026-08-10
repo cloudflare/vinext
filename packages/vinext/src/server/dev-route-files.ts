@@ -1,4 +1,4 @@
-import path from "node:path";
+import path from "pathslash";
 import type { ValidFileMatcher } from "../routing/file-matcher.js";
 import { matchMetadataFileBaseName, METADATA_FILE_MAP } from "./metadata-routes.js";
 

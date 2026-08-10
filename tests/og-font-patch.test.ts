@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { createOgAssetsPlugin } from "../packages/vinext/src/plugins/og-assets.js";
 import type { Plugin } from "vite-plus";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -177,5 +178,38 @@ describe("vinext:og-font-patch plugin", () => {
     const yogaPath = path.posix.join(writeDistDir, "yoga.wasm");
     expect(fs.existsSync(yogaPath)).toBe(true);
     expect(fs.readFileSync(yogaPath)).toEqual(Buffer.from(FAKE_YOGA_B64, "base64"));
+  });
+});
+
+describe("vinext:og-assets plugin", () => {
+  it.each([
+    ["resvg.wasm", "resvg.Cjh1zH0p.wasm"],
+    ["yoga.wasm", "yoga.sbSbVeWy.wasm"],
+    ["resvg.wasm", "resvg-legacyhash.wasm"],
+  ])("rewrites the %s Node fallback to emitted asset %s", (baseName, emittedName) => {
+    const plugin = createOgAssetsPlugin();
+    const generateBundle = unwrapHook(plugin.generateBundle);
+    const chunk = {
+      type: "chunk",
+      fileName: "_next/static/index.edge.js",
+      code: `const wasm = import("./media/${emittedName}").catch(() => new URL("./${baseName}", import.meta.url));`,
+      map: null,
+    };
+    const emittedFileName = `_next/static/media/${emittedName}`;
+    const bundle = {
+      [chunk.fileName]: chunk,
+      [emittedFileName]: {
+        type: "asset",
+        fileName: emittedFileName,
+      },
+    };
+
+    generateBundle.call({ environment: { name: "rsc" } }, {}, bundle);
+
+    // Next.js verifies ImageResponse in the Node runtime and verifies copied
+    // WASM/assets in standalone output:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
+    expect(chunk.code).not.toContain(`new URL("./${baseName}", import.meta.url)`);
+    expect(chunk.code).toContain(`new URL("./media/${emittedName}", import.meta.url)`);
   });
 });

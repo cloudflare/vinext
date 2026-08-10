@@ -30,8 +30,22 @@ export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
  */
 export const VINEXT_IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 
-/** Returns true when `pathname` is either supported image optimization endpoint. */
+/**
+ * Returns true when `pathname` is either supported image optimization
+ * endpoint.
+ *
+ * A single trailing slash is accepted (`/_next/image/`): with
+ * `trailingSlash: true`, Next.js 308-redirects `/_next/image?url=...` to
+ * `/_next/image/?url=...` and then serves the slashed form — its route
+ * matching strips a trailing slash before matching internal paths (see
+ * getItem in packages/next/src/server/lib/router-utils/filesystem.ts).
+ * Rejecting the slashed form 404'd every dev-mode next/image request under
+ * `trailingSlash: true`.
+ */
 export function isImageOptimizationPath(pathname: string): boolean {
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    pathname = pathname.slice(0, -1);
+  }
   return pathname === IMAGE_OPTIMIZATION_PATH || pathname === VINEXT_IMAGE_OPTIMIZATION_PATH;
 }
 
@@ -74,7 +88,7 @@ export type ImageConfig = {
  * config is provided. Matches Next.js defaults exactly.
  */
 export const DEFAULT_DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
-export const DEFAULT_IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
+export const DEFAULT_IMAGE_SIZES = [32, 48, 64, 96, 128, 256, 384];
 const DEV_BLUR_MAX_WIDTH = 8;
 const DEV_BLUR_QUALITY = 70;
 

@@ -14,13 +14,9 @@
  * `entries/pages-client-entry.ts`). Hybrid builds expose both globals; a
  * single-router build only sets its own.
  */
-import {
-  isExternalUrl,
-  matchRewrite,
-  parseCookies,
-  type RequestContext,
-} from "../../config/config-matchers.js";
-import type { NextRewrite } from "../../config/next-config.js";
+import { parseCookies, type RequestContext } from "../../config/config-matchers.js";
+import { matchClientRewrite } from "../../client/client-rewrite-matcher.js";
+import type { ClientRewrite } from "../../client/client-rewrites.js";
 import { mergeRewriteQuery } from "../../utils/query.js";
 import {
   matchDirectHybridClientRoutes,
@@ -34,7 +30,7 @@ export type { HybridClientOwner } from "./hybrid-client-route-owner-direct.js";
 function resolveClientRewrite(
   href: string,
   basePath: string,
-  rewrites: readonly NextRewrite[],
+  rewrites: readonly ClientRewrite[],
   continueAfterMatch = false,
 ): { kind: "document" } | { href: string; kind: "rewrite" } | null {
   const initialUrl = new URL(href, window.location.href);
@@ -58,15 +54,68 @@ function resolveClientRewrite(
       host: url.hostname,
       query: url.searchParams,
     };
-    const rewritten = matchRewrite(pathname, [rewrite], context, basePathState);
-    if (rewritten === null) continue;
-    if (isExternalUrl(rewritten)) return { kind: "document" };
-    currentHref = mergeRewriteQuery(currentHref, rewritten);
+    const result = matchClientRewrite(pathname, rewrite, context, basePathState);
+    if (result === null) continue;
+    if (result.kind === "server") return { kind: "document" };
+    currentHref = mergeRewriteQuery(currentHref, result.destination);
     matched = true;
     if (!continueAfterMatch) break;
   }
 
   return matched ? { href: currentHref, kind: "rewrite" } : null;
+}
+
+export function resolveHybridClientRewriteHref(href: string, basePath: string): string | null {
+  if (typeof window === "undefined") return null;
+
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  if (!rewrites) return null;
+
+  let currentHref = href;
+  let didRewrite = false;
+
+  const beforeFilesRewrite = resolveClientRewrite(
+    currentHref,
+    basePath,
+    rewrites.beforeFiles,
+    true,
+  );
+  if (beforeFilesRewrite?.kind === "document") return null;
+  if (beforeFilesRewrite?.kind === "rewrite") {
+    currentHref = beforeFilesRewrite.href;
+    didRewrite = true;
+  }
+
+  let matches = matchDirectHybridClientRoutes(currentHref, basePath);
+
+  if (
+    (matches.appMatch === null || matches.appMatch.isDynamic) &&
+    (matches.pagesMatch === null || matches.pagesMatch.isDynamic)
+  ) {
+    for (const rewrite of rewrites.afterFiles) {
+      const afterFilesRewrite = resolveClientRewrite(currentHref, basePath, [rewrite]);
+      if (afterFilesRewrite?.kind === "document") return didRewrite ? currentHref : null;
+      if (afterFilesRewrite?.kind !== "rewrite") continue;
+      currentHref = afterFilesRewrite.href;
+      didRewrite = true;
+      matches = matchDirectHybridClientRoutes(currentHref, basePath);
+      if (matches.appMatch || matches.pagesMatch) break;
+    }
+  }
+
+  if (matches.appMatch === null && matches.pagesMatch === null) {
+    for (const rewrite of rewrites.fallback) {
+      const fallbackRewrite = resolveClientRewrite(currentHref, basePath, [rewrite]);
+      if (fallbackRewrite?.kind === "document") return didRewrite ? currentHref : null;
+      if (fallbackRewrite?.kind !== "rewrite") continue;
+      currentHref = fallbackRewrite.href;
+      didRewrite = true;
+      matches = matchDirectHybridClientRoutes(currentHref, basePath);
+      if (matches.appMatch || matches.pagesMatch) break;
+    }
+  }
+
+  return didRewrite ? currentHref : null;
 }
 
 /**

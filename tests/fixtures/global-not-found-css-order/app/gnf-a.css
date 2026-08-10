@@ -1,3 +1,4 @@
 body {
+  --global-not-found-a-css: gnf-a;
   background-color: blue;
 }

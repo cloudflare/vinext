@@ -21,15 +21,36 @@
  * Callers must `await` it before any synchronous read of route modules
  * (segment config, fetch-cache mode, runtime resolution, dispatch branch,
  * element building, etc.).
+ *
+ * Every thunk is invoked via `runOutsideRequestScopes`. Hydration runs inside
+ * the matched request's scopes, and a dynamic `import()` propagates
+ * AsyncLocalStorage into the imported module's top-level evaluation — so
+ * without that guard, module-scope `headers()`/`cookies()`/`after()` would bind
+ * to whichever request happened to be first. Since a module evaluates once per
+ * isolate and its namespace is cached here, that first request's data would
+ * then be served to every later one. Matching Next.js, which loads components
+ * before entering the request store, module scope simply sees no request.
  */
+
+import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 
 type LazyModuleThunk = () => Promise<unknown>;
 type LazyModuleLoaderArray = readonly (LazyModuleThunk | null | undefined)[];
 
 type LazyLoadableIntercept = {
+  page?: unknown;
+  __pageLoader?: LazyModuleThunk | null;
+  notFound?: unknown;
+  __loadNotFound?: LazyModuleThunk | null;
   interceptLayouts?: readonly unknown[] | null;
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
+  interceptLoadings?: readonly unknown[] | null;
+  __loadInterceptLoadings?: LazyModuleLoaderArray | null;
   __loadState?: {
+    page?: unknown;
+    pageLoading?: Promise<unknown> | null;
+    notFound?: unknown;
+    notFoundLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
 };
@@ -40,13 +61,17 @@ type LazyLoadableSlot = {
   layout?: unknown;
   configLayouts?: readonly unknown[];
   loading?: unknown;
+  loadings?: readonly unknown[];
   error?: unknown;
+  notFound?: unknown;
   __loadPage?: LazyModuleThunk | null;
   __loadDefault?: LazyModuleThunk | null;
   __loadLayout?: LazyModuleThunk | null;
   __loadConfigLayouts?: LazyModuleLoaderArray | null;
   __loadLoading?: LazyModuleThunk | null;
+  __loadLoadings?: LazyModuleLoaderArray | null;
   __loadError?: LazyModuleThunk | null;
+  __loadNotFound?: LazyModuleThunk | null;
   /** Hydrated only after an intercept matches, not with the slot's base modules. */
   intercepts?: LazyLoadableIntercept[];
 };
@@ -56,6 +81,7 @@ export type LazyLoadableRoute = {
   routeHandler?: unknown;
   layouts?: unknown[];
   templates?: unknown[];
+  loadings?: unknown[];
   errors?: unknown[];
   errorPaths?: unknown[];
   notFounds?: unknown[];
@@ -74,6 +100,7 @@ export type LazyLoadableRoute = {
   __loadRouteHandler?: LazyModuleThunk | null;
   __loadLayouts?: LazyModuleLoaderArray | null;
   __loadTemplates?: LazyModuleLoaderArray | null;
+  __loadLoadings?: LazyModuleLoaderArray | null;
   __loadErrors?: LazyModuleLoaderArray | null;
   __loadErrorPaths?: LazyModuleLoaderArray | null;
   __loadNotFounds?: LazyModuleLoaderArray | null;
@@ -98,7 +125,7 @@ function pushFieldLoad(
 ): void {
   if (!loader || target[field] != null) return;
   loads.push(
-    loader().then((module) => {
+    runOutsideRequestScopes(loader).then((module) => {
       target[field] = module;
     }),
   );
@@ -120,11 +147,64 @@ function pushArrayLoads(
   for (const [index, loader] of loaders.entries()) {
     if (index >= slots.length || !loader || slots[index] != null) continue;
     loads.push(
-      loader().then((module) => {
+      runOutsideRequestScopes(loader).then((module) => {
         slots[index] = module;
       }),
     );
   }
+}
+
+/**
+ * Hydrate one lazily-imported intercept module onto the intercept, dedup'd
+ * through `__loadState` so concurrent navigations share a single import.
+ *
+ * The intercept's page and not-found modules were loaded inline at their call
+ * sites, which meant they missed the isolation every other route module gets.
+ * They are user modules cached for the isolate's lifetime just like the rest,
+ * so they belong on this path.
+ */
+async function hydrateInterceptModule(
+  intercept: LazyLoadableIntercept,
+  loader: LazyModuleThunk | null | undefined,
+  field: "page" | "notFound",
+  loadingField: "pageLoading" | "notFoundLoading",
+): Promise<void> {
+  const loadState = intercept.__loadState;
+  const cached = loadState?.[field];
+  if (cached != null) intercept[field] = cached;
+  if (!loader || intercept[field] != null) return;
+
+  const loading =
+    loadState?.[loadingField] ??
+    runOutsideRequestScopes(loader)
+      .then((module) => {
+        intercept[field] = module;
+        if (loadState) {
+          loadState[field] = module;
+          loadState[loadingField] = null;
+        }
+        return module;
+      })
+      .catch((error: unknown) => {
+        if (loadState) loadState[loadingField] = null;
+        throw error;
+      });
+  if (loadState) loadState[loadingField] = loading;
+  // Each matched interception is a request-local clone that shares only
+  // `__loadState`. A concurrent caller can therefore observe the in-flight
+  // promise above without being the clone assigned by its `.then()` callback.
+  // Publish the resolved namespace onto every caller's clone before returning.
+  intercept[field] = await loading;
+}
+
+/** Hydrate an intercepting route's page module onto `intercept.page`. */
+export function loadAppInterceptPage(intercept: LazyLoadableIntercept): Promise<void> {
+  return hydrateInterceptModule(intercept, intercept.__pageLoader, "page", "pageLoading");
+}
+
+/** Hydrate an intercepting route's not-found boundary onto `intercept.notFound`. */
+export function loadAppInterceptNotFound(intercept: LazyLoadableIntercept): Promise<void> {
+  return hydrateInterceptModule(intercept, intercept.__loadNotFound, "notFound", "notFoundLoading");
 }
 
 export function loadAppInterceptLayouts(
@@ -135,6 +215,7 @@ export function loadAppInterceptLayouts(
 
   const loads: Promise<unknown>[] = [];
   pushArrayLoads(loads, intercept.interceptLayouts, intercept.__loadInterceptLayouts);
+  pushArrayLoads(loads, intercept.interceptLoadings, intercept.__loadInterceptLoadings);
   if (loads.length === 0) return Promise.resolve(intercept.interceptLayouts ?? []);
 
   const loading = Promise.all(loads)
@@ -175,6 +256,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   pushFieldLoad(loads, route as Record<string, unknown>, "unauthorized", route.__loadUnauthorized);
   pushArrayLoads(loads, route.layouts, route.__loadLayouts);
   pushArrayLoads(loads, route.templates, route.__loadTemplates);
+  pushArrayLoads(loads, route.loadings, route.__loadLoadings);
   pushArrayLoads(loads, route.errors, route.__loadErrors);
   pushArrayLoads(loads, route.errorPaths, route.__loadErrorPaths);
   pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
@@ -187,7 +269,9 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     pushFieldLoad(loads, slot as Record<string, unknown>, "layout", slot.__loadLayout);
     pushArrayLoads(loads, slot.configLayouts, slot.__loadConfigLayouts);
     pushFieldLoad(loads, slot as Record<string, unknown>, "loading", slot.__loadLoading);
+    pushArrayLoads(loads, slot.loadings, slot.__loadLoadings);
     pushFieldLoad(loads, slot as Record<string, unknown>, "error", slot.__loadError);
+    pushFieldLoad(loads, slot as Record<string, unknown>, "notFound", slot.__loadNotFound);
   }
 
   if (loads.length === 0) {

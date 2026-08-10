@@ -7,6 +7,7 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import {
+  createBfcacheSegmentIdentityMap,
   createPendingNavigationCommit,
   preserveBfcacheIdsForMergedElements,
   resolvePendingNavigationCommitDispositionDecision,
@@ -174,6 +175,12 @@ function reduceApprovedVisibleCommitState(
             );
           })
         : [];
+      const previousBfcacheIdentities = createBfcacheSegmentIdentityMap({
+        elements: state.elements,
+      });
+      const preservePreviousBfcacheIdIds = preservePreviousSlotIds.filter(
+        (id) => previousBfcacheIdentities[id] !== undefined,
+      );
       const hmrPreservedSlotOwnerLayoutIds =
         action.operation.lane === "hmr"
           ? bfcacheCompatiblePreserveElementIds.filter((id) =>
@@ -212,6 +219,8 @@ function reduceApprovedVisibleCommitState(
             elements: mergedElements,
             next: action.bfcacheIds,
             previous: action.reuseCurrentBfcacheIds ? state.bfcacheIds : {},
+            preservedElementIds: preservePreviousSlotIds,
+            preservePreviousIds: preservePreviousBfcacheIdIds,
           }),
           elements: mergedElements,
           interception: action.interception,

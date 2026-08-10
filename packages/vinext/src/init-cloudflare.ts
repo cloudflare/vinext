@@ -1,10 +1,12 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
+import { createRequire } from "node:module";
 import MagicString from "magic-string";
-import { parseSync } from "vite";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions } from "./init-platform.js";
 import { detectProject } from "./utils/project.js";
+
+const require = createRequire(import.meta.url);
 
 export type CloudflareProjectInfo = {
   root: string;
@@ -17,7 +19,7 @@ export type CloudflareProjectInfo = {
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   dataCache: "kv",
-  cdnCache: "data-cache",
+  cdnCache: "workers-cache",
   imageOptimization: "cloudflare-images",
 };
 
@@ -53,7 +55,7 @@ export function validateCloudflarePlatformSetup(
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const updatedWranglerCode = wranglerCode
-    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare)
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
     : undefined;
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
@@ -123,7 +125,9 @@ export function setupCloudflarePlatform(
     );
     generatedPlatformFiles.push("wrangler.jsonc");
   } else if (wranglerCode) {
-    const updatedConfig = updateWranglerConfigForCloudflare(wranglerCode, cloudflare);
+    const updatedConfig = updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
+      root: context.root,
+    });
     if (updatedConfig !== wranglerCode) {
       fs.writeFileSync(wranglerPath, updatedConfig, "utf-8");
       generatedPlatformFiles.push(path.basename(wranglerPath));
@@ -161,18 +165,25 @@ export function setupCloudflarePlatform(
   };
 }
 
+/**
+ * `main` is what makes a Wrangler config a Worker rather than a static-assets
+ * project. A custom `worker/index.*` wins when present; otherwise the
+ * router-selected entry resolves to the App or Pages Router handler at build
+ * time.
+ */
+function resolveWorkerEntry(root: string): string {
+  if (fs.existsSync(path.join(root, "worker", "index.ts"))) return "./worker/index.ts";
+  if (fs.existsSync(path.join(root, "worker", "index.js"))) return "./worker/index.js";
+  return "vinext/server/fetch-handler";
+}
+
 // Cloudflare deployment scaffolding belongs to `vinext init`.
 export function generateWranglerConfig(
   info: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   today = new Date().toISOString().split("T")[0],
 ): string {
-  const customWorkerEntry = fs.existsSync(path.join(info.root, "worker", "index.ts"))
-    ? "./worker/index.ts"
-    : fs.existsSync(path.join(info.root, "worker", "index.js"))
-      ? "./worker/index.js"
-      : undefined;
-  const workerEntry = customWorkerEntry ?? "vinext/server/fetch-handler";
+  const workerEntry = resolveWorkerEntry(info.root);
 
   const config: Record<string, unknown> = {
     $schema: "node_modules/wrangler/config-schema.json",
@@ -363,13 +374,34 @@ function appendTopLevelJsonProperty(code: string, property: string): string {
 export function updateWranglerConfigForCloudflare(
   code: string,
   options: CloudflareInitOptions,
+  context: { root?: string } = {},
 ): string {
+  let config: Record<string, unknown>;
   try {
-    JSON.parse(stripJsonComments(code));
+    config = JSON.parse(stripJsonComments(code)) as Record<string, unknown>;
   } catch (cause) {
     throw new Error("Could not parse the existing Wrangler JSON/JSONC config.", { cause });
   }
+  if (Object.hasOwn(config, "pages_build_output_dir")) {
+    throw new Error(
+      'The existing Wrangler config uses "pages_build_output_dir", which cannot be combined with the Worker "main" required by vinext. Remove "pages_build_output_dir" and rerun vinext init.',
+    );
+  }
   let output = code;
+  // Without `main` and `assets` the Cloudflare plugin builds the project as
+  // assets-only: the build emits no `dist/server/wrangler.json`, and the deploy
+  // reports success while every route 404s. Keep these in sync with
+  // `generateWranglerConfig`, which writes them on the from-scratch path.
+  if (!findTopLevelJsonProperty(output, "main")) {
+    const workerEntry = resolveWorkerEntry(context.root ?? process.cwd());
+    output = appendTopLevelJsonProperty(output, `  "main": ${JSON.stringify(workerEntry)}`);
+  }
+  if (!findTopLevelJsonProperty(output, "assets")) {
+    output = appendTopLevelJsonProperty(
+      output,
+      '  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS" }',
+    );
+  }
   if (options.cdnCache === "workers-cache") {
     const cacheProperty = findTopLevelJsonProperty(output, "cache");
     if (!cacheProperty) {
@@ -507,7 +539,7 @@ export function generateAppRouterViteConfig(
     }),`);
 
   // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's Vite 8 native support / Vite 7 fallback).
+  // by the vinext plugin's native Vite support).
   let resolveBlock = "";
   const aliases: string[] = [];
 
@@ -550,7 +582,7 @@ export function generatePagesRouterViteConfig(
   }
 
   // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's Vite 8 native support / Vite 7 fallback).
+  // by the vinext plugin's native Vite support).
   let resolveBlock = "";
   const aliases: string[] = [];
 
@@ -580,6 +612,18 @@ type AstObject = ESTree.ObjectExpression & AstNode;
 type AstProperty = Extract<AstObject["properties"][number], { type: "Property" }>;
 
 function parseViteConfig(filePath: string, code: string): ESTree.Program {
+  let parseSync: typeof import("vite").parseSync;
+  try {
+    ({ parseSync } = require("vite") as typeof import("vite"));
+  } catch (error) {
+    const maybeNodeError = error as NodeJS.ErrnoException;
+    if (maybeNodeError.code === "MODULE_NOT_FOUND" && maybeNodeError.message.includes("vite")) {
+      throw new Error(
+        `Could not update ${path.basename(filePath)} because the "vite" package is not available to parse the existing config. Install dependencies first, or remove the existing Vite config and rerun vinext init.`,
+      );
+    }
+    throw error;
+  }
   const extension = path.extname(filePath).slice(1);
   const lang = extension === "ts" || extension === "mts" || extension === "cts" ? "ts" : "js";
   const parsed = parseSync(path.basename(filePath), code, {
@@ -961,6 +1005,91 @@ function cloudflarePluginExpression(isAppRouter: boolean, binding: string): stri
     : `${binding}()`;
 }
 
+/**
+ * An existing bare `cloudflare()` call is left as-is by `ensurePlugins`, which
+ * only adds plugins that are absent. For the App Router that silently drops
+ * `viteEnvironment`, so the RSC environment never runs in workerd.
+ */
+function ensureCloudflareViteEnvironment(
+  output: MagicString,
+  config: AstObject,
+  binding: string,
+  isAppRouter: boolean,
+  code: string,
+): void {
+  if (!isAppRouter) return;
+  const call = findPluginCall(config, binding);
+  if (!call) return;
+  const viteEnvironment = `viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] }`;
+  const firstArgument = call.arguments[0];
+  if (!firstArgument) {
+    output.appendLeft(call.end - 1, `{ ${viteEnvironment} }`);
+    return;
+  }
+  if (firstArgument.type === "SpreadElement" || firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The cloudflare() plugin options must be a static object for vinext init to configure the App Router Vite environment.",
+    );
+  }
+  const argumentObject = firstArgument as AstObject;
+  const viteEnvironmentProperties = argumentObject.properties.filter(
+    (property): property is AstProperty =>
+      property.type === "Property" && propertyName(property) === "viteEnvironment",
+  );
+  const existingViteEnvironment = viteEnvironmentProperties.at(-1);
+  if (existingViteEnvironment) {
+    const propertyIndex = argumentObject.properties.lastIndexOf(existingViteEnvironment);
+    if (
+      argumentObject.properties
+        .slice(propertyIndex + 1)
+        .some((property) => property.type === "SpreadElement")
+    ) {
+      throw new Error(
+        "The cloudflare() viteEnvironment option must appear after any spread properties so vinext init can verify it.",
+      );
+    }
+    if (existingViteEnvironment.value.type !== "ObjectExpression") {
+      throw new Error(
+        'The cloudflare() viteEnvironment option must be a static object with name: "rsc" and childEnvironments containing "ssr".',
+      );
+    }
+    const environmentObject = existingViteEnvironment.value as AstObject;
+    const nameProperties = environmentObject.properties.filter(
+      (property): property is AstProperty =>
+        property.type === "Property" && propertyName(property) === "name",
+    );
+    const childEnvironmentProperties = environmentObject.properties.filter(
+      (property): property is AstProperty =>
+        property.type === "Property" && propertyName(property) === "childEnvironments",
+    );
+    const name = nameProperties[0];
+    const childEnvironments = childEnvironmentProperties[0];
+    const hasAmbiguousProperties =
+      environmentObject.properties.some((property) => property.type === "SpreadElement") ||
+      nameProperties.length !== 1 ||
+      childEnvironmentProperties.length !== 1;
+    const hasRequiredName = name?.value.type === "Literal" && name.value.value === "rsc";
+    const hasRequiredChild =
+      childEnvironments?.value.type === "ArrayExpression" &&
+      childEnvironments.value.elements.some(
+        (element) => element?.type === "Literal" && element.value === "ssr",
+      );
+    if (hasAmbiguousProperties || !hasRequiredName || !hasRequiredChild) {
+      throw new Error(
+        'The cloudflare() viteEnvironment option must statically set name: "rsc" and include "ssr" in childEnvironments.',
+      );
+    }
+    return;
+  }
+  const callIndent =
+    code
+      .slice(0, (call as AstNode).start)
+      .split("\n")
+      .at(-1)
+      ?.match(/^\s*/)?.[0] ?? "";
+  insertObjectProperty(output, argumentObject, `${callIndent}  ${viteEnvironment},`, code);
+}
+
 function findPluginCall(
   config: AstObject,
   binding: string,
@@ -1319,7 +1448,7 @@ export function updateViteConfigForCloudflare(
   const program = parseViteConfig(filePath, code);
   const cacheOptions = options.cache ?? {
     dataCache: "none",
-    cdnCache: "data-cache",
+    cdnCache: "workers-cache",
     imageOptimization: "cloudflare-images",
   };
   const config = findConfigObject(program);
@@ -1446,6 +1575,7 @@ export function updateViteConfigForCloudflare(
     ],
     code,
   );
+  ensureCloudflareViteEnvironment(output, config, cloudflareBinding, options.isAppRouter, code);
   if (existingVinextCall) {
     if (
       existingVinextCall.arguments.length === 0 &&

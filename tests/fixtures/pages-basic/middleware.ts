@@ -4,6 +4,13 @@ import type { NextRequest } from "next/server";
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
 
+  if (
+    url.pathname === "/revalidate-middleware-sentinel" &&
+    request.headers.has("x-prerender-revalidate")
+  ) {
+    return new Response("middleware must not observe on-demand revalidation", { status: 418 });
+  }
+
   // Add a custom header to all matched requests
   const response = NextResponse.next();
   response.headers.set("x-custom-middleware", "active");
@@ -39,6 +46,19 @@ export function middleware(request: NextRequest) {
 
   if (url.pathname === "/middleware-general-error-throw" && request.__isData) {
     throw new Error("middleware data request failure");
+  }
+
+  if (
+    url.pathname === "/ssr" &&
+    url.searchParams.has("dangerous-middleware-redirect") &&
+    request.__isData
+  ) {
+    return new Response(null, {
+      status: 307,
+      headers: {
+        Location: "javascript:void(window.__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__=true)",
+      },
+    });
   }
 
   // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
@@ -187,6 +207,10 @@ export function middleware(request: NextRequest) {
     });
     res.cookies.set("blocked", "1", { path: "/" });
     return res;
+  }
+
+  if (url.pathname === "/middleware-protected-data") {
+    return new Response("Access Denied", { status: 403 });
   }
 
   // Return a binary response (PNG 1x1 pixel) to test binary body preservation

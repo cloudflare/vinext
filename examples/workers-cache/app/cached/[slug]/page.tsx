@@ -8,6 +8,10 @@ import { RevalidateControls } from "../../components/revalidate-controls";
 // Cache layer honours it automatically.
 export const revalidate = 60;
 
+export function generateStaticParams() {
+  return [{ slug: "intro" }, { slug: "featured" }];
+}
+
 export async function generateMetadata({
   params,
 }: {

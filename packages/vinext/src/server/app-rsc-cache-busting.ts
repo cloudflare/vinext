@@ -13,9 +13,10 @@ import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
-import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
+import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 
 /**
  * RSC cache-busting hashes cover the headers that make an RSC payload vary.
@@ -32,7 +33,6 @@ export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 
 export const VINEXT_RSC_VARY_HEADER = [
   RSC_HEADER,
-  "Accept",
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -49,7 +49,14 @@ type CreateRscRequestHeadersOptions = {
   clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
+  fetchPriority?: "auto" | "high" | "low";
+  nextUrl?: string | null;
+  prefetchRouterState?: {
+    pathAndSearch: string;
+    routeId: string;
+  } | null;
 };
 
 type ResolveInvalidRscCacheBustingRequestOptions = {
@@ -87,6 +94,15 @@ export function applyRscCompatibilityIdHeader(
     headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, normalized);
   } else {
     headers.delete(VINEXT_RSC_COMPATIBILITY_ID_HEADER);
+  }
+}
+
+export function applyRscDeploymentIdHeader(headers: Headers): void {
+  const deploymentId = getDeploymentId();
+  if (deploymentId) {
+    headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
+  } else {
+    headers.delete(NEXTJS_DEPLOYMENT_ID_HEADER);
   }
 }
 
@@ -282,6 +298,24 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   });
   applyDeploymentIdHeader(headers);
 
+  if (options.prefetchRouterState) {
+    if (options.includePrefetchHeader !== false) {
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    }
+    headers.set(
+      NEXT_ROUTER_STATE_TREE_HEADER,
+      encodeURIComponent(JSON.stringify(options.prefetchRouterState)),
+    );
+  }
+
+  if (options.nextUrl) {
+    headers.set(NEXT_URL_HEADER, options.nextUrl);
+  }
+
+  if (process.env.__NEXT_TEST_MODE && options.fetchPriority) {
+    headers.set("Next-Test-Fetch-Priority", options.fetchPriority);
+  }
+
   if (options.interceptionContext !== undefined && options.interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, options.interceptionContext);
   }
@@ -357,7 +391,7 @@ export async function resolveInvalidRscCacheBustingRequest(
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
 
-  if (actualHash === null && expectedHash === "") {
+  if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
     return null;
   }
 

@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
-import type { CachedAppPageValue } from "vinext/shims/cache-handler";
+import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import {
@@ -73,7 +74,6 @@ import {
   createAppPageHtmlOutputScope,
   createAppPageRenderObservation,
   createAppPageRscOutputScope,
-  createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
 import type {
@@ -82,6 +82,8 @@ import type {
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
+import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
+import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -89,17 +91,11 @@ type AppPageBoundaryOnError = (
   errorContext: unknown,
 ) => unknown;
 type AppPageDebugLogger = (event: string, detail: string) => void;
-type AppPageCacheSetter = (
-  key: string,
-  data: CachedAppPageValue,
-  revalidateSeconds: number,
-  tags: string[],
-  expireSeconds?: number,
-) => Promise<void>;
 
 type AppPageRequestCacheLife = {
   revalidate?: number;
   expire?: number;
+  stale?: number;
 };
 
 type RenderAppPageLifecycleOptions = {
@@ -143,6 +139,7 @@ type RenderAppPageLifecycleOptions = {
   isForceStatic: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
+  isSpeculativePrerender?: boolean;
   isProduction: boolean;
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
@@ -195,6 +192,7 @@ type RenderAppPageLifecycleOptions = {
   clientReuseManifest?: ClientReuseManifestParseResult;
   skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
+  renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
   waitUntil?: (promise: Promise<void>) => void;
   // Per-layout observation tracker. Constructed in dispatch, consumed by the
@@ -224,12 +222,37 @@ function buildResponseTiming(
 }
 
 function readRequestCacheLifeForPrerender(
-  options: Pick<RenderAppPageLifecycleOptions, "getRequestCacheLife" | "peekRequestCacheLife">,
+  options: Pick<
+    RenderAppPageLifecycleOptions,
+    "getRequestCacheLife" | "isEdgeRuntime" | "peekRequestCacheLife" | "revalidateSeconds"
+  >,
 ): AppPageRequestCacheLife | null {
+  if (options.isEdgeRuntime && options.revalidateSeconds === null) {
+    const requestCacheLife = options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
+    return requestCacheLife?.revalidate !== undefined ? { revalidate: 0 } : null;
+  }
   // Prefer the non-destructive reader so prerender.ts can consume metadata
   // after the handler returns. The consume fallback supports older entry glue
   // and is only safe because this path reads at most once per prerender.
   return options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
+}
+
+function resolveConfiguredDynamicStaleTimeSeconds(): number {
+  const seconds = Number(process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME);
+  return Number.isInteger(seconds) && seconds >= 0 ? seconds : 0;
+}
+
+function readRequestCacheLifeForCachePolicy(
+  options: Pick<
+    RenderAppPageLifecycleOptions,
+    "getRequestCacheLife" | "isEdgeRuntime" | "revalidateSeconds"
+  >,
+): AppPageRequestCacheLife | null {
+  const requestCacheLife = options.getRequestCacheLife();
+  if (options.isEdgeRuntime && options.revalidateSeconds === null) {
+    return null;
+  }
+  return requestCacheLife;
 }
 
 function applyRequestCacheLife(options: {
@@ -253,7 +276,22 @@ function applyRequestCacheLife(options: {
     expireSeconds = requestCacheLife.expire;
   }
 
+  // `stale` is deliberately absent: it is the client-router dimension and must
+  // not leak into `Cache-Control`. It travels on the cache entry instead (see
+  // resolveAppPageCacheControl).
   return { expireSeconds, revalidateSeconds };
+}
+
+function resolveAppPageCacheWriteRevalidateSeconds(options: {
+  isDynamicError: boolean;
+  isForceStatic: boolean;
+  revalidateSeconds: number | null;
+}): number | null {
+  if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
+    return Infinity;
+  }
+
+  return options.revalidateSeconds;
 }
 
 function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string | null {
@@ -590,6 +628,23 @@ function wrapRscResponseForDevErrorReporting(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
+  // Request dynamic state is consumptive, but both cache finalization and the
+  // streamed client completion marker need the final answer. Keep the first
+  // positive observation for this render so whichever branch drains first
+  // cannot hide it from the other.
+  let dynamicUsageObserved = false;
+  let dynamicUsageFinalized = false;
+  const consumeRenderDynamicUsage = (): boolean => {
+    if (!dynamicUsageObserved) dynamicUsageObserved = options.consumeDynamicUsage();
+    return dynamicUsageObserved;
+  };
+  const finalizeRenderDynamicUsage = (): boolean => {
+    if (!dynamicUsageFinalized) {
+      consumeRenderDynamicUsage();
+      dynamicUsageFinalized = true;
+    }
+    return dynamicUsageObserved;
+  };
   const configuredProbePageBeforeRender = options.probePageBeforeRender ?? options.isRscRequest;
   const probePageBeforeRender =
     options.isRscRequest ||
@@ -645,19 +700,6 @@ export async function renderAppPageLifecycle(
     rootBoundaryId,
     routePattern: options.routePattern,
   });
-  // Partial payload metadata is a pre-stream snapshot. Fetch tags may still
-  // accumulate while the RSC/HTML streams are consumed; complete cache artifact
-  // observations below rebuild this field after the stream drains.
-  const payloadRenderObservation = createAppPageRenderObservation({
-    boundaryOutcome: { kind: "unknown" },
-    cacheability: "unknown",
-    cacheTags: options.getPageTags(),
-    cleanPathname: options.cleanPathname,
-    completeness: "partial",
-    output: rscOutputScope,
-    params: options.navigationParams,
-    state: options.peekRenderObservationState?.() ?? createEmptyAppPageRenderObservationState(),
-  });
   const skipDisposition =
     options.skipDisposition ??
     createRenderLifecycleSkipDisposition({
@@ -671,16 +713,17 @@ export async function renderAppPageLifecycle(
     });
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
+  const dynamicStaleTimeSeconds =
+    options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
     element: options.element,
     layoutFlags,
-    ...(options.dynamicStaleTimeSeconds !== undefined &&
+    ...(dynamicStaleTimeSeconds !== undefined &&
     options.isPrerender !== true &&
     !options.isForceStatic
-      ? { dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds }
+      ? { dynamicStaleTimeSeconds }
       : {}),
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
-    renderObservation: payloadRenderObservation,
     skipDisposition: options.isRscRequest ? skipDisposition : undefined,
   });
 
@@ -719,13 +762,17 @@ export async function renderAppPageLifecycle(
 
   let revalidateSeconds = options.revalidateSeconds;
   let expireSeconds = options.expireSeconds;
-  const shouldCaptureRscForCacheMetadata =
+  const shouldWaitForAllReady =
+    options.isPrerender === true && options.isSpeculativePrerender !== true;
+  const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
+  const mayResolveCacheLifeAfterHeaders =
     options.isProgressiveActionRender !== true &&
-    (options.isProduction || options.isPrerender === true) &&
     (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCacheForSkipTransport;
+  const shouldCaptureRscForCacheMetadata =
+    (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -756,16 +803,20 @@ export async function renderAppPageLifecycle(
   }
 
   if (options.isRscRequest) {
-    if (options.isPrerender === true) {
+    let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
+    if (shouldWaitForAllReady) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    }
+    if (shouldReadRequestCacheLifeForPrerender) {
+      requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
       ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
         expireSeconds,
-        requestCacheLife: readRequestCacheLifeForPrerender(options),
+        requestCacheLife: requestCacheLifeForPrerender,
         revalidateSeconds,
       }));
     }
 
-    const dynamicUsedDuringBuild = options.consumeDynamicUsage();
+    const dynamicUsedDuringBuild = consumeRenderDynamicUsage();
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
@@ -785,24 +836,33 @@ export async function renderAppPageLifecycle(
       options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
     }
     const shouldEmitDynamicStaleTime =
-      options.dynamicStaleTimeSeconds !== undefined &&
+      dynamicStaleTimeSeconds !== undefined &&
       options.isPrerender !== true &&
       !options.isForceStatic &&
-      (dynamicUsedDuringBuild || !shouldCaptureRscForCacheMetadata);
+      (dynamicUsedDuringBuild || options.isForceDynamic);
+    // The response streams before the captured render resolves its cacheLife
+    // (#961) — mark the claim pending so the client bounds reuse. This is also
+    // the conservative dev transport: dev does not persist ISR artifacts, but
+    // nested `use cache` scopes still resolve only while the stream is read.
+    // Known-dynamic renders carry the config bound instead, keeping the two
+    // wire states mutually exclusive.
+    const staleTimePending =
+      options.isPrerender !== true && mayResolveCacheLifeAfterHeaders && !dynamicUsedDuringBuild;
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
-      // Only emit on dynamic renders — Next.js gates on !workStore.isStaticGeneration (line 2223).
-      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L2223-L2229
-      // shouldCaptureRscForCacheMetadata is the runtime analog of isStaticGeneration: a render
-      // written to the ISR cache (incl. production ISR, where isPrerender is false at runtime)
-      // must not emit the authoritative per-page stale time.
-      dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime
-        ? options.dynamicStaleTimeSeconds
-        : undefined,
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
+      staleTimePending,
+      // Only on renders already known to be dynamic. A render that becomes
+      // dynamic while streaming keeps the pending marker; its completed body
+      // metadata carries this config bound so cache publication can tighten
+      // the conservative pending expiry after decoding.
+      dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime ? dynamicStaleTimeSeconds : undefined,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,
       policy: rscResponsePolicy,
+      renderedPathAndSearch: options.renderedPathAndSearch,
+      requestCacheLife: requestCacheLifeForPrerender,
       timing: buildResponseTiming({
         compileEnd,
         handlerStart: options.handlerStart,
@@ -823,16 +883,54 @@ export async function renderAppPageLifecycle(
     // if uncaught by user code. Full parity with Next.js would require checking
     // invalidDynamicUsageError after SSR rendering, which is deferred as out of scope
     // for this PR focused on client-side navigations.
-    const devRscResponse =
-      !options.isProduction && rscResponse.body && options.consumeInvalidDynamicUsageError
-        ? wrapRscResponseForDevErrorReporting(rscResponse, options.consumeInvalidDynamicUsageError)
+    const completionHeaders = new Headers(rscResponse.headers);
+    completionHeaders.set(VINEXT_RSC_COMPLETION_METADATA_HEADER, "1");
+    const completionResponse =
+      dynamicStaleTimeSeconds !== undefined &&
+      options.isPrerender !== true &&
+      !options.isForceStatic &&
+      rscResponse.body
+        ? new Response(
+            appendRscCompletionMetadata(rscResponse.body, () => {
+              if (!finalizeRenderDynamicUsage()) return undefined;
+              const completedServerStaleTimeSeconds = resolveClientStaleTimeSeconds(
+                options.peekRequestCacheLife?.(),
+              );
+              // A known-dynamic response already carries its BFCache bound in
+              // the header. Add a footer only when it has a distinct completed
+              // cacheLife claim for runtime-prefetch expiry.
+              if (shouldEmitDynamicStaleTime && completedServerStaleTimeSeconds === undefined) {
+                return undefined;
+              }
+              return {
+                dynamicStaleTimeSeconds,
+                serverStaleTimeSeconds:
+                  completedServerStaleTimeSeconds === undefined
+                    ? null
+                    : Math.floor(completedServerStaleTimeSeconds),
+              };
+            }),
+            {
+              status: rscResponse.status,
+              statusText: rscResponse.statusText,
+              headers: completionHeaders,
+            },
+          )
         : rscResponse;
+
+    const devRscResponse =
+      !options.isProduction && completionResponse.body && options.consumeInvalidDynamicUsageError
+        ? wrapRscResponseForDevErrorReporting(
+            completionResponse,
+            options.consumeInvalidDynamicUsageError,
+          )
+        : completionResponse;
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       cleanPathname: options.cleanPathname,
-      consumeDynamicUsage: options.consumeDynamicUsage,
+      consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,
       createRscRenderObservation(input) {
         return createAppPageRenderObservation({
@@ -851,17 +949,22 @@ export async function renderAppPageLifecycle(
         return options.getPageTags();
       },
       getRequestCacheLife() {
-        return options.getRequestCacheLife();
+        return readRequestCacheLifeForCachePolicy(options);
       },
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
-      revalidateSeconds,
+      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+        isDynamicError: options.isDynamicError,
+        isForceStatic: options.isForceStatic,
+        revalidateSeconds,
+      }),
       waitUntil(promise) {
         options.waitUntil?.(promise);
       },
@@ -874,6 +977,7 @@ export async function renderAppPageLifecycle(
     getStyles: options.getFontStyles,
   });
   const fontLinkHeader = buildAppPageFontLinkHeader(fontData.preloads);
+  let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
 
@@ -908,14 +1012,36 @@ export async function renderAppPageLifecycle(
                 ? "dynamic"
                 : "static";
           }
+          // Runs after the RSC embed drains, so this peek observes the
+          // completed render's minimum. Peek, not consume — the cache-write
+          // closure owns the consuming read.
+          // Prerendering drains the captured RSC stream and consumes the
+          // completed request cache life before the HTML stream reaches this
+          // done-script callback. Reuse that captured value here; peeking the
+          // now-cleared request state would omit the client stale claim from
+          // the prerendered HTML even though the seeded cache entry retains it.
+          // Runtime renders have not consumed the state yet and still use the
+          // non-destructive peek so the cache-write closure remains its owner.
+          const requestCacheLife =
+            options.isPrerender === true
+              ? requestCacheLifeForPrerender
+              : options.peekRequestCacheLife?.();
+          const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
           return {
             kind,
+            // Unlike the RSC header, the done script never emits the pending
+            // marker, so there is no 30s floor to fall back on: a render that
+            // turned dynamic must carry the config bound even when the
+            // speculative capture was still armed, or the cacheLife claim
+            // becomes the only bound on reusing dynamic output.
             ...(kind === "dynamic" &&
-            options.dynamicStaleTimeSeconds !== undefined &&
-            options.isPrerender !== true &&
-            !shouldCaptureRscForCacheMetadata
-              ? { dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds }
+            dynamicStaleTimeSeconds !== undefined &&
+            options.isPrerender !== true
+              ? { dynamicStaleTimeSeconds }
               : {}),
+            ...(staleTimeSeconds === undefined
+              ? {}
+              : { staleTimeSeconds: Math.floor(staleTimeSeconds) }),
           };
         },
         fontData,
@@ -931,7 +1057,11 @@ export async function renderAppPageLifecycle(
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
-        waitForAllReady: options.isPrerender === true,
+        fallbackToErrorDocumentOnShellError:
+          options.isPrerender === true && options.isSpeculativePrerender === true
+            ? false
+            : undefined,
+        waitForAllReady: shouldWaitForAllReady,
       });
     },
     renderSpecialErrorResponse(specialError) {
@@ -982,15 +1112,34 @@ export async function renderAppPageLifecycle(
   }
 
   // Eagerly read values that must be captured before the stream is consumed.
-  if (options.isPrerender === true) {
-    await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
+  let dynamicUsedDuringRender = consumeRenderDynamicUsage();
+  dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
+  const stopSpeculativeMetadataWaitOnDynamicUsage =
+    options.isSpeculativePrerender === true && shouldReadRequestCacheLifeForPrerender
+      ? () => {
+          if (dynamicUsedDuringRender || (options.peekDynamicUsage?.() ?? peekDynamicUsage())) {
+            dynamicUsedDuringRender = true;
+            dynamicUsedDuringHtmlRender = true;
+            return true;
+          }
+          return false;
+        }
+      : undefined;
+  if (shouldWaitForAllReady || shouldReadRequestCacheLifeForPrerender) {
+    await settleCapturedRscRenderForCacheMetadata(
+      htmlRender.capturedRscData,
+      stopSpeculativeMetadataWaitOnDynamicUsage,
+    );
+  }
+  if (shouldReadRequestCacheLifeForPrerender) {
+    requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,
-      requestCacheLife: readRequestCacheLifeForPrerender(options),
+      requestCacheLife: requestCacheLifeForPrerender,
       revalidateSeconds,
     }));
   }
-  let dynamicUsedDuringRender = options.consumeDynamicUsage();
+  dynamicUsedDuringRender = dynamicUsedDuringRender || consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
 
   const draftCookie = options.getDraftModeCookieHeader();
@@ -1004,7 +1153,7 @@ export async function renderAppPageLifecycle(
   // See: https://github.com/cloudflare/vinext/issues/660
   const safeHtmlStream = deferUntilStreamConsumed(htmlStream, () => {
     dynamicUsedBeforeContextCleanup =
-      dynamicUsedBeforeContextCleanup || options.consumeDynamicUsage();
+      dynamicUsedBeforeContextCleanup || consumeRenderDynamicUsage();
     dynamicUsedDuringHtmlRender = dynamicUsedBeforeContextCleanup;
     options.clearRequestContext();
   });
@@ -1031,6 +1180,7 @@ export async function renderAppPageLifecycle(
 
   if (htmlRender.shellErrorRecovered) {
     const response = buildAppPageHtmlResponse(safeHtmlStream, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
       linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
@@ -1039,6 +1189,7 @@ export async function renderAppPageLifecycle(
         status: 500,
       },
       policy: { cacheControl: NEVER_CACHE_CONTROL },
+      requestCacheLife: requestCacheLifeForPrerender,
       timing: htmlResponseTiming,
     });
     applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
@@ -1048,6 +1199,7 @@ export async function renderAppPageLifecycle(
   const shouldSpeculativelyWriteCache =
     options.isProduction &&
     shouldCaptureRscForCacheMetadata &&
+    !options.isEdgeRuntime &&
     revalidateSeconds === null &&
     !options.isDynamicError &&
     !options.isForceStatic &&
@@ -1057,11 +1209,13 @@ export async function renderAppPageLifecycle(
 
   if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
       linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
+      requestCacheLife: requestCacheLifeForPrerender,
       timing: htmlResponseTiming,
     });
 
@@ -1075,7 +1229,7 @@ export async function renderAppPageLifecycle(
       },
       capturedRscDataPromise: capturedRscDataRef.value,
       cleanPathname: options.cleanPathname,
-      consumeDynamicUsage: options.consumeDynamicUsage,
+      consumeDynamicUsage: consumeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,
       createHtmlRenderObservation(input) {
         return createAppPageRenderObservation({
@@ -1105,7 +1259,7 @@ export async function renderAppPageLifecycle(
         return options.getPageTags();
       },
       getRequestCacheLife() {
-        return options.getRequestCacheLife();
+        return readRequestCacheLifeForCachePolicy(options);
       },
       isrDebug: options.isrDebug,
       isrHtmlKey: options.isrHtmlKey,
@@ -1115,7 +1269,11 @@ export async function renderAppPageLifecycle(
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
-      revalidateSeconds,
+      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+        isDynamicError: options.isDynamicError,
+        isForceStatic: options.isForceStatic,
+        revalidateSeconds,
+      }),
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },
@@ -1123,27 +1281,52 @@ export async function renderAppPageLifecycle(
   }
 
   return buildAppPageHtmlResponse(safeHtmlStream, {
+    cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
     isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
+    requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
 }
 
 async function settleCapturedRscRenderForCacheMetadata(
   capturedRscDataPromise: Promise<ArrayBuffer> | null,
+  shouldStopWaiting?: () => boolean,
 ): Promise<void> {
   if (!capturedRscDataPromise) {
     return;
   }
 
+  if (!shouldStopWaiting) {
+    try {
+      await capturedRscDataPromise;
+    } catch {
+      // The response stream and cache-write path own render error propagation.
+      // This pre-read only makes "use cache" metadata available before headers
+      // and ISR seed metadata are finalized.
+    }
+    return;
+  }
+
+  let settled = false;
+  const settledPromise = capturedRscDataPromise
+    .catch(() => {
+      // The response stream and cache-write path own render error propagation.
+      // This pre-read only makes "use cache" metadata available before headers
+      // and ISR seed metadata are finalized.
+    })
+    .then(() => {
+      settled = true;
+    });
+
   try {
-    await capturedRscDataPromise;
-  } catch {
-    // The response stream and cache-write path own render error propagation.
-    // This pre-read only makes "use cache" metadata available before headers
-    // and ISR seed metadata are finalized.
+    while (!settled && !shouldStopWaiting()) {
+      await Promise.race([settledPromise, new Promise<void>((resolve) => setTimeout(resolve, 0))]);
+    }
+  } finally {
+    void settledPromise;
   }
 }

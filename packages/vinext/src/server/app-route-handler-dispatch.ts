@@ -7,16 +7,23 @@ import {
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
+import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import {
   consumeDynamicUsage,
+  getActiveDraftModeState,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
+  isDraftModeRequest,
   markDynamicUsage,
   setHeadersAccessPhase,
 } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import {
+  closeAfterResponse,
+  createRequestContext,
+  runWithRequestContext,
+} from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
   getAppRouteHandlerRevalidateSeconds,
@@ -27,6 +34,7 @@ import {
 } from "./app-route-handler-policy.js";
 import { readAppRouteHandlerCacheResponse } from "./app-route-handler-cache.js";
 import {
+  applyDraftModeCachePolicy,
   executeAppRouteHandler,
   type AppRouteDebugLogger,
   type AppRouteHandlerFunction,
@@ -36,6 +44,7 @@ import {
 import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
 import {
   applyRouteHandlerMiddlewareContext,
+  finalizeRouteHandlerResponse,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
 import { resolveAppRouteHandlerFetchCacheMode } from "./app-segment-config.js";
@@ -126,7 +135,7 @@ async function runInRouteHandlerRevalidationContext(
     unstableCacheRevalidation: "foreground",
   });
 
-  await runWithRequestContext(requestContext, async () => {
+  const revalidation = runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
     setCurrentFetchSoftTags(
       buildRouteHandlerPageCacheTags(options.cleanPathname, [], options.routeSegments),
@@ -135,8 +144,20 @@ async function runInRouteHandlerRevalidationContext(
     // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
     setCurrentFetchCacheMode(options.fetchCacheMode);
     setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
-    await renderFn();
+    try {
+      await renderFn();
+    } finally {
+      // Stale ISR regeneration invokes the route handler directly instead of
+      // going through executeAppRouteHandler(), so its fresh request context
+      // owns and drains any synchronous next/cache invalidations here.
+      await _drainPendingRevalidations();
+    }
   });
+  try {
+    await revalidation;
+  } finally {
+    await closeAfterResponse(requestContext);
+  }
 }
 
 export async function dispatchAppRouteHandler(
@@ -148,6 +169,27 @@ export async function dispatchAppRouteHandler(
   const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
+  // Middleware may enable or disable draft mode before dispatch. Prefer the
+  // live headers context over the original request cookie, and retain the
+  // pending transition now so a force-static context replacement or cache HIT
+  // cannot discard the Set-Cookie side effect.
+  const isDraftMode =
+    getActiveDraftModeState() ?? isDraftModeRequest(options.request, options.draftModeSecret);
+  const initialDraftModeCookie = getDraftModeCookieHeader();
+  const hasDraftModeTransition = initialDraftModeCookie != null;
+
+  const finalizeFrameworkResponse = (response: Response, isHead = false): Response => {
+    const finalized = finalizeRouteHandlerResponse(response, {
+      pendingCookies: getAndClearPendingCookies(),
+      draftCookie: initialDraftModeCookie,
+      isHead,
+    });
+    options.clearRequestContext();
+    return applyDraftModeCachePolicy(
+      applyRouteHandlerMiddlewareContext(finalized, options.middlewareContext),
+      isDraftMode || hasDraftModeTransition,
+    );
+  };
 
   if (hasAppRouteHandlerDefaultExport(handler) && isDevelopment) {
     console.error(
@@ -161,24 +203,18 @@ export async function dispatchAppRouteHandler(
   // Next.js returns 400 for invalid methods; vinext mirrors that behavior.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts#L390-L392
   if (!isValidHTTPMethod(method)) {
-    options.clearRequestContext();
-    return applyRouteHandlerMiddlewareContext(
-      new Response(null, { status: 400 }),
-      options.middlewareContext,
-    );
+    return finalizeFrameworkResponse(new Response(null, { status: 400 }));
   }
 
   const { allowHeaderForOptions, handlerFn, isAutoHead, shouldAutoRespondToOptions } =
     resolveAppRouteHandlerMethod(handler, method);
 
   if (shouldAutoRespondToOptions) {
-    options.clearRequestContext();
-    return applyRouteHandlerMiddlewareContext(
+    return finalizeFrameworkResponse(
       new Response(null, {
         status: 204,
         headers: { Allow: allowHeaderForOptions },
       }),
-      options.middlewareContext,
     );
   }
 
@@ -202,6 +238,7 @@ export async function dispatchAppRouteHandler(
       handlerFn: resolvedHandlerFn,
       isAutoHead,
       isKnownDynamic: isKnownDynamicAppRoute(route.pattern),
+      isDraftMode: isDraftMode || hasDraftModeTransition,
       isProduction,
       method,
       revalidateSeconds,
@@ -275,12 +312,15 @@ export async function dispatchAppRouteHandler(
       executionContext: getRequestExecutionContext(),
       getAndClearPendingCookies,
       getCollectedFetchTags,
+      getActiveDraftModeState,
       getDraftModeCookieHeader,
       handler,
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
       isAutoHead,
+      initialDraftModeCookie,
+      isDraftMode,
       isProduction,
       isrDebug: options.isrDebug,
       isrRouteKey: options.isrRouteKey,
@@ -301,11 +341,5 @@ export async function dispatchAppRouteHandler(
     });
   }
 
-  options.clearRequestContext();
-  return applyRouteHandlerMiddlewareContext(
-    new Response(null, {
-      status: 405,
-    }),
-    options.middlewareContext,
-  );
+  return finalizeFrameworkResponse(new Response(null, { status: 405 }));
 }

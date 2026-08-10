@@ -26,7 +26,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createBuilder } from "vite";
+import { createBuilder, type Plugin } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
@@ -59,6 +59,25 @@ async function buildApp(root: string) {
 }
 
 describe("App Router: client modules with JSX in .js files inside node_modules", () => {
+  it.runIf(process.platform === "win32")(
+    "skips non-directive dependencies when Vite reports a native Windows id",
+    async () => {
+      const plugin = (vinext() as Plugin[])
+        .flat(Infinity)
+        .find((candidate) => candidate.name === "vinext:jsx-in-js");
+      expect(plugin).toBeDefined();
+
+      const transform = plugin!.transform as {
+        handler(code: string, id: string): Promise<unknown>;
+      };
+      const dependencyId = path.join("C:\\project", "node_modules", "dependency", "component.js");
+
+      await expect(
+        transform.handler("export default function Component() { return <div />; }", dependencyId),
+      ).resolves.toBeUndefined();
+    },
+  );
+
   it("builds a 'use client' .js module with JSX shipped from a node_modules dependency", async () => {
     await withTempDir("vinext-jsx-node-modules-", async (root) => {
       // Link top-level node_modules (react, react-dom, etc.) so vinext can resolve them.

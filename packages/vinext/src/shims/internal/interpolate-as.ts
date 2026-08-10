@@ -34,6 +34,13 @@ export type DynamicRouteHrefProjection = {
   routePathname: string;
 };
 
+export type DynamicRouteHrefResolution = {
+  /** Route-pattern URL passed to the Pages Router. */
+  href: string;
+  /** Interpolated URL rendered in the anchor and displayed in the browser. */
+  as: string;
+};
+
 function normalizeQuery(query: UrlQuery | undefined): ParsedUrlQuery {
   const normalized: ParsedUrlQuery = {};
   if (!query) return normalized;
@@ -278,14 +285,13 @@ export function interpolateDynamicRouteHref(
   asHref: string,
   queryInput?: UrlQuery,
 ): DynamicRouteHrefProjection | null {
-  if (!routeHref.includes("[")) return null;
-
   const hashIndex = routeHref.indexOf("#");
   const queryIndex = routeHref.indexOf("?");
   const pathEnd = [hashIndex, queryIndex]
     .filter((index) => index !== -1)
     .reduce((earliest, index) => Math.min(earliest, index), routeHref.length);
   const routePathname = routeHref.slice(0, pathEnd);
+  if (!routePathname.includes("[")) return null;
   const trailing = routeHref.slice(pathEnd);
   const asPathname = asHref.split(/[?#]/, 1)[0];
   const query = queryInput
@@ -298,5 +304,36 @@ export function interpolateDynamicRouteHref(
     params,
     query,
     routePathname,
+  };
+}
+
+/**
+ * Resolve the two URLs that Next.js' Pages Router derives from a dynamic
+ * href: the original route-pattern URL used to load the page and the
+ * interpolated browser URL. Dynamic params are consumed from the latter's
+ * query string while unrelated query values and the hash are retained.
+ *
+ * Mirrors `resolveHref(router, href, true)` from Next.js:
+ * packages/next/src/client/resolve-href.ts.
+ */
+export function resolveDynamicRouteHref(routeHref: string): DynamicRouteHrefResolution | null {
+  const projection = interpolateDynamicRouteHref(routeHref, routeHref);
+  if (!projection?.href) return null;
+
+  const hashIndex = projection.href.indexOf("#");
+  const hash = hashIndex === -1 ? "" : projection.href.slice(hashIndex);
+  const hrefWithoutHash = hashIndex === -1 ? projection.href : projection.href.slice(0, hashIndex);
+  const queryIndex = hrefWithoutHash.indexOf("?");
+  const pathname = queryIndex === -1 ? hrefWithoutHash : hrefWithoutHash.slice(0, queryIndex);
+  const searchParams = new URLSearchParams(
+    queryIndex === -1 ? "" : hrefWithoutHash.slice(queryIndex + 1),
+  );
+
+  for (const param of projection.params) searchParams.delete(param);
+
+  const search = searchParams.toString();
+  return {
+    href: routeHref,
+    as: `${pathname}${search ? `?${search}` : ""}${hash}`,
   };
 }

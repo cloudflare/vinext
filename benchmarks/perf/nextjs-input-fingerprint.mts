@@ -7,11 +7,38 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const excludedPerfFiles = new Set([
+const includedExactInputPaths = [".github/workflows/perf.yml", "benchmarks/generate-app.mjs"];
+
+const includedInputPrefixes = ["benchmarks/nextjs/", "benchmarks/perf/"];
+
+const excludedInputPrefixes = ["benchmarks/nextjs/app/"];
+
+const excludedPerfInputPaths = [
+  "benchmarks/perf/README.md",
   "benchmarks/perf/format-pr-comment.mjs",
   "benchmarks/perf/upload-results.mjs",
   "benchmarks/perf/validate-results.mjs",
-]);
+];
+
+const excludedExactInputPaths = excludedPerfInputPaths;
+
+const includedInputPredicate = [
+  ...includedExactInputPaths.map((path) => `.path == ${JSON.stringify(path)}`),
+  ...includedInputPrefixes.map((prefix) => `(.path | startswith(${JSON.stringify(prefix)}))`),
+].join(" or ");
+
+const excludedInputPredicate = [
+  ...excludedInputPrefixes.map(
+    (prefix) => `((.path | startswith(${JSON.stringify(prefix)})) | not)`,
+  ),
+  ...excludedExactInputPaths.map((path) => `.path != ${JSON.stringify(path)}`),
+].join(" and ");
+
+export const nextjsBenchmarkInputTreeJq =
+  `{truncated, tree: [.tree[] | select(.type == "blob" and ` +
+  `(${includedInputPredicate}) and ${excludedInputPredicate}) | {path, sha, type}]}`;
+
+const excludedPerfFiles = new Set(excludedPerfInputPaths);
 
 export type GitTreeEntry = {
   path: string;
@@ -20,8 +47,7 @@ export type GitTreeEntry = {
 };
 
 export function isNextjsBenchmarkInput(path: string) {
-  if (path === ".github/workflows/perf.yml") return true;
-  if (path === "benchmarks/generate-app.mjs") return true;
+  if (includedExactInputPaths.includes(path)) return true;
   if (path.startsWith("benchmarks/nextjs/")) {
     return !path.startsWith("benchmarks/nextjs/app/");
   }

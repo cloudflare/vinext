@@ -8,7 +8,7 @@
  * deploy-suite parity against `test/e2e/getserversideprops/test/index.test.ts`
  * and `test/e2e/basepath/error-pages.test.ts`.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   buildDefaultPagesNotFoundResponse,
   DEFAULT_PAGES_NOT_FOUND_HTML,

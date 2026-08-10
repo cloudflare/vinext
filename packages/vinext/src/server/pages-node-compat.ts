@@ -5,8 +5,18 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
+import {
+  clearPagesPreviewData,
+  getPagesPreviewState,
+  setPagesDraftMode,
+  setPagesPreviewData,
+  type PagesPreviewData,
+} from "./pages-preview.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
+// Next.js's Node sendData() strips bodies for 204/304. Fetch additionally
+// forbids a body for 205, so the Worker adapter must normalize that status too.
+const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
 /**
  * @deprecated Use PagesBodyParseError from pages-media-type.ts instead.
@@ -23,6 +33,9 @@ export type PagesReqResRequest = Readable & {
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
+  preview?: true;
+  draftMode?: true;
+  previewData: PagesPreviewData | false;
 };
 
 type PagesReqResHeaders = {
@@ -38,9 +51,15 @@ export type PagesReqResResponse = Writable & {
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
   send: (data: unknown) => void;
-  redirect: (statusOrUrl: number | string, url?: string) => void;
+  redirect: (statusOrUrl: number | string, url?: string) => PagesReqResResponse;
   getHeaders: () => PagesReqResHeaders;
   revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
+  setPreviewData: (
+    data: object | string,
+    options?: { maxAge?: number; path?: string },
+  ) => PagesReqResResponse;
+  clearPreviewData: (options?: { path?: string }) => PagesReqResResponse;
+  setDraftMode: (options?: { enable?: boolean }) => PagesReqResResponse;
 };
 
 type PagesRequestCookiesCarrier = {
@@ -51,9 +70,11 @@ type PagesRequestCookiesCarrier = {
 };
 
 type CreatePagesReqResOptions = {
+  allowedRevalidateHeaderKeys?: readonly string[];
   body: unknown;
   query: PagesRequestQuery;
   request: Request;
+  trustedRevalidateOrigin?: string;
   url: string;
 };
 
@@ -165,6 +186,20 @@ function parsePagesRequestCookies(cookieHeader: string | string[] | null | undef
   return parseCookieHeader(Array.isArray(cookieHeader) ? cookieHeader.join("; ") : cookieHeader);
 }
 
+function getPagesPreviewDataFromCookieHeader(
+  cookieHeader: string | string[] | null | undefined,
+  options: { isOnDemandRevalidate?: boolean } = {},
+): PagesPreviewData | false {
+  return getPagesPreviewState(cookieHeader, options).data;
+}
+
+export function getPagesPreviewData(
+  request: Request,
+  options: { isOnDemandRevalidate?: boolean } = {},
+): PagesPreviewData | false {
+  return getPagesPreviewDataFromCookieHeader(request.headers.get("cookie"), options);
+}
+
 export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void {
   if (Object.hasOwn(req, "cookies")) return;
 
@@ -192,6 +227,28 @@ export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void
   });
 }
 
+export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResResponse): void {
+  const preview = getPagesPreviewState(req.headers.cookie);
+  req.previewData = preview.data;
+  if (preview.data !== false) {
+    req.preview = true;
+    req.draftMode = true;
+  }
+  res.setPreviewData = (data, options = {}) => {
+    setPagesPreviewData(res, data, options);
+    return res;
+  };
+  res.clearPreviewData = (options = {}) => {
+    clearPagesPreviewData(res, options);
+    return res;
+  };
+  res.setDraftMode = (options = { enable: true }) => {
+    setPagesDraftMode(res, options.enable !== false);
+    return res;
+  };
+  if (preview.shouldClear) clearPagesPreviewData(res);
+}
+
 class PagesResponseStream extends Writable {
   private resStatusCode = 200;
   private readonly resHeaders: Record<string, string | number | boolean> = {};
@@ -200,11 +257,15 @@ class PagesResponseStream extends Writable {
   private controller: ReadableStreamDefaultController | null = null;
   private readonly bufferedChunks: Buffer[] = [];
   private streamEnded = false;
+  private pendingWrite: ((error?: Error | null) => void) | null = null;
+  private discardBody = false;
 
   constructor(
     private readonly resolveResponse: (value: Response) => void,
     private readonly rejectResponse: (error: Error) => void,
     private readonly requestHeaders: Headers,
+    private readonly trustedRevalidateOrigin?: string,
+    private readonly allowedRevalidateHeaderKeys: readonly string[] = [],
   ) {
     super();
     this.once("error", (err) => {
@@ -231,7 +292,7 @@ class PagesResponseStream extends Writable {
     this.resStatusCode = code;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
-        this.setHeaderValue(key, value, { replaceSetCookie: false });
+        this.setHeaderValue(key, value, { replaceSetCookie: true });
       }
     }
     return this as PagesReqResResponse;
@@ -281,13 +342,20 @@ class PagesResponseStream extends Writable {
     this.end(String(data));
   }
 
-  redirect(statusOrUrl: number | string, url?: string): void {
+  redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {
     if (typeof statusOrUrl === "string") {
-      this.writeHead(307, { Location: statusOrUrl });
-    } else {
-      this.writeHead(statusOrUrl, { Location: url ?? "" });
+      url = statusOrUrl;
+      statusOrUrl = 307;
     }
+    if (typeof statusOrUrl !== "number" || typeof url !== "string") {
+      throw new Error(
+        "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+      );
+    }
+    this.writeHead(statusOrUrl, { Location: url });
+    this.write(url);
     this.end();
+    return this as PagesReqResResponse;
   }
 
   getHeaders(): PagesReqResHeaders {
@@ -299,7 +367,31 @@ class PagesResponseStream extends Writable {
   }
 
   async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
-    await performOnDemandRevalidate(this.requestHeaders, urlPath, opts);
+    await performOnDemandRevalidate(
+      this.requestHeaders,
+      urlPath,
+      opts,
+      this.trustedRevalidateOrigin,
+      this.allowedRevalidateHeaderKeys,
+    );
+  }
+
+  setPreviewData(
+    data: object | string,
+    options: { maxAge?: number; path?: string } = {},
+  ): PagesReqResResponse {
+    setPagesPreviewData(this, data, options);
+    return this as PagesReqResResponse;
+  }
+
+  clearPreviewData(options: { path?: string } = {}): PagesReqResResponse {
+    clearPagesPreviewData(this, options);
+    return this as PagesReqResResponse;
+  }
+
+  setDraftMode(options: { enable?: boolean } = { enable: true }): PagesReqResResponse {
+    setPagesDraftMode(this, options.enable !== false);
+    return this as PagesReqResResponse;
   }
 
   override _write(
@@ -307,6 +399,10 @@ class PagesResponseStream extends Writable {
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
+    if (this.discardBody) {
+      callback();
+      return;
+    }
     const buffer = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
     if (this.controller && !this.streamEnded) {
       try {
@@ -318,7 +414,23 @@ class PagesResponseStream extends Writable {
       this.bufferedChunks.push(buffer);
     }
     this.resolveOnce();
-    callback();
+    // Propagate consumer backpressure to the Node source: while the response
+    // body's queue is full, hold the write callback until the consumer pulls.
+    // A held callback makes `write()` return false, which pauses any piped
+    // source (e.g. a proxied upstream) instead of queueing chunks without
+    // bound. `end(data)` writes can park here too because Node sets
+    // writableEnded after _write returns; the adapter's first body pull
+    // releases them, and the completed response remains on the buffered path.
+    if (
+      this.controller &&
+      !this.streamEnded &&
+      !this.writableEnded &&
+      (this.controller.desiredSize ?? 1) <= 0
+    ) {
+      this.pendingWrite = callback;
+    } else {
+      callback();
+    }
   }
 
   override _final(callback: (error?: Error | null) => void): void {
@@ -336,6 +448,9 @@ class PagesResponseStream extends Writable {
 
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.streamEnded = true;
+    // A write parked for backpressure would otherwise never complete; release
+    // it so piped sources unwind instead of waiting on a dead stream.
+    this.releasePendingWrite(error);
     if (!this.resolved) {
       if (error) {
         this.resolved = true;
@@ -364,18 +479,23 @@ class PagesResponseStream extends Writable {
     options: { replaceSetCookie: boolean },
   ): void {
     if (name.toLowerCase() === "set-cookie") {
+      // getHeader() exposes this array like Node's ServerResponse. Snapshot it
+      // before replacement so passing that live value back does not clear it.
+      const values = Array.isArray(value) ? value.map(String) : [String(value)];
       if (options.replaceSetCookie) {
         this.setCookieHeaders.length = 0;
       }
-      if (Array.isArray(value)) {
-        this.setCookieHeaders.push(...value.map(String));
-      } else {
-        this.setCookieHeaders.push(String(value));
-      }
+      this.setCookieHeaders.push(...values);
       return;
     }
 
     this.resHeaders[name.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value;
+  }
+
+  private releasePendingWrite(error?: Error | null): void {
+    const callback = this.pendingWrite;
+    this.pendingWrite = null;
+    callback?.(error);
   }
 
   private resolveOnce(): void {
@@ -390,6 +510,20 @@ class PagesResponseStream extends Writable {
     }
     for (const cookie of this.setCookieHeaders) {
       headers.append("set-cookie", cookie);
+    }
+
+    // Fetch rejects a Response that pairs 204/205/304 with any body, including
+    // an empty ReadableStream. Node's ServerResponse accepts `res.status(204).end()`,
+    // so preserve that API while matching Next.js's sendData() cleanup for
+    // bodyless statuses.
+    if (NO_BODY_RESPONSE_STATUSES.has(this.resStatusCode)) {
+      this.discardBody = true;
+      this.bufferedChunks.length = 0;
+      headers.delete("content-length");
+      headers.delete("content-type");
+      headers.delete("transfer-encoding");
+      this.resolveResponse(new Response(null, { status: this.resStatusCode, headers }));
+      return;
     }
 
     const stream = new ReadableStream({
@@ -411,6 +545,9 @@ class PagesResponseStream extends Writable {
           }
         }
       },
+      pull: () => {
+        this.releasePendingWrite();
+      },
       cancel: (reason) => {
         this.bufferedChunks.length = 0;
         this.destroy(reason instanceof Error ? reason : new Error("Response body cancelled"));
@@ -419,6 +556,26 @@ class PagesResponseStream extends Writable {
 
     this.resolveResponse(new Response(stream, { status: this.resStatusCode, headers }));
   }
+}
+
+type ResponseWithVinextStreamedApiBody = Response & {
+  __vinextStreamedApiResponse?: boolean;
+};
+
+/**
+ * Marks a Pages API Response whose body was still being written when the
+ * handler settled (streaming/piping), so Node adapters forward it as a stream.
+ * Buffering a live stream would defer delivery until the source closes and
+ * hold the whole body in memory. Complete bodies (`res.json`, `res.send`,
+ * `res.end(data)`) are not marked and keep the buffered path, which preserves
+ * Content-Length.
+ */
+export function markVinextStreamedApiResponse(response: Response): void {
+  (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse = true;
+}
+
+export function isVinextStreamedApiResponse(response: Response): boolean {
+  return (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse === true;
 }
 
 export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePagesReqResResult {
@@ -450,7 +607,13 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     resolveResponse,
     rejectResponse,
     options.request.headers,
+    // Fetch runtimes do not expose a listening socket origin. Fall back to the
+    // platform-provided Request URL origin and deliberately ignore any raw Host
+    // header carried in request.headers.
+    options.trustedRevalidateOrigin ?? new URL(options.request.url).origin,
+    options.allowedRevalidateHeaderKeys,
   ) as PagesReqResResponse;
+  attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };
 }

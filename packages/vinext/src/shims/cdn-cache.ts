@@ -17,7 +17,7 @@
  * | ------------------ | --------------------------------------- | ------------------------------------------- |
  * | Serve from store?  | Yes — reads the data cache              | No — origin renders fresh, edge caches      |
  * | Background regen   | In-process via `waitUntil`              | Edge re-requests origin                     |
- * | Response headers   | `Cache-Control` (SWR)                   | `Cache-Control: no-store` + `CDN-Cache-Control: <SWR>` |
+ * | Response headers   | Framework cache policy                  | Provider-specific cache policy                         |
  * | Invalidation       | (data cache handles tag invalidation)   | purge / revalidate via request context      |
  *
  * The default adapter is a thin shim over the data cache + the framework's
@@ -30,11 +30,6 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "./cache-handler.js";
-import { getRequestExecutionContext } from "./request-context.js";
-// The edge adapter lives with the Cloudflare integration; the resolver below
-// imports it to use as the built-in default when a request-context host cache
-// is present.
-import { CloudflareCdnCacheAdapter } from "@vinext/cloudflare/cache/cdn-adapter.runtime";
 
 /** A map of response header name -> value the adapter wants applied or removed. */
 export type CdnResponseHeaders = Record<string, string | null>;
@@ -53,14 +48,14 @@ export type CdnCacheableHeaderInput = {
    *
    * The default adapter forces `no-store` for the browser in this case — the
    * page is instead served from the origin store on subsequent requests. Edge
-   * adapters may instead emit edge-only cache headers (e.g. `CDN-Cache-Control`)
-   * so the CDN performs SWR while the browser still sees `no-store`.
+   * adapters may instead emit edge-only cache headers so the CDN performs SWR
+   * while the browser receives a separate policy.
    */
   pendingDynamicCheck?: boolean;
   /**
    * The cache tags associated with this page/route, already canonicalised
    * (e.g. via `encodeCacheTag`). Edge adapters use these to emit a tag header
-   * (e.g. a `Cache-Tag` header) so tag-based purging can target the response.
+   * so tag-based purging can target the response.
    * The default adapter ignores them.
    */
   tags?: readonly string[];
@@ -98,10 +93,21 @@ export type CdnCacheAdapter = {
 
   /**
    * Build the response cache headers for a given policy. Returns a map so an
-   * adapter can emit more than one header (e.g. `Cache-Control` +
-   * `CDN-Cache-Control`) and remove stale adapter-owned headers with `null`.
+   * adapter can emit more than one header and remove stale adapter-owned
+   * headers with `null`. Adapters must return `null` for every header they own
+   * when the input policy should remove it; core never infers provider header
+   * names or deletes headers the active adapter did not claim.
    */
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
+
+  /**
+   * Whether existing response headers explicitly opt out of storage. Adapters
+   * that split browser and provider cache policy should implement this so they
+   * can interpret the provider-specific headers they own.
+   *
+   * When omitted, core inspects only the generic `Cache-Control` header.
+   */
+  hasExplicitNonCacheableResponsePolicy?(headers: Headers): boolean;
 
   /**
    * Whether the **origin** runs in-process background regeneration when a stale
@@ -128,7 +134,9 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 /**
  * Default origin-managed ISR strategy: store page artifacts in the data cache,
  * serve HIT/STALE from it, run in-process background regeneration, and emit the
- * framework's standard `Cache-Control` headers.
+ * framework's standard `Cache-Control` headers. It deliberately leaves unknown
+ * response headers alone. Deployments where provider headers carry cache
+ * semantics must configure the adapter that owns those headers.
  */
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
@@ -170,16 +178,6 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
 //      visible across Vite environments (RSC + SSR), mirroring the data cache
 //      handler resolution in cache.ts.
 //   2. Otherwise, the origin-managed DefaultCdnCacheAdapter.
-//
-// Auto-detection of a request-context host cache (e.g. the Cloudflare Workers
-// Cache at `ctx.cache`) is gated behind the VINEXT_CDN_CACHE_AUTO_DETECT env
-// flag and is OFF by default. Edge-managed page ISR needs deployment skew
-// protection to be safe (a stale isolate purging/serving against a newer build
-// can mismatch), so until that is figured out the edge adapter is only selected
-// when an operator explicitly opts in via the flag (value "1"). When enabled
-// and `ctx.cache` is present, the resolved CloudflareCdnCacheAdapter is stored
-// on the same global slot setCdnCacheAdapter() uses, so there is no separate
-// "edge" variable and it is reused on subsequent calls.
 // ---------------------------------------------------------------------------
 
 const _CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
@@ -215,25 +213,12 @@ export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
 }
 
 /**
- * Get the active CDN cache adapter. See the precedence note above:
- * explicit (or an already-resolved auto-detected edge adapter) → origin-managed
- * {@link DefaultCdnCacheAdapter}.
- *
- * Auto-detection of the Cloudflare Workers Cache (`ctx.cache`) only runs when
- * `VINEXT_CDN_CACHE_AUTO_DETECT === "1"`; otherwise the default adapter is used
- * unless an adapter was set explicitly.
+ * Get the active CDN cache adapter. An explicitly configured adapter wins;
+ * otherwise the origin-managed {@link DefaultCdnCacheAdapter} is used.
  */
 export function getCdnCacheAdapter(): CdnCacheAdapter {
   const active = _gCdn[_CDN_KEY] as CdnCacheAdapter | undefined;
   if (active) return active;
-
-  if (process.env.VINEXT_CDN_CACHE_AUTO_DETECT === "1" && getRequestExecutionContext()?.cache) {
-    // Resolve once and store on the single active-adapter slot so the explicit
-    // and auto-detected paths share one mechanism (and one reused instance).
-    const edge = new CloudflareCdnCacheAdapter();
-    _gCdn[_CDN_KEY] = edge;
-    return edge;
-  }
 
   return (_defaultAdapter ??= new DefaultCdnCacheAdapter());
 }

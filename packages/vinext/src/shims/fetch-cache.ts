@@ -19,10 +19,11 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
-import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
+import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { markDynamicUsage } from "./headers.js";
+import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -42,7 +43,7 @@ import {
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v3";
+const CACHE_KEY_PREFIX = "v4";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -73,34 +74,27 @@ type ExtendedRequestInit = RequestInit & {
 
 /**
  * Collect all headers from the request, excluding the blocklist.
- * Merges headers from both the Request object and the init object,
- * with init taking precedence (matching fetch() spec behavior).
+ * RequestInit headers replace a Request input's headers rather than merging
+ * with them, matching the Request constructor's normalization behavior.
  */
 function collectHeaders(input: string | URL | Request, init?: RequestInit): Record<string, string> {
-  const merged: Record<string, string> = {};
-
-  // Start with headers from Request object (if any)
-  if (input instanceof Request && input.headers) {
-    input.headers.forEach((v, k) => {
-      merged[k] = v;
-    });
-  }
-
-  // Override with headers from init (init takes precedence per fetch spec)
-  if (init?.headers) {
-    const headers =
-      init.headers instanceof Headers ? init.headers : new Headers(init.headers as HeadersInit);
-    headers.forEach((v, k) => {
-      merged[k] = v;
-    });
-  }
+  const headers = getEffectiveRequestHeaders(input, init);
+  const collected = Object.fromEntries(headers.entries());
 
   // Remove blocklisted headers
   for (const blocked of HEADER_BLOCKLIST) {
-    delete merged[blocked];
+    delete collected[blocked];
   }
 
-  return merged;
+  return collected;
+}
+
+function getEffectiveRequestHeaders(input: string | URL | Request, init?: RequestInit): Headers {
+  return init?.headers !== undefined
+    ? new Headers(init.headers)
+    : input instanceof Request
+      ? input.headers
+      : new Headers();
 }
 
 /**
@@ -115,22 +109,63 @@ function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): bool
   return AUTH_HEADERS.some((name) => name in headers);
 }
 
+const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"));
+
+function encodeBodyBytes(bytes: Uint8Array): string {
+  let encoded = "bytes:";
+  for (const byte of bytes) {
+    encoded += BYTE_HEX[byte];
+  }
+  return encoded;
+}
+
+function concatBodyBytes(chunks: Uint8Array[]): Uint8Array {
+  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function serializeFormData(
   formData: FormData,
-  pushBodyChunk: (chunk: string) => void,
+  pushBodyChunk: (chunk: string, byteLength?: number) => void,
   getTotalBodyBytes: () => number,
 ): Promise<void> {
+  const encoder = new TextEncoder();
   for (const [key, val] of formData.entries()) {
     if (typeof val === "string") {
       pushBodyChunk(JSON.stringify([key, { kind: "string", value: val }]));
       continue;
     }
-    if (
-      val.size > MAX_CACHE_KEY_BODY_BYTES ||
-      getTotalBodyBytes() + val.size > MAX_CACHE_KEY_BODY_BYTES
-    ) {
+    // Reject obviously oversized metadata before JSON escaping can amplify an
+    // attacker-controlled field name, filename, or media type.
+    const metadataLowerBound =
+      encoder.encode(key).byteLength +
+      encoder.encode(val.name).byteLength +
+      encoder.encode(val.type).byteLength;
+    if (getTotalBodyBytes() + val.size + metadataLowerBound > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
+
+    const metadata = JSON.stringify([
+      key,
+      {
+        kind: "file",
+        name: val.name,
+        type: val.type,
+        value: "bytes:",
+      },
+    ]);
+    const metadataByteLength = encoder.encode(metadata).byteLength;
+    if (getTotalBodyBytes() + val.size + metadataByteLength > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+
+    const bytes = new Uint8Array(await val.arrayBuffer());
     pushBodyChunk(
       JSON.stringify([
         key,
@@ -138,9 +173,10 @@ async function serializeFormData(
           kind: "file",
           name: val.name,
           type: val.type,
-          value: await val.text(),
+          value: encodeBodyBytes(bytes),
         },
       ]),
+      bytes.byteLength + metadataByteLength,
     );
   }
 }
@@ -170,13 +206,25 @@ function stripMultipartBoundary(contentType: string): string {
 type SerializedBodyResult = {
   bodyChunks: string[];
   canonicalizedContentType?: string;
+  defaultContentType?: string;
+  bodyMetadata?: string;
 };
 
-async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
+const NORMALIZED_FETCH_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"]);
+
+function normalizeFetchMethod(method: string): string {
+  const upperMethod = method.toUpperCase();
+  return NORMALIZED_FETCH_METHODS.has(upperMethod) ? upperMethod : method;
+}
+
+async function readRequestBodyChunksWithinLimit(
+  request: Request,
+  effectiveHeaders: Headers,
+): Promise<{
   chunks: Uint8Array[];
   contentType: string | undefined;
 }> {
-  const contentLengthHeader = request.headers.get("content-length");
+  const contentLengthHeader = effectiveHeaders.get("content-length");
   if (contentLengthHeader) {
     const contentLength = Number(contentLengthHeader);
     if (Number.isFinite(contentLength) && contentLength > MAX_CACHE_KEY_BODY_BYTES) {
@@ -185,7 +233,7 @@ async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
   }
 
   const requestClone = request.clone();
-  const contentType = requestClone.headers.get("content-type") ?? undefined;
+  const contentType = effectiveHeaders.get("content-type") ?? undefined;
   const reader = requestClone.body?.getReader();
   if (!reader) {
     return { chunks: [], contentType };
@@ -225,30 +273,40 @@ async function serializeBody(
   input: string | URL | Request,
   init?: RequestInit,
 ): Promise<SerializedBodyResult> {
-  if (!init?.body && !(input instanceof Request && input.body)) {
+  const hasInitBody = init?.body !== undefined && init.body !== null;
+  if (!hasInitBody && !(input instanceof Request && input.body)) {
     return { bodyChunks: [] };
   }
 
   const bodyChunks: string[] = [];
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
   let totalBodyBytes = 0;
   let canonicalizedContentType: string | undefined;
+  let defaultContentType: string | undefined;
+  let bodyMetadata: string | undefined = "body-present";
+  const hasEffectiveContentType = getEffectiveRequestHeaders(input, init).has("content-type");
 
-  const pushBodyChunk = (chunk: string): void => {
-    totalBodyBytes += encoder.encode(chunk).byteLength;
+  const pushBodyChunk = (chunk: string, byteLength = encoder.encode(chunk).byteLength): void => {
+    totalBodyBytes += byteLength;
     if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
     bodyChunks.push(chunk);
   };
+  const pushBodyBytes = (bytes: Uint8Array): void => {
+    pushBodyChunk(encodeBodyBytes(bytes), bytes.byteLength);
+  };
   const getTotalBodyBytes = (): number => totalBodyBytes;
 
-  if (init?.body instanceof Uint8Array) {
-    if (init.body.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
+  if (init?.body instanceof ArrayBuffer || (init?.body && ArrayBuffer.isView(init.body))) {
+    const bytes =
+      init.body instanceof ArrayBuffer
+        ? new Uint8Array(init.body)
+        : new Uint8Array(init.body.buffer, init.body.byteOffset, init.body.byteLength);
+    if (bytes.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(decoder.decode(init.body));
+    pushBodyBytes(bytes);
     (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
@@ -256,29 +314,24 @@ async function serializeBody(
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
     (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
+    const chunks: Uint8Array[] = [];
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (typeof value === "string") {
-          pushBodyChunk(value);
-        } else {
-          // Check raw byte size before the expensive decode to prevent
-          // OOM from a single oversized chunk.
-          totalBodyBytes += value.byteLength;
-          if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
-            throw new BodyTooLargeForCacheKeyError();
-          }
-          bodyChunks.push(decoder.decode(value, { stream: true }));
+        const bytes = typeof value === "string" ? encoder.encode(value) : value;
+        totalBodyBytes += bytes.byteLength;
+        if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+          throw new BodyTooLargeForCacheKeyError();
         }
+        chunks.push(bytes);
       }
-      const finalChunk = decoder.decode();
-      if (finalChunk) {
-        pushBodyChunk(finalChunk);
-      }
+      bodyChunks.push(encodeBodyBytes(concatBodyBytes(chunks)));
     } catch (err) {
-      await reader.cancel();
+      // Do not await cancellation of one tee branch: it may not settle until
+      // the fallback fetch starts consuming the other branch.
+      void reader.cancel().catch(() => {});
       if (err instanceof BodyTooLargeForCacheKeyError) {
         throw err;
       }
@@ -287,12 +340,21 @@ async function serializeBody(
   } else if (init?.body instanceof URLSearchParams) {
     // URLSearchParams — .toString() gives a stable serialization
     (init as ExtendedRequestInit)._ogBody = init.body;
-    pushBodyChunk(init.body.toString());
+    pushBodyBytes(encoder.encode(init.body.toString()));
+    if (!hasEffectiveContentType) {
+      defaultContentType = "application/x-www-form-urlencoded;charset=UTF-8";
+    }
   } else if (init?.body && typeof (init.body as { keys?: unknown }).keys === "function") {
     // FormData
     const formData = init.body as FormData;
     (init as ExtendedRequestInit)._ogBody = init.body;
     await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
+    // The generated boundary is transport-specific and the serialized form
+    // entries already distinguish bodies, so keep only the stable media type.
+    if (!hasEffectiveContentType) {
+      defaultContentType = "multipart/form-data";
+      bodyMetadata = "body-present;valid-multipart-boundary";
+    }
   } else if (
     init?.body &&
     typeof (init.body as { arrayBuffer?: unknown }).arrayBuffer === "function"
@@ -302,22 +364,31 @@ async function serializeBody(
     if (blob.size > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(await blob.text());
     const arrayBuffer = await blob.arrayBuffer();
+    pushBodyBytes(new Uint8Array(arrayBuffer));
     (init as ExtendedRequestInit)._ogBody = new Blob([arrayBuffer], { type: blob.type });
+    if (!hasEffectiveContentType) {
+      defaultContentType = blob.type || undefined;
+    }
   } else if (typeof init?.body === "string") {
     // String length is always <= UTF-8 byte length, so this is a
     // cheap lower-bound check that avoids encoder.encode() for huge strings.
     if (init.body.length > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(init.body);
+    pushBodyBytes(encoder.encode(init.body));
     (init as ExtendedRequestInit)._ogBody = init.body;
+    if (!hasEffectiveContentType) {
+      defaultContentType = "text/plain;charset=UTF-8";
+    }
   } else if (input instanceof Request && input.body) {
     let chunks: Uint8Array[];
     let contentType: string | undefined;
     try {
-      ({ chunks, contentType } = await readRequestBodyChunksWithinLimit(input));
+      ({ chunks, contentType } = await readRequestBodyChunksWithinLimit(
+        input,
+        getEffectiveRequestHeaders(input, init),
+      ));
     } catch (err) {
       if (err instanceof BodyTooLargeForCacheKeyError) {
         throw err;
@@ -339,7 +410,11 @@ async function serializeBody(
           formContentType === "multipart/form-data" && contentType
             ? stripMultipartBoundary(contentType)
             : undefined;
-        return { bodyChunks, canonicalizedContentType };
+        bodyMetadata =
+          formContentType === "multipart/form-data"
+            ? "body-present;valid-multipart-boundary"
+            : "body-present";
+        return { bodyChunks, canonicalizedContentType, bodyMetadata };
       } catch (err) {
         if (err instanceof BodyTooLargeForCacheKeyError) {
           throw err;
@@ -348,16 +423,10 @@ async function serializeBody(
       }
     }
 
-    for (const chunk of chunks) {
-      pushBodyChunk(decoder.decode(chunk, { stream: true }));
-    }
-    const finalChunk = decoder.decode();
-    if (finalChunk) {
-      pushBodyChunk(finalChunk);
-    }
+    pushBodyBytes(concatBodyBytes(chunks));
   }
 
-  return { bodyChunks, canonicalizedContentType };
+  return { bodyChunks, canonicalizedContentType, defaultContentType, bodyMetadata };
 }
 
 /**
@@ -372,24 +441,25 @@ async function buildFetchCacheKey(
   init?: RequestInit & { next?: NextFetchOptions },
 ): Promise<string> {
   let url: string;
-  let method = "GET";
+  const inputRequest = input instanceof Request ? input : undefined;
 
   if (typeof input === "string") {
-    url = input;
+    url = new Request(input).url;
   } else if (input instanceof URL) {
-    url = input.toString();
+    url = new Request(input).url;
   } else {
-    // Request object
     url = input.url;
-    method = input.method || "GET";
   }
 
-  if (init?.method) method = init.method;
+  const method = normalizeFetchMethod(init?.method ?? inputRequest?.method ?? "GET");
 
   const headers = collectHeaders(input, init);
-  const { bodyChunks, canonicalizedContentType } = await serializeBody(input, init);
+  const { bodyChunks, canonicalizedContentType, defaultContentType, bodyMetadata } =
+    await serializeBody(input, init);
   if (canonicalizedContentType) {
     headers["content-type"] = canonicalizedContentType;
+  } else if (defaultContentType && headers["content-type"] === undefined) {
+    headers["content-type"] = defaultContentType;
   }
 
   const cacheString = JSON.stringify([
@@ -397,14 +467,15 @@ async function buildFetchCacheKey(
     url,
     method,
     headers,
-    init?.mode,
-    init?.redirect,
-    init?.credentials,
-    init?.referrer,
-    init?.referrerPolicy,
-    init?.integrity,
-    init?.cache,
+    init?.mode ?? inputRequest?.mode ?? "cors",
+    init?.redirect ?? inputRequest?.redirect ?? "follow",
+    init?.credentials ?? inputRequest?.credentials ?? "same-origin",
+    init?.referrer ?? inputRequest?.referrer ?? "about:client",
+    init?.referrerPolicy ?? inputRequest?.referrerPolicy ?? "",
+    init?.integrity ?? inputRequest?.integrity ?? "",
+    init?.cache ?? inputRequest?.cache ?? "default",
     bodyChunks,
+    bodyMetadata,
   ]);
 
   const encoder = new TextEncoder();
@@ -484,6 +555,7 @@ export type FetchCacheState = {
   currentFetchCacheMode: FetchCacheMode | null;
   currentForceDynamicFetchDefault: boolean;
   dynamicFetchUrls: Set<string>;
+  refreshStaleFetchesInForeground: boolean;
   isFetchDedupeActive: boolean;
   currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
 };
@@ -520,6 +592,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentFetchCacheMode: null,
   currentForceDynamicFetchDefault: false,
   dynamicFetchUrls: new Set<string>(),
+  refreshStaleFetchesInForeground: false,
   isFetchDedupeActive: false,
   currentFetchDedupeEntries: new Map(),
 } satisfies FetchCacheState) as FetchCacheState;
@@ -542,6 +615,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentFetchCacheMode = null;
   _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
+  _fallbackState.refreshStaleFetchesInForeground = false;
   _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
   _fallbackState.currentFetchDedupeEntries = new Map();
 }
@@ -561,6 +635,92 @@ function markUncachedFetchForPageOutput(input: string | URL | Request): void {
 
 function recordCacheableFetchObservation(input: string | URL | Request): void {
   _getState().cacheableFetchUrls.add(getFetchObservationUrl(input));
+}
+
+function recordFiniteFetchRevalidate(revalidateSeconds: number): void {
+  if (Number.isFinite(revalidateSeconds) && revalidateSeconds > 0) {
+    _setRequestScopedCacheLife({ revalidate: revalidateSeconds });
+  }
+}
+
+function shouldRefreshStaleFetchInForeground(): boolean {
+  return _getState().refreshStaleFetchesInForeground;
+}
+
+async function buildFetchCacheValue(
+  response: Response,
+  tags: string[],
+  revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
+): Promise<CachedFetchValue | null> {
+  if (response.status !== 200) return null;
+
+  const responseForCache = options?.cloneForReturn === false ? response : response.clone();
+  const body = await responseForCache.text();
+  const headers: Record<string, string> = {};
+  responseForCache.headers.forEach((v, k) => {
+    if (k.toLowerCase() === "set-cookie") return;
+    headers[k] = v;
+  });
+
+  return {
+    kind: "FETCH",
+    data: {
+      headers,
+      body,
+      url: response.url,
+      status: responseForCache.status,
+    },
+    tags,
+    revalidate: revalidateSeconds,
+  };
+}
+
+async function writeFetchCacheResponse(
+  handler: CacheHandler,
+  cacheKey: string,
+  response: Response,
+  tags: string[],
+  revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
+): Promise<void> {
+  const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
+  if (!cacheValue) return;
+
+  await handler.set(cacheKey, cacheValue, {
+    fetchCache: true,
+    tags,
+    revalidate: revalidateSeconds,
+  });
+}
+
+async function lowerFetchCacheRevalidateIfNeeded(
+  handler: CacheHandler,
+  cacheKey: string,
+  cachedValue: CachedFetchValue,
+  tags: string[],
+  revalidateSeconds: number,
+): Promise<void> {
+  if (
+    !Number.isFinite(revalidateSeconds) ||
+    revalidateSeconds <= 0 ||
+    typeof cachedValue.revalidate !== "number" ||
+    cachedValue.revalidate <= revalidateSeconds
+  ) {
+    return;
+  }
+
+  const mergedTags = Array.from(new Set([...(cachedValue.tags ?? []), ...tags]));
+  const updatedValue: CachedFetchValue = {
+    ...cachedValue,
+    tags: mergedTags,
+    revalidate: revalidateSeconds,
+  };
+  await handler.set(cacheKey, updatedValue, {
+    fetchCache: true,
+    tags: mergedTags,
+    revalidate: revalidateSeconds,
+  });
 }
 
 export function peekCacheableFetchObservations(): string[] {
@@ -637,6 +797,10 @@ export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
 
 export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
   _getState().currentForceDynamicFetchDefault = enabled;
+}
+
+export function setRefreshStaleFetchesInForeground(enabled: boolean): void {
+  _getState().refreshStaleFetchesInForeground = enabled;
 }
 
 function isNoStoreFetch(
@@ -769,8 +933,8 @@ function createFetchDedupeCandidate(
     return null;
   }
 
-  const method = init?.method?.toUpperCase();
-  if (method && method !== "GET" && method !== "HEAD") {
+  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
     return null;
   }
 
@@ -778,8 +942,10 @@ function createFetchDedupeCandidate(
     return null;
   }
 
-  const request =
-    typeof input === "string" || input instanceof URL ? new Request(input, init) : input;
+  // RequestInit overrides a Request input too. Normalize whenever init is
+  // present so the dedupe key describes the request that fetch will execute.
+  // Eligible GET/HEAD requests have no body stream for this to disturb.
+  const request = input instanceof Request && !init ? input : new Request(input, init);
 
   if ((request.method !== "GET" && request.method !== "HEAD") || request.keepalive) {
     return null;
@@ -1031,6 +1197,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // recording both cacheable and dynamic is conservative — a false "unsafe"
     // result costs performance, not correctness.
     recordCacheableFetchObservation(input);
+    recordFiniteFetchRevalidate(revalidateSeconds);
     const reqTags = _getState().currentRequestTags;
     const tags = encodeCacheTags(nextOpts?.tags ?? []);
     if (tags.length > 0) {
@@ -1066,11 +1233,33 @@ function createPatchedFetch(): typeof globalThis.fetch {
       throw err;
     }
     const handler = getDataCacheHandler();
+    let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
     // Try cache first
     try {
-      const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
+      let cached = mustBypassPendingRevalidation
+        ? null
+        : await handler.get(cacheKey, {
+            kind: "FETCH",
+            tags,
+            softTags,
+            revalidate: revalidateSeconds,
+          });
+      if (
+        cached?.value?.kind === "FETCH" &&
+        _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
+      ) {
+        mustBypassPendingRevalidation = true;
+        cached = null;
+      }
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+        await lowerFetchCacheRevalidateIfNeeded(
+          handler,
+          cacheKey,
+          cached.value,
+          tags,
+          revalidateSeconds,
+        );
         const cachedData = cached.value.data;
         return buildCachedFetchResponse(cachedData, input);
       }
@@ -1079,6 +1268,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
       // However, if we have a stale entry, return it and trigger background refetch.
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+        if (shouldRefreshStaleFetchInForeground()) {
+          const freshResponse = await dedupeFetch(input, fetchInit);
+          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
+          return freshResponse;
+        }
+
         const staleData = cached.value.data;
 
         // Background refetch — deduped so only one in-flight refetch runs
@@ -1086,32 +1281,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
         if (!pendingRefetches.has(cacheKey)) {
           const refetchPromise = originalFetch(input, fetchInit)
             .then(async (freshResp) => {
-              // Only cache 200 responses — a transient error or unexpected
-              // status must not overwrite previously-good cached data.
-              if (freshResp.status !== 200) return;
-
-              const freshBody = await freshResp.text();
-              const freshHeaders: Record<string, string> = {};
-              freshResp.headers.forEach((v, k) => {
-                if (k.toLowerCase() === "set-cookie") return;
-                freshHeaders[k] = v;
-              });
-
-              const freshValue: CachedFetchValue = {
-                kind: "FETCH",
-                data: {
-                  headers: freshHeaders,
-                  body: freshBody,
-                  url: freshResp.url,
-                  status: freshResp.status,
-                },
-                tags,
-                revalidate: revalidateSeconds,
-              };
-              await handler.set(cacheKey, freshValue, {
-                fetchCache: true,
-                tags,
-                revalidate: revalidateSeconds,
+              await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
+                cloneForReturn: false,
               });
             })
             .catch((err) => {
@@ -1158,34 +1329,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Cache miss — fetch from network
-    const response = await dedupeFetch(input, fetchInit);
+    const response = await (mustBypassPendingRevalidation
+      ? originalFetch(input, fetchInit)
+      : dedupeFetch(input, fetchInit));
 
-    // Only cache 200 responses
-    if (response.status === 200) {
-      // Clone before reading body
-      const cloned = response.clone();
-      const body = await cloned.text();
-      const headers: Record<string, string> = {};
-      cloned.headers.forEach((v, k) => {
-        // Never cache Set-Cookie headers — they are per-user and must not
-        // be replayed to subsequent requests from different users.
-        if (k.toLowerCase() === "set-cookie") return;
-        headers[k] = v;
-      });
-
-      const cacheValue: CachedFetchValue = {
-        kind: "FETCH",
-        data: {
-          headers,
-          body,
-          url: response.url,
-          status: cloned.status,
-        },
-        tags,
-        revalidate: revalidateSeconds,
-      };
-
-      // Store in cache (fire-and-forget)
+    const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+    if (cacheValue) {
       handler
         .set(cacheKey, cacheValue, {
           fetchCache: true,
@@ -1278,6 +1427,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       uCtx.currentRequestTags = [];
       uCtx.currentFetchSoftTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
+      uCtx.refreshStaleFetchesInForeground = false;
       uCtx.isFetchDedupeActive = true;
       uCtx.currentFetchDedupeEntries = new Map();
     }, fn);
@@ -1290,6 +1440,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentFetchCacheMode: null,
       currentForceDynamicFetchDefault: false,
       dynamicFetchUrls: new Set<string>(),
+      refreshStaleFetchesInForeground: false,
       isFetchDedupeActive: true,
       currentFetchDedupeEntries: new Map(),
     },

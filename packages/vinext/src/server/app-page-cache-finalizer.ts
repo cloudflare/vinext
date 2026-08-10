@@ -1,24 +1,18 @@
-import type { CachedAppPageValue } from "vinext/shims/cache";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_CACHE_HEADER } from "./headers.js";
 import {
   createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
-import { buildAppPageCacheValue } from "./isr-cache.js";
+import { buildAppPageCacheValue, isrCacheControl, type AppPageCacheSetter } from "./isr-cache.js";
+import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import type { RenderObservation } from "./cache-proof.js";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
-type AppPageCacheSetter = (
-  key: string,
-  data: CachedAppPageValue,
-  revalidateSeconds: number,
-  tags: string[],
-  expireSeconds?: number,
-) => Promise<void>;
 type AppPageRscCacheKeyBuilder = (
   pathname: string,
   mountedSlotsHeader?: string | null,
@@ -28,6 +22,7 @@ type AppPageRscCacheKeyBuilder = (
 type AppPageRequestCacheLife = {
   revalidate?: number;
   expire?: number;
+  stale?: number;
 };
 type BuildAppPageCacheRenderObservation = (input: {
   cacheTags: readonly string[];
@@ -70,6 +65,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -84,7 +80,40 @@ function applyPendingDynamicCdnHeaders(
 ): void {
   const cacheable = headers.get("Cache-Control") ?? "";
   applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
-  if (options.omitCacheState === true) {
+  finalizePendingCacheStateHeaders(headers, options);
+}
+
+function applyMountedSlotRscNoStoreHeaders(
+  headers: Headers,
+  options: { omitCacheState?: boolean } = {},
+): void {
+  // Mounted-slot RSC payloads deliberately bypass the slot-blind persistent
+  // cache. Make that same bypass explicit to every CDN adapter: an edge-managed
+  // adapter may intentionally cache pending-dynamic responses, so the generic
+  // pendingDynamicCheck signal is not strong enough for this variant.
+  // This branch additionally forces no-store because mounted variants have no
+  // persistent admission path at all. The active adapter clears any stale
+  // provider-specific headers that it owns.
+  applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+  // Dynamic and draft responses intentionally have no cache state. Do not
+  // manufacture a MISS solely because the request carried mounted slots.
+  finalizePendingCacheStateHeaders(headers, {
+    ...options,
+    preserveMissingCacheState: true,
+  });
+}
+
+function finalizePendingCacheStateHeaders(
+  headers: Headers,
+  options: { omitCacheState?: boolean; preserveMissingCacheState?: boolean } = {},
+): void {
+  const hadCacheState = headers.has(VINEXT_CACHE_HEADER) || headers.has(NEXTJS_CACHE_HEADER);
+  // Either an explicitly omitted provisional state or an intentionally absent
+  // mounted dynamic/draft state must remain headerless.
+  if (
+    options.omitCacheState === true ||
+    (options.preserveMissingCacheState === true && !hadCacheState)
+  ) {
     headers.delete(VINEXT_CACHE_HEADER);
     headers.delete(NEXTJS_CACHE_HEADER);
     return;
@@ -92,11 +121,11 @@ function applyPendingDynamicCdnHeaders(
   setCacheStateHeaders(headers, "MISS");
 }
 
-function resolveAppPageCacheWritePolicy(options: {
+function resolveAppPageCacheControl(options: {
   expireSeconds?: number;
   requestCacheLife?: AppPageRequestCacheLife | null;
   revalidateSeconds: number | null;
-}): { expireSeconds?: number; revalidateSeconds: number } | null {
+}): CacheControlMetadata | null {
   let revalidateSeconds = options.revalidateSeconds;
   let expireSeconds = options.expireSeconds;
   const requestCacheLife = options.requestCacheLife;
@@ -115,7 +144,12 @@ function resolveAppPageCacheWritePolicy(options: {
     return null;
   }
 
-  return { expireSeconds, revalidateSeconds };
+  // Callers reach this only after the render's stream drained, so the
+  // request-scoped accumulation is the completed render's minimum.
+  return isrCacheControl(revalidateSeconds, {
+    expireSeconds,
+    staleSeconds: resolveClientStaleTimeSeconds(requestCacheLife),
+  });
 }
 
 export function finalizeAppPageHtmlCacheResponse(
@@ -153,12 +187,12 @@ export function finalizeAppPageHtmlCacheResponse(
         return;
       }
 
-      const cachePolicy = resolveAppPageCacheWritePolicy({
+      const cacheControl = resolveAppPageCacheControl({
         expireSeconds: options.expireSeconds,
         requestCacheLife: options.getRequestCacheLife?.(),
         revalidateSeconds: options.revalidateSeconds,
       });
-      if (!cachePolicy) {
+      if (!cacheControl) {
         options.isrDebug?.("HTML cache write skipped (no cache policy)", htmlKey);
         return;
       }
@@ -185,22 +219,17 @@ export function finalizeAppPageHtmlCacheResponse(
             htmlRenderObservation,
             linkHeader ? { link: linkHeader } : undefined,
           ),
-          cachePolicy.revalidateSeconds,
-          pageTags,
-          cachePolicy.expireSeconds,
+          { cacheControl, tags: pageTags },
         ),
       ];
 
       if (options.capturedRscDataPromise) {
         writes.push(
           options.capturedRscDataPromise.then((rscData) =>
-            options.isrSet(
-              rscKey,
-              buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
-              cachePolicy.revalidateSeconds,
-              pageTags,
-              cachePolicy.expireSeconds,
-            ),
+            options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
+              cacheControl,
+              tags: pageTags,
+            }),
           ),
         );
       }
@@ -225,17 +254,29 @@ export function finalizeAppPageRscCacheResponse(
   response: Response,
   options: ScheduleAppPageRscCacheWriteOptions,
 ): Response {
-  const didSchedule = scheduleAppPageRscCacheWrite(options);
-  if (!didSchedule) {
-    return response;
-  }
+  // Persisting to the ISR store and finalizing the client-facing headers are
+  // independent decisions. Mounted-slot variants are deliberately never stored
+  // (their RSC key is slot-blind), but a fresh MISS stream can still reach a
+  // dynamic API after the cache policy was chosen, so shared caches must not
+  // keep it either way. An explicit no-store policy is required for mounted
+  // slots because edge-managed adapters may cache pending-dynamic responses.
+  scheduleAppPageRscCacheWrite(options);
 
-  if (options.preserveClientResponseHeaders === true) {
+  const isMountedSlotVariant = Boolean(options.mountedSlotsHeader);
+  if (options.preserveClientResponseHeaders === true && !isMountedSlotVariant) {
     return response;
   }
 
   const clientHeaders = new Headers(response.headers);
-  applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
+  if (isMountedSlotVariant) {
+    applyMountedSlotRscNoStoreHeaders(clientHeaders, {
+      omitCacheState: options.omitPendingDynamicCacheState === true,
+    });
+  } else {
+    applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+      omitCacheState: options.omitPendingDynamicCacheState === true,
+    });
+  }
 
   return new Response(response.body, {
     status: response.status,
@@ -248,13 +289,13 @@ export function scheduleAppPageRscCacheWrite(
   options: ScheduleAppPageRscCacheWriteOptions,
 ): boolean {
   const capturedRscDataPromise = options.capturedRscDataPromise;
-  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild) {
+  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild || options.mountedSlotsHeader) {
     return false;
   }
 
   const rscKey = options.isrRscKey(
     options.cleanPathname,
-    options.mountedSlotsHeader,
+    null,
     options.renderMode,
     options.interceptionContext,
   );
@@ -267,12 +308,12 @@ export function scheduleAppPageRscCacheWrite(
         return;
       }
 
-      const cachePolicy = resolveAppPageCacheWritePolicy({
+      const cacheControl = resolveAppPageCacheControl({
         expireSeconds: options.expireSeconds,
         requestCacheLife: options.getRequestCacheLife?.(),
         revalidateSeconds: options.revalidateSeconds,
       });
-      if (!cachePolicy) {
+      if (!cacheControl) {
         options.isrDebug?.("RSC cache write skipped (no cache policy)", rscKey);
         return;
       }
@@ -284,13 +325,10 @@ export function scheduleAppPageRscCacheWrite(
         cacheTags: pageTags,
         state: observationState,
       });
-      await options.isrSet(
-        rscKey,
-        buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
-        cachePolicy.revalidateSeconds,
-        pageTags,
-        cachePolicy.expireSeconds,
-      );
+      await options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
+        cacheControl,
+        tags: pageTags,
+      });
       options.isrDebug?.("RSC cache written", rscKey);
     } catch (cacheError) {
       console.error("[vinext] ISR RSC cache write error:", cacheError);

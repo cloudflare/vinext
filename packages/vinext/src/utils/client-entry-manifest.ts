@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { manifestFileWithBase } from "./manifest-paths.js";
 import { isUnknownRecord } from "./record.js";
 

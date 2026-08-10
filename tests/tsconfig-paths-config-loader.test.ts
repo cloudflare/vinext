@@ -1,11 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { loadTsconfigPathAliasesForRoot } from "../packages/vinext/src/config/tsconfig-paths.js";
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tsconfig-paths-test-"));
+}
+
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 describe("loadTsconfigPathAliasesForRoot", () => {
@@ -31,7 +36,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "src"));
   });
 
   it("supports baseUrl with relative path values", () => {
@@ -49,7 +54,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "src"));
   });
 
   it("follows 'extends' for inherited paths", () => {
@@ -66,7 +71,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "lib"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "lib"));
   });
 
   it("child paths override extended paths", () => {
@@ -86,7 +91,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "src"));
   });
 
   // Ported from Next.js: packages/next/src/build/next-config-ts/transpile-config.ts (array extends)
@@ -104,7 +109,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "lib"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "lib"));
   });
 
   // Ported from Next.js: packages/next/src/build/next-config-ts/transpile-config.ts (array extends)
@@ -128,7 +133,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "second"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "second"));
   });
 
   it("child paths override array-form extended paths", () => {
@@ -148,7 +153,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "src"));
   });
 
   it("supports non-wildcard exact alias", () => {
@@ -165,7 +170,30 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@app"]).toBe(path.join(tmpDir, "src", "app.ts"));
+    expect(aliases["@app"]).toBe(canonical(tmpDir, "src/app.ts"));
+  });
+
+  it("orders overlapping aliases longest-prefix-first regardless of declaration order", () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            // General pattern declared first; TypeScript matches by longest
+            // prefix, so consumers applying first-match semantics (Vite's
+            // alias plugin) need `@/public` ordered before `@`.
+            "@/*": ["./src/*"],
+            "@/public/*": ["./public/*"],
+          },
+        },
+      }),
+    );
+
+    const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
+    expect(Object.keys(aliases)).toEqual(["@/public", "@"]);
+    expect(aliases["@/public"]).toBe(path.join(tmpDir, "public"));
+    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
   });
 
   it("returns empty object when tsconfig.json is missing", () => {
@@ -185,7 +213,7 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     );
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
-    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "src"));
   });
 
   it("ignores malformed wildcard patterns", () => {

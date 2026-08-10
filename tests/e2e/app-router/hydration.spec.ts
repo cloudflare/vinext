@@ -1,10 +1,32 @@
 import { test, expect } from "../fixtures";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
 test.describe("App Router Hydration", () => {
   // The consoleErrors fixture automatically fails tests if any console errors occur.
   // This catches React hydration mismatches (error #418), runtime errors, etc.
+
+  test("hydrates when Chromium strips userinfo from location.href (#2614)", async ({
+    page,
+    consoleErrors,
+  }) => {
+    await page.goto(BASE.replace("://", "://user:pass@"));
+
+    expect(
+      await page.evaluate(() => ({
+        documentUrl: document.URL,
+        locationHref: window.location.href,
+      })),
+    ).toEqual({
+      documentUrl: "http://user:pass@localhost:4174/",
+      locationHref: `${BASE}/`,
+    });
+    await waitForAppRouterHydration(page);
+    await expect(page.getByRole("heading", { name: "Welcome to App Router" })).toBeVisible();
+
+    void consoleErrors;
+  });
 
   test("use client Counter component hydrates and becomes interactive", async ({
     page,

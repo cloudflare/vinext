@@ -6,9 +6,9 @@ import type { PagesPageModule } from "./pages-page-data.js";
  *
  * The initial `router.isReady` value for the `next/navigation` compat hooks is
  * derived from the page/_app data-fetching exports plus the configured-rewrites
- * flag, serialized into `__NEXT_DATA__`. The dev SSR handler and the production
- * Pages page handler must compute this identically so server HTML and client
- * hydration agree — see `getPagesNavigationIsReadyFromSerializedState` in
+ * flag. The client recomputes readiness from those flags and its live URL,
+ * matching the Pages Router constructor; server-only readiness remains in the
+ * request context. See `getPagesNavigationIsReadyFromSerializedState` in
  * `shims/router.ts`.
  */
 
@@ -20,7 +20,7 @@ import type { PagesPageModule } from "./pages-page-data.js";
  */
 type PagesReadinessNextData = Pick<
   VinextNextData,
-  "gssp" | "gsp" | "gip" | "appGip" | "autoExport"
+  "gssp" | "gsp" | "gip" | "appGip" | "autoExport" | "nextExport"
 > & {
   __vinext: Pick<NonNullable<VinextNextData["__vinext"]>, "hasRewrites">;
 };
@@ -31,7 +31,7 @@ type PagesReadinessNextData = Pick<
  */
 export function buildPagesReadinessNextData(options: {
   pageModule: PagesPageModule;
-  appComponent: { getInitialProps?: unknown } | null | undefined;
+  appComponent: { getInitialProps?: unknown; origGetInitialProps?: unknown } | null | undefined;
   hasRewrites: boolean;
 }): PagesReadinessNextData {
   const hasPageGssp = typeof options.pageModule.getServerSideProps === "function";
@@ -39,13 +39,17 @@ export function buildPagesReadinessNextData(options: {
   const hasPageGip =
     typeof (options.pageModule.default as { getInitialProps?: unknown } | undefined)
       ?.getInitialProps === "function";
-  const hasAppGip = typeof options.appComponent?.getInitialProps === "function";
+  const hasAppGip =
+    typeof options.appComponent?.getInitialProps === "function" &&
+    options.appComponent.getInitialProps !== options.appComponent.origGetInitialProps;
+  const autoExport = !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip;
   return {
     gssp: hasPageGssp,
     gsp: hasPageGsp ? true : undefined,
     gip: hasPageGip,
     appGip: hasAppGip,
-    autoExport: !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip,
+    autoExport,
+    nextExport: autoExport ? true : undefined,
     __vinext: { hasRewrites: options.hasRewrites },
   };
 }

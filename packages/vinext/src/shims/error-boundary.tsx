@@ -156,9 +156,7 @@ export class RedirectErrorBoundary extends React.Component<
 
       const result = decodeRedirectError(error.digest);
       if (!result) {
-        // Malformed digest (e.g. `NEXT_REDIRECT;push;` with an empty URL
-        // segment). The server-side parser at next-error-digest.ts:51 also
-        // rejects this. Re-throw so the error reaches a regular error
+        // Re-throw malformed digests so the error reaches a regular error
         // boundary instead of being silently swallowed.
         throw error;
       }

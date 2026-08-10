@@ -2,26 +2,58 @@ import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/c
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
+export const BROWSER_REVALIDATE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
+
 export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 
 const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
+const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
+const NON_CACHEABLE_DIRECTIVE_RE = /(?:private|no-store|no-cache)/i;
+
+export function shouldUseNextDeployCacheControl(): boolean {
+  return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";
+}
+
+function isSharedCacheControl(cacheControl: string): boolean {
+  return SHARED_CACHE_DIRECTIVE_RE.test(cacheControl);
+}
+
+/**
+ * Whether an existing response explicitly opted out of storage. Adapters may
+ * inspect the provider-specific policy headers they own; the generic fallback
+ * only understands the framework-owned `Cache-Control` header.
+ */
+export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
+  const adapter = getCdnCacheAdapter();
+  if (adapter.hasExplicitNonCacheableResponsePolicy) {
+    return adapter.hasExplicitNonCacheableResponsePolicy(headers);
+  }
+  const cacheControl = headers.get("Cache-Control");
+  return Boolean(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl));
+}
+
 /**
  * Route a cacheable response's headers through the active CDN cache adapter and
  * apply the result to `headers`. The default adapter yields a single
  * `Cache-Control` identical to `input.cacheControl` (no behavior change); edge
- * adapters may instead emit `CDN-Cache-Control` / `Cache-Tag`.
+ * adapters may instead emit provider-specific cache and invalidation headers.
  *
- * We only clear `Cache-Control` — the one header vinext stamps internally — so
- * a stale vinext value never lingers if an adapter chooses not to emit one. The
- * adapter's own headers are applied via `set()`, which overrides any prior value
- * for the same name, so there's no need to pre-clear adapter-specific headers.
+ * The adapter owns its provider-specific output: returning a value sets it,
+ * while returning `null` removes it. Core only clears the generic header it
+ * owns before applying that map.
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");
-  const map = getCdnCacheAdapter().buildResponseHeaders(input);
+  const useNextDeployPolicy =
+    shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl);
+  // An empty policy tells the adapter to remove any provider-specific cache
+  // metadata it owns before core applies the deployment-specific browser policy.
+  const map = getCdnCacheAdapter().buildResponseHeaders(
+    useNextDeployPolicy ? { ...input, cacheControl: "" } : input,
+  );
   for (const [name, value] of Object.entries(map)) {
     if (value === null) {
       headers.delete(name);
@@ -34,6 +66,9 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
     if (value === "") continue;
     headers.set(name, value);
   }
+  if (useNextDeployPolicy) {
+    headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+  }
 }
 
 /**
@@ -45,9 +80,11 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/cache-control.ts
  */
 export function buildRevalidateCacheControl(
-  revalidateSeconds: number,
+  revalidateSeconds: number | false,
   expireSeconds?: number,
 ): string {
+  if (revalidateSeconds === false) return STATIC_CACHE_CONTROL;
+
   if (expireSeconds === undefined) {
     return `s-maxage=${revalidateSeconds}, stale-while-revalidate`;
   }
@@ -72,10 +109,10 @@ export function buildRevalidateCacheControl(
  */
 export function buildCachedRevalidateCacheControl(
   cacheState: "HIT" | "STALE",
-  revalidateSeconds: number,
+  revalidateSeconds: number | false,
   expireSeconds?: number,
 ): string {
-  if (revalidateSeconds === Infinity) {
+  if (revalidateSeconds === false || revalidateSeconds === Infinity) {
     return STATIC_CACHE_CONTROL;
   }
 

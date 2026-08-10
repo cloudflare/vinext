@@ -1,4 +1,5 @@
 import { readFile as readFileFromFs } from "node:fs/promises";
+import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
 
@@ -244,18 +245,19 @@ export function clientReferenceDedupPlugin(options: ClientReferenceDedupOptions 
         if (!importer || !importer.includes(PROXY_MARKER)) return;
 
         // Only handle absolute paths through node_modules
-        if (!id.startsWith("/") || !id.includes("/node_modules/")) return;
+        const normalizedId = toSlash(id);
+        if (!path.isAbsolute(normalizedId) || !normalizedId.includes("/node_modules/")) return;
 
-        const packageName = extractPackageName(id);
+        const packageName = extractPackageName(normalizedId);
         if (!packageName) return;
 
         // Respect user's optimizeDeps.exclude
         if (excludeSet.has(packageName)) return;
 
-        let packageImportPromise = packageImportCache.get(id);
+        let packageImportPromise = packageImportCache.get(normalizedId);
         if (!packageImportPromise) {
-          packageImportPromise = extractPackageImportSpecifier(id, readPackageJson);
-          packageImportCache.set(id, packageImportPromise);
+          packageImportPromise = extractPackageImportSpecifier(normalizedId, readPackageJson);
+          packageImportCache.set(normalizedId, packageImportPromise);
         }
 
         const packageImport = await packageImportPromise;
