@@ -17,8 +17,10 @@ import {
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -2240,6 +2242,14 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
       props: { prefetch: true },
     });
+    result.fetch.mockResolvedValue(
+      new Response("partial instant payload", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+        },
+      }),
+    );
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -2262,6 +2272,42 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("refetches a runtime instant route after its server stale time elapses", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    // "expires runtime prefetches when their stale time has elapsed"
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/instant-target",
+      nodeEnv: "production",
+    });
+    result.fetch.mockResolvedValue(
+      new Response("complete instant payload", {
+        headers: {
+          "content-type": "text/x-component",
+          [NEXT_ROUTER_STALE_TIME_HEADER]: "120",
+        },
+      }),
+    );
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      observer.dispatchIntersectingEntry(result.anchor, false);
+      vi.mocked(Date.now).mockReturnValue(now + 120_001);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("renders cache-aware instant shells for static instant prefetches", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
@@ -2269,6 +2315,14 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
       props: { prefetch: true },
     });
+    result.fetch.mockResolvedValue(
+      new Response("partial instant payload", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+        },
+      }),
+    );
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);

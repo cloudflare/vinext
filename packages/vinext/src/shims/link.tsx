@@ -447,6 +447,7 @@ function prefetchUrl(
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
+          hasFreshPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
           peekPrefetchResponseForNavigation,
@@ -539,10 +540,8 @@ function prefetchUrl(
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
-            return;
-          }
+        if (prefetched.has(cacheKey) && hasFreshPrefetchCacheEntry(cacheKey)) {
+          return;
         }
         const fetchFullRscPayload = () =>
           scheduleAppPrefetchFetch(

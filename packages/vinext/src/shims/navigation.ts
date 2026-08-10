@@ -675,6 +675,24 @@ export function hasPrefetchCacheEntryForNavigation(
   return false;
 }
 
+/** Check an exact prefetch entry for freshness, regardless of whether navigation may consume it. */
+export function hasFreshPrefetchCacheEntry(cacheKey: string): boolean {
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry === undefined) {
+    getPrefetchedUrls().delete(cacheKey);
+    return false;
+  }
+
+  if (entry.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) {
+    touchPrefetchCacheEntry(cache, cacheKey, entry);
+    return true;
+  }
+
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  return false;
+}
+
 export function hasSearchAgnosticPrefetchShellForRoute(
   rscUrl: string,
   interceptionContext: string | null = null,
@@ -1376,6 +1394,13 @@ export function prefetchRscResponse(
         if (response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER) === "1") {
           entry.cacheForNavigation = false;
           entry.partialSuspenseShell = true;
+        } else if (entry.instantShell === true) {
+          // A runtime instant render that reached the end of the tree is a
+          // complete navigation payload. Next reuses it directly rather than
+          // issuing the same request again on click.
+          entry.cacheForNavigation = true;
+          entry.instantShell = false;
+          entry.prefetchKind = "navigation";
         }
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
@@ -2787,7 +2812,7 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
-      } else if (prefetched.has(cacheKey)) {
+      } else if (prefetched.has(cacheKey) && hasFreshPrefetchCacheEntry(cacheKey)) {
         attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
         return;
       }

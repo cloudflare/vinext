@@ -243,6 +243,45 @@ describe("prefetch cache eviction", () => {
     expect(secondInvalidate).toHaveBeenCalledTimes(1);
   });
 
+  it("router.prefetch refetches a runtime instant route after its stale time elapses", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+    // "expires runtime prefetches when their stale time has elapsed"
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        hasInstant: true,
+        hasRuntimeInstant: true,
+        isDynamic: false,
+        patternParts: ["runtime-instant"],
+      },
+    ];
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const fetch = vi.fn(
+      async () =>
+        new Response("complete instant payload", {
+          headers: {
+            "content-type": "text/x-component",
+            [NEXT_ROUTER_STALE_TIME_HEADER]: "120",
+          },
+        }),
+    );
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/runtime-instant");
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().values().next().value?.outcome === "cache-seeded",
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    now += 120_001;
+    appRouterInstance.prefetch("/runtime-instant");
+    await settlePrefetchSetup();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("reuses a prefetched response only when mounted-slot context matches", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();
@@ -424,6 +463,36 @@ describe("prefetch cache eviction", () => {
       prefetchKind: "instant-shell",
     });
     expect(consumePrefetchResponse(rscUrl)).toBeNull();
+  });
+
+  it("reuses a complete runtime instant prefetch for navigation", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/prefetch-runtime/prefetch-runtime.test.ts
+    // "can completely prefetch a page that is fully static"
+    const rscUrl = "/complete-instant-shell.rsc";
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("complete instant payload", {
+          headers: { "content-type": "text/x-component" },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: false, instantShell: true },
+    );
+
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+
+    expect(getPrefetchCache().get(rscUrl)).toMatchObject({
+      cacheForNavigation: true,
+      instantShell: false,
+      prefetchKind: "navigation",
+    });
+    const consumed = consumePrefetchResponse(rscUrl);
+    expect(consumed).not.toBeNull();
+    await expect(restoreRscResponse(consumed!).text()).resolves.toBe("complete instant payload");
   });
 
   it("derives the interception context from the current pathname", () => {
