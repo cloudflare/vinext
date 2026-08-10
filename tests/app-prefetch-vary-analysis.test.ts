@@ -147,6 +147,50 @@ describe("App Router prefetch vary analysis", () => {
       expect(resolveAppPrefetchSharedCacheKey("/items/books/two", "loading-shell")).toBe(
         "items/:category/:itemId\0items/books/two",
       );
+
+      const inheritedSlotRoute = toLinkPrefetchRoute(
+        createRoute({
+          params: ["teamID", "folder"],
+          pattern: "/:teamID/sub/:folder",
+          patternParts: [":teamID", "sub", ":folder"],
+          routeSegments: ["[teamID]", "sub", "[folder]"],
+          parallelSlots: [
+            {
+              id: "slot:slot:/:teamID",
+              key: "slot@[teamID]/@slot",
+              name: "slot",
+              ownerDir: "/tmp/app/[teamID]/@slot",
+              ownerTreePath: "/[teamID]",
+              ownerTreePosition: 1,
+              hasPage: true,
+              pagePath: "/tmp/app/[teamID]/@slot/[...catchAll]/page.tsx",
+              defaultPath: null,
+              layoutPath: null,
+              loadingPath: null,
+              errorPath: null,
+              interceptingRoutes: [],
+              layoutIndex: 0,
+              routeSegments: ["[...catchAll]"],
+              slotPatternParts: [":teamID", ":catchAll+"],
+              slotParamNames: ["teamID", "catchAll"],
+            },
+          ],
+        }),
+      );
+      expect(inheritedSlotRoute.slotParamPatterns).toEqual([
+        {
+          paramNames: ["teamID", "catchAll"],
+          patternParts: [":teamID", ":catchAll+"],
+        },
+      ]);
+      inheritedSlotRoute.runtimePrefetchVaryParamNames = ["catchAll"];
+      (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [inheritedSlotRoute];
+      expect(resolveAppPrefetchSharedCacheKey("/acme/sub/docs", "runtime")).toBe(
+        ":teamID/sub/:folder\0:teamID/sub/:folder\0" + "0:catchAll=sub/docs",
+      );
+      expect(resolveAppPrefetchSharedCacheKey("/acme/sub/api", "runtime")).toBe(
+        ":teamID/sub/:folder\0:teamID/sub/:folder\0" + "0:catchAll=sub/api",
+      );
     } finally {
       if (originalFlags.cacheComponents === undefined) delete process.env.__NEXT_CACHE_COMPONENTS;
       else process.env.__NEXT_CACHE_COMPONENTS = originalFlags.cacheComponents;

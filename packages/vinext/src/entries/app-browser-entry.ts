@@ -117,6 +117,16 @@ export function toLinkPrefetchRoute(
   ),
 ): VinextLinkPrefetchRoute {
   const capabilities = analyzeAppPrefetchCapabilities(route);
+  const slotParamPatterns = route.parallelSlots.flatMap((slot) =>
+    slot.slotPatternParts && slot.slotParamNames
+      ? [
+          {
+            paramNames: [...slot.slotParamNames],
+            patternParts: [...slot.slotPatternParts],
+          },
+        ]
+      : [],
+  );
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
     ...(capabilities.canPrefetchFullStaticRoute ? { canPrefetchFullStaticRoute: true } : {}),
@@ -125,6 +135,7 @@ export function toLinkPrefetchRoute(
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
+    ...(slotParamPatterns.length > 0 ? { slotParamPatterns } : {}),
   };
 }
 

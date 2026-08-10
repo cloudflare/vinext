@@ -14,6 +14,8 @@ import type {
   VinextPrefetchVaryMetadata,
 } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
+import { matchRoutePattern } from "../../routing/route-pattern.js";
+import { splitPathnameForRouteMatch } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
 declare global {
@@ -105,6 +107,35 @@ function mergeVaryParamNames(
   return Array.from(new Set([...(current ?? []), ...observed])).sort();
 }
 
+function resolvePrefetchSlotVaryKey(
+  url: URL,
+  route: VinextLinkPrefetchRoute,
+  varyParams: ReadonlySet<string>,
+  routeParamNames: ReadonlySet<string>,
+): string {
+  const pathname = stripBasePath(url.pathname, __basePath) || "/";
+  const conservativePathIdentity = `!${encodeURIComponent(pathname)}`;
+  const urlParts = splitPathnameForRouteMatch(pathname);
+  const coveredNames = new Set<string>();
+  const entries: string[] = [];
+  for (const [index, slotPattern] of (route.slotParamPatterns ?? []).entries()) {
+    const matched = matchRoutePattern(urlParts, slotPattern.patternParts);
+    for (const name of slotPattern.paramNames) {
+      if (!varyParams.has(name)) continue;
+      coveredNames.add(name);
+      const value = matched?.[name];
+      entries.push(
+        `${index}:${encodeURIComponent(name)}=${value === undefined ? conservativePathIdentity : encodePrefetchParamValue(value)}`,
+      );
+    }
+  }
+  for (const name of [...varyParams].sort()) {
+    if (routeParamNames.has(name) || coveredNames.has(name)) continue;
+    entries.push(`?:${encodeURIComponent(name)}=${conservativePathIdentity}`);
+  }
+  return entries.join("&");
+}
+
 /**
  * Teach the client route manifest the dependency set observed by a completed
  * server prefetch render. Observations are monotonic: a later conditional
@@ -190,11 +221,14 @@ export function resolveAppPrefetchSharedCacheKey(
           ? route.runtimePrefetchVaryParamNames
           : route.prefetchVaryParamNames;
   const varyParams = new Set(varyParamNames ?? []);
+  const routeParamNames = new Set<string>();
   const keyParts = route.patternParts.map((part) => {
     if (!part.startsWith(":")) return part;
     const name = part.replace(/^:/, "").replace(/[+*]$/, "");
+    routeParamNames.add(name);
     return varyParams.has(name) ? encodePrefetchParamValue(match.params[name]) : `:${name}`;
   });
+  const slotVaryKey = resolvePrefetchSlotVaryKey(url, route, varyParams, routeParamNames);
   const search =
     kind === "loading-shell" && route.loadingShellVarySearchParams === true
       ? url.search
@@ -205,7 +239,7 @@ export function resolveAppPrefetchSharedCacheKey(
           : kind === "navigation" && route.prefetchVarySearchParams === true
             ? url.search
             : "";
-  return `${route.patternParts.join("/")}\0${keyParts.join("/")}${search}`;
+  return `${route.patternParts.join("/")}\0${keyParts.join("/")}${slotVaryKey ? `\0${slotVaryKey}` : ""}${search}`;
 }
 
 export function canAutoPrefetchFullAppRoute(href: string): boolean {

@@ -372,7 +372,10 @@ import {
   getAppPageSerializedSlotProbeElements as __getAppPageSerializedSlotProbeElements,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
-import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
+import {
+  buildPageElements as __buildPageElements,
+  resolveSlotParamOverrides as __resolveSlotParamOverrides,
+} from ${JSON.stringify(appPageElementBuilderPath)};
 import {
   buildAppPageProbes as __buildAppPageProbes,
   resolveAppPageProbeMainElementId as __resolveAppPageProbeMainElementId,
@@ -933,11 +936,11 @@ export default createAppRscHandler({
           intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,
-          makeThenableParams(value, pageElementId) {
+          makeThenableParams(value, pageElementId, paramNames) {
             return makeThenableParams(
               value,
               layoutParamAccess?.createPageParamsObserver(
-                route.params ?? undefined,
+                paramNames ?? route.params ?? undefined,
                 pageElementId,
               ),
             );
@@ -948,6 +951,7 @@ export default createAppRscHandler({
           onDynamicSuspenseBoundary(pageElementId, ordinal) {
             layoutParamAccess?.observePageDynamicSuspenseBoundary(pageElementId, ordinal);
           },
+          slotParamOverrides: __resolveSlotParamOverrides(route, cleanPathname),
         }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {

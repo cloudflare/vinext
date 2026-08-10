@@ -307,12 +307,15 @@ type AppPageProbeSlot =
       loading?: AppPageProbeModule;
       loadings?: readonly AppPageProbeModule[] | null;
       loadingTreePositions?: readonly number[] | null;
+      slotParamNames?: readonly string[] | null;
+      slotPatternParts?: readonly string[] | null;
     }>
   | null
   | undefined;
 
 type AppPageProbeRoute = Readonly<{
   childrenSlot?: Readonly<{ ownerTreePath: string }> | null;
+  params?: readonly string[] | null;
   slots?: Readonly<Record<string, AppPageProbeSlot>> | null;
 }>;
 
@@ -401,10 +404,15 @@ export function buildAppPageProbes(options: {
   isRscRequest: boolean;
   /** Fallback raw params used when an interception match omits its own. */
   matchedParams: unknown;
-  makeThenableParams: (params: unknown, pageElementId: string) => unknown;
+  makeThenableParams: (
+    params: unknown,
+    pageElementId: string,
+    paramNames?: readonly string[] | null,
+  ) => unknown;
   mainPageElementId?: string;
   onDynamicSuspenseBoundary?: (pageElementId: string, ordinal: number) => void;
   onSearchParamsAccess?: (pageElementId: string) => void;
+  slotParamOverrides?: Readonly<Record<string, unknown>> | null;
 }): Promise<unknown>[] {
   const { route, pageComponent, asyncRouteParams, searchParams, matchedParams } = options;
 
@@ -478,7 +486,17 @@ export function buildAppPageProbes(options: {
       slot?.loading?.default || slot?.loadings?.some((loading) => loading?.default)
     );
     const hasSerializedSlot = hasSerializedElement(slotElementId);
-    addProbe(slot?.page?.default, asyncRouteParams, slotElementId, awaitResult, !hasSerializedSlot);
+    addProbe(
+      slot?.page?.default,
+      options.makeThenableParams(
+        options.slotParamOverrides?.[slotKey] ?? matchedParams,
+        slotElementId,
+        slot?.slotParamNames ?? options.route.params,
+      ),
+      slotElementId,
+      awaitResult,
+      !hasSerializedSlot,
+    );
     if (hasSerializedSlot) addSerializedElementProbe(slotElementId, awaitResult);
   }
 
@@ -504,6 +522,7 @@ export function buildAppPageProbes(options: {
       options.makeThenableParams(
         intercept.matchedParams ?? matchedParams,
         interceptedPageElementId,
+        interceptedSlot?.slotParamNames ?? options.route.params,
       ),
       interceptedPageElementId,
       !interceptHasLoadingBoundary,

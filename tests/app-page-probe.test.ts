@@ -939,6 +939,62 @@ describe("buildAppPageProbes", () => {
     expect(observed).toEqual([[slotElementId, 1]]);
   });
 
+  it("probes named slots with their effective catch-all params and name domain", async () => {
+    const slotElementId = "slot:slot:/:teamID";
+    const observedKeys: string[] = [];
+    const receivedParams: Array<Record<string, unknown>> = [];
+    const receivedParamNames: Array<readonly string[] | null | undefined> = [];
+
+    async function SlotPage({ params }: { params: Promise<Record<string, unknown>> }) {
+      const resolved = await params;
+      void resolved.catchAll;
+      receivedParams.push(resolved);
+      return null;
+    }
+
+    const probes = buildAppPageProbes({
+      route: {
+        params: ["teamID", "folder"],
+        slots: {
+          slot: {
+            id: slotElementId,
+            page: { default: SlotPage },
+            slotParamNames: ["teamID", "catchAll"],
+            slotPatternParts: [":teamID", ":catchAll+"],
+          },
+        },
+      },
+      pageComponent: () => null,
+      asyncRouteParams: makeThenableParams({ teamID: "acme", folder: "docs" }),
+      mainPageElementId: "page:/acme/sub/docs",
+      searchParams: null,
+      isRscRequest: true,
+      matchedParams: { teamID: "acme", folder: "docs" },
+      makeThenableParams(params, _pageElementId, paramNames) {
+        receivedParamNames.push(paramNames);
+        const resolved = new Proxy(
+          { ...(params as Record<string, unknown>) },
+          {
+            get(target, property, receiver) {
+              if (property === "catchAll") observedKeys.push(property);
+              return Reflect.get(target, property, receiver);
+            },
+          },
+        );
+        return Promise.resolve(resolved);
+      },
+      slotParamOverrides: {
+        slot: { teamID: "acme", catchAll: ["sub", "docs"] },
+      },
+    });
+
+    await Promise.all(probes);
+
+    expect(receivedParamNames).toEqual([["teamID", "catchAll"]]);
+    expect(observedKeys).toEqual(["catchAll"]);
+    expect(receivedParams).toEqual([{ teamID: "acme", catchAll: ["sub", "docs"] }]);
+  });
+
   it("probes the matched page, every slot page, and the interception page", async () => {
     const probed: string[] = [];
     const probes = buildAppPageProbes({

@@ -43,6 +43,10 @@ export type VinextLinkPrefetchRoute = {
   requiresDynamicNavigationRequest?: boolean;
   runtimePrefetchVaryParamNames?: string[];
   runtimePrefetchVarySearchParams?: boolean;
+  slotParamPatterns?: Array<{
+    paramNames: string[];
+    patternParts: string[];
+  }>;
 };
 
 /**
