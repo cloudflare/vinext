@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto";
-import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Plugin } from "vite";
+import type { Plugin } from "vite";
 import type { BundleBackfillChunk } from "../build/ssr-manifest.js";
 
 const APP_GLOBAL_CSS_OWNER_PREFIX = "\0vinext:app-global-css:";
 const APP_GLOBAL_CSS_OWNER_SUFFIX = ".js";
 const APP_GLOBAL_CSS_SOURCE_QUERY = "vinext-app-global-css-source";
-const CSS_MODULE_OWNER_QUERY = "vinext-app-css-module-owner";
 const GLOBAL_STYLESHEET_RE = /\.(?:css|scss|sass)$/i;
 const GLOBAL_STYLESHEET_CANDIDATE_RE =
   /(?:\.(?:css|scss|sass)(?:\?|$)|^[^?]*\/(?:[^./?]+)$|^[^./?]+$)/i;
@@ -22,27 +20,6 @@ function isInsideDirectory(directory: string, id: string): boolean {
 }
 
 type CssOwner = { key: string; kind: "global" | "module"; source: string };
-
-type StaticImportNode = {
-  type: "ImportDeclaration";
-  source: { end: number; start: number; value: unknown };
-};
-
-function staticImports(source: string, id: string): StaticImportNode[] {
-  const extension = path.extname(cleanModuleId(id)).slice(1).toLowerCase();
-  const lang =
-    extension === "tsx" || extension === "jsx" ? extension : extension === "ts" ? "ts" : "js";
-  try {
-    const ast = parseAst(source, { lang });
-    return ast.body.flatMap((node) => {
-      if (node.type !== "ImportDeclaration") return [];
-      const value = (node as StaticImportNode).source.value;
-      return typeof value === "string" ? [node as StaticImportNode] : [];
-    });
-  } catch {
-    return [];
-  }
-}
 
 function encodeOwnerId(owner: CssOwner): string {
   return (
@@ -69,9 +46,9 @@ function decodeOwnerId(id: string): CssOwner | null {
  *
  * Global stylesheets use the owner in both RSC and client-reference builds so
  * both environments emit the same CSS asset href. In the RSC build, CSS
- * modules in an importer that mixes module and global styles also get owners.
- * That lets the server-resource manifest preserve order across each global
- * boundary without changing normal client CSS chunking.
+ * modules get owners as well. That lets the server-resource manifest preserve
+ * their graph-wide order across global boundaries without changing normal
+ * client CSS chunking.
  */
 export function appGlobalCssOwnerChunkName(id: string): string | null {
   const owner = decodeOwnerId(id);
@@ -93,10 +70,7 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
       filter: { id: GLOBAL_STYLESHEET_CANDIDATE_RE },
       async handler(source, importer) {
         if (!importer) return null;
-        if (
-          source.includes("?") &&
-          !/[?&](?:vite-rsc-css-export|vinext-app-css-module-owner)(?:[=&]|$)/.test(source)
-        ) {
+        if (source.includes("?") && !/[?&]vite-rsc-css-export(?:[=&]|$)/.test(source)) {
           return null;
         }
 
@@ -110,52 +84,13 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
         const resolvedId = toSlash(resolved.id);
         if (!GLOBAL_STYLESHEET_RE.test(cleanModuleId(resolvedId))) return null;
         const isModule = cleanModuleId(resolvedId).includes(".module.");
-        if (isModule && !source.includes(CSS_MODULE_OWNER_QUERY)) return null;
+        if (isModule && this.environment?.name !== "rsc") return null;
         const ownerKey = path.relative(appDir, cleanModuleId(resolvedId));
         return encodeOwnerId({
           key: ownerKey,
           kind: isModule ? "module" : "global",
           source: resolvedId,
         });
-      },
-    },
-    transform: {
-      filter: { id: /\.[jt]sx?$/, code: /\.module\.(?:css|scss|sass)/i },
-      async handler(code, id) {
-        if (this.environment?.name !== "rsc") return null;
-        const appDir = getAppDir();
-        const cleanId = cleanModuleId(id);
-        if (!appDir || !isInsideDirectory(appDir, cleanId)) return null;
-
-        const imports = staticImports(code, id);
-        const stylesheets: Array<{
-          importNode: StaticImportNode;
-          isModule: boolean;
-        }> = [];
-        for (const importNode of imports) {
-          const specifier = String(importNode.source.value);
-          const resolved = await this.resolve(specifier, id, { skipSelf: true });
-          if (!resolved || resolved.external) continue;
-          const resolvedId = cleanModuleId(resolved.id);
-          if (!GLOBAL_STYLESHEET_RE.test(resolvedId)) continue;
-          stylesheets.push({ importNode, isModule: resolvedId.includes(".module.") });
-        }
-        if (!stylesheets.some(({ isModule }) => isModule)) return null;
-        if (!stylesheets.some(({ isModule }) => !isModule)) return null;
-
-        const output = new MagicString(code);
-        for (const { importNode, isModule } of stylesheets) {
-          if (!isModule) continue;
-          const specifier = String(importNode.source.value);
-          output.update(
-            importNode.source.start,
-            importNode.source.end,
-            JSON.stringify(
-              `${specifier}${specifier.includes("?") ? "&" : "?"}${CSS_MODULE_OWNER_QUERY}`,
-            ),
-          );
-        }
-        return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
       },
     },
     load: {
@@ -201,18 +136,21 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
             }
           };
 
-          let hasOwnerImport = false;
-          for (const moduleId of Object.keys(chunk.modules ?? {})) {
-            const importedIds = this.getModuleInfo(moduleId)?.importedIds ?? [];
-            for (const importedId of importedIds) {
-              const importedOwnerCss = ownerCss.get(importedId);
-              if (importedOwnerCss) {
-                hasOwnerImport = true;
-                add(importedOwnerCss);
-              }
+          const visitedModules = new Set<string>();
+          const collectModuleCss = (moduleId: string) => {
+            if (visitedModules.has(moduleId)) return;
+            visitedModules.add(moduleId);
+            const importedOwnerCss = ownerCss.get(moduleId);
+            if (importedOwnerCss) {
+              add(importedOwnerCss);
+              return;
             }
-          }
-          if (!hasOwnerImport) continue;
+            for (const importedId of this.getModuleInfo(moduleId)?.importedIds ?? []) {
+              collectModuleCss(importedId);
+            }
+          };
+          for (const moduleId of Object.keys(chunk.modules ?? {})) collectModuleCss(moduleId);
+          if (orderedCss.length === 0) continue;
           add(currentCss);
           metadata.importedCss = new Set(orderedCss);
         }

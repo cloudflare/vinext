@@ -24,6 +24,7 @@ function fixtureConfig() {
       alias: {
         [GLOBAL_CSS_ALIAS]: path.join(FIXTURE_DIR, "app/page/global2.css"),
         "fixture-alias-only-css": path.join(FIXTURE_DIR, "app/alias-only.css"),
+        "fixture-module-alias": path.join(FIXTURE_DIR, "app/alias-module.module.css"),
       },
     },
     plugins: [vinext({ appDir: FIXTURE_DIR })],
@@ -105,6 +106,32 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     await expect
       .poll(() =>
         page.locator("#straddled-order").evaluate((element) => getComputedStyle(element).color),
+      )
+      .toBe("rgb(0, 0, 255)");
+
+    await page.close();
+  });
+
+  it("classifies extensionless CSS module aliases by their resolved target", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/alias-module`, { waitUntil: "networkidle" });
+
+    await expect
+      .poll(() =>
+        page.locator("#alias-module").evaluate((element) => getComputedStyle(element).color),
+      )
+      .toBe("rgb(255, 0, 0)");
+
+    await page.close();
+  });
+
+  it("preserves CSS order through an intermediate JavaScript module", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/transitive`, { waitUntil: "networkidle" });
+
+    await expect
+      .poll(() =>
+        page.locator("#transitive-order").evaluate((element) => getComputedStyle(element).color),
       )
       .toBe("rgb(0, 0, 255)");
 
