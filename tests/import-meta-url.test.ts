@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   createImportMetaUrlPlugin,
+  rewriteDynamicImportUrls,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
@@ -85,6 +86,30 @@ describe("vinext:import-meta-url plugin", () => {
 
     expect(result?.code).toContain(`new URL("./font.ttf", import.meta?.url)`);
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
+  });
+
+  // Ported from Next.js:
+  // test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  it("normalizes literal module URLs used as dynamic import specifiers", () => {
+    const result = rewriteDynamicImportUrls(
+      `const dependency = import(new URL("./style.css", import.meta.url).href);\n`,
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
+    expect(result?.code).not.toContain("new URL");
+  });
+
+  it("preserves non-literal and absolute dynamic import URLs", () => {
+    const result = rewriteDynamicImportUrls(
+      [
+        `const relative = "./style.css";`,
+        `const dynamic = import(new URL(relative, import.meta.url).href);`,
+        `const absolute = import(new URL("/style.css", import.meta.url).href);`,
+      ].join("\n"),
+    );
+
+    expect(result).toBeNull();
   });
 
   it("rewrites optional chained import.meta.url reads", () => {

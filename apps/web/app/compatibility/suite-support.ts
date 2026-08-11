@@ -112,7 +112,6 @@ export const SUITE_SUPPORT_POLICY = {
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
   "test/e2e/import-conditions/import-conditions.test.ts": VITE_RUNTIME_CONDITIONS,
-  "test/e2e/react-version/react-version.test.ts": VITE_RUNTIME_CONDITIONS,
 } as const satisfies Record<string, ScopedSuiteSupport>;
 
 /** Feature labels for the supported failures classified in run 29551314872. */
@@ -171,6 +170,7 @@ const SUPPORTED_SUITE_FEATURES = {
     "Middleware rewrites, query propagation, and trailing slash",
   "test/e2e/next-head/index.test.ts": "Pages Router rendering and data APIs",
   "test/e2e/prerender.test.ts": "ISR, tags, revalidation, and after()",
+  "test/e2e/react-version/react-version.test.ts": "React and runtime export conditions",
   "test/e2e/revalidate-reason/revalidate-reason.test.ts": "ISR, tags, revalidation, and after()",
   "test/e2e/streaming-ssr/index.test.ts": "CSS ordering, styled-jsx, and dynamic CSS",
   "test/e2e/tsconfig-path/index.test.ts": "next.config and custom tsconfig loading",
