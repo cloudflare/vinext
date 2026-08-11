@@ -31,10 +31,10 @@ describe("compatibility suite support policy", () => {
 
     expect(counts).toEqual({
       deferred: 26,
-      "needs-vite-equivalent": 3,
+      "needs-vite-equivalent": 2,
       unsupported: 5,
     });
-    expect(NON_SUPPORTED_SUITES).toHaveLength(34);
+    expect(NON_SUPPORTED_SUITES).toHaveLength(33);
     expect(CLASSIFIED_SUITES).toHaveLength(69);
     expect(new Set(CLASSIFIED_SUITES).size).toBe(69);
   });
@@ -52,6 +52,18 @@ describe("compatibility suite support policy", () => {
       feature: "Pages Router HTML serialization",
       reason: "Next.js internal HTML serialization whitespace; charset order is already correct",
     });
+  });
+
+  it("routes Next.js compiler condition labels to Worker-equivalent coverage", () => {
+    const support = getSuiteSupport("test/e2e/import-conditions/import-conditions.test.ts");
+
+    expect(support).toMatchObject({
+      status: "needs-vite-equivalent",
+      feature: "Runtime export conditions across deployment environments",
+    });
+    expect(support.reason).toContain(
+      "tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts",
+    );
   });
 });
 

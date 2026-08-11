@@ -43,11 +43,11 @@ const NEXT_BUNDLER_SPECIFIC = {
   reason: "Exercises a Next.js compiler surface rather than Vite or Rolldown behavior.",
 } as const satisfies ScopedSuiteSupport;
 
-const VITE_RUNTIME_CONDITIONS = {
+const NEXT_RUNTIME_CONDITION_LABELS = {
   status: "needs-vite-equivalent",
-  feature: "React and runtime export conditions",
+  feature: "Runtime export conditions across deployment environments",
   reason:
-    "The capability needs Vite, RSC, and Workers coverage; exact edge-light assertions are Next.js-specific.",
+    "The exact suite asserts Next.js's per-route node/edge compiler split and private edge-light condition. Vinext instead selects node in the Node adapter, worker/workerd in Cloudflare Workers, and browser in the client; equivalent Worker coverage lives in tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts.",
 } as const satisfies ScopedSuiteSupport;
 
 export const SUITE_SUPPORT_POLICY = {
@@ -111,13 +111,12 @@ export const SUITE_SUPPORT_POLICY = {
       "Web Worker behavior needs Vite and Rolldown coverage; Next.js deployment-token assertions are not portable.",
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
-  "test/e2e/import-conditions/import-conditions.test.ts": VITE_RUNTIME_CONDITIONS,
+  "test/e2e/import-conditions/import-conditions.test.ts": NEXT_RUNTIME_CONDITION_LABELS,
   "test/e2e/next-head/index.test.ts": {
     status: "deferred",
     feature: "Pages Router HTML serialization",
     reason: "Next.js internal HTML serialization whitespace; charset order is already correct",
   },
-  "test/e2e/react-version/react-version.test.ts": VITE_RUNTIME_CONDITIONS,
 } as const satisfies Record<string, ScopedSuiteSupport>;
 
 /** Feature labels for the supported failures classified in run 29551314872. */
@@ -175,6 +174,7 @@ const SUPPORTED_SUITE_FEATURES = {
   "test/e2e/middleware-trailing-slash/test/index.test.ts":
     "Middleware rewrites, query propagation, and trailing slash",
   "test/e2e/prerender.test.ts": "ISR, tags, revalidation, and after()",
+  "test/e2e/react-version/react-version.test.ts": "React and runtime export conditions",
   "test/e2e/revalidate-reason/revalidate-reason.test.ts": "ISR, tags, revalidation, and after()",
   "test/e2e/streaming-ssr/index.test.ts": "CSS ordering, styled-jsx, and dynamic CSS",
   "test/e2e/tsconfig-path/index.test.ts": "next.config and custom tsconfig loading",

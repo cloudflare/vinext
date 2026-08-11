@@ -244,7 +244,10 @@ import {
   validatePageExports,
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
-import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import {
+  createDynamicImportUrlPlugin,
+  createImportMetaUrlPlugin,
+} from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
@@ -1808,6 +1811,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     mdxProxyPlugin,
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
+    // Normalize literal module URLs before the dynamic-request transform sees
+    // them. The latter intentionally replaces unresolved expressions with a
+    // deterministic runtime error, but this form is a statically resolvable
+    // module dependency that Vite can bundle.
+    createDynamicImportUrlPlugin(),
     // Next.js ignores requests without any statically known path component
     // during graph analysis and leaves a deterministic runtime failure.
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
