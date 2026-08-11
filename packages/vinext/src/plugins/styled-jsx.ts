@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
@@ -15,7 +16,11 @@ type StyledJsxPluginOptions = {
   importModule?: (url: string) => Promise<NextSwcModule>;
 };
 
-const STYLED_JSX_IMPORT_RE = /^styled-jsx(?:\/.*)?$/;
+const STYLED_JSX_RUNTIME_ID = "styled-jsx";
+const STYLED_JSX_STYLE_ID = "styled-jsx/style";
+const STYLED_JSX_RUNTIME_PUBLIC_ID = "virtual:vinext-styled-jsx-runtime";
+const STYLED_JSX_RUNTIME_RESOLVED_ID = "\0vinext-styled-jsx-runtime";
+const STYLED_JSX_STYLE_FACADE_ID = "\0vinext-styled-jsx-style";
 const NODE_MODULES_RE = /[\\/]node_modules[\\/]/;
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
@@ -93,6 +98,32 @@ function parserOptions(id: string): Record<string, unknown> {
   return { syntax: "ecmascript", jsx: true };
 }
 
+function convertStyledJsxRuntimeToEsm(source: string): string {
+  const withoutClientOnlyRequire = source.replace(
+    /^require\(["']client-only["']\);/m,
+    'import "client-only";',
+  );
+  const withReactImport = withoutClientOnlyRequire.replace(
+    /^var React = require\(["']react["']\);/m,
+    'import * as React from "react";',
+  );
+  const withEsmExports = withReactImport.replace(
+    /exports\.StyleRegistry = StyleRegistry;\s*exports\.createStyleRegistry = createStyleRegistry;\s*exports\.style = JSXStyle;\s*exports\.useStyleRegistry = useStyleRegistry;\s*$/,
+    "export { StyleRegistry, createStyleRegistry, JSXStyle as style, useStyleRegistry };\n",
+  );
+
+  if (
+    withoutClientOnlyRequire === source ||
+    withReactImport === withoutClientOnlyRequire ||
+    withEsmExports === withReactImport
+  ) {
+    throw new Error(
+      "[vinext] The installed styled-jsx runtime has an unsupported module wrapper shape.",
+    );
+  }
+  return withEsmExports;
+}
+
 export function createStyledJsxPlugin(
   initialProjectRoot: string,
   options: StyledJsxPluginOptions = {},
@@ -106,6 +137,13 @@ export function createStyledJsxPlugin(
   function getNextRequire(): NodeJS.Require | null {
     nextRequire ??= resolveNextRequire(projectRoot);
     return nextRequire;
+  }
+
+  function getRuntimeDistPath(): string | null {
+    const requireFromNext = getNextRequire();
+    if (!requireFromNext) return null;
+    const runtimePath = toSlash(requireFromNext.resolve(STYLED_JSX_RUNTIME_ID));
+    return path.join(path.dirname(runtimePath), "dist/index/index.js");
   }
 
   async function getCompiler(): Promise<NextSwcModule> {
@@ -128,47 +166,6 @@ export function createStyledJsxPlugin(
   return {
     name: "vinext:styled-jsx",
     enforce: "pre",
-    config(config) {
-      const configRoot = config.root ? resolveProjectRoot(config.root) : undefined;
-      if (configRoot && configRoot !== projectRoot) {
-        projectRoot = configRoot;
-        nextRequire = undefined;
-        compilerPromise = null;
-      }
-      try {
-        const requireFromNext = getNextRequire();
-        const runtimePath = requireFromNext?.resolve("styled-jsx");
-        const stylePath = requireFromNext?.resolve("styled-jsx/style");
-        if (!runtimePath || !stylePath) return;
-        return {
-          optimizeDeps: {
-            include: ["styled-jsx", "styled-jsx/style"],
-          },
-          resolve: {
-            alias: [
-              { find: /^styled-jsx\/style$/, replacement: stylePath },
-              { find: /^styled-jsx$/, replacement: runtimePath },
-            ],
-          },
-          ssr: {
-            optimizeDeps: {
-              exclude: [
-                "react",
-                "react-dom",
-                "react-dom/server.edge",
-                "react-dom/static.edge",
-                "react/jsx-runtime",
-                "react/jsx-dev-runtime",
-                "react-server-dom-webpack/client.edge",
-              ],
-              include: ["styled-jsx", "styled-jsx/style"],
-            },
-          },
-        };
-      } catch {
-        return;
-      }
-    },
     configResolved(config) {
       development = config.command === "serve";
       const configRoot = resolveProjectRoot(config.root);
@@ -179,18 +176,30 @@ export function createStyledJsxPlugin(
       }
     },
     resolveId: {
-      filter: { id: STYLED_JSX_IMPORT_RE },
+      filter: { id: /^(?:styled-jsx(?:\/.*)?|virtual:vinext-styled-jsx-runtime)$/ },
       handler(source) {
+        if (source === STYLED_JSX_RUNTIME_ID || source === STYLED_JSX_RUNTIME_PUBLIC_ID) {
+          return STYLED_JSX_RUNTIME_RESOLVED_ID;
+        }
+        if (source === STYLED_JSX_STYLE_ID) return STYLED_JSX_STYLE_FACADE_ID;
         try {
           return getNextRequire()?.resolve(source) ?? null;
-        } catch {}
-
-        try {
-          return createProjectRequire(projectRoot).resolve(source);
         } catch {
           return null;
         }
       },
+    },
+    load(id) {
+      if (id === STYLED_JSX_RUNTIME_RESOLVED_ID) {
+        const runtimeDistPath = getRuntimeDistPath();
+        if (!runtimeDistPath) return null;
+        this.addWatchFile(runtimeDistPath);
+        return convertStyledJsxRuntimeToEsm(readFileSync(runtimeDistPath, "utf8"));
+      }
+      if (id === STYLED_JSX_STYLE_FACADE_ID) {
+        return `export { style as default } from ${JSON.stringify(STYLED_JSX_RUNTIME_PUBLIC_ID)};`;
+      }
+      return null;
     },
     transform: {
       filter: {

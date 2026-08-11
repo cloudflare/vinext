@@ -1502,17 +1502,17 @@ export default function Page({ marker }: { marker: string }) {
     expect(firstRes.status).toBe(200);
     expect(firstRes.headers.get("x-vinext-cache")).toBeNull();
     const firstHtml = await firstRes.text();
-    expect(firstHtml).toContain('data-testid="head-before">0<');
-    expect(firstHtml).toContain('data-testid="private-cache-before">0<');
-    expect(firstHtml).toContain('data-testid="inserted-html-before">0<');
+    expect(firstHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+    expect(firstHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+    expect(firstHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
 
     const secondRes = await fetch(`${baseUrl}/isr-second-render-state`);
     expect(secondRes.status).toBe(200);
     expect(secondRes.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await secondRes.text();
-    expect(secondHtml).toContain('data-testid="head-before">0<');
-    expect(secondHtml).toContain('data-testid="private-cache-before">0<');
-    expect(secondHtml).toContain('data-testid="inserted-html-before">0<');
+    expect(secondHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+    expect(secondHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+    expect(secondHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
   });
 
   it("includes __NEXT_DATA__ script tag", async () => {
@@ -6423,23 +6423,25 @@ export default function CounterPage() {
       expect(isrFirstRes.status).toBe(200);
       expect(isrFirstRes.headers.get("x-vinext-cache")).toBe("MISS");
       const isrFirstHtml = await isrFirstRes.text();
-      expect(isrFirstHtml).toContain('data-testid="head-before">0<');
-      expect(isrFirstHtml).toContain('data-testid="private-cache-before">0<');
-      expect(isrFirstHtml).toContain('data-testid="inserted-html-before">0<');
-      const firstTimestamp = isrFirstHtml.match(/data-testid="timestamp">(\d+)</)?.[1];
+      expect(isrFirstHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+      expect(isrFirstHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+      expect(isrFirstHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
+      const firstTimestamp = isrFirstHtml.match(/data-testid="timestamp"[^>]*>(\d+)</)?.[1];
       expect(firstTimestamp).toBeDefined();
       expect(isrFirstHtml).toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
-      expect(isrFirstHtml).toContain(
-        `<title data-next-head="">ISR Second Render State ${firstTimestamp}</title>`,
+      expect(isrFirstHtml).toMatch(
+        new RegExp(
+          `<title\\b(?=[^>]*data-next-head="")[^>]*>ISR Second Render State ${firstTimestamp}</title>`,
+        ),
       );
 
       const isrSecondRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(isrSecondRes.status).toBe(200);
       expect(isrSecondRes.headers.get("x-vinext-cache")).toBe("HIT");
       const isrSecondHtml = await isrSecondRes.text();
-      expect(isrSecondHtml).toContain('data-testid="head-before">0<');
-      expect(isrSecondHtml).toContain('data-testid="private-cache-before">0<');
-      expect(isrSecondHtml).toContain('data-testid="inserted-html-before">0<');
+      expect(isrSecondHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+      expect(isrSecondHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+      expect(isrSecondHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
 
       // Next.js regenerates stale Pages entries with a full render, so
       // metadata derived from getStaticProps must advance with the body rather
@@ -6450,14 +6452,16 @@ export default function CounterPage() {
       const staleRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(staleRes.status).toBe(200);
       expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
-      expect(await staleRes.text()).toContain(`data-testid="timestamp">${firstTimestamp}<`);
+      expect(await staleRes.text()).toMatch(
+        new RegExp(`data-testid="timestamp"[^>]*>${firstTimestamp}<`),
+      );
 
       let regeneratedTimestamp: string | undefined;
       let isrRegeneratedHtml = "";
       for (let attempt = 0; attempt < 40; attempt++) {
         const regeneratedRes = await fetch(`${prodUrl}/isr-second-render-state`);
         isrRegeneratedHtml = await regeneratedRes.text();
-        regeneratedTimestamp = isrRegeneratedHtml.match(/data-testid="timestamp">(\d+)</)?.[1];
+        regeneratedTimestamp = isrRegeneratedHtml.match(/data-testid="timestamp"[^>]*>(\d+)</)?.[1];
         if (
           regeneratedRes.headers.get("x-vinext-cache") === "HIT" &&
           regeneratedTimestamp !== firstTimestamp
@@ -6468,8 +6472,10 @@ export default function CounterPage() {
       }
       expect(regeneratedTimestamp).toBeDefined();
       expect(regeneratedTimestamp).not.toBe(firstTimestamp);
-      expect(isrRegeneratedHtml).toContain(
-        `<title data-next-head="">ISR Second Render State ${regeneratedTimestamp}</title>`,
+      expect(isrRegeneratedHtml).toMatch(
+        new RegExp(
+          `<title\\b(?=[^>]*data-next-head="")[^>]*>ISR Second Render State ${regeneratedTimestamp}</title>`,
+        ),
       );
       expect(isrRegeneratedHtml).toMatch(new RegExp(`z-index:\\s*${regeneratedTimestamp}`));
       expect(isrRegeneratedHtml).not.toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));

@@ -25,13 +25,27 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
     "styled-jsx",
   );
   fs.mkdirSync(path.join(nextRoot, "node_modules"), { recursive: true });
-  fs.mkdirSync(styledJsxRoot, { recursive: true });
+  fs.mkdirSync(path.join(styledJsxRoot, "dist", "index"), { recursive: true });
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
   fs.writeFileSync(path.join(nextRoot, "package.json"), '{"name":"next"}');
   fs.writeFileSync(path.join(styledJsxRoot, "package.json"), '{"name":"styled-jsx"}');
   fs.writeFileSync(path.join(styledJsxRoot, "index.js"), "module.exports = {};");
   fs.writeFileSync(path.join(styledJsxRoot, "style.js"), "module.exports = () => null;");
   fs.writeFileSync(path.join(styledJsxRoot, "css.js"), "module.exports = {};");
+  fs.writeFileSync(
+    path.join(styledJsxRoot, "dist", "index", "index.js"),
+    `require('client-only');
+var React = require('react');
+function StyleRegistry() {}
+function createStyleRegistry() {}
+function JSXStyle() {}
+function useStyleRegistry() {}
+exports.StyleRegistry = StyleRegistry;
+exports.createStyleRegistry = createStyleRegistry;
+exports.style = JSXStyle;
+exports.useStyleRegistry = useStyleRegistry;
+`,
+  );
   fs.symlinkSync(nextRoot, path.join(root, "node_modules", "next"), "dir");
   fs.symlinkSync(styledJsxRoot, path.join(nextRoot, "node_modules", "styled-jsx"), "dir");
   return { root, styledJsxRoot };
@@ -77,22 +91,26 @@ describe("styled-jsx compatibility plugin", () => {
     );
   });
 
-  it("resolves relative Vite roots before configuring styled-jsx optimization", () => {
-    const { root, styledJsxRoot } = createPnpmStyleFixture();
+  it("resolves relative Vite roots before loading the portable runtime", () => {
+    const { root } = createPnpmStyleFixture();
     const plugin = createStyledJsxPlugin(process.cwd());
-    const configHook = plugin.config as (config: { root: string }) =>
-      | {
-          resolve?: { alias?: Array<{ find: RegExp; replacement: string }> };
-          ssr?: { optimizeDeps?: { include?: string[] } };
-        }
-      | undefined;
-    const result = configHook({ root: path.relative(process.cwd(), root) });
+    const configResolved = plugin.configResolved as (config: {
+      root: string;
+      command: "build";
+    }) => void;
+    configResolved({ root: path.relative(process.cwd(), root), command: "build" });
 
-    const aliases = result?.resolve?.alias ?? [];
-    expect(
-      fs.realpathSync(aliases.find((alias) => alias.find.test("styled-jsx"))!.replacement),
-    ).toBe(fs.realpathSync(path.join(styledJsxRoot, "index.js")));
-    expect(result?.ssr?.optimizeDeps?.include).toContain("styled-jsx/style");
+    const resolveId = plugin.resolveId as { handler(source: string): string | null };
+    const runtimeId = resolveId.handler("styled-jsx");
+    expect(runtimeId).toBe("\0vinext-styled-jsx-runtime");
+
+    const watched: string[] = [];
+    const load = plugin.load as (this: { addWatchFile(path: string): void }, id: string) => string;
+    const runtime = load.call({ addWatchFile: (filePath) => watched.push(filePath) }, runtimeId!);
+    expect(runtime).toContain('import * as React from "react"');
+    expect(runtime).toContain("export { StyleRegistry, createStyleRegistry, JSXStyle as style");
+    expect(runtime).not.toContain("module.exports");
+    expect(watched).toHaveLength(1);
   });
 
   it("leaves ordinary style tags untouched when Next is not installed", async () => {

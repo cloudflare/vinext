@@ -2837,7 +2837,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       ...nextServerExternal,
                     ],
                     noExternal: true,
-                    optimizeDeps: config.ssr?.optimizeDeps,
                   },
                 }),
           resolve: {
