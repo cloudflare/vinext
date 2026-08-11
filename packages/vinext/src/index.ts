@@ -2634,7 +2634,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           worker: {
-            plugins: () => [{ ...imageImportsPlugin }],
+            plugins: () => [
+              // Worker builds need a distinct plugin object, but its closures
+              // intentionally share the client plugin's image caches. A worker
+              // buildStart may clear them; writeBundle recreates any missing
+              // staticImageAssets entries from imageImports before writing.
+              { ...imageImportsPlugin },
+            ],
           },
           build: {
             // Emit asset files (CSS, etc.) referenced by SSR JS chunks.

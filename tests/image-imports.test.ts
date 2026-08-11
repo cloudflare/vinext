@@ -231,6 +231,35 @@ describe("vinext:image-imports — transform", () => {
     expectImageBinding(result.code, "photo", "test-8x6.jpg");
   });
 
+  it("transforms dynamic image imports outside worker builds into StaticImageData modules", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const result = await transform.call(
+      plugin,
+      `export const image = import("./test-4x3.png");`,
+      fakeId,
+    );
+    const imagePath = toSlash(PNG_PATH);
+
+    expect(result?.code).toContain(
+      `import(${JSON.stringify(imagePath + "?vinext-dynamic-image")})`,
+    );
+
+    const resolveId = unwrapHook(plugin.resolveId);
+    const dynamicImageId = resolveId.call(plugin, imagePath + "?vinext-dynamic-image", fakeId);
+    const load = unwrapHook(plugin.load);
+    const dynamicImageModule = await load.call(plugin, dynamicImageId);
+    expect(dynamicImageModule).toContain(
+      `import url from ${JSON.stringify(imagePath + "?vinext-image-url")}`,
+    );
+    expect(dynamicImageModule).toContain(
+      `import meta from ${JSON.stringify(imagePath + "?vinext-meta")}`,
+    );
+    expect(dynamicImageModule).toContain(
+      "export default { src: url, width: meta.width, height: meta.height }",
+    );
+  });
+
   it("returns null for files with no image imports", async () => {
     const plugin = getImagePlugin();
     const transform = unwrapHook(plugin.transform);
