@@ -1062,6 +1062,8 @@ export async function renderAppPageLifecycle(
             ? false
             : undefined,
         waitForAllReady: shouldWaitForAllReady,
+        isStaticGeneration: options.isPrerender === true,
+        isForceStatic: options.isForceStatic,
       });
     },
     renderSpecialErrorResponse(specialError) {

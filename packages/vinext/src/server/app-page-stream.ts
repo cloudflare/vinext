@@ -139,6 +139,10 @@ export type AppPageSsrHandler = {
       pprFallbackShellSignal?: AbortSignal;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
+      /** Render is producing a static/prerendered HTML artifact. */
+      isStaticGeneration?: boolean;
+      /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+      isForceStatic?: boolean;
       /** Dev-only: original server error to surface in the browser overlay. */
       initialDevServerError?: unknown;
       /** When true, an SSR-phase-only shell render error resolves to the
@@ -183,6 +187,10 @@ type RenderAppPageHtmlStreamOptions = {
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
+  /** Render is producing a static/prerendered HTML artifact. */
+  isStaticGeneration?: boolean;
+  /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+  isForceStatic?: boolean;
   /** Override the default shell-error recovery decision passed to handleSsr. */
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
@@ -253,6 +261,8 @@ export async function renderAppPageHtmlStream(
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
     waitForAllReady: options.waitForAllReady,
+    isStaticGeneration: options.isStaticGeneration,
+    isForceStatic: options.isForceStatic,
     initialDevServerError: options.initialDevServerError,
     // Only when the caller affirmatively knows there is no custom
     // global-error.tsx; undefined (unknown) keeps reject semantics.

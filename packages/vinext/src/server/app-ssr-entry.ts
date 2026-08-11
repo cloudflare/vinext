@@ -394,13 +394,21 @@ export async function handleSsr(
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
+    /** Render is producing a static/prerendered HTML artifact. */
+    isStaticGeneration?: boolean;
+    /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+    isForceStatic?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
-    const ssrNavigationContext = requireNavigationContext(navContext);
+    const ssrNavigationContext = {
+      ...requireNavigationContext(navContext),
+      isStaticGeneration: options?.isStaticGeneration,
+      isForceStatic: options?.isForceStatic,
+    };
 
     await clientReferencePreloader.preload();
 

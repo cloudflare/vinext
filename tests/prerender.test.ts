@@ -1060,6 +1060,24 @@ describe("prerenderApp — default mode (app-basic)", () => {
     }
   });
 
+  it("emits the nearest Suspense fallback when useSearchParams bails out during prerender", () => {
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+    const route = "/nextjs-compat/use-search-params-static-bailout";
+    expect(findRoute(results, route)).toMatchObject({
+      route,
+      status: "rendered",
+      revalidate: false,
+    });
+
+    const html = fs.readFileSync(
+      path.join(outDir, "nextjs-compat/use-search-params-static-bailout.html"),
+      "utf8",
+    );
+    expect(html).toContain('<p id="search-params-suspense">search params suspense</p>');
+    expect(html).not.toContain('id="search-params-value"');
+  });
+
   it("renders revalidate=Infinity page as static", () => {
     const r = findRoute(results, "/revalidate-infinity-test");
     expect(r).toMatchObject({ status: "rendered", revalidate: false });

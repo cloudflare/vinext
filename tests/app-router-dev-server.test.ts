@@ -388,6 +388,16 @@ describe("App Router integration", () => {
     expect(html).toContain("hello");
   });
 
+  it("keeps useSearchParams server-rendered outside static prerender", async () => {
+    const res = await fetch(
+      `${baseUrl}/nextjs-compat/use-search-params-static-bailout?value=runtime`,
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<p id="search-params-value">runtime</p>');
+    expect(html).not.toContain('id="search-params-suspense"');
+  });
+
   it("SSR renders a real app route that calls useRouter()", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-router");
     expect(res.status).toBe(200);
