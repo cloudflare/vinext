@@ -39,6 +39,11 @@ function createFixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-esm-externals-"));
   fixtureRoots.push(root);
   writeFile(root, "package.json", JSON.stringify({ type: "module" }));
+  writeFile(
+    root,
+    "tsconfig.json",
+    JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@shared/*": ["lib/*"] } } }),
+  );
   fs.mkdirSync(path.join(root, "node_modules"));
   for (const dependency of ["react", "react-dom", "styled-jsx"]) {
     fs.symlinkSync(
@@ -128,12 +133,42 @@ function createFixture(): string {
       "alternative.js": 'module.exports = "Alternative";',
     },
   );
+  writePackage(
+    root,
+    "shared-condition-package",
+    {
+      exports: {
+        ".": {
+          "react-server": "./rsc.mjs",
+          import: "./default.mjs",
+        },
+      },
+    },
+    {
+      "rsc.mjs": 'export default "RSC";',
+      "default.mjs": 'export default "DEFAULT";',
+    },
+  );
+  for (const [name, value] of [
+    ["geist", "DEFAULT_TRANSPILED"],
+    ["optimized-esm-package", "OPTIMIZED"],
+    ["explicit-esm-package", "EXPLICIT"],
+  ]) {
+    writePackage(
+      root,
+      name,
+      { exports: { "./entry": { import: "./entry.mjs" } } },
+      { "entry.mjs": `export default ${JSON.stringify(value)};` },
+    );
+  }
 
   writeFile(
     root,
     "next.config.mjs",
     `export default {
   serverExternalPackages: ["app-esm-package1", "app-esm-package2", "app-cjs-esm-package"],
+  transpilePackages: ["explicit-esm-package"],
+  experimental: { optimizePackageImports: ["optimized-esm-package"] },
   turbopack: { resolveAlias: { "preact/compat": "react" } },
   webpack(config) {
     config.resolve.alias = { ...config.resolve.alias, "preact/compat": "react" };
@@ -159,6 +194,16 @@ import World3 from "app-cjs-esm-package/entry";`;
       `${directive}\n${appImports}\nexport default function Page() { return <p>Hello {World1}+{World2}+{World3}</p>; }`,
     );
   }
+  writeFile(
+    root,
+    "lib/shared-condition.js",
+    'import value from "shared-condition-package"; export default value;',
+  );
+  writeFile(
+    root,
+    "app/app-shared/page.js",
+    'import value from "../../lib/shared-condition.js"; export default function Page() { return <p>App:{value}</p>; }',
+  );
 
   writeFile(
     root,
@@ -169,7 +214,7 @@ import World3 from "invalid-esm-package/entry";
 export { World1, World2, World3 };`,
   );
   const pagesImports = `import React from "preact/compat";
-import { World1, World2, World3 } from "../lib/pages-worlds.js";`;
+import { World1, World2, World3 } from "@shared/pages-worlds.js";`;
   writeFile(
     root,
     "pages/static.js",
@@ -187,6 +232,19 @@ export function ${loader}() { return { props: { worlds: [World1, World2, World3]
 export default function Page({ worlds }) { return <p>Hello {World1}+{World2}+{World3}+{worlds}</p>; }`,
     );
   }
+  writeFile(
+    root,
+    "pages/pages-shared.js",
+    'import value from "@shared/shared-condition.js"; export default function Page() { return <p>Pages:{value}</p>; }',
+  );
+  writeFile(
+    root,
+    "pages/bundled-packages.js",
+    `import defaultTranspiled from "geist/entry";
+import optimized from "optimized-esm-package/entry";
+import explicit from "explicit-esm-package/entry";
+export default function Page() { return <p>{defaultTranspiled}+{optimized}+{explicit}</p>; }`,
+  );
   return root;
 }
 
@@ -222,6 +280,18 @@ describe("ESM externals", () => {
         ).replaceAll("<!-- -->", "");
         expect(html).toContain("Hello World+World+World");
       }
+      const appShared = await (await fetch(`http://127.0.0.1:${address.port}/app-shared`)).text();
+      expect(appShared.replaceAll("<!-- -->", "")).toContain("App:RSC");
+      const pagesShared = await (
+        await fetch(`http://127.0.0.1:${address.port}/pages-shared`)
+      ).text();
+      expect(pagesShared.replaceAll("<!-- -->", "")).toContain("Pages:DEFAULT");
+      const bundledPackages = await (
+        await fetch(`http://127.0.0.1:${address.port}/bundled-packages`)
+      ).text();
+      expect(bundledPackages.replaceAll("<!-- -->", "")).toContain(
+        "DEFAULT_TRANSPILED+OPTIMIZED+EXPLICIT",
+      );
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
@@ -240,5 +310,12 @@ describe("ESM externals", () => {
       .join("\n");
     expect(clientCode).not.toContain("process.browser");
     expect(clientCode).not.toContain("Browser only");
+
+    const externals = JSON.parse(
+      fs.readFileSync(path.join(root, "dist", "server", "vinext-externals.json"), "utf8"),
+    ) as string[];
+    expect(externals).not.toContain("geist");
+    expect(externals).not.toContain("optimized-esm-package");
+    expect(externals).not.toContain("explicit-esm-package");
   }, 60_000);
 });

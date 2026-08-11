@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path, { toSlash } from "pathslash";
-import type { Plugin } from "vite";
+import { parseAst, type Plugin } from "vite";
 import { stripViteModuleQuery } from "../utils/path.js";
 
 type PagesNodeExternalsOptions = {
   getRoot: () => string;
   getPagesDir: () => string | null;
   getAliases: () => Readonly<Record<string, string>>;
-  getTranspilePackages: () => readonly string[];
+  getTsconfigAliases: () => Readonly<Record<string, string>>;
+  getBundledPackages: () => ReadonlySet<string>;
   isEnabled: () => boolean;
 };
 
@@ -21,6 +22,7 @@ const FRAMEWORK_PACKAGES = new Set([
   "vite",
   "vinext",
 ]);
+const SCRIPT_MODULE_RE = /\.[cm]?[jt]sx?$/i;
 
 function packageNameFromSpecifier(id: string): string | null {
   const [first, second] = id.split("/");
@@ -73,6 +75,45 @@ function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): bo
   return Object.keys(aliases).some((alias) => id === alias || id.startsWith(`${alias}/`));
 }
 
+type StaticImportStatement = {
+  type?: string;
+  importKind?: string;
+  exportKind?: string;
+  source?: { value?: unknown } | null;
+};
+
+function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
+  const cleanId = stripViteModuleQuery(id).toLowerCase();
+  if (cleanId.endsWith(".tsx")) return "tsx";
+  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) {
+    return "ts";
+  }
+  return "jsx";
+}
+
+function staticImportSpecifiers(code: string, id: string): string[] {
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code, { lang: parserLanguage(id) });
+  } catch {
+    return [];
+  }
+
+  const specifiers: string[] = [];
+  for (const statement of ast.body as StaticImportStatement[]) {
+    if (
+      statement.type !== "ImportDeclaration" &&
+      statement.type !== "ExportNamedDeclaration" &&
+      statement.type !== "ExportAllDeclaration"
+    ) {
+      continue;
+    }
+    if (statement.importKind === "type" || statement.exportKind === "type") continue;
+    if (typeof statement.source?.value === "string") specifiers.push(statement.source.value);
+  }
+  return specifiers;
+}
+
 /**
  * Externalize native ESM dependencies reached from Pages Router files.
  *
@@ -84,18 +125,69 @@ function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): bo
  * selected `import` export just like Turbopack.
  */
 export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOptions): Plugin {
-  const pagesOwnedModules = new Set<string>();
+  const pagesOwnedModulesByEnvironment = new Map<string, Set<string>>();
+  const pagesOwnedModulesFor = (environmentName: string): Set<string> => {
+    let modules = pagesOwnedModulesByEnvironment.get(environmentName);
+    if (!modules) {
+      modules = new Set<string>();
+      pagesOwnedModulesByEnvironment.set(environmentName, modules);
+    }
+    return modules;
+  };
 
   return {
     name: "vinext:pages-node-externals",
     enforce: "pre",
+    transform: {
+      // Alias plugins resolve before user resolveId hooks, so follow static
+      // import edges here while the original specifiers are still available.
+      // This preserves Pages ownership through relative, tsconfig-path, and
+      // other project-local imports before Rolldown traverses the module.
+      filter: {
+        id: {
+          include: /\.[cm]?[jt]sx?(?:\?.*)?$/,
+          exclude: /\/node_modules\//,
+        },
+      },
+      async handler(code, id) {
+        const environment = this.environment;
+        if (!options.isEnabled() || !environment || environment.name === "client") return null;
+
+        const pagesDir = options.getPagesDir();
+        const cleanId = canonicalFile(id);
+        if (!pagesDir || !path.isAbsolute(cleanId) || cleanId.includes("/node_modules/")) {
+          return null;
+        }
+
+        const pagesOwnedModules = pagesOwnedModulesFor(environment.name);
+        if (!isInsideDirectory(pagesDir, cleanId) && !pagesOwnedModules.has(cleanId)) {
+          return null;
+        }
+
+        pagesOwnedModules.add(cleanId);
+        for (const specifier of staticImportSpecifiers(code, cleanId)) {
+          const resolved = await this.resolve(specifier, id, { skipSelf: true });
+          if (!resolved || resolved.external) continue;
+          const resolvedFile = canonicalFile(resolved.id);
+          if (path.isAbsolute(resolvedFile) && !resolvedFile.includes("/node_modules/")) {
+            pagesOwnedModules.add(resolvedFile);
+          }
+        }
+        return null;
+      },
+    },
     resolveId: {
-      // Only relative modules (for Pages ownership propagation) and bare
-      // package requests need this rule. Absolute and virtual ids stay out of
-      // the JavaScript hook entirely.
+      // Relative edges retain the cheap resolve-time path (including imports
+      // emitted by non-script transforms such as MDX). Bare alias propagation
+      // is handled by the transform hook because Vite resolves aliases first.
       filter: { id: /^(?:\.\.?\/|(?![./\\]|[a-zA-Z][\w+.-]*:)[\w@])/ },
       async handler(id, importer) {
-        if (!options.isEnabled() || this.environment?.name === "client" || !importer) return null;
+        const environment = this.environment;
+        if (!options.isEnabled() || !environment || environment.name === "client" || !importer) {
+          return null;
+        }
+
+        const pagesOwnedModules = pagesOwnedModulesFor(environment.name);
 
         const pagesDir = options.getPagesDir();
         const cleanImporter = canonicalFile(importer);
@@ -110,7 +202,16 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
 
         if (id.startsWith(".")) {
           const resolved = await this.resolve(id, importer, { skipSelf: true });
-          if (resolved && !resolved.external) pagesOwnedModules.add(canonicalFile(resolved.id));
+          if (resolved && !resolved.external) {
+            const resolvedFile = canonicalFile(resolved.id);
+            if (
+              path.isAbsolute(resolvedFile) &&
+              !resolvedFile.includes("/node_modules/") &&
+              SCRIPT_MODULE_RE.test(resolvedFile)
+            ) {
+              pagesOwnedModules.add(resolvedFile);
+            }
+          }
           return null;
         }
 
@@ -122,12 +223,15 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
           id.startsWith("next/") ||
           id.startsWith("vinext/") ||
           id.startsWith("@vinext/") ||
-          options.getTranspilePackages().includes(packageName)
+          options.getBundledPackages().has(packageName)
         ) {
           return null;
         }
 
-        if (matchesAlias(id, options.getAliases())) {
+        if (
+          matchesAlias(id, options.getAliases()) ||
+          matchesAlias(id, options.getTsconfigAliases())
+        ) {
           const aliased = await this.resolve(id, importer, { skipSelf: true });
           if (aliased && !aliased.external) {
             const aliasedFile = canonicalFile(aliased.id);
@@ -141,7 +245,14 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
         const resolved = await this.resolve(id, importer, { skipSelf: true });
         if (!resolved || resolved.external) return null;
         const resolvedFile = canonicalFile(resolved.id);
-        if (!path.isAbsolute(resolvedFile) || !resolvedFile.includes("/node_modules/")) return null;
+        if (!path.isAbsolute(resolvedFile)) return null;
+        // Vite's native tsconfig/baseUrl resolver can resolve a bare-looking
+        // request without materializing it in resolve.alias. Preserve Pages
+        // ownership across that local edge before considering npm externals.
+        if (!resolvedFile.includes("/node_modules/")) {
+          pagesOwnedModules.add(resolvedFile);
+          return null;
+        }
         if (!canNodeImport(resolvedFile)) return null;
 
         // A nested dependency must stay bundled when resolving the same request
