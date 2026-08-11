@@ -1,0 +1,10 @@
+.global-class {
+  --next-dynamic-css-layout-class: layout-global;
+  background: darkred;
+  color: darkred;
+}
+
+body {
+  --next-dynamic-css-layout-body: layout-global;
+  background: red;
+}

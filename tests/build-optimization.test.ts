@@ -34,6 +34,7 @@ import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+import { appGlobalCssOwnerChunkName } from "../packages/vinext/src/plugins/app-global-css-owner.js";
 import { aliasEntriesToRecord } from "./helpers.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
@@ -1653,9 +1654,9 @@ describe("computeDynamicImportPreloads", () => {
 
     expect(computeDynamicImportPreloads(manifest)).toEqual({
       "app/dynamic/widget.tsx": [
+        "_next/static/widget-helper.js",
         "_next/static/widget.js",
         "_next/static/widget.css",
-        "_next/static/widget-helper.js",
       ],
     });
   });
@@ -3587,6 +3588,10 @@ describe("createRscFrameworkChunkOutputConfig", () => {
     expect(config).toEqual({
       codeSplitting: {
         groups: [
+          {
+            name: appGlobalCssOwnerChunkName,
+            minSize: 0,
+          },
           {
             name: "framework",
             test: RSC_FRAMEWORK_CHUNK_TEST,

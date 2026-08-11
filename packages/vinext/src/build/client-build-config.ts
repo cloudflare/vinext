@@ -1,5 +1,6 @@
 import type { UserConfig } from "vite";
 import { toSlash } from "pathslash";
+import { appGlobalCssOwnerChunkName } from "../plugins/app-global-css-owner.js";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
@@ -184,6 +185,10 @@ export function createClientCodeSplittingConfig(
     minSize: 10_000,
     groups: [
       {
+        name: appGlobalCssOwnerChunkName,
+        minSize: 0,
+      },
+      {
         name(moduleId: string) {
           return clientManualChunks(moduleId) ?? null;
         },
@@ -244,6 +249,10 @@ export function createRscFrameworkChunkOutputConfig() {
   return {
     codeSplitting: {
       groups: [
+        {
+          name: appGlobalCssOwnerChunkName,
+          minSize: 0,
+        },
         {
           name: "framework",
           test: RSC_FRAMEWORK_CHUNK_TEST,

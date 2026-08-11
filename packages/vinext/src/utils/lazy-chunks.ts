@@ -109,15 +109,18 @@ function collectStaticChunkFiles(
   const chunk = buildManifest[key];
   if (!chunk) return;
 
+  // Static dependencies execute before the importing chunk. Preserve that
+  // order for their stylesheets too: a shared base module must precede the
+  // next/dynamic component CSS that intentionally overrides it.
+  for (const importedKey of chunk.imports ?? []) {
+    collectStaticChunkFiles(buildManifest, importedKey, files, seenFiles, visitedChunks);
+  }
+
   if (chunk.file.endsWith(".js")) {
     addFile(files, seenFiles, chunk.file);
   }
   for (const cssFile of chunk.css ?? []) {
     addFile(files, seenFiles, cssFile);
-  }
-
-  for (const importedKey of chunk.imports ?? []) {
-    collectStaticChunkFiles(buildManifest, importedKey, files, seenFiles, visitedChunks);
   }
 }
 
