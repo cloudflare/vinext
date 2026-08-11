@@ -1893,6 +1893,47 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
   return matched ? { href: currentHref, kind: "rewrite" } : null;
 }
 
+/**
+ * Query-only navigations to the already-mounted destination of a beforeFiles
+ * rewrite can reuse the current route info. Next.js keeps that route info in
+ * `Router.components`, so its `beforeHistoryChange`/history commit happens in
+ * the click turn instead of waiting for another page-module load. Vinext does
+ * not keep the same route-info cache, but the generated loader manifest lets
+ * us prove the rewritten target is the page that is already mounted.
+ */
+function reusesMountedConfigRewritePage(href: string): boolean {
+  let current: URL;
+  let target: URL;
+  try {
+    current = new URL(window.location.href);
+    target = new URL(href, current);
+  } catch {
+    return false;
+  }
+
+  if (target.origin !== current.origin || target.pathname !== current.pathname) return false;
+  if (target.search === current.search) return false;
+  if (clientConfigRedirectCouldMatch(href)) return false;
+
+  const rewrite = resolveClientConfigRewriteSync(href);
+  if (rewrite?.kind !== "rewrite") return false;
+  const dataTarget = resolvePagesDataNavigationTarget(rewrite.href, __basePath);
+  const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+  if (
+    dataTarget?.dataKind !== "none" ||
+    dataTarget.pattern !== nextData?.page ||
+    nextData.gip === true ||
+    nextData.appGip === true
+  ) {
+    return false;
+  }
+
+  // A middleware/proxy probe or page-data request can still redirect or fail,
+  // so those navigations must retain the normal post-resolution history
+  // commit. The eager path is only for a mounted, component-only page.
+  return getMiddlewarePagesDataFetchUrl(href, dataTarget) === null;
+}
+
 async function resolveClientConfigRewrite(
   href: string,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
@@ -3332,6 +3373,12 @@ async function performNavigation(
     updateHistory(mode, redirectBrowserHref ?? full, navState);
   };
   if (!shallow) {
+    // A query-only navigation through a beforeFiles rewrite can reuse the
+    // mounted page. Commit its visible URL before entering the asynchronous
+    // loader/render path, matching Next.js's cached-route behavior and keeping
+    // router.push/replace and <Link> observably synchronous for the address
+    // bar in this case.
+    if (reusesMountedConfigRewritePage(full)) emitBeforeHistoryChange();
     navigateOptions.beforeHistoryChange = emitBeforeHistoryChange;
     const result = await runNavigateClient(
       full,

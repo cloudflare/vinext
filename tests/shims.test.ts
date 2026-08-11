@@ -22501,7 +22501,14 @@ describe("Pages Router _next/data client navigation", () => {
       const Router = routerModule.default;
 
       const rootPushPromise = Router.push({ query: { param: 1 } });
-      expect(pushState).not.toHaveBeenCalled();
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          as: "/?param=1",
+          url: "/?param=1",
+        }),
+        "",
+        "/?param=1",
+      );
       await expect(rootPushPromise).resolves.toBe(true);
       expect(pushState).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -22521,6 +22528,14 @@ describe("Pages Router _next/data client navigation", () => {
       };
 
       const pushPromise = Router.push({ query: { id: 1 } });
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          as: "/rewrite-to-another-segment/0?id=1",
+          url: "/rewrite-to-another-segment/0?id=1",
+        }),
+        "",
+        "/rewrite-to-another-segment/0?id=1",
+      );
       await expect(pushPromise).resolves.toBe(true);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(sourceLoader).not.toHaveBeenCalled();
@@ -22535,7 +22550,16 @@ describe("Pages Router _next/data client navigation", () => {
       );
       expect(Router.asPath).toBe("/rewrite-to-another-segment/0?id=1");
 
-      await expect(Router.replace({ query: { id: 2 } })).resolves.toBe(true);
+      const replacePromise = Router.replace({ query: { id: 2 } });
+      expect(replaceState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          as: "/rewrite-to-another-segment/0?id=2",
+          url: "/rewrite-to-another-segment/0?id=2",
+        }),
+        "",
+        "/rewrite-to-another-segment/0?id=2",
+      );
+      await expect(replacePromise).resolves.toBe(true);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(destinationLoader).toHaveBeenCalledTimes(2);
       expect(replaceState).toHaveBeenLastCalledWith(
