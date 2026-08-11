@@ -811,10 +811,9 @@ function storeVisitedResponseSnapshot(
   };
 }
 
-// Build the absolute current-document href the early-intent planner compares
-// against the navigation target. The committed snapshot carries a base-stripped
-// pathname plus parsed search params; the planner re-strips the base (a no-op on
-// an already-stripped path) so both sides reduce to the same canonical form.
+// Build the absolute app-relative href the early-intent planner compares
+// against the browser-space navigation target. The committed snapshot already
+// has basePath stripped; its explicit URL-space tag prevents a second strip.
 function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot): string {
   return `${window.location.origin}${createSnapshotPathAndSearch(snapshot)}`;
 }
@@ -1772,6 +1771,7 @@ function bootstrapHydration(
           navigationKind === "navigate"
             ? navigationPlanner.classifyEarlyNavigationIntent({
                 basePath: __basePath,
+                currentUrlSpace: "appRelativeSnapshot",
                 currentHref: clientNavigationSnapshotHref(
                   navigationInitiationState.navigationSnapshot,
                 ),

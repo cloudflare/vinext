@@ -14,6 +14,7 @@ function createFacts(
 ): EarlyNavigationIntentFacts {
   return {
     basePath: "",
+    currentUrlSpace: "browser",
     currentHref: "https://example.com/docs?q=1",
     mode: "push",
     scroll: true,
@@ -148,9 +149,10 @@ describe("navigationPlanner early navigation intent classification", () => {
     });
   });
 
-  it("refreshes an exact current URL when the committed snapshot is base-stripped", () => {
+  it("refreshes an exact current URL when the committed snapshot is app-relative", () => {
     const decision = classify({
       basePath: "/app",
+      currentUrlSpace: "appRelativeSnapshot",
       currentHref: "https://example.com/docs?q=1",
       targetHref: "https://example.com/app/docs?q=1",
     });
@@ -161,14 +163,43 @@ describe("navigationPlanner early navigation intent classification", () => {
     });
   });
 
-  it("keeps an identical non-empty hash on the same-document scroll path", () => {
+  it("refreshes an identical non-empty hash", () => {
     const decision = classify({
       basePath: "/app",
+      currentUrlSpace: "appRelativeSnapshot",
       currentHref: "https://example.com/docs#section",
       targetHref: "https://example.com/app/docs#section",
     });
 
-    expect(decision).toMatchObject({ kind: "sameDocumentScroll", hash: "#section" });
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/app/docs#section",
+    });
+  });
+
+  it("does not strip a basePath-like first segment from an app-relative snapshot", () => {
+    const decision = classify({
+      basePath: "/docs",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs/foo",
+      targetHref: "https://example.com/docs/docs/foo",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/docs/docs/foo",
+    });
+  });
+
+  it("keeps encoded search spelling significant for app-relative exact identity", () => {
+    const decision = classify({
+      basePath: "/docs",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs/foo?q=+",
+      targetHref: "https://example.com/docs/docs/foo?q=%20",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
   it("treats hash removal as a flight navigation, not a same-document scroll", () => {

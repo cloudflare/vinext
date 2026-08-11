@@ -228,16 +228,21 @@ export type RscFetchResultDecision =
 // planner inputs (route manifest, mounted slots) join later slices once prefetch
 // reuse and the remaining hard-navigation causes route through this surface.
 export type EarlyNavigationIntentFacts = {
-  // App basePath, stripped from both pathnames before comparison.
+  // App basePath. Navigation targets are browser-space URLs and are stripped
+  // once before comparison.
   basePath: string;
-  // The current visible document URL (window.location.href at navigation start),
-  // absolute so it can anchor relative target resolution.
+  // Whether currentHref is the visible browser URL or a committed App Router
+  // snapshot URL. Snapshot pathnames are already app-relative and must never
+  // have basePath stripped again: an app route whose first segment equals the
+  // configured basePath would otherwise lose a real route segment.
+  currentUrlSpace: "appRelativeSnapshot" | "browser";
+  // The current URL, absolute so it can anchor relative target resolution.
   currentHref: string;
   // push/replace history intent carried through to the scroll executor.
   mode: "push" | "replace";
   // Whether the navigation requested scroll (Link/router scroll option).
   scroll: boolean;
-  // The navigation target, absolute or relative to currentHref.
+  // The browser-space navigation target, absolute or relative to currentHref.
   targetHref: string;
 };
 
@@ -604,6 +609,14 @@ function createEarlyNavigationIntentTrace(
   return createNavigationTrace(reasonCode, { targetHref: facts.targetHref });
 }
 
+function appRelativeNavigationPathname(
+  pathname: string,
+  basePath: string,
+  urlSpace: "appRelativeSnapshot" | "browser",
+): string {
+  return urlSpace === "browser" ? stripBasePath(pathname, basePath) : pathname;
+}
+
 function classifyEarlyNavigationIntent(
   facts: EarlyNavigationIntentFacts,
 ): EarlyNavigationIntentDecision {
@@ -631,10 +644,13 @@ function classifyEarlyNavigationIntent(
   // here, so it cannot assume the caller already filtered same-origin: gate both
   // same-document outcomes on origin so a different host falls through to an
   // ordinary flight.
-  const samePathname =
-    current.origin === next.origin &&
-    stripBasePath(current.pathname, facts.basePath) ===
-      stripBasePath(next.pathname, facts.basePath);
+  const currentAppPathname = appRelativeNavigationPathname(
+    current.pathname,
+    facts.basePath,
+    facts.currentUrlSpace,
+  );
+  const targetAppPathname = appRelativeNavigationPathname(next.pathname, facts.basePath, "browser");
+  const samePathname = current.origin === next.origin && currentAppPathname === targetAppPathname;
   // Compare serialised search params rather than raw search strings, matching the
   // previous same-page-search predicate, so encoding differences that parse to
   // the same query (e.g. "%20" vs "+") are not read as a search change. App
@@ -643,26 +659,27 @@ function classifyEarlyNavigationIntent(
   // key order. We intentionally do not sort, since query order can be observable.
   const sameSearch = current.searchParams.toString() === next.searchParams.toString();
 
-  if (samePathname && sameSearch && next.hash !== "") {
+  // A Link to the exact current URL still invalidates the page segment in
+  // Next.js, including when both URLs contain the same non-empty hash. Keep raw
+  // search/hash equality here: equivalent query encodings are the same page but
+  // not the exact same URL spelling.
+  if (samePathname && current.search === next.search && current.hash === next.hash) {
+    return {
+      bypassNavigationCache: true,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.samePageRefresh, facts),
+    };
+  }
+
+  // Only a change to a non-empty hash is a same-document scroll. An unchanged
+  // hash reached exact identity above and refreshes the page segment.
+  if (samePathname && sameSearch && current.hash !== next.hash && next.hash !== "") {
     return {
       hash: next.hash,
       kind: "sameDocumentScroll",
       mode: facts.mode,
       scroll: facts.scroll,
       trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.sameDocumentScroll, facts),
-    };
-  }
-
-  // A Link to the exact current URL still invalidates the page segment in
-  // Next.js. The committed App Router snapshot is base-stripped while a Link
-  // target retains basePath, so exact identity compares canonical URL parts
-  // rather than the raw href. Keep raw search/hash equality here: equivalent
-  // query encodings are the same page but not the exact same URL spelling.
-  if (samePathname && current.search === next.search && current.hash === next.hash) {
-    return {
-      bypassNavigationCache: true,
-      kind: "flightNavigation",
-      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.samePageRefresh, facts),
     };
   }
 

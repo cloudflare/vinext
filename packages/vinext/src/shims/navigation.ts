@@ -2570,6 +2570,7 @@ export async function navigateClientSide(
   // an RSC fetch; everything else proceeds to the RSC navigation below.
   const earlyIntent = navigationPlanner.classifyEarlyNavigationIntent({
     basePath: __basePath,
+    currentUrlSpace: "browser",
     currentHref: window.location.href,
     mode,
     scroll,
