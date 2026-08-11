@@ -330,6 +330,12 @@ export function createAssetImportMetaUrlPlugin(options: { isWorkerTarget: () => 
           }
           if (file === null) continue;
 
+          // The asset is not part of Vite's module graph: its bytes are read
+          // directly below and embedded in the transformed module. Register it
+          // explicitly so an asset-only edit invalidates the owning module in
+          // dev and triggers a rebuild in watch mode.
+          this.addWatchFile(file);
+
           let dataUrl = isBuild ? cache.get(file) : undefined;
           if (dataUrl === undefined) {
             let bytes: Buffer;

@@ -1388,6 +1388,8 @@ export type VinextOptions = {
 type NitroSetupContext = {
   options: {
     dev?: boolean;
+    node?: boolean;
+    preset?: string;
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
   };
@@ -1422,6 +1424,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let hasNodelessNitroTarget = false;
   let nitroTraceDepsFromServerExternals: string[] = [];
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
@@ -6336,7 +6339,7 @@ export const loadServerActionClient = ${
     // server runtimes. Keep this after the specialized OG transform so its
     // arrayBuffer/readFile patterns retain their narrower output shape.
     createAssetImportMetaUrlPlugin({
-      isWorkerTarget: () => hasCloudflarePlugin || hasNitroPlugin,
+      isWorkerTarget: () => hasCloudflarePlugin || hasNodelessNitroTarget,
     }),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
@@ -6437,6 +6440,12 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-route-rules",
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
+          // Nitro's default/node-server output retains normal file URL
+          // semantics. Only nodeless presets (Workers/edge runtimes) need the
+          // constructor-wide rewrite because import.meta.url is not a usable
+          // filesystem base there.
+          hasNodelessNitroTarget = nitro.options.node === false;
+
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 

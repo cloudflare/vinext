@@ -50,8 +50,13 @@ describe("vinext:asset-import-meta-url", () => {
   }
 
   function context(resolveMap: Record<string, string> = {}) {
+    const watchedFiles: string[] = [];
     return {
+      watchedFiles,
       environment: { name: "ssr", config: { consumer: "server" } },
+      addWatchFile(file: string) {
+        watchedFiles.push(file);
+      },
       async resolve(specifier: string) {
         const id = resolveMap[specifier];
         return id ? { id } : null;
@@ -73,6 +78,22 @@ describe("vinext:asset-import-meta-url", () => {
     );
     expect(result.code).toContain(`const path = url.pathname;`);
     expect(result.code).toContain(`fetch(new URL("data:text/plain; charset=utf-8;base64,`);
+  });
+
+  it("watches every asset embedded by the transform", async () => {
+    const plugin = await createPlugin(false);
+    const pluginContext = context({ "my-pkg/hello/world.json": packageAssetPath });
+    const source = [
+      `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
+      `fetch(new URL("my-pkg/hello/world.json", import.meta.url));`,
+    ].join("\n");
+
+    await transformHandler(plugin).call(pluginContext, source, routePath);
+
+    expect(pluginContext.watchedFiles).toEqual([
+      await fsp.realpath(path.join(root, "src", "text-file.txt")),
+      await fsp.realpath(packageAssetPath),
+    ]);
   });
 
   it("replaces a direct fetch input in a plain Node build", async () => {
