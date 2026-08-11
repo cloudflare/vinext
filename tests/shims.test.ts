@@ -19720,6 +19720,139 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("keeps same-origin absolute middleware redirects safe when reached by popstate", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win, pushState, replaceState, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const redirectHeader = "/docs//evil.example/steal?token=secret#fragment";
+    const target = `http://localhost${redirectHeader}`;
+    Object.assign(win.location, {
+      origin: "http://localhost",
+      pathname: "/docs/start",
+      href: "http://localhost/docs/start",
+    });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+    (globalThis as any).document = {
+      getElementById: vi.fn(() => null),
+      getElementsByName: vi.fn(() => []),
+    };
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/docs/_next/data/build-1/old-home.json") {
+        return new Response("{}", {
+          headers: { "x-nextjs-redirect": redirectHeader },
+          status: 200,
+        });
+      }
+      if (href === target) {
+        return new Response(buildNavHtml("//evil.example/steal", pageModuleUrl));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+    vi.resetModules();
+
+    const events: Array<[string, string]> = [];
+    const record = (name: string) =>
+      function (...args: unknown[]) {
+        events.push([name, String(args[0])]);
+      };
+    const onStart = record("routeChangeStart");
+    const onBefore = record("beforeHistoryChange");
+    const onComplete = record("routeChangeComplete");
+
+    try {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeComplete", onComplete);
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+      replaceState.mockClear();
+
+      const state = {
+        url: "/old-home",
+        as: "/old-home",
+        options: { shallow: false },
+        __N: true,
+        key: "old-home",
+      };
+      Object.assign(win.location, {
+        pathname: "/docs/old-home",
+        href: "http://localhost/docs/old-home",
+      });
+      (win.history as { state: unknown }).state = state;
+      popstateHandler!({ state });
+
+      await vi.waitFor(() =>
+        expect(events).toContainEqual(["routeChangeComplete", redirectHeader]),
+      );
+      await vi.waitFor(() => expect(win.scrollTo).toHaveBeenCalled());
+
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/docs/_next/data/build-1/old-home.json",
+        expect.any(Object),
+      );
+      expect(fetch).toHaveBeenNthCalledWith(2, target, expect.any(Object));
+      expect(fetch).not.toHaveBeenCalledWith(
+        "http://localhost/docs/docs//evil.example/steal?token=secret#fragment",
+        expect.any(Object),
+      );
+      expect(events).toEqual([
+        ["routeChangeStart", "/docs/old-home"],
+        ["routeChangeStart", redirectHeader],
+        ["beforeHistoryChange", redirectHeader],
+        ["routeChangeComplete", redirectHeader],
+      ]);
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).toHaveBeenCalledTimes(1);
+      expect(replaceState).toHaveBeenCalledWith(expect.any(Object), "", target);
+      expect(win.history.state).toMatchObject({
+        url: "//evil.example/steal?token=secret",
+        as: "//evil.example/steal?token=secret",
+        __N: true,
+      });
+      expect(win.location.href).toBe(target);
+      expect(win.location.assign).not.toHaveBeenCalled();
+      expect(render).toHaveBeenCalledTimes(1);
+    } finally {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeComplete", onComplete);
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      if (previousDocument === undefined) delete (globalThis as any).document;
+      else (globalThis as any).document = previousDocument;
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+      vi.resetModules();
+    }
+  });
+
   it("hydrates middleware rewrites to fallback pages from the data response", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -21919,6 +22052,120 @@ describe("Pages Router _next/data client navigation", () => {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
       globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  // Mirrors Next.js popstate calling change("replaceState", ...) and threading
+  // that method through recursive internal redirects.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  it("follows config redirects reached by popstate with replace semantics", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const sourceLoader = vi.fn(async () => makePageModule("source"));
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState, replaceState } = createDataNavWindow({
+      page: "/start",
+      pathname: "/docs/start",
+      loaders: {
+        "/start": vi.fn(async () => makePageModule("start")),
+        "/legacy": sourceLoader,
+        "/destination": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_CLIENT_REDIRECTS__ = [
+      { source: "/legacy", destination: "/destination", permanent: false },
+    ];
+    const listeners = new Map<string, (event: any) => void>();
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+    globalThis.fetch = vi.fn(async () => new Response("{}"));
+    vi.resetModules();
+
+    const events: Array<[string, string]> = [];
+    const record = (name: string) =>
+      function (...args: unknown[]) {
+        events.push([name, String(args[0])]);
+      };
+    const onStart = record("routeChangeStart");
+    const onBefore = record("beforeHistoryChange");
+    const onComplete = record("routeChangeComplete");
+
+    try {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeComplete", onComplete);
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+      replaceState.mockClear();
+
+      const state = {
+        url: "/legacy",
+        as: "/legacy",
+        options: { shallow: false },
+        __N: true,
+        key: "legacy",
+      };
+      Object.assign(win.location, {
+        pathname: "/docs/legacy",
+        href: "http://localhost/docs/legacy",
+      });
+      (win.history as { state: unknown }).state = state;
+      popstateHandler!({ state });
+
+      await vi.waitFor(() =>
+        expect(events).toContainEqual(["routeChangeComplete", "/docs/destination"]),
+      );
+
+      expect(events).toEqual([
+        ["routeChangeStart", "/docs/legacy"],
+        ["routeChangeStart", "/docs/destination"],
+        ["beforeHistoryChange", "/docs/destination"],
+        ["routeChangeComplete", "/docs/destination"],
+      ]);
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).toHaveBeenCalledTimes(1);
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "/destination",
+          as: "/destination",
+          __N: true,
+        }),
+        "",
+        "/docs/destination",
+      );
+      expect(sourceLoader).not.toHaveBeenCalled();
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.location.pathname).toBe("/docs/destination");
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/destination",
+        props: { pageProps: {} },
+      });
+    } finally {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeComplete", onComplete);
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
       vi.resetModules();
     }
   });

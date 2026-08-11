@@ -3792,6 +3792,25 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
       stateRouteUrl,
       eventContext,
     );
+    if (typeof result === "object") {
+      // Popstate enters the same redirect pipeline as push/replace, but the
+      // browser has already traversed to the source entry. Unwind that source
+      // event and replace it with the redirect destination so the source never
+      // commits or leaves a second history entry. This mirrors Next.js passing
+      // the popstate change() method (replaceState) through recursive redirects.
+      clearActiveNavigationEvent(eventContext);
+      await performNavigation(
+        result.redirectDestination,
+        undefined,
+        { locale: false },
+        "replace",
+        undefined,
+        isAbsoluteOrProtocolRelativeUrl(result.redirectDestination)
+          ? result.redirectDestination
+          : undefined,
+      );
+      return;
+    }
     if (result === "completed") {
       routerEvents.emit("routeChangeComplete", fullEventUrl, { shallow: false });
       clearActiveNavigationEvent(eventContext);
