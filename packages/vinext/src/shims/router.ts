@@ -1490,6 +1490,14 @@ function cancelActiveNavigationEvent(): void {
   const active = routerRuntimeState.activeNavigationEvent;
   if (active === null || active.cancellationEmitted) return;
 
+  // Event cancellation and runtime cancellation are one operation. Hash-only
+  // and shallow winners never enter navigateClient(), so relying on its normal
+  // supersession path would let the abandoned fetch or render commit later.
+  routerRuntimeState.navigationId += 1;
+  routerRuntimeState.activeAbortController?.abort();
+  routerRuntimeState.activeAbortController = null;
+  cancelPreviousRenderCommit();
+
   active.cancellationEmitted = true;
   routerEvents.emit(
     "routeChangeError",
@@ -3661,6 +3669,11 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     if (!shouldContinue) return;
   }
 
+  // A history traversal is a new navigation just like push/replace. Cancel
+  // the prior fetch/render before announcing this destination so the prior
+  // routeChangeError is always observed before this routeChangeStart.
+  cancelActiveNavigationEvent();
+
   // Update trackers only after beforePopState confirms navigation proceeds.
   // If beforePopState cancels, the app stays on the previous history entry,
   // so both must retain their previous values: `lastPathnameAndSearch` so the
@@ -3699,6 +3712,12 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   const effectiveLocale = typeof stateLocale === "string" ? stateLocale : window.__VINEXT_LOCALE__;
 
   const fullEventUrl = browserUrl + window.location.hash;
+  const eventContext: PagesNavigationEventContext = {
+    cancellationEmitted: false,
+    routeProps: { shallow: false },
+    url: fullEventUrl,
+  };
+  routerRuntimeState.activeNavigationEvent = eventContext;
   routerEvents.emit("routeChangeStart", fullEventUrl, { shallow: false });
   let beforeHistoryChangeEmitted = false;
   const emitBeforeHistoryChange = () => {
@@ -3747,9 +3766,11 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
       getPagesHtmlFetchUrl(stateRouteUrl, effectiveLocale),
       { scroll: scrollTarget, beforeHistoryChange: emitBeforeHistoryChange },
       stateRouteUrl,
+      eventContext,
     );
     if (result === "completed") {
       routerEvents.emit("routeChangeComplete", fullEventUrl, { shallow: false });
+      clearActiveNavigationEvent(eventContext);
       dispatchNavigateEvent();
     }
     // "cancelled": superseded by a newer navigation, so this popstate no longer wins.

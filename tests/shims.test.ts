@@ -18165,6 +18165,238 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("hash-only navigation aborts and invalidates a pending page fetch", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const response = createDeferred<Response>();
+    let fetchSignal: AbortSignal | undefined;
+
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      getElementById: vi.fn(() => null),
+      getElementsByName: vi.fn(() => []),
+    };
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+      fetchSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+      return response.promise;
+    };
+
+    const events: Array<[string, string]> = [];
+    const record = (name: string, urlIndex = 0) =>
+      function (...args: unknown[]) {
+        events.push([name, String(args[urlIndex])]);
+      };
+    const onStart = record("routeChangeStart");
+    const onError = record("routeChangeError", 1);
+    const onComplete = record("routeChangeComplete");
+    const onHashStart = record("hashChangeStart");
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("routeChangeError", onError);
+      Router.events.on("routeChangeComplete", onComplete);
+      Router.events.on("hashChangeStart", onHashStart);
+
+      const pendingNavigation = Router.push("/page-a");
+      await vi.waitFor(() => expect(fetchSignal).toBeDefined());
+
+      await Router.push("#section");
+
+      expect(fetchSignal?.aborted).toBe(true);
+      expect(events.slice(0, 3)).toEqual([
+        ["routeChangeStart", "/page-a"],
+        ["routeChangeError", "/page-a"],
+        ["hashChangeStart", "/page-a#section"],
+      ]);
+
+      response.resolve(new Response(buildNavHtml("/page-a", pageModuleUrl)));
+      await pendingNavigation;
+
+      expect(render).not.toHaveBeenCalled();
+      expect(events).not.toContainEqual(["routeChangeComplete", "/page-a"]);
+    } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("routeChangeError", onError);
+      Router.events.off("routeChangeComplete", onComplete);
+      Router.events.off("hashChangeStart", onHashStart);
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      if (previousDocument === undefined) delete (globalThis as any).document;
+      else (globalThis as any).document = previousDocument;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("shallow navigation cancels a pending render before it can complete", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    let fetchSignal: AbortSignal | undefined;
+
+    render.mockImplementation(() => {});
+    (globalThis as any).window = win;
+    (globalThis as any).document = { documentElement: {} };
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+      fetchSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+      return new Response(buildNavHtml("/page-a", pageModuleUrl));
+    };
+
+    const events: Array<[string, string]> = [];
+    const record = (name: string, urlIndex = 0) =>
+      function (...args: unknown[]) {
+        events.push([name, String(args[urlIndex])]);
+      };
+    const onStart = record("routeChangeStart");
+    const onError = record("routeChangeError", 1);
+    const onComplete = record("routeChangeComplete");
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("routeChangeError", onError);
+      Router.events.on("routeChangeComplete", onComplete);
+
+      const pendingNavigation = Router.push("/page-a");
+      await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(1));
+      const staleTree = render.mock.calls[0]![0] as { props: { onCommit: () => void } };
+
+      await Router.push("/page-b", undefined, { shallow: true });
+      staleTree.props.onCommit();
+      await pendingNavigation;
+
+      expect(fetchSignal?.aborted).toBe(true);
+      expect(events).toContainEqual(["routeChangeError", "/page-a"]);
+      expect(events).not.toContainEqual(["routeChangeComplete", "/page-a"]);
+      expect(events).toContainEqual(["routeChangeComplete", "/page-b"]);
+    } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("routeChangeError", onError);
+      Router.events.off("routeChangeComplete", onComplete);
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      if (previousDocument === undefined) delete (globalThis as any).document;
+      else (globalThis as any).document = previousDocument;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("overlapping popstates cancel and track each active navigation before starting the next", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const responses = [
+      createDeferred<Response>(),
+      createDeferred<Response>(),
+      createDeferred<Response>(),
+    ];
+    const fetchSignals: AbortSignal[] = [];
+
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal instanceof AbortSignal) fetchSignals.push(init.signal);
+      return responses[fetchSignals.length - 1]!.promise;
+    };
+
+    const events: Array<[string, string]> = [];
+    const record = (name: string, urlIndex = 0) =>
+      function (...args: unknown[]) {
+        events.push([name, String(args[urlIndex])]);
+      };
+    const onStart = record("routeChangeStart");
+    const onBefore = record("beforeHistoryChange");
+    const onError = record("routeChangeError", 1);
+    const onComplete = record("routeChangeComplete");
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeError", onError);
+      Router.events.on("routeChangeComplete", onComplete);
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const initialNavigation = Router.push("/page-a");
+      await vi.waitFor(() => expect(fetchSignals).toHaveLength(1));
+
+      Object.assign(win.location, {
+        pathname: "/page-b",
+        href: "http://localhost/page-b",
+      });
+      popstateHandler!({ state: null });
+      await vi.waitFor(() => expect(fetchSignals).toHaveLength(2));
+
+      expect(fetchSignals[0]!.aborted).toBe(true);
+      expect(events.slice(0, 3)).toEqual([
+        ["routeChangeStart", "/page-a"],
+        ["routeChangeError", "/page-a"],
+        ["routeChangeStart", "/page-b"],
+      ]);
+
+      Object.assign(win.location, {
+        pathname: "/page-c",
+        href: "http://localhost/page-c",
+      });
+      popstateHandler!({ state: null });
+      await vi.waitFor(() => expect(fetchSignals).toHaveLength(3));
+
+      expect(fetchSignals[1]!.aborted).toBe(true);
+      expect(events.slice(3, 5)).toEqual([
+        ["routeChangeError", "/page-b"],
+        ["routeChangeStart", "/page-c"],
+      ]);
+
+      responses[2]!.resolve(new Response(buildNavHtml("/page-c", pageModuleUrl)));
+      await vi.waitFor(() => expect(events).toContainEqual(["routeChangeComplete", "/page-c"]));
+      responses[0]!.resolve(new Response(buildNavHtml("/page-a", pageModuleUrl)));
+      responses[1]!.resolve(new Response(buildNavHtml("/page-b", pageModuleUrl)));
+      await initialNavigation;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events).not.toContainEqual(["beforeHistoryChange", "/page-a"]);
+      expect(events).not.toContainEqual(["beforeHistoryChange", "/page-b"]);
+      expect(events).not.toContainEqual(["routeChangeComplete", "/page-a"]);
+      expect(events).not.toContainEqual(["routeChangeComplete", "/page-b"]);
+      expect(render).toHaveBeenCalledTimes(1);
+    } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeError", onError);
+      Router.events.off("routeChangeComplete", onComplete);
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
   it("last push() wins when two overlap — superseded navigation does not render", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
