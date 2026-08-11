@@ -171,6 +171,7 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createAssetImportMetaUrlPlugin } from "./plugins/asset-import-meta-url.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -6331,6 +6332,12 @@ export const loadServerActionClient = ${
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
+    // Make general `new URL("./asset", import.meta.url)` fetches work in
+    // server runtimes. Keep this after the specialized OG transform so its
+    // arrayBuffer/readFile patterns retain their narrower output shape.
+    createAssetImportMetaUrlPlugin({
+      isWorkerTarget: () => hasCloudflarePlugin || hasNitroPlugin,
+    }),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
