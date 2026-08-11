@@ -6156,7 +6156,10 @@ export const loadServerActionClient = ${
         // the JS handler entirely for files that don't match.
         filter: {
           id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
+            // Runtime-isolated App Router modules carry a query suffix. Keep
+            // those modules in the image transform so their static imports do
+            // not fall through to Vite's ordinary asset inlining.
+            include: /\.(tsx?|jsx?|mjs)(?:[?#]|$)/,
             exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
@@ -6185,7 +6188,8 @@ export const loadServerActionClient = ${
           // (`<Foo>bar`) and non-comma generic arrows (`<T>(x) => x`) would throw
           // — which the `catch` below would swallow, silently leaving image
           // imports in those files untransformed.
-          const lang = id.endsWith(".ts") ? "ts" : "tsx";
+          const sourceId = id.split(/[?#]/, 1)[0]!;
+          const lang = sourceId.endsWith(".ts") ? "ts" : "tsx";
           let ast: ReturnType<typeof parseAst>;
           try {
             ast = parseAst(code, { lang });
