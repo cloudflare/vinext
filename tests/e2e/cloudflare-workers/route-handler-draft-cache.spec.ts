@@ -95,6 +95,47 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     }
   });
 
+  // Vite-equivalent coverage for Next.js:
+  // test/e2e/import-conditions/import-conditions.test.ts
+  // Cloudflare Workers activate both portable `worker` and `workerd`
+  // conditions instead of Next.js's private `edge-light` compiler condition.
+  // The browser build selects `browser`, while middleware, Pages, RSC, route
+  // handlers, and server actions all share the deployment runtime.
+  test("selects Worker, Workerd, and browser package export conditions", async ({
+    page,
+    request,
+  }) => {
+    const workerRuntimeConditions = {
+      workerFirst: "worker",
+      workerdFirst: "workerd",
+    };
+    for (const pathname of ["/api/pages-import-conditions", "/api/app-import-conditions"]) {
+      const response = await request.get(`${BASE_URL}${pathname}`);
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({
+        middleware: workerRuntimeConditions,
+        server: workerRuntimeConditions,
+      });
+    }
+
+    await page.goto(`${BASE_URL}/import-conditions`);
+    await expect(page.getByTestId("server-worker-first-condition")).toHaveText("worker");
+    await expect(page.getByTestId("server-workerd-first-condition")).toHaveText("workerd");
+    await expect(page.getByTestId("client-worker-first-condition")).toHaveText("browser");
+    await expect(page.getByTestId("client-workerd-first-condition")).toHaveText("browser");
+
+    await page.goto(`${BASE_URL}/pages-import-conditions`);
+    await expect(page.getByTestId("server-worker-first-condition")).toHaveText("worker");
+    await expect(page.getByTestId("server-workerd-first-condition")).toHaveText("workerd");
+    await expect(page.getByTestId("client-worker-first-condition")).toHaveText("browser");
+    await expect(page.getByTestId("client-workerd-first-condition")).toHaveText("browser");
+
+    await page.goto(`${BASE_URL}/import-conditions`);
+    await page.getByRole("button", { name: "Resolve action condition" }).click();
+    await expect(page.getByTestId("action-worker-first-condition")).toHaveText("worker");
+    await expect(page.getByTestId("action-workerd-first-condition")).toHaveText("workerd");
+  });
+
   test("does not cache a middleware draft transition on an ISR MISS", async ({ request }) => {
     await setDraftMode(request, false);
     const scenario = `middleware-miss-${Date.now()}`;

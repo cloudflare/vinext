@@ -1,0 +1,23 @@
+{
+  "name": "runtime-condition-library",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./worker-first": {
+      "types": "./index.d.ts",
+      "worker": "./worker.js",
+      "workerd": "./workerd.js",
+      "browser": "./browser.js",
+      "node": "./node.js",
+      "default": "./default.js"
+    },
+    "./workerd-first": {
+      "types": "./index.d.ts",
+      "workerd": "./workerd.js",
+      "worker": "./worker.js",
+      "browser": "./browser.js",
+      "node": "./node.js",
+      "default": "./default.js"
+    }
+  }
+}

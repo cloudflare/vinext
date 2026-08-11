@@ -50,6 +50,13 @@ const VITE_RUNTIME_CONDITIONS = {
     "The capability needs Vite, RSC, and Workers coverage; exact edge-light assertions are Next.js-specific.",
 } as const satisfies ScopedSuiteSupport;
 
+const NEXT_RUNTIME_CONDITION_LABELS = {
+  status: "needs-vite-equivalent",
+  feature: "Runtime export conditions across deployment environments",
+  reason:
+    "The exact suite asserts Next.js's per-route node/edge compiler split and private edge-light condition. Vinext instead selects node in the Node adapter, worker/workerd in Cloudflare Workers, and browser in the client; equivalent Worker coverage lives in tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts.",
+} as const satisfies ScopedSuiteSupport;
+
 export const SUITE_SUPPORT_POLICY = {
   "test/e2e/app-dir/app-root-params-getters/use-cache.test.ts": DEFERRED_CACHE_COMPONENTS,
   "test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts":
@@ -111,7 +118,7 @@ export const SUITE_SUPPORT_POLICY = {
       "Web Worker behavior needs Vite and Rolldown coverage; Next.js deployment-token assertions are not portable.",
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
-  "test/e2e/import-conditions/import-conditions.test.ts": VITE_RUNTIME_CONDITIONS,
+  "test/e2e/import-conditions/import-conditions.test.ts": NEXT_RUNTIME_CONDITION_LABELS,
   "test/e2e/react-version/react-version.test.ts": VITE_RUNTIME_CONDITIONS,
 } as const satisfies Record<string, ScopedSuiteSupport>;
 

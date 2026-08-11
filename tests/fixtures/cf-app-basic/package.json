@@ -10,6 +10,7 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",
+    "runtime-condition-library": "file:./__test_packages__/runtime-condition-library",
     "vinext": "workspace:*",
     "vite": "catalog:",
     "wrangler": "catalog:"

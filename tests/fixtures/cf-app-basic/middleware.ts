@@ -1,5 +1,7 @@
 import { draftMode } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
+import { runtimeCondition as workerFirstCondition } from "runtime-condition-library/worker-first";
+import { runtimeCondition as workerdFirstCondition } from "runtime-condition-library/workerd-first";
 
 /**
  * Mirrors the upstream `app-middleware` fixture: mutate the *request* headers
@@ -24,5 +26,7 @@ export async function middleware(request: NextRequest) {
   }
   const headers = new Headers(request.headers);
   headers.set("x-from-middleware", "hello-from-middleware");
+  headers.set("x-middleware-worker-first-condition", workerFirstCondition);
+  headers.set("x-middleware-workerd-first-condition", workerdFirstCondition);
   return NextResponse.next({ request: { headers } });
 }
