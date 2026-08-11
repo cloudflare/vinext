@@ -330,7 +330,13 @@ ${
 } from ${JSON.stringify(appRouteHandlerResponsePath)};`
     : ""
 }
-const __loadAppRouteHandlerDispatch = () => import(${JSON.stringify(appRouteHandlerDispatchPath)});
+let __dispatchAppRouteHandlerFn;
+const __loadAppRouteHandlerDispatch = async () => {
+  if (__dispatchAppRouteHandlerFn) return __dispatchAppRouteHandlerFn;
+  const { dispatchAppRouteHandler } = await import(${JSON.stringify(appRouteHandlerDispatchPath)});
+  __dispatchAppRouteHandlerFn = dispatchAppRouteHandler;
+  return __dispatchAppRouteHandlerFn;
+};
 ${
   hasServerActions
     ? `const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});`
@@ -973,8 +979,8 @@ export default createAppRscHandler({
     route,
     searchParams,
   }) {
-    const { dispatchAppRouteHandler: __dispatchAppRouteHandler } =
-      await __loadAppRouteHandlerDispatch();
+    const __dispatchAppRouteHandler =
+      __dispatchAppRouteHandlerFn ?? (await __loadAppRouteHandlerDispatch());
     return __dispatchAppRouteHandler({
       basePath: __basePath,
       cleanPathname,

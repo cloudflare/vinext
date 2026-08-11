@@ -1306,9 +1306,13 @@ describe("App Router entry templates", () => {
   it("generateRscEntry defers route-handler and server-action runtimes", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain('const __loadAppRouteHandlerDispatch = () => import("');
+    expect(code).toContain("let __dispatchAppRouteHandlerFn;");
+    expect(code).toContain("const __loadAppRouteHandlerDispatch = async () => {");
+    expect(code).toContain('const { dispatchAppRouteHandler } = await import("');
     expect(code).toContain('const __loadAppServerActionExecution = () => import("');
-    expect(code).toContain("await __loadAppRouteHandlerDispatch()");
+    expect(code).toContain(
+      "__dispatchAppRouteHandlerFn ?? (await __loadAppRouteHandlerDispatch())",
+    );
     expect(code).toContain("await __loadAppServerActionExecution()");
     expect(code).not.toMatch(/import \{\s*dispatchAppRouteHandler as __dispatchAppRouteHandler,/);
     expect(code).not.toMatch(
