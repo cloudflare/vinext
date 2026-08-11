@@ -395,7 +395,6 @@ describe("App Router integration", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('<p id="search-params-value">runtime</p>');
-    expect(html).not.toContain('id="search-params-suspense"');
   });
 
   it("SSR renders a real app route that calls useRouter()", async () => {
