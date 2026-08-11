@@ -147,7 +147,7 @@ describe("vinext:import-meta-url plugin", () => {
   });
 
   it.each([
-    ["block comments", `/* webpackMode: "eager" */ `],
+    ["block comments", `/* webpackMode: ** "eager" ** */ `],
     ["line comments", `// webpackMode: eager\n`],
   ])(
     "normalizes module URL imports with %s in dependencies before the dynamic-request fallback",
