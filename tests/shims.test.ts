@@ -16884,6 +16884,48 @@ describe("Pages Router router helpers", () => {
     }
   });
 
+  it("keeps dynamic rewrite route params authoritative over visible query values", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/rewrite-navigation/0",
+        search: "?id=2",
+        hash: "",
+        href: "http://localhost/rewrite-navigation/0?id=2",
+        hostname: "localhost",
+      },
+      history: { state: null },
+      __NEXT_DATA__: {
+        page: "/rewrite-target/[id]",
+        query: { id: "0" },
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+    (globalThis as any).window = win;
+
+    try {
+      let captured: unknown = "NOT_SET";
+      function Probe() {
+        captured = routerModule.useRouter();
+        return React.createElement("div", null, "probe");
+      }
+
+      renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
+
+      expect((captured as any).query).toEqual({ id: "0" });
+      expect((captured as any).asPath).toBe("/rewrite-navigation/0?id=2");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   it("exposes beforePopState on both the Router singleton and wrapped router context", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");

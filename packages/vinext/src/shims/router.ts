@@ -1333,10 +1333,12 @@ function getPathnameAndQuery(): {
   // params from __NEXT_DATA__, but let a later shallow navigation's visible
   // search string replace stale same-key rewrite query state. A normal route
   // match keeps route params authoritative over same-key search values.
-  const query =
-    extractRouteParamsFromPath(nextData?.page ?? pathname, canonicalResolvedPath) === null
-      ? { ...routeQuery, ...searchQuery }
-      : { ...searchQuery, ...routeQuery };
+  const routePattern = nextData?.page ?? pathname;
+  const isRewrite = extractRouteParamsFromPath(routePattern, canonicalResolvedPath) === null;
+  const rewriteRouteParams = isRewrite ? getRouteParamsFromQuery(routePattern, routeQuery) : null;
+  const query = isRewrite
+    ? { ...routeQuery, ...searchQuery, ...rewriteRouteParams }
+    : { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
     getCurrentHistoryAsPath() ??
