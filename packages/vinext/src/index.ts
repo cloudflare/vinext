@@ -4222,7 +4222,7 @@ export const loadServerActionClient = ${
       transform: {
         filter: {
           id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
+            include: /\.(tsx?|jsx?|mjs)(?:[?#]|$)/,
             exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/,

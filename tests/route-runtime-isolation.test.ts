@@ -11,6 +11,7 @@ import {
 } from "../packages/vinext/src/plugins/fonts.js";
 import { createOptimizeImportsPlugin } from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite";
+import vinext from "../packages/vinext/src/index.js";
 
 function transformIdInclude(plugin: Plugin): RegExp {
   const transform = plugin.transform as
@@ -26,6 +27,10 @@ function transformIdInclude(plugin: Plugin): RegExp {
 
 describe("route runtime isolation", () => {
   it("keeps query-qualified edge modules eligible for sibling RSC transforms", () => {
+    const reactCanaryPlugin = (vinext() as Plugin[]).find(
+      (plugin) => plugin.name === "vinext:react-canary",
+    );
+    if (!reactCanaryPlugin) throw new Error("vinext:react-canary plugin not found");
     const plugins = [
       createOptimizeImportsPlugin(
         () => undefined,
@@ -34,6 +39,7 @@ describe("route runtime isolation", () => {
       createDynamicPreloadMetadataPlugin(),
       createGoogleFontsPlugin("/vinext/shims/font-google.ts", "/vinext/shims/"),
       createLocalFontsPlugin("/vinext/shims/"),
+      reactCanaryPlugin,
     ];
 
     for (const plugin of plugins) {
