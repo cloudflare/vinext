@@ -517,7 +517,10 @@ describe("pages page response", () => {
     const wrap = vi.fn((element: React.ReactNode) =>
       React.createElement("style-registry", null, element),
     );
-    const styles = vi.fn(() => React.createElement("style", { id: "__jsx-123" }, "p{color:blue}"));
+    const styles = vi
+      .fn()
+      .mockReturnValueOnce(React.createElement("style", { id: "__jsx-123" }, "p{color:blue}"))
+      .mockReturnValue([]);
     const flush = vi.fn();
     const createStyleRegistry = vi.fn(() => ({ wrap, styles, flush }));
     common.renderToReadableStream.mockImplementation(async (element: React.ReactNode) => {
@@ -536,10 +539,66 @@ describe("pages page response", () => {
     const html = await response.text();
 
     expect(wrap).toHaveBeenCalledTimes(1);
+    expect(styles).toHaveBeenCalledTimes(2);
     expect(styles).toHaveBeenCalledWith({ nonce: "style-nonce" });
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(2);
     expect(html).toContain('<style id="__jsx-123">p{color:blue}</style>');
     expect(html.indexOf("p{color:blue}")).toBeLessThan(html.indexOf("live-body"));
+  });
+
+  it("streams the shell before collecting styled-jsx styles from late Suspense content", async () => {
+    const common = createCommonOptions();
+    let resolveAllReady!: () => void;
+    const allReady = new Promise<void>((resolve) => {
+      resolveAllReady = resolve;
+    });
+    let renderFinished = false;
+    const bodyStream = Object.assign(createStream(["<div>fallback</div>"]), {
+      allReady: allReady.then(() => {
+        renderFinished = true;
+      }),
+    });
+    const wrap = vi.fn((element: React.ReactNode) =>
+      React.createElement("style-registry", null, element),
+    );
+    const styles = vi
+      .fn()
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce(
+        React.createElement("style", { id: "__jsx-late" }, ".late{color:purple}"),
+      );
+    const flush = vi.fn();
+    const createStyleRegistry = vi.fn(() => ({ wrap, styles, flush }));
+    common.renderToReadableStream.mockImplementation(async (element: React.ReactNode) => {
+      if (React.isValidElement(element) && element.type === "style") {
+        return createStream(['<style id="__jsx-late">.late{color:purple}</style>']);
+      }
+      return bodyStream;
+    });
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      createStyleRegistry,
+    });
+    const reader = response.body!.getReader();
+    const firstChunk = await reader.read();
+
+    expect(renderFinished).toBe(false);
+    expect(new TextDecoder().decode(firstChunk.value)).toContain("<!DOCTYPE html>");
+
+    resolveAllReady();
+    let remainingHtml = "";
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      remainingHtml += new TextDecoder().decode(chunk.value);
+    }
+
+    expect(renderFinished).toBe(true);
+    expect(remainingHtml).toContain("fallback");
+    expect(remainingHtml).toContain('<style id="__jsx-late">.late{color:purple}</style>');
+    expect(remainingHtml.indexOf("fallback")).toBeLessThan(remainingHtml.indexOf("__jsx-late"));
+    expect(flush).toHaveBeenCalledTimes(2);
   });
 
   it("clears SSR context only after rendering, not before", async () => {

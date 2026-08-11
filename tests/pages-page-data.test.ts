@@ -181,7 +181,7 @@ describe("pages page data", () => {
       pageProps: { title: "fresh" },
       params: { slug: "post" },
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",
@@ -197,6 +197,39 @@ describe("pages page data", () => {
     // regenerated, so the swap must leave it in place.
     expect(html).toContain('<style data-vinext-doc="">.a{}</style>');
     expect(html).toContain("<div>fresh-body</div>");
+  });
+
+  it("replaces stale styled-jsx rules when regenerating an ISR shell", async () => {
+    const freshStyle = '<style id="__jsx-fresh">p{z-index:2}</style>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head><meta charSet="utf-8" data-next-head="" />' +
+        '<style id="__jsx-stale-head">p{z-index:1}</style></head>' +
+        '<body><div id="__next"><p>stale-body</p></div>' +
+        '<style id="__jsx-stale-late">span{color:red}</style>' +
+        '<script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
+      collectIsrHeadHTML: vi.fn(() => ""),
+      createPageElement() {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.(freshStyle);
+        return "<p>fresh-body</p>";
+      }),
+      routePattern: "/isr",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain(freshStyle);
+    expect(html).not.toContain("__jsx-stale-head");
+    expect(html).not.toContain("__jsx-stale-late");
+    expect(html).toContain("<p>fresh-body</p>");
   });
 
   it("leaves the cached head alone when the regeneration collects no head", async () => {
@@ -217,7 +250,7 @@ describe("pages page data", () => {
       pageProps: {},
       params: {},
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",
@@ -249,7 +282,7 @@ describe("pages page data", () => {
       pageProps: {},
       params: {},
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",
@@ -285,7 +318,7 @@ describe("pages page data", () => {
       pageProps: {},
       params: {},
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",

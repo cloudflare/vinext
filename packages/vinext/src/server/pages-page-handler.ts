@@ -277,7 +277,7 @@ export type CreatePagesPageHandlerOptions = {
    */
   renderIsrPassToStringAsync: (
     element: ReactNode,
-    onHeadReady?: () => Promise<void>,
+    onHeadReady?: (styledJsxHTML: string) => Promise<void>,
   ) => Promise<string>;
   /** `safeJsonStringify` from `vinext/html`. */
   safeJsonStringify: (value: unknown) => string;

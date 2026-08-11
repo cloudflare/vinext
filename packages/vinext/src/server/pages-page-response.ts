@@ -120,6 +120,10 @@ type PagesStreamedHtmlResponse = {
   __vinextStreamedHtmlResponse?: boolean;
 } & Response;
 
+type PagesRenderStream = ReadableStream<Uint8Array> & {
+  allReady?: Promise<void>;
+};
+
 export type PagesStyleRegistry = {
   wrap(element: ReactNode): ReactNode;
   styles(options?: { nonce?: string }): ReactNode;
@@ -380,10 +384,28 @@ async function buildPagesShellHtml(
   );
 }
 
+async function collectPagesStyleRegistryHtml(
+  registry: PagesStyleRegistry,
+  renderToReadableStream: RenderPagesPageResponseOptions["renderToReadableStream"],
+  scriptNonce?: string,
+): Promise<string> {
+  const styles = registry.styles({ nonce: scriptNonce });
+  registry.flush();
+  if (styles == null || (Array.isArray(styles) && styles.length === 0)) return "";
+  return readStreamAsText(await renderToReadableStream(styles));
+}
+
+function injectPagesLateStyles(shellSuffix: string, stylesHTML: string): string {
+  if (!stylesHTML) return shellSuffix;
+  const closingBody = shellSuffix.toLowerCase().lastIndexOf("</body>");
+  if (closingBody === -1) return shellSuffix + stylesHTML;
+  return `${shellSuffix.slice(0, closingBody)}  ${stylesHTML}\n${shellSuffix.slice(closingBody)}`;
+}
+
 async function buildPagesCompositeStream(
   bodyStream: ReadableStream<Uint8Array>,
   shellPrefix: string,
-  shellSuffix: string,
+  shellSuffix: Promise<string>,
 ): Promise<ReadableStream<Uint8Array>> {
   const encoder = new TextEncoder();
 
@@ -402,7 +424,7 @@ async function buildPagesCompositeStream(
       } finally {
         reader.releaseLock();
       }
-      controller.enqueue(encoder.encode(shellSuffix));
+      controller.enqueue(encoder.encode(await shellSuffix));
       controller.close();
     },
   });
@@ -436,7 +458,7 @@ async function writePagesIsrCache(options: {
   revalidateSeconds: number | false;
   routePattern: string;
   shellPrefix: string;
-  shellSuffix: string;
+  shellSuffix: Promise<string>;
   status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
@@ -446,7 +468,7 @@ async function writePagesIsrCache(options: {
     options.cacheKey,
     {
       kind: "PAGES",
-      html: options.shellPrefix + bodyHtml + options.shellSuffix,
+      html: options.shellPrefix + bodyHtml + (await options.shellSuffix),
       pageData: options.pageData,
       headers: undefined,
       status: options.status,
@@ -592,12 +614,33 @@ export async function renderPagesPageResponse(
     bodyStream = await options.renderToReadableStream(pageElement);
   }
 
-  let styledJsxHTML = "";
-  if (styleRegistry) {
-    const styles = styleRegistry.styles({ nonce: options.scriptNonce });
-    styleRegistry.flush();
-    styledJsxHTML = await readStreamAsText(await options.renderToReadableStream(styles));
-  }
+  const bodyAllReady = (bodyStream as PagesRenderStream).allReady ?? Promise.resolve();
+  const styledJsxHTML = styleRegistry
+    ? await collectPagesStyleRegistryHtml(
+        styleRegistry,
+        options.renderToReadableStream,
+        options.scriptNonce,
+      )
+    : "";
+  // Keep the request-local registry alive while Suspense boundaries finish.
+  // Late styles cannot be moved back into an already-streamed <head>, so add
+  // them outside the React root immediately before </body>. This preserves
+  // progressive body streaming while keeping styled-jsx hydration discovery
+  // (`[id^="__jsx-"]`) and ISR cache contents complete.
+  const lateStyledJsxHTML = styleRegistry
+    ? bodyAllReady.then(
+        () =>
+          collectPagesStyleRegistryHtml(
+            styleRegistry,
+            options.renderToReadableStream,
+            options.scriptNonce,
+          ),
+        () => {
+          styleRegistry.flush();
+          return "";
+        },
+      )
+    : Promise.resolve("");
 
   // Fold any head tags returned by `_document.getInitialProps()` into the
   // dedupe pipeline before getSSRHeadHTML serialises the final <head>. Mirrors
@@ -645,6 +688,9 @@ export async function renderPagesPageResponse(
   const markerIndex = shellHtml.indexOf(bodyMarker);
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
+  const finalShellSuffix = lateStyledJsxHTML.then((stylesHTML) =>
+    injectPagesLateStyles(shellSuffix, stylesHTML),
+  );
   const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
@@ -677,7 +723,7 @@ export async function renderPagesPageResponse(
       routePattern: options.routePattern,
       setCache: options.isrSet,
       shellPrefix,
-      shellSuffix,
+      shellSuffix: finalShellSuffix,
       status: finalStatus,
       stream: cacheBodyStream,
     };
@@ -694,7 +740,7 @@ export async function renderPagesPageResponse(
   const compositeStream = await buildPagesCompositeStream(
     responseBodyStream,
     shellPrefix,
-    shellSuffix,
+    finalShellSuffix,
   );
 
   // Capture user-set Cache-Control (from getServerSideProps's res.setHeader)

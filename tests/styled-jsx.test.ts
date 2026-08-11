@@ -29,6 +29,8 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
   fs.writeFileSync(path.join(nextRoot, "package.json"), '{"name":"next"}');
   fs.writeFileSync(path.join(styledJsxRoot, "package.json"), '{"name":"styled-jsx"}');
+  fs.writeFileSync(path.join(styledJsxRoot, "index.js"), "module.exports = {};");
+  fs.writeFileSync(path.join(styledJsxRoot, "style.js"), "module.exports = () => null;");
   fs.writeFileSync(path.join(styledJsxRoot, "css.js"), "module.exports = {};");
   fs.symlinkSync(nextRoot, path.join(root, "node_modules", "next"), "dir");
   fs.symlinkSync(styledJsxRoot, path.join(nextRoot, "node_modules", "styled-jsx"), "dir");
@@ -73,6 +75,24 @@ describe("styled-jsx compatibility plugin", () => {
     expect(fs.realpathSync(resolveId.handler("styled-jsx/css")!)).toBe(
       fs.realpathSync(path.join(styledJsxRoot, "css.js")),
     );
+  });
+
+  it("resolves relative Vite roots before configuring styled-jsx optimization", () => {
+    const { root, styledJsxRoot } = createPnpmStyleFixture();
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const configHook = plugin.config as (config: { root: string }) =>
+      | {
+          resolve?: { alias?: Array<{ find: RegExp; replacement: string }> };
+          ssr?: { optimizeDeps?: { include?: string[] } };
+        }
+      | undefined;
+    const result = configHook({ root: path.relative(process.cwd(), root) });
+
+    const aliases = result?.resolve?.alias ?? [];
+    expect(
+      fs.realpathSync(aliases.find((alias) => alias.find.test("styled-jsx"))!.replacement),
+    ).toBe(fs.realpathSync(path.join(styledJsxRoot, "index.js")));
+    expect(result?.ssr?.optimizeDeps?.include).toContain("styled-jsx/style");
   });
 
   it("leaves ordinary style tags untouched when Next is not installed", async () => {

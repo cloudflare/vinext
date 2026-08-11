@@ -302,12 +302,19 @@ async function _renderIsrPassToStringAsync(element, onHeadReady) {
       _runWithCacheState(() =>
         runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const html = await _renderToStringAsync(element);
+            const jsxStyleRegistry = __createStyleRegistry();
+            const wrappedElement = React.createElement(__StyleRegistry, { registry: jsxStyleRegistry }, element);
+            const html = await _renderToStringAsync(wrappedElement);
+            const styles = jsxStyleRegistry.styles();
+            jsxStyleRegistry.flush();
+            const styledJsxHTML = styles.length > 0
+              ? await _renderToStringAsync(React.createElement(React.Fragment, null, styles))
+              : "";
             // next/head tags are collected as a side effect of the render
             // above and live in this ALS scope only, so a caller that wants
             // the regenerated head has to read it here — after the render,
             // before the scope unwinds.
-            await onHeadReady?.();
+            await onHeadReady?.(styledJsxHTML);
             return html;
           }),
         ),

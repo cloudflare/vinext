@@ -238,7 +238,7 @@ type RenderPagesIsrHtmlOptions = {
   params: Record<string, unknown>;
   renderIsrPassToStringAsync: (
     element: ReactNode,
-    onHeadReady?: () => Promise<void>,
+    onHeadReady?: (styledJsxHTML: string) => Promise<void>,
   ) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
@@ -343,7 +343,7 @@ export type ResolvePagesPageDataOptions = {
   ) => void;
   renderIsrPassToStringAsync: (
     element: ReactNode,
-    onHeadReady?: () => Promise<void>,
+    onHeadReady?: (styledJsxHTML: string) => Promise<void>,
   ) => Promise<string>;
   /**
    * Serializes the `<head>` collected by an ISR regeneration render. Called
@@ -1073,6 +1073,7 @@ const SSR_HEAD_TAG_PATTERN =
  * `</head>` intact in any of them.
  */
 const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
+const STYLED_JSX_STYLE_PATTERN = /<style\b(?=[^>]*\bid=["']__jsx-)[^>]*>[\s\S]*?<\/style>/gi;
 
 /**
  * Replace the `next/head` region of a cached shell with a freshly collected
@@ -1098,6 +1099,11 @@ function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
   // An empty collection means the render produced no head at all; leave the
   // cached head alone rather than deleting the tags we do have.
   if (!freshHead) return cachedHtml;
+
+  // styled-jsx styles are request-derived just like next/head. Remove both
+  // initial head styles and any late-Suspense styles emitted before </body>
+  // so regeneration can replace them without retaining stale rules.
+  cachedHtml = cachedHtml.replace(STYLED_JSX_STYLE_PATTERN, "");
 
   // Blank out raw-text/RCDATA elements before locating the boundary so a
   // `</head>` string inside one is not mistaken for the closing tag — that
@@ -1160,10 +1166,10 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
   let freshHead = "";
   const freshBody = await options.renderIsrPassToStringAsync(
     options.createPageElement(renderProps),
-    collectHead &&
-      (async () => {
-        freshHead = collectHead();
-      }),
+    async (styledJsxHTML) => {
+      freshHead = collectHead?.() ?? "";
+      if (styledJsxHTML) freshHead += `\n  ${styledJsxHTML}`;
+    },
   );
   const nextDataScript = buildPagesNextDataScript({
     buildId: options.buildId,

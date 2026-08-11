@@ -265,7 +265,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     errorPagePath,
     'import errorStyles from "@/styles/error.module.css";\n' +
       "export default function Custom404() {\n" +
-      "  return <div className={errorStyles.errorText}>Global CSS Error Test</div>;\n" +
+      "  return <div className={errorStyles.errorText}>Global CSS Error Test<style jsx>{`div { color: rgb(91, 92, 93); }`}</style></div>;\n" +
       "}\n",
   );
 
@@ -760,6 +760,8 @@ describe("Pages Router integration", () => {
     const html = await res.text();
     expect(html).toContain("styled-jsx streaming");
     expect(html).toMatch(/color:\s*(?:blue|#00f)/);
+    expect(html).toContain("late styled-jsx content");
+    expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
   });
 
   // Refs #1463: Pages Router should reject non-GET/HEAD methods to static
@@ -3959,6 +3961,7 @@ describe("Virtual server entry generation", () => {
       const html = await res.text();
       expect(res.status).toBe(404);
       expect(html).toContain("Global CSS Error Test");
+      expect(html).toMatch(/color:\s*rgb\(91,\s*92,\s*93\)/);
       const stylesheetHrefs = getStylesheetHrefs(html);
       for (const href of fixture.errorDevStylesheetHrefs) {
         expect(stylesheetHrefs).toContain(href);
@@ -6411,6 +6414,7 @@ export default function CounterPage() {
       expect(isrFirstHtml).toContain('data-testid="inserted-html-before">0<');
       const firstTimestamp = isrFirstHtml.match(/data-testid="timestamp">(\d+)</)?.[1];
       expect(firstTimestamp).toBeDefined();
+      expect(isrFirstHtml).toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
       expect(isrFirstHtml).toContain(
         `<title data-next-head="">ISR Second Render State ${firstTimestamp}</title>`,
       );
@@ -6453,6 +6457,8 @@ export default function CounterPage() {
       expect(isrRegeneratedHtml).toContain(
         `<title data-next-head="">ISR Second Render State ${regeneratedTimestamp}</title>`,
       );
+      expect(isrRegeneratedHtml).toMatch(new RegExp(`z-index:\\s*${regeneratedTimestamp}`));
+      expect(isrRegeneratedHtml).not.toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
 
       // Test: SSR page with getServerSideProps
       const ssrRes = await fetch(`${prodUrl}/ssr`);
@@ -8153,6 +8159,8 @@ describe("Production Pages Router SSR streaming", () => {
     const html = await res.text();
     expect(html).toContain("styled-jsx streaming");
     expect(html).toMatch(/color:\s*(?:blue|#00f)/);
+    expect(html).toContain("late styled-jsx content");
+    expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
   });
 
   it("streams Pages SSR responses incrementally in production with br compression", async () => {

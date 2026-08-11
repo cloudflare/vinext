@@ -28,6 +28,11 @@ export default function ISRSecondRenderStatePage({ timestamp }: ISRSecondRenderS
       <p data-testid="private-cache-before">{privateCacheBefore}</p>
       <p data-testid="inserted-html-before">{insertedHtmlBefore}</p>
       <p data-testid="timestamp">{timestamp}</p>
+      <style jsx>{`
+        p[data-testid="timestamp"] {
+          z-index: ${timestamp};
+        }
+      `}</style>
     </>
   );
 }

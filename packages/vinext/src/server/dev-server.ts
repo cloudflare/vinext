@@ -248,6 +248,32 @@ function writeGsspRedirect(
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
 
+type DevPagesStyleRegistry = {
+  styles(options?: { nonce?: string }): React.ReactNode;
+  flush(): void;
+};
+
+type DevPagesRenderStream = ReadableStream<Uint8Array> & {
+  allReady?: Promise<void>;
+};
+
+async function collectDevPagesStyleRegistryHtml(
+  registry: DevPagesStyleRegistry,
+  scriptNonce?: string,
+): Promise<string> {
+  const styles = registry.styles({ nonce: scriptNonce });
+  registry.flush();
+  if (styles == null || (Array.isArray(styles) && styles.length === 0)) return "";
+  return renderToStringAsync(React.createElement(React.Fragment, null, styles));
+}
+
+function injectDevPagesLateStyles(shellSuffix: string, stylesHTML: string): string {
+  if (!stylesHTML) return shellSuffix;
+  const closingBody = shellSuffix.toLowerCase().lastIndexOf("</body>");
+  if (closingBody === -1) return shellSuffix + stylesHTML;
+  return `${shellSuffix.slice(0, closingBody)}  ${stylesHTML}\n${shellSuffix.slice(closingBody)}`;
+}
+
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
   res.removeHeader("Transfer-Encoding");
@@ -333,12 +359,7 @@ async function streamPageToResponse(
     preserveExistingContentType = false,
   } = options;
 
-  let jsxStyleRegistry:
-    | {
-        styles(options?: { nonce?: string }): React.ReactNode;
-        flush(): void;
-      }
-    | undefined;
+  let jsxStyleRegistry: DevPagesStyleRegistry | undefined;
   let wrapWithStyleRegistry = (pageElement: React.ReactElement): React.ReactElement => pageElement;
   try {
     const styledJsxModule = await importModule(moduleImporter, "styled-jsx");
@@ -394,12 +415,20 @@ async function streamPageToResponse(
     bodyStream = await renderToReadableStream(wrapWithStyleRegistry(element));
   }
 
-  let styledJsxHTML = "";
-  if (jsxStyleRegistry) {
-    const styles = jsxStyleRegistry.styles({ nonce: scriptNonce });
-    jsxStyleRegistry.flush();
-    styledJsxHTML = await renderToStringAsync(React.createElement(React.Fragment, null, styles));
-  }
+  const bodyAllReady = (bodyStream as DevPagesRenderStream).allReady ?? Promise.resolve();
+  const activeStyleRegistry = jsxStyleRegistry;
+  const styledJsxHTML = activeStyleRegistry
+    ? await collectDevPagesStyleRegistryHtml(activeStyleRegistry, scriptNonce)
+    : "";
+  const lateStyledJsxHTML = activeStyleRegistry
+    ? bodyAllReady.then(
+        () => collectDevPagesStyleRegistryHtml(activeStyleRegistry, scriptNonce),
+        () => {
+          activeStyleRegistry.flush();
+          return "";
+        },
+      )
+    : Promise.resolve("");
 
   // Fold any head tags returned by `_document.getInitialProps()` into the same
   // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
@@ -516,6 +545,9 @@ async function streamPageToResponse(
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
+  const finalSuffix = lateStyledJsxHTML.then((stylesHTML) =>
+    injectDevPagesLateStyles(suffix, stylesHTML),
+  );
   const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
 
   // Send headers and start streaming.
@@ -541,7 +573,7 @@ async function streamPageToResponse(
   res.write(prefix);
 
   if (bufferedBody !== null) {
-    res.end(bufferedBody + suffix);
+    res.end(bufferedBody + (await finalSuffix));
     return;
   }
 
@@ -558,7 +590,7 @@ async function streamPageToResponse(
   }
 
   // Write the document suffix (closing tags, scripts)
-  res.end(suffix);
+  res.end(await finalSuffix);
 }
 
 /**
@@ -1992,89 +2024,43 @@ async function renderErrorPage(
       });
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
       if (statusCode === 404) stripDevPagesNotFoundFramingHeaders(res);
-      if (DocumentComponent) {
-        await streamPageToResponse(res, element, {
-          url,
-          server,
-          moduleImporter: runner,
-          fontHeadHTML: "",
-          assetHeadHTML,
-          scripts: errorScripts,
-          DocumentComponent,
-          statusCode,
-          documentContext: {
-            err,
-            pathname: errorPage,
-            query: parseQuery(url),
-            asPath: url,
-            req,
-            res,
-          },
-          enhancePageElement: (renderPageOpts) => {
-            let FinalApp = AppComponent;
-            let FinalComponent = ErrorComponent;
-            if (renderPageOpts.enhanceApp && FinalApp) {
-              FinalApp = renderPageOpts.enhanceApp(FinalApp);
-            }
-            if (renderPageOpts.enhanceComponent) {
-              FinalComponent = renderPageOpts.enhanceComponent(FinalComponent);
-            }
-            return createErrorElement(FinalApp, FinalComponent);
-          },
-          getHeadHTML: () =>
-            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
-          setDocumentInitialHead:
-            typeof headShim.setDocumentInitialHead === "function"
-              ? headShim.setDocumentInitialHead
-              : undefined,
-          crossOrigin: context.crossOrigin,
-          preserveExistingContentType: statusCode === 404,
-        });
-      } else {
-        const bodyHtml = await renderToStringAsync(element);
-        const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
-        const protectAssetTags = (assetHtml: string): string =>
-          markDocumentAssetPropsProtectedTags(assetHtml, protectedAssetMarker);
-        const protectedErrorScripts = protectAssetTags(
-          applyDocumentAssetProps(
-            errorScripts,
-            {},
-            {
-              configuredCrossOrigin: context.crossOrigin,
-            },
-          ),
-        );
-        const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  ${assetHeadHTML}
-</head>
-<body>
-  <div id="__next">${protectAssetTags(bodyHtml)}</div>
-  ${protectedErrorScripts}
-</body>
-</html>`;
-        const transformedHtml = stripDocumentAssetPropsProtectionMarkers(
-          applyDocumentAssetProps(
-            await server.transformIndexHtml(url, html),
-            {},
-            {
-              configuredCrossOrigin: context.crossOrigin,
-              protectedAssetMarker,
-            },
-          ),
-          protectedAssetMarker,
-        );
-        res.writeHead(
-          statusCode,
-          statusCode === 404 && res.hasHeader("Content-Type")
-            ? undefined
-            : { "Content-Type": "text/html; charset=utf-8" },
-        );
-        res.end(transformedHtml);
-      }
+      await streamPageToResponse(res, element, {
+        url,
+        server,
+        moduleImporter: runner,
+        fontHeadHTML: "",
+        assetHeadHTML,
+        scripts: errorScripts,
+        DocumentComponent,
+        statusCode,
+        documentContext: {
+          err,
+          pathname: errorPage,
+          query: parseQuery(url),
+          asPath: url,
+          req,
+          res,
+        },
+        enhancePageElement: (renderPageOpts) => {
+          let FinalApp = AppComponent;
+          let FinalComponent = ErrorComponent;
+          if (renderPageOpts.enhanceApp && FinalApp) {
+            FinalApp = renderPageOpts.enhanceApp(FinalApp);
+          }
+          if (renderPageOpts.enhanceComponent) {
+            FinalComponent = renderPageOpts.enhanceComponent(FinalComponent);
+          }
+          return createErrorElement(FinalApp, FinalComponent);
+        },
+        getHeadHTML: () =>
+          typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+        setDocumentInitialHead:
+          typeof headShim.setDocumentInitialHead === "function"
+            ? headShim.setDocumentInitialHead
+            : undefined,
+        crossOrigin: context.crossOrigin,
+        preserveExistingContentType: statusCode === 404,
+      });
       return;
     } catch (error) {
       if (res.headersSent || res.writableEnded) return;

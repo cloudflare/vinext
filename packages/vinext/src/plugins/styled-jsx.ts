@@ -69,6 +69,13 @@ function createProjectRequire(projectRoot: string) {
   return createRequire(path.join(projectRoot, "package.json"));
 }
 
+function resolveProjectRoot(projectRoot: string): string {
+  const normalizedRoot = toSlash(projectRoot);
+  return path.isAbsolute(normalizedRoot)
+    ? normalizedRoot
+    : path.resolve(toSlash(process.cwd()), normalizedRoot);
+}
+
 function resolveNextRequire(projectRoot: string): NodeJS.Require | null {
   try {
     const projectRequire = createProjectRequire(projectRoot);
@@ -90,7 +97,7 @@ export function createStyledJsxPlugin(
   initialProjectRoot: string,
   options: StyledJsxPluginOptions = {},
 ): Plugin {
-  let projectRoot = initialProjectRoot;
+  let projectRoot = resolveProjectRoot(initialProjectRoot);
   let development = false;
   let nextRequire: NodeJS.Require | null | undefined;
   let compilerPromise: Promise<NextSwcModule> | null = null;
@@ -122,7 +129,7 @@ export function createStyledJsxPlugin(
     name: "vinext:styled-jsx",
     enforce: "pre",
     config(config) {
-      const configRoot = config.root ? toSlash(config.root) : undefined;
+      const configRoot = config.root ? resolveProjectRoot(config.root) : undefined;
       if (configRoot && configRoot !== projectRoot) {
         projectRoot = configRoot;
         nextRequire = undefined;
@@ -164,7 +171,7 @@ export function createStyledJsxPlugin(
     },
     configResolved(config) {
       development = config.command === "serve";
-      const configRoot = toSlash(config.root);
+      const configRoot = resolveProjectRoot(config.root);
       if (configRoot !== projectRoot) {
         projectRoot = configRoot;
         nextRequire = undefined;
