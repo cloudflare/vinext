@@ -800,7 +800,7 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
     expect(response.status).toBe(200);
-    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/1", "/%2561dmin");
+    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/1", "/%2561dmin", null);
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({ interceptionContext: "/%2561dmin" }),
     );
@@ -1468,7 +1468,7 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
     expect(response.status).toBe(200);
-    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/%5Fhidden", "/feed/a%252Fb");
+    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/%5Fhidden", "/feed/a%252Fb", null);
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         interceptionPathname: "/photos/%5Fhidden",

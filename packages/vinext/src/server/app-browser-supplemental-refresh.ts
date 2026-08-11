@@ -12,10 +12,41 @@ import { addBasePathToPathname } from "../utils/base-path.js";
 
 const SUPPLEMENTAL_REFRESH_TIMEOUT_MS = 10_000;
 
-export type SupplementalRefreshResult<T> = {
-  degraded: boolean;
-  value: Awaited<T>;
-};
+export type SupplementalRefreshDegradedReason = "aborted" | "failed" | "timeout";
+
+export type SupplementalRefreshResult<T> =
+  | { degraded: false; value: Awaited<T> }
+  | {
+      degraded: true;
+      reason: SupplementalRefreshDegradedReason;
+      value: Awaited<T>;
+    };
+
+export class SupplementalRefreshError extends Error {
+  readonly reason: SupplementalRefreshDegradedReason;
+
+  constructor(reason: SupplementalRefreshDegradedReason) {
+    super(`[vinext] Supplemental parallel-route refresh ${reason}`);
+    this.name = "SupplementalRefreshError";
+    this.reason = reason;
+  }
+}
+
+export function requireCompleteSupplementalRefresh<T>(
+  result: SupplementalRefreshResult<T>,
+): Awaited<T> {
+  if (result.degraded) throw new SupplementalRefreshError(result.reason);
+  return result.value;
+}
+
+export function resolveServerActionSupplementalRefresh<T>(
+  result: SupplementalRefreshResult<T>,
+  currentValue: Awaited<T>,
+): { retry: boolean; value: Awaited<T> } {
+  return result.degraded
+    ? { retry: result.reason !== "aborted", value: currentValue }
+    : { retry: false, value: result.value };
+}
 
 export type SupplementalRefreshHandle = {
   finish(): void;
@@ -133,6 +164,7 @@ function copyRefreshedBranchElements(
 }
 
 export function resolvePersistedSourcePageRefreshes(options: {
+  activeRoutePaths?: readonly string[];
   basePath: string;
   refreshUrl: URL;
   state: Pick<AppRouterState, "previousNextUrl" | "slotBindings">;
@@ -143,11 +175,17 @@ export function resolvePersistedSourcePageRefreshes(options: {
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);
   }
 
-  for (const binding of options.state.slotBindings) {
-    if (binding.state !== "active" || binding.activeRouteId == null) continue;
-    const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (activeRoute?.kind !== "route" || activeRoute.interceptionContext !== null) continue;
-    const pathname = addBasePathToPathname(activeRoute.path, options.basePath);
+  const activeRoutePaths =
+    options.activeRoutePaths ??
+    options.state.slotBindings.flatMap((binding) => {
+      if (binding.state !== "active" || binding.activeRouteId == null) return [];
+      const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
+      return activeRoute?.kind === "route" && activeRoute.interceptionContext === null
+        ? [activeRoute.path]
+        : [];
+    });
+  for (const activeRoutePath of activeRoutePaths) {
+    const pathname = addBasePathToPathname(activeRoutePath, options.basePath);
     if (sourceUrlsByPathname.has(pathname)) continue;
     const sourceUrl = new URL(pathname, options.refreshUrl);
     sourceUrl.search = options.refreshUrl.search;
@@ -214,7 +252,7 @@ export async function resolveSupplementalRefreshes<T>(options: {
 
   try {
     if (controller.signal.aborted) {
-      return { degraded: true, value: await options.primary };
+      return { degraded: true, reason: "aborted", value: await options.primary };
     }
     const supplemental = options.supplemental.map((load) => load(controller.signal));
     const [primary, supplementalValues] = await Promise.all([
@@ -227,8 +265,14 @@ export async function resolveSupplementalRefreshes<T>(options: {
     }
     return { degraded: false, value };
   } catch {
+    const reason: SupplementalRefreshDegradedReason = options.signal.aborted
+      ? "aborted"
+      : controller.signal.reason instanceof DOMException &&
+          controller.signal.reason.name === "TimeoutError"
+        ? "timeout"
+        : "failed";
     controller.abort();
-    return { degraded: true, value: await options.primary };
+    return { degraded: true, reason, value: await options.primary };
   } finally {
     clearTimeout(timeout);
     options.signal.removeEventListener("abort", abort);

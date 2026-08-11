@@ -24,6 +24,7 @@ import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
   createPendingNavigationCommitFromElements,
+  resolveActiveRoutePaths,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
@@ -62,6 +63,7 @@ type HardNavigationMode = "assign" | "replace";
 type BrowserNavigationCommitEffect = () => void;
 
 type BrowserNavigationCommitEffectFactory = (options: {
+  activeRoutePaths: readonly string[];
   bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
@@ -837,6 +839,7 @@ export function createAppBrowserNavigationController(
       queuePrePaintNavigationEffect(
         renderId,
         options.createNavigationCommitEffect({
+          activeRoutePaths: resolveActiveRoutePaths(approvedCommit.action.slotBindings),
           bfcacheIds: approvedCommit.action.bfcacheIds,
           href: options.targetHref,
           historyUpdateMode: options.historyUpdateMode,

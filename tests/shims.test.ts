@@ -540,6 +540,7 @@ describe("next/navigation shim", () => {
     const previousWindow = (globalThis as any).window;
     const previousDocument = (globalThis as any).document;
     let historyState: unknown = {
+      __vinext_activeRoutePaths: ["/current"],
       __vinext_bfcacheIds: { "page:/current": "_b_1_" },
       __vinext_bfcacheVersion: 2,
       __vinext_previousNextUrl: "/feed",
@@ -608,6 +609,7 @@ describe("next/navigation shim", () => {
       );
       expect(pushState).toHaveBeenCalledWith(
         {
+          __vinext_activeRoutePaths: ["/current"],
           __vinext_bfcacheIds: { "page:/current": "_b_1_" },
           __vinext_bfcacheVersion: 2,
           __vinext_previousNextUrl: "/feed",
@@ -795,6 +797,7 @@ describe("next/navigation shim", () => {
     // Covered by Next.js shallow-routing tests for object, null, and undefined state:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
     const previousWindow = (globalThis as any).window;
+    const historyActiveRoutePathsKey = "__vinext_activeRoutePaths";
     const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
     const historyTraversalIndexKey = "__vinext_historyIndex";
     const win = {
@@ -807,6 +810,7 @@ describe("next/navigation shim", () => {
       },
       history: {
         state: {
+          [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
           [historyPreviousNextUrlKey]: "/feed",
           [historyTraversalIndexKey]: 4,
         } as unknown,
@@ -839,6 +843,7 @@ describe("next/navigation shim", () => {
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
       expect(win.history.state).toEqual({
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
         myData: { foo: "bar" },
@@ -846,18 +851,21 @@ describe("next/navigation shim", () => {
 
       win.history.pushState(null, "", "/photo/1?filter=pending");
       expect(win.history.state).toEqual({
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
       });
 
       win.history.replaceState(null, "", "/photo/1?filter=archived");
       expect(win.history.state).toEqual({
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
       });
 
       win.history.replaceState(undefined, "", "/photo/1?filter=all");
       expect(win.history.state).toEqual({
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
       });

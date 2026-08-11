@@ -2,8 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
+  requireCompleteSupplementalRefresh,
   resolvePersistedSourcePageRefreshes,
+  resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
+  SupplementalRefreshError,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import { AppElementsWire, type AppElements } from "../packages/vinext/src/server/app-elements.js";
 
@@ -58,6 +61,36 @@ describe("parallel route supplemental refreshes", () => {
         },
       }),
     ).toEqual(["/docs/nested-revalidate/drawer", "/docs/nested-revalidate?view=current"]);
+  });
+
+  it("uses the traversed-to history entry instead of routes from the page being left", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        activeRoutePaths: ["/detail-page"],
+        basePath: "",
+        refreshUrl: new URL("https://example.com/detail-page"),
+        state: {
+          previousNextUrl: null,
+          // These bindings belong to the intercepted page being left. A
+          // cache-miss traversal must use the target history entry's paths,
+          // never this navigation-initiation tree.
+          slotBindings: [
+            {
+              activeRouteId: "route:/refreshing",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/refreshing/login",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:modal:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
   });
 
   it("merges every active slot from a supplemental route response", () => {
@@ -197,7 +230,30 @@ describe("parallel route supplemental refreshes", () => {
           },
         ],
       }),
-    ).resolves.toEqual({ degraded: true, value: ["children"] });
+    ).resolves.toEqual({ degraded: true, reason: "failed", value: ["children"] });
+  });
+
+  it("times out supplemental work without exposing a partial merge", async () => {
+    vi.useFakeTimers();
+    const result = resolveSupplementalRefreshes({
+      merge: (current, supplemental) => [...current, ...supplemental],
+      primary: Promise.resolve(["children"]),
+      signal: new AbortController().signal,
+      supplemental: [
+        (signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }),
+      ],
+      timeoutMs: 5,
+    });
+
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(result).resolves.toEqual({
+      degraded: true,
+      reason: "timeout",
+      value: ["children"],
+    });
   });
 
   it("aborts supplemental work when a newer navigation wins", async () => {
@@ -216,7 +272,53 @@ describe("parallel route supplemental refreshes", () => {
     });
 
     coordinator.abortAll();
-    await expect(result).resolves.toEqual({ degraded: true, value: "children" });
+    await expect(result).resolves.toEqual({
+      degraded: true,
+      reason: "aborted",
+      value: "children",
+    });
     refresh.finish();
+  });
+
+  it("rejects degraded router refreshes so recovery stays atomic", () => {
+    for (const reason of ["failed", "timeout"] as const) {
+      expect(() =>
+        requireCompleteSupplementalRefresh({ degraded: true, reason, value: "children" }),
+      ).toThrow(expect.objectContaining<Partial<SupplementalRefreshError>>({ reason }));
+    }
+
+    expect(requireCompleteSupplementalRefresh({ degraded: false, value: "children+modal" })).toBe(
+      "children+modal",
+    );
+  });
+
+  it("keeps the complete current tree and retries failed server-action fan-out", () => {
+    expect(
+      resolveServerActionSupplementalRefresh(
+        { degraded: true, reason: "failed", value: "partial-primary" },
+        "complete-current-tree",
+      ),
+    ).toEqual({ retry: true, value: "complete-current-tree" });
+    expect(
+      resolveServerActionSupplementalRefresh(
+        { degraded: true, reason: "timeout", value: "partial-primary" },
+        "complete-current-tree",
+      ),
+    ).toEqual({ retry: true, value: "complete-current-tree" });
+  });
+
+  it("does not retry a server-action fan-out cancelled by newer navigation", () => {
+    expect(
+      resolveServerActionSupplementalRefresh(
+        { degraded: true, reason: "aborted", value: "partial-primary" },
+        "complete-current-tree",
+      ),
+    ).toEqual({ retry: false, value: "complete-current-tree" });
+    expect(
+      resolveServerActionSupplementalRefresh(
+        { degraded: false, value: "complete-refreshed-tree" },
+        "complete-current-tree",
+      ),
+    ).toEqual({ retry: false, value: "complete-refreshed-tree" });
   });
 });

@@ -101,7 +101,9 @@ import {
 import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
+  requireCompleteSupplementalRefresh,
   resolvePersistedSourcePageRefreshes,
+  resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
 import {
@@ -124,7 +126,9 @@ import {
   createInitialBfcacheIdMap,
   isCacheRestorableAppPayloadMetadata,
   isCompleteAppPayloadMetadata,
+  readHistoryStateActiveRoutePaths,
   readHistoryStatePreviousNextUrl,
+  resolveActiveRoutePaths,
   resolveInterceptionContextFromPreviousNextUrl,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
@@ -276,7 +280,11 @@ const historyController = new AppBrowserHistoryController({
   readVisibleNavigationMetadata: () => {
     if (!hasBrowserRouterState()) return null;
     const routerState = getBrowserRouterState();
-    return { bfcacheIds: routerState.bfcacheIds, previousNextUrl: routerState.previousNextUrl };
+    return {
+      activeRoutePaths: resolveActiveRoutePaths(routerState.slotBindings),
+      bfcacheIds: routerState.bfcacheIds,
+      previousNextUrl: routerState.previousNextUrl,
+    };
   },
 });
 
@@ -660,6 +668,7 @@ function createActionInitiationSnapshot() {
 type ActionInitiationSnapshot = ReturnType<typeof createActionInitiationSnapshot>;
 
 function createNavigationCommitEffect(options: {
+  activeRoutePaths: readonly string[];
   bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
@@ -669,6 +678,7 @@ function createNavigationCommitEffect(options: {
   targetHistoryIndex?: number | null;
 }): () => void {
   const {
+    activeRoutePaths,
     bfcacheIds,
     href,
     historyUpdateMode,
@@ -689,6 +699,7 @@ function createNavigationCommitEffect(options: {
     }
 
     historyController.commitNavigationHistory({
+      activeRoutePaths,
       bfcacheIds,
       href,
       historyUpdateMode,
@@ -759,6 +770,7 @@ async function commitSameUrlNavigatePayload(
   returnValue?: ServerActionResult["returnValue"],
   revalidation: ServerActionRevalidationKind = "none",
 ): Promise<unknown> {
+  let shouldRetrySupplementalRefresh = false;
   let supplementalHandle: ReturnType<
     typeof serverActionSupplementalRefreshCoordinator.begin
   > | null = null;
@@ -814,7 +826,14 @@ async function commitSameUrlNavigatePayload(
         primary: nextElements,
         signal: supplementalHandle.signal,
         supplemental,
-      }).then((result) => result.value);
+      }).then((result) => {
+        const resolution = resolveServerActionSupplementalRefresh(
+          result,
+          actionInitiation.routerState.elements,
+        );
+        shouldRetrySupplementalRefresh ||= resolution.retry;
+        return resolution.value;
+      });
     }
   }
   const navigationSnapshot = createClientNavigationRenderSnapshot(
@@ -822,7 +841,7 @@ async function commitSameUrlNavigatePayload(
     actionInitiation.routerState.navigationSnapshot.params,
   );
   try {
-    return await browserNavigationController.commitSameUrlNavigatePayload(
+    const result = await browserNavigationController.commitSameUrlNavigatePayload(
       nextElements,
       navigationSnapshot,
       returnValue,
@@ -836,6 +855,10 @@ async function commitSameUrlNavigatePayload(
         targetHref: actionInitiation.href,
       },
     );
+    if (shouldRetrySupplementalRefresh) {
+      discardedServerActionRefreshScheduler.schedule();
+    }
+    return result;
   } finally {
     supplementalHandle?.finish();
   }
@@ -1296,10 +1319,11 @@ function BrowserRoot({
     }
 
     historyController.writeHydratedHistoryMetadata({
+      activeRoutePaths: resolveActiveRoutePaths(treeState.slotBindings),
       bfcacheIds: treeState.bfcacheIds,
       previousNextUrl: treeState.previousNextUrl,
     });
-  }, [treeState.bfcacheIds, treeState.previousNextUrl, treeState.renderId]);
+  }, [treeState.bfcacheIds, treeState.previousNextUrl, treeState.renderId, treeState.slotBindings]);
 
   const routeTree = createElement(
     RedirectBoundary,
@@ -1921,9 +1945,16 @@ function bootstrapHydration(
             : [];
         const persistedSourcePageRefreshes = shouldSupplementVisibleBranches
           ? resolvePersistedSourcePageRefreshes({
+              activeRoutePaths:
+                navigationKind === "traverse"
+                  ? (readHistoryStateActiveRoutePaths(activeTraversalIntent?.historyState) ?? [])
+                  : undefined,
               basePath: __basePath,
               refreshUrl: url,
-              state: navigationInitiationState,
+              state:
+                navigationKind === "traverse"
+                  ? { previousNextUrl: requestPreviousNextUrl, slotBindings: [] }
+                  : navigationInitiationState,
             }).filter((sourcePathAndSearch) => {
               if (
                 persistedRefreshInterceptions.some(
@@ -1932,17 +1963,14 @@ function bootstrapHydration(
               ) {
                 return false;
               }
-              if (navigationKind !== "traverse") return true;
-              return (
-                new URL(sourcePathAndSearch, url).pathname !==
-                navigationInitiationState.navigationSnapshot.pathname
-              );
+              return true;
             })
           : [];
         if (navigationKind === "refresh") {
           historyController.syncCurrentHistoryStatePreviousNextUrl(
             requestPreviousNextUrl,
             getBrowserRouterState().bfcacheIds,
+            resolveActiveRoutePaths(getBrowserRouterState().slotBindings),
           );
         }
 
@@ -2444,7 +2472,7 @@ function bootstrapHydration(
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortController.signal,
             supplemental,
-          }).then((result) => result.value);
+          }).then(requireCompleteSupplementalRefresh);
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;

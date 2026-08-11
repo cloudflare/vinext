@@ -105,6 +105,7 @@ import {
   isCompleteAppPayloadMetadata,
   isCacheRestorableAppPayloadMetadata,
   isHistoryStateBfcacheVersionCurrent,
+  readHistoryStateActiveRoutePaths,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
@@ -5555,6 +5556,34 @@ describe("app browser entry previousNextUrl helpers", () => {
       __vinext_scrollY: 120,
     });
     expect(readHistoryStateTraversalIndex(state)).toBe(4);
+  });
+
+  it("stores canonical active route evidence for the history entry", () => {
+    const state = createHistoryStateWithNavigationMetadata(null, {
+      activeRoutePaths: ["/detail-page", "/detail-page", "/dashboard/settings"],
+      previousNextUrl: null,
+    });
+
+    expect(readHistoryStateActiveRoutePaths(state)).toEqual([
+      "/detail-page",
+      "/dashboard/settings",
+    ]);
+  });
+
+  it("rejects malformed active route evidence from history state", () => {
+    for (const activeRoutePaths of [
+      ["detail-page"],
+      ["//other-origin.example/detail-page"],
+      ["/detail-page?stale=1"],
+      ["/detail-page#stale"],
+      ["/detail-page\\stale"],
+      ["/detail-page\0stale"],
+      ["/detail-page", 42],
+    ]) {
+      expect(
+        readHistoryStateActiveRoutePaths({ __vinext_activeRoutePaths: activeRoutePaths }),
+      ).toBeNull();
+    }
   });
 
   it("resolves back, forward, and unknown traversal intent from history state", () => {
