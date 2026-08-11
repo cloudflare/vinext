@@ -59,7 +59,7 @@ async function createFixture(): Promise<string> {
     root,
     "app/page.tsx",
     `import depA from "dep-a";
-import depB from "dep-b";
+import depB from "../node_modules/dep-b/index.js?vinext-transitive";
 export default function Page() { return <p>{depA}, {depB}</p>; }\n`,
   );
 

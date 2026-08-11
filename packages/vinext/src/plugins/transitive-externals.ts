@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path, { toSlash } from "pathslash";
 import { createIdResolver, type Plugin, type Rollup } from "vite";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 type ExternalModuleMode = "import" | "require";
 
@@ -139,19 +140,19 @@ export function createTransitiveExternalsPlugin(options: {
 
         const packageName = packageNameFromSpecifier(source);
         if (!packageName || !externalPackages.has(packageName)) return null;
-        if (importer.startsWith("\0") || importer.includes("?") || !path.isAbsolute(importer)) {
-          return null;
-        }
+        if (importer.startsWith("\0")) return null;
+        const cleanImporter = stripViteModuleQuery(importer);
+        if (!path.isAbsolute(cleanImporter)) return null;
 
         const mode = moduleMode(resolveOptions.kind);
         const resolver = mode === "require" ? requireResolver : importResolver;
         return (async () => {
-          const importerResolution = await resolver(this.environment, source, importer);
+          const importerResolution = await resolver(this.environment, source, cleanImporter);
           if (!importerResolution || !path.isAbsolute(importerResolution)) {
             // Node's resolver models require() accurately, but must not be used
             // for ESM imports because doing so can select a require-only export.
             return mode === "require"
-              ? resolveTransitiveExternal(source, importer, rootResolver)
+              ? resolveTransitiveExternal(source, cleanImporter, rootResolver)
               : null;
           }
 
