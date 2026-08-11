@@ -6,6 +6,9 @@ const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
 const VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY = "__vinext_bfcacheIds";
 const VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY = "__vinext_bfcacheVersion";
+const VINEXT_EXTERNAL_HISTORY_STATE_KEY = "__vinext_externalHistoryState";
+const VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY = "__vinext_treeSnapshotId";
+const VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY = "__vinext_treeSnapshotClaimed";
 
 type HistoryStateRecord = {
   [key: string]: unknown;
@@ -251,17 +254,92 @@ export function createExternalHistoryStatePreservingMetadata(
   const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
   const bfcacheIds = readHistoryStateBfcacheIds(currentHistoryState);
   const bfcacheVersion = readHistoryStateBfcacheVersion(currentHistoryState);
+  const treeSnapshotId = readHistoryStateTreeSnapshotId(currentHistoryState);
 
-  if (previousNextUrl === null && traversalIndex === null && bfcacheIds === null) {
-    return callerState;
-  }
-
-  return createHistoryStateWithNavigationMetadata(callerState, {
+  const state = createHistoryStateWithNavigationMetadata(callerState, {
     bfcacheIds,
     bfcacheVersion: bfcacheIds === null ? undefined : bfcacheVersion,
     previousNextUrl,
     traversalIndex,
   });
+  // Like Next.js' copied router tree, this identifies an entry whose browser
+  // URL may differ while its rendered App Router tree remains the copied one.
+  return {
+    ...state,
+    ...createExternalHistoryStateMarker(),
+    ...(treeSnapshotId === null
+      ? {}
+      : {
+          [VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY]: true,
+          [VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY]: treeSnapshotId,
+        }),
+  };
+}
+
+function createExternalHistoryStateMarker(): Record<string, true> {
+  return { [VINEXT_EXTERNAL_HISTORY_STATE_KEY]: true };
+}
+
+export function isExternalHistoryState(state: unknown): boolean {
+  return readHistoryStateRecord(state)?.[VINEXT_EXTERNAL_HISTORY_STATE_KEY] === true;
+}
+
+/**
+ * Mirrors Next.js' `data?.__NA` guard in its patched History API. Passing a
+ * previously captured App Router history entry back to pushState/replaceState
+ * is an internal traversal write, not a new shallow-routing entry. App-owned
+ * entries always carry a traversal index after bootstrap; externally patched
+ * entries are distinguished by their explicit external marker.
+ */
+export function isAppOwnedHistoryState(state: unknown): boolean {
+  return !isExternalHistoryState(state) && readHistoryStateTraversalIndex(state) !== null;
+}
+
+export function createAppOwnedHistoryState(state: unknown): unknown {
+  const nextState = cloneHistoryState(state);
+  delete nextState[VINEXT_EXTERNAL_HISTORY_STATE_KEY];
+  return Object.keys(nextState).length > 0 ? nextState : null;
+}
+
+export function createHistoryStateWithTreeSnapshotId(
+  state: unknown,
+  treeSnapshotId: number | null,
+): unknown {
+  const nextState = cloneHistoryState(state);
+  const previousTreeSnapshotId = readHistoryStateTreeSnapshotId(nextState);
+  if (isNonNegativeSafeInteger(treeSnapshotId)) {
+    nextState[VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY] = treeSnapshotId;
+    if (previousTreeSnapshotId !== treeSnapshotId) {
+      delete nextState[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY];
+    }
+  } else {
+    delete nextState[VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY];
+    delete nextState[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY];
+  }
+  return Object.keys(nextState).length > 0 ? nextState : null;
+}
+
+export function createHistoryStateWithTreeSnapshotClaim(state: unknown, claimed: boolean): unknown {
+  const nextState = cloneHistoryState(state);
+  if (claimed && readHistoryStateTreeSnapshotId(nextState) !== null) {
+    nextState[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY] = true;
+  } else {
+    delete nextState[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY];
+  }
+  return Object.keys(nextState).length > 0 ? nextState : null;
+}
+
+export function isHistoryStateTreeSnapshotClaimed(state: unknown): boolean {
+  return readHistoryStateRecord(state)?.[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY] === true;
+}
+
+export function clearHistoryStateTreeSnapshotId(state: unknown): unknown {
+  return createHistoryStateWithTreeSnapshotId(state, null);
+}
+
+export function readHistoryStateTreeSnapshotId(state: unknown): number | null {
+  const value = readHistoryStateRecord(state)?.[VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY];
+  return isNonNegativeSafeInteger(value) ? value : null;
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {

@@ -10,7 +10,10 @@ import {
 } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
   createHistoryStateWithNavigationMetadata,
+  createHistoryStateWithTreeSnapshotId,
+  isExternalHistoryState,
   readHistoryStateTraversalIndex,
+  readHistoryStateTreeSnapshotId,
 } from "../packages/vinext/src/server/app-history-state.js";
 import {
   AppElementsWire,
@@ -82,13 +85,14 @@ function createHistoryStore(initialState: unknown = null, initialHref = "https:/
 function createController(options?: {
   initialState?: unknown;
   initialHref?: string;
+  maxHistoryStateSnapshots?: number;
   visibleMetadata?: VisibleNavigationMetadata | null;
 }) {
   const store = createHistoryStore(options?.initialState ?? null, options?.initialHref);
   let visibleMetadata = options?.visibleMetadata ?? null;
   const controller = new AppBrowserHistoryController({
     initialHistoryState: store.state,
-    maxHistoryStateSnapshots: 50,
+    maxHistoryStateSnapshots: options?.maxHistoryStateSnapshots ?? 50,
     readHistoryState: store.readHistoryState,
     readCurrentHref: store.readCurrentHref,
     pushHistoryState: store.pushHistoryState,
@@ -229,6 +233,30 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
     expect("__vinext_scrollY" in writtenState).toBe(false);
     expect(readHistoryStateTraversalIndex(writtenState)).toBe(1);
     expect(controller.currentHistoryTraversalIndex).toBe(1);
+  });
+
+  it("retains copied tree identity when pushing a hash from an external entry", () => {
+    const bfcacheIds = { "page:/shallow-test": "shallow-page" };
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(
+        { __vinext_externalHistoryState: true, __vinext_treeSnapshotId: 7 },
+        {
+          bfcacheIds,
+          bfcacheVersion: 0,
+          previousNextUrl: null,
+          traversalIndex: 0,
+        },
+      ),
+      visibleMetadata: { bfcacheIds, previousNextUrl: null },
+    });
+
+    controller.commitHashOnlyNavigation("/shallow-test/sub#content", "push", true);
+
+    const writtenState = readWrittenState(store.pushed[0]);
+    expect(writtenState.__vinext_externalHistoryState).toBe(true);
+    expect(readHistoryStateTreeSnapshotId(writtenState)).toBe(7);
+    expect(writtenState.__vinext_bfcacheIds).toEqual(bfcacheIds);
+    expect(readHistoryStateTraversalIndex(writtenState)).toBe(1);
   });
 });
 
@@ -418,6 +446,350 @@ describe("AppBrowserHistoryController snapshot restore", () => {
 
     expect(restored).toBe(false);
     expect(approveVisibleRestore).not.toHaveBeenCalled();
+  });
+
+  it("restores an external entry by copied tree identity after its traversal index is replaced", () => {
+    const { controller, setVisibleMetadata, store } = createController();
+    const shallowState = createRouterState({
+      bfcacheIds: { "page:/shallow-test": "shallow-page" },
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/shallow-test",
+        {},
+      ),
+      routeId: "route:/shallow-test",
+    });
+    seedSnapshotAtIndex(controller, 0, shallowState);
+    const shallowTreeSnapshotId = readHistoryStateTreeSnapshotId(store.state);
+    expect(shallowTreeSnapshotId).not.toBeNull();
+    controller.claimCurrentHistoryTreeSnapshot("push", store.state);
+    store.setState(createHistoryStateWithTreeSnapshotId(store.state, null));
+
+    const replacementState = createRouterState({
+      bfcacheIds: { "page:/about": "about-page" },
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/about", {}),
+      routeId: "route:/about",
+    });
+    seedSnapshotAtIndex(controller, 0, replacementState);
+    setVisibleMetadata({
+      bfcacheIds: replacementState.bfcacheIds,
+      previousNextUrl: null,
+    });
+
+    const externalHistoryState = createHistoryStateWithTreeSnapshotId(
+      createHistoryStateWithNavigationMetadata(
+        { __vinext_externalHistoryState: true },
+        {
+          bfcacheIds: shallowState.bfcacheIds,
+          bfcacheVersion: 0,
+          previousNextUrl: null,
+          traversalIndex: 0,
+        },
+      ),
+      shallowTreeSnapshotId,
+    );
+    expect(controller.isCurrentExternalHistoryTree(externalHistoryState)).toBe(false);
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: externalHistoryState,
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(shallowState);
+  });
+
+  it("retains reachable external tree snapshots across traversal-cache eviction", () => {
+    const { controller, store } = createController();
+    const externalState = createRouterState({ routeId: "route:/external" });
+    seedSnapshotAtIndex(controller, 0, externalState);
+    const externalTreeSnapshotId = readHistoryStateTreeSnapshotId(store.state);
+    expect(externalTreeSnapshotId).not.toBeNull();
+    controller.claimCurrentHistoryTreeSnapshot("push", store.state);
+    controller.rememberHistoryStateSnapshot(externalState);
+    expect(readHistoryStateTreeSnapshotId(store.state)).toBe(externalTreeSnapshotId);
+    store.setState(createHistoryStateWithTreeSnapshotId(store.state, null));
+
+    // More than the 50-entry traversal-cache limit worth of same-entry replace
+    // renders must not evict a raw pushState entry's exact tree identity. The
+    // browser gives us no way to prove that external entry unreachable.
+    for (let render = 1; render <= 52; render += 1) {
+      seedSnapshotAtIndex(
+        controller,
+        0,
+        createRouterState({ routeId: `route:/replacement-${render}` }),
+      );
+    }
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: createHistoryStateWithTreeSnapshotId(
+          { __vinext_externalHistoryState: true },
+          externalTreeSnapshotId,
+        ),
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(externalState);
+  });
+
+  it("releases ordinary tree snapshots that no history entry claims", () => {
+    const { controller, store } = createController();
+    seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: "route:/ordinary-0" }));
+    const firstTreeSnapshotId = readHistoryStateTreeSnapshotId(store.state);
+    expect(firstTreeSnapshotId).not.toBeNull();
+    const supersededTreeSnapshotIds = [firstTreeSnapshotId];
+
+    for (let render = 1; render <= 52; render += 1) {
+      seedSnapshotAtIndex(
+        controller,
+        0,
+        createRouterState({ routeId: `route:/ordinary-${render}` }),
+      );
+      if (render < 52) {
+        supersededTreeSnapshotIds.push(readHistoryStateTreeSnapshotId(store.state));
+      }
+    }
+
+    const approveVisibleRestore = vi.fn(() => true);
+    for (const treeSnapshotId of supersededTreeSnapshotIds) {
+      expect(
+        controller.restoreHistorySnapshot({
+          historyState: createHistoryStateWithTreeSnapshotId(null, treeSnapshotId),
+          preferExternalSnapshot: true,
+          stageClientParams: vi.fn(),
+          approveVisibleRestore,
+        }),
+      ).toBe(false);
+    }
+    expect(approveVisibleRestore).not.toHaveBeenCalled();
+  });
+
+  it("releases raw replace claims when app replace overwrites the same entry", () => {
+    const { controller, store } = createController();
+    const overwrittenTreeSnapshotIds: Array<number | null> = [];
+    seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: "route:/cycle-0" }));
+
+    for (let render = 1; render <= 52; render += 1) {
+      overwrittenTreeSnapshotIds.push(readHistoryStateTreeSnapshotId(store.state));
+      controller.claimCurrentHistoryTreeSnapshot("replace", store.state);
+      controller.commitNavigationHistory({
+        bfcacheIds: {},
+        href: `/cycle-${render}`,
+        historyUpdateMode: "replace",
+        previousNextUrl: null,
+        stageClientParams: vi.fn(),
+      });
+      seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: `route:/cycle-${render}` }));
+    }
+
+    const approveVisibleRestore = vi.fn(() => true);
+    for (const treeSnapshotId of overwrittenTreeSnapshotIds) {
+      expect(
+        controller.restoreHistorySnapshot({
+          historyState: createHistoryStateWithTreeSnapshotId(null, treeSnapshotId),
+          preferExternalSnapshot: true,
+          stageClientParams: vi.fn(),
+          approveVisibleRestore,
+        }),
+      ).toBe(false);
+    }
+    expect(approveVisibleRestore).not.toHaveBeenCalled();
+  });
+
+  it("releases an external claim overwritten by a captured app-owned replace", () => {
+    const { controller, store } = createController({
+      initialState: { __vinext_historyIndex: 0 },
+    });
+    seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: "route:/external" }));
+    const overwrittenTreeSnapshotId = readHistoryStateTreeSnapshotId(store.state);
+    expect(overwrittenTreeSnapshotId).not.toBeNull();
+
+    const appOwnedState = store.state;
+    store.setState({
+      ...(appOwnedState as Record<string, unknown>),
+      __vinext_externalHistoryState: true,
+    });
+    controller.claimCurrentHistoryTreeSnapshot("replace", appOwnedState);
+    const overwrittenExternalState = store.state;
+
+    const capturedAppState = { __vinext_historyIndex: 0, captured: true };
+    store.setState(capturedAppState);
+    controller.commitAppOwnedHistoryStateWrite("replace", overwrittenExternalState);
+    controller.commitAppOwnedHistoryStateWrite("replace", overwrittenExternalState);
+    expect(store.state).toEqual(capturedAppState);
+    expect(isExternalHistoryState(store.state)).toBe(false);
+
+    seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: "route:/replacement" }));
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: createHistoryStateWithTreeSnapshotId(
+          { __vinext_externalHistoryState: true },
+          overwrittenTreeSnapshotId,
+        ),
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: vi.fn(() => true),
+      }),
+    ).toBe(false);
+  });
+
+  it("releases claimed snapshots when a push truncates forward history", () => {
+    const { controller, store } = createController();
+    const truncatedTreeSnapshotIds: Array<number | null> = [];
+
+    for (let render = 0; render <= 52; render += 1) {
+      seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: `route:/source-${render}` }));
+      const sourceHistoryState = store.state;
+      const sourceTreeSnapshotId = readHistoryStateTreeSnapshotId(sourceHistoryState);
+      controller.claimCurrentHistoryTreeSnapshot("push", sourceHistoryState);
+
+      if (render > 0) {
+        truncatedTreeSnapshotIds.push(sourceTreeSnapshotId);
+      }
+      if (render === 52) break;
+
+      store.setState(sourceHistoryState);
+      controller.commitTraversalIndexFromHistoryState(sourceHistoryState);
+      controller.commitNavigationHistory({
+        bfcacheIds: {},
+        href: `/source-${render + 1}`,
+        historyUpdateMode: "replace",
+        previousNextUrl: null,
+        stageClientParams: vi.fn(),
+      });
+    }
+
+    const approveVisibleRestore = vi.fn(() => true);
+    for (const treeSnapshotId of truncatedTreeSnapshotIds.slice(0, -1)) {
+      expect(
+        controller.restoreHistorySnapshot({
+          historyState: createHistoryStateWithTreeSnapshotId(null, treeSnapshotId),
+          preferExternalSnapshot: true,
+          stageClientParams: vi.fn(),
+          approveVisibleRestore,
+        }),
+      ).toBe(false);
+    }
+    expect(approveVisibleRestore).not.toHaveBeenCalled();
+  });
+
+  it("releases forward claims truncated by a captured app-owned push after Back", () => {
+    const { controller, store } = createController({
+      initialState: { __vinext_historyIndex: 0 },
+    });
+    seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: "route:/source" }));
+    const sourceHistoryState = store.state;
+    const truncatedTreeSnapshotId = readHistoryStateTreeSnapshotId(sourceHistoryState);
+    expect(truncatedTreeSnapshotId).not.toBeNull();
+
+    controller.claimCurrentHistoryTreeSnapshot("push", sourceHistoryState);
+    controller.claimCurrentHistoryTreeSnapshot("push", store.state);
+    store.setState(sourceHistoryState);
+    controller.commitTraversalIndexFromHistoryState(sourceHistoryState);
+
+    const capturedAppState = { __vinext_historyIndex: 0, captured: true };
+    store.setState(capturedAppState);
+    controller.commitAppOwnedHistoryStateWrite("push", sourceHistoryState);
+    controller.commitAppOwnedHistoryStateWrite("push", sourceHistoryState);
+    expect(store.state).toEqual(capturedAppState);
+    expect(isExternalHistoryState(store.state)).toBe(false);
+
+    seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: "route:/replacement" }));
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: createHistoryStateWithTreeSnapshotId(
+          { __vinext_externalHistoryState: true },
+          truncatedTreeSnapshotId,
+        ),
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: vi.fn(() => true),
+      }),
+    ).toBe(false);
+  });
+
+  it("detaches a same-URL app replace from a tree claimed by another entry", () => {
+    const { controller, store } = createController({ initialHref: "https://example.com/about" });
+    const copiedState = createRouterState({ routeId: "route:/copied" });
+    seedSnapshotAtIndex(controller, 0, copiedState);
+    const copiedTreeSnapshotId = readHistoryStateTreeSnapshotId(store.state);
+    expect(copiedTreeSnapshotId).not.toBeNull();
+
+    controller.claimCurrentHistoryTreeSnapshot("push", store.state);
+    controller.claimCurrentHistoryTreeSnapshot("push", store.state);
+    controller.commitNavigationHistory({
+      bfcacheIds: {},
+      href: "/about",
+      historyUpdateMode: "replace",
+      previousNextUrl: null,
+      stageClientParams: vi.fn(),
+    });
+    expect(readHistoryStateTreeSnapshotId(store.state)).toBeNull();
+
+    seedSnapshotAtIndex(controller, 0, createRouterState({ routeId: "route:/about" }));
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: createHistoryStateWithTreeSnapshotId(
+          { __vinext_externalHistoryState: true, __vinext_treeSnapshotClaimed: true },
+          copiedTreeSnapshotId,
+        ),
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(copiedState);
+  });
+
+  it("refreshes reachable external tree snapshots across client-cache invalidation", () => {
+    const { controller, store } = createController();
+    const externalState = createRouterState({ routeId: "route:/external" });
+    seedSnapshotAtIndex(controller, 0, externalState);
+    const externalTreeSnapshotId = readHistoryStateTreeSnapshotId(store.state);
+    expect(externalTreeSnapshotId).not.toBeNull();
+    controller.claimCurrentHistoryTreeSnapshot("push", store.state);
+
+    // router.refresh() invalidates BFCache ids and traversal-index snapshots,
+    // but a forward raw pushState entry still owns this exact copied tree. The
+    // refresh commit updates the state behind that stable identity rather than
+    // replaying stale pre-refresh server elements.
+    controller.invalidateRestorableClientState();
+    const refreshedState = createRouterState({ routeId: "route:/external-refreshed" });
+    seedSnapshotAtIndex(controller, 0, refreshedState);
+    expect(readHistoryStateTreeSnapshotId(store.state)).toBe(externalTreeSnapshotId);
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: createHistoryStateWithTreeSnapshotId(
+          { __vinext_externalHistoryState: true },
+          externalTreeSnapshotId,
+        ),
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(refreshedState);
   });
 });
 

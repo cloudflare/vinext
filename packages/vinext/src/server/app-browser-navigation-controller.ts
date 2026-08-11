@@ -131,6 +131,7 @@ type BrowserNavigationController = {
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
   restoreHistorySnapshotVisibleState(options: {
+    restoreCopiedExternalHistoryEntry?: boolean;
     beforeCommit?: () => void;
     navId: number;
     state: AppRouterState;
@@ -677,14 +678,25 @@ export function createAppBrowserNavigationController(
   }
 
   function restoreHistorySnapshotVisibleState(options: {
+    restoreCopiedExternalHistoryEntry?: boolean;
     beforeCommit?: () => void;
     navId: number;
     state: AppRouterState;
     targetHref: string;
   }): boolean {
-    if (!isSnapshotTargetHref(basePath, options.state.navigationSnapshot, options.targetHref)) {
+    if (
+      !options.restoreCopiedExternalHistoryEntry &&
+      !isSnapshotTargetHref(basePath, options.state.navigationSnapshot, options.targetHref)
+    ) {
       return false;
     }
+
+    // A user pushState entry copies the current App Router tree while exposing a
+    // different URL to navigation hooks. Approve restoration against the copied
+    // tree's route, then let commitClientNavigationState publish the browser URL.
+    const approvalTargetHref = options.restoreCopiedExternalHistoryEntry
+      ? createSnapshotPathAndSearch(options.state.navigationSnapshot)
+      : options.targetHref;
 
     const currentState = getBrowserRouterState();
     const pending = createRestoredHistorySnapshotCommit({
@@ -698,7 +710,7 @@ export function createAppBrowserNavigationController(
       pending,
       routeManifest: getRouteManifest(),
       startedNavigationId: options.navId,
-      targetHref: options.targetHref,
+      targetHref: approvalTargetHref,
     });
 
     if (approval.approvedCommit === null) {

@@ -1,9 +1,17 @@
 import {
   RestorableClientStateController,
+  clearHistoryStateTreeSnapshotId,
+  createAppOwnedHistoryState,
+  createExternalHistoryStatePreservingMetadata,
   createHistoryStateWithNavigationMetadata,
+  createHistoryStateWithTreeSnapshotClaim,
+  createHistoryStateWithTreeSnapshotId,
+  isExternalHistoryState,
+  isHistoryStateTreeSnapshotClaimed,
   readHistoryStateBfcacheIds,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
+  readHistoryStateTreeSnapshotId,
   resolveHistoryTraversalIntent,
   type BfcacheIdMap,
   type HistoryTraversalIntent,
@@ -49,6 +57,7 @@ export type RestorableSnapshotCandidate = {
 
 type RestoreHistorySnapshotOptions = {
   historyState: unknown;
+  preferExternalSnapshot?: boolean;
   stageClientParams: (params: Record<string, string | string[]>) => void;
   approveVisibleRestore: (candidate: RestorableSnapshotCandidate) => boolean;
 };
@@ -98,6 +107,13 @@ function stripVinextScrollState(state: unknown): unknown {
  */
 export class AppBrowserHistoryController {
   readonly #restorableClientState: RestorableClientStateController<AppRouterState>;
+  // Unlike traversal-index snapshots, a tree explicitly copied by raw/hash
+  // history can remain reachable for the document lifetime. Keep one current
+  // candidate and promote only ids claimed by those history writes; ordinary
+  // renders are released when the candidate advances.
+  readonly #treeSnapshots = new Map<number, AppRouterState>();
+  readonly #treeSnapshotClaimCounts = new Map<number, number>();
+  readonly #treeSnapshotClaimByHistoryIndex = new Map<number, number>();
   readonly #readHistoryState: () => unknown;
   readonly #readCurrentHref: () => string;
   readonly #pushHistoryState: (state: unknown, href: string) => void;
@@ -110,6 +126,9 @@ export class AppBrowserHistoryController {
   // still continue from the highest known app history.
   #currentHistoryTraversalIndex: number | null;
   #nextHistoryTraversalIndex: number;
+  #currentTreeSnapshotId: number | null = null;
+  #nextTreeSnapshotId = 0;
+  #treeSnapshotIdPendingFreshState: number | null = null;
 
   constructor(deps: AppBrowserHistoryControllerDeps) {
     this.#readHistoryState = deps.readHistoryState;
@@ -185,6 +204,11 @@ export class AppBrowserHistoryController {
 
   invalidateRestorableClientState(): void {
     this.#restorableClientState.invalidateClientState();
+    const historyTreeSnapshotId = readHistoryStateTreeSnapshotId(this.#readHistoryState());
+    this.#treeSnapshotIdPendingFreshState =
+      historyTreeSnapshotId !== null && this.#treeSnapshots.has(historyTreeSnapshotId)
+        ? historyTreeSnapshotId
+        : null;
   }
 
   rememberHistoryStateSnapshot(state: AppRouterState): void {
@@ -192,6 +216,143 @@ export class AppBrowserHistoryController {
       historyIndex: this.#currentHistoryTraversalIndex,
       state,
     });
+    const historyTreeSnapshotId = readHistoryStateTreeSnapshotId(this.#readHistoryState());
+    // A refresh, revalidation, or HMR render updates the backing state for the
+    // copied tree that was visible when client caches were invalidated. Reuse
+    // that identity exactly once so every raw history entry that copied it sees
+    // fresh server elements. Ordinary renders allocate a distinct identity;
+    // otherwise same-index replace navigations could overwrite an older copied
+    // tree that remains reachable in forward history.
+    const updatesExistingTree =
+      historyTreeSnapshotId !== null &&
+      this.#treeSnapshots.has(historyTreeSnapshotId) &&
+      (historyTreeSnapshotId === this.#treeSnapshotIdPendingFreshState ||
+        this.#treeSnapshotClaimCounts.has(historyTreeSnapshotId));
+    const treeSnapshotId = updatesExistingTree ? historyTreeSnapshotId : this.#nextTreeSnapshotId++;
+    this.#treeSnapshotIdPendingFreshState = null;
+    const previousTreeSnapshotId = this.#currentTreeSnapshotId;
+    this.#currentTreeSnapshotId = treeSnapshotId;
+    this.#treeSnapshots.set(treeSnapshotId, state);
+    if (
+      previousTreeSnapshotId !== null &&
+      previousTreeSnapshotId !== treeSnapshotId &&
+      !this.#treeSnapshotClaimCounts.has(previousTreeSnapshotId)
+    ) {
+      this.#treeSnapshots.delete(previousTreeSnapshotId);
+    }
+    if (historyTreeSnapshotId !== treeSnapshotId) {
+      this.#replaceHistoryState(
+        createHistoryStateWithTreeSnapshotId(this.#readHistoryState(), treeSnapshotId),
+      );
+    }
+  }
+
+  isCurrentExternalHistoryTree(historyState: unknown): boolean {
+    const treeSnapshotId = readHistoryStateTreeSnapshotId(historyState);
+    return treeSnapshotId !== null && treeSnapshotId === this.#currentTreeSnapshotId;
+  }
+
+  /** Records the raw/hash history entry that now claims the live tree. */
+  claimCurrentHistoryTreeSnapshot(
+    historyUpdateMode: HistoryUpdateMode,
+    previousHistoryState: unknown,
+  ): void {
+    let historyState = this.#readHistoryState();
+    const treeSnapshotId = readHistoryStateTreeSnapshotId(historyState);
+    if (treeSnapshotId === null || !this.#treeSnapshots.has(treeSnapshotId)) return;
+
+    let historyIndex: number | null;
+    if (historyUpdateMode === "push") {
+      this.#releaseForwardTreeSnapshotClaims();
+      historyIndex = this.#nextHistoryTraversalIndex + 1;
+    } else {
+      historyIndex =
+        readHistoryStateTraversalIndex(previousHistoryState) ?? this.#currentHistoryTraversalIndex;
+    }
+    if (historyIndex === null) return;
+
+    historyState = createHistoryStateWithTreeSnapshotClaim(
+      createHistoryStateWithNavigationMetadata(historyState, {
+        previousNextUrl: readHistoryStatePreviousNextUrl(historyState),
+        traversalIndex: historyIndex,
+      }),
+      true,
+    );
+    this.#replaceHistoryState(historyState);
+    this.#claimTreeSnapshotAtHistoryIndex(historyIndex, treeSnapshotId);
+    this.commitHistoryTraversalIndex(historyIndex);
+  }
+
+  /**
+   * Applies only the claim cleanup caused by a successful raw History API write
+   * whose caller state is already app-owned. The browser write intentionally
+   * bypasses external-tree claiming (matching Next.js' `data?.__NA` path), but
+   * it still overwrites or truncates entries that may own retained snapshots.
+   * Every cleanup operation is idempotent so duplicate runtime delivery is safe.
+   */
+  commitAppOwnedHistoryStateWrite(
+    historyUpdateMode: HistoryUpdateMode,
+    previousHistoryState: unknown,
+  ): void {
+    if (historyUpdateMode === "push") {
+      this.#releaseForwardTreeSnapshotClaims();
+      return;
+    }
+
+    if (
+      !isExternalHistoryState(previousHistoryState) &&
+      !isHistoryStateTreeSnapshotClaimed(previousHistoryState)
+    ) {
+      return;
+    }
+    const previousHistoryIndex =
+      readHistoryStateTraversalIndex(previousHistoryState) ?? this.#currentHistoryTraversalIndex;
+    if (previousHistoryIndex !== null) {
+      this.#releaseTreeSnapshotClaimAtHistoryIndex(previousHistoryIndex);
+    }
+  }
+
+  #claimTreeSnapshotAtHistoryIndex(historyIndex: number, treeSnapshotId: number): void {
+    const previousTreeSnapshotId = this.#treeSnapshotClaimByHistoryIndex.get(historyIndex);
+    if (previousTreeSnapshotId === treeSnapshotId) return;
+    if (previousTreeSnapshotId !== undefined) {
+      this.#releaseTreeSnapshotClaim(previousTreeSnapshotId);
+    }
+    this.#treeSnapshotClaimByHistoryIndex.set(historyIndex, treeSnapshotId);
+    this.#treeSnapshotClaimCounts.set(
+      treeSnapshotId,
+      (this.#treeSnapshotClaimCounts.get(treeSnapshotId) ?? 0) + 1,
+    );
+  }
+
+  #releaseTreeSnapshotClaimAtHistoryIndex(historyIndex: number): void {
+    const treeSnapshotId = this.#treeSnapshotClaimByHistoryIndex.get(historyIndex);
+    if (treeSnapshotId === undefined) return;
+    this.#treeSnapshotClaimByHistoryIndex.delete(historyIndex);
+    this.#releaseTreeSnapshotClaim(treeSnapshotId);
+  }
+
+  #releaseForwardTreeSnapshotClaims(): void {
+    const currentHistoryIndex = this.#currentHistoryTraversalIndex;
+    if (currentHistoryIndex === null) return;
+    for (const historyIndex of this.#treeSnapshotClaimByHistoryIndex.keys()) {
+      if (historyIndex > currentHistoryIndex) {
+        this.#releaseTreeSnapshotClaimAtHistoryIndex(historyIndex);
+      }
+    }
+  }
+
+  #releaseTreeSnapshotClaim(treeSnapshotId: number): void {
+    const claimCount = this.#treeSnapshotClaimCounts.get(treeSnapshotId);
+    if (claimCount === undefined) return;
+    if (claimCount > 1) {
+      this.#treeSnapshotClaimCounts.set(treeSnapshotId, claimCount - 1);
+      return;
+    }
+    this.#treeSnapshotClaimCounts.delete(treeSnapshotId);
+    if (treeSnapshotId !== this.#currentTreeSnapshotId) {
+      this.#treeSnapshots.delete(treeSnapshotId);
+    }
   }
 
   // --- History metadata writes ---
@@ -201,6 +362,9 @@ export class AppBrowserHistoryController {
     historyUpdateMode: HistoryUpdateMode,
     scroll: boolean,
   ): void {
+    if (historyUpdateMode === "push") {
+      this.#releaseForwardTreeSnapshotClaims();
+    }
     const navigationHistoryIndex = this.allocateNavigationHistoryTraversalIndex(historyUpdateMode);
     const historyState = this.#readHistoryState();
     const visible = this.#readVisibleNavigationMetadata();
@@ -210,21 +374,28 @@ export class AppBrowserHistoryController {
     const bfcacheIds = visible
       ? visible.bfcacheIds
       : this.#restorableClientState.readCurrentBfcacheVersionHistoryIds(historyState);
-    const nextHistoryState = createHistoryStateWithNavigationMetadata(
-      this.#createHashOnlyNavigationBaseHistoryState(historyUpdateMode, scroll),
-      {
-        bfcacheIds,
-        bfcacheVersion:
-          bfcacheIds === null ? undefined : this.#restorableClientState.currentBfcacheVersion,
-        previousNextUrl,
-        traversalIndex: navigationHistoryIndex,
-      },
+    const nextHistoryState = createHistoryStateWithTreeSnapshotClaim(
+      createHistoryStateWithNavigationMetadata(
+        this.#createHashOnlyNavigationBaseHistoryState(historyUpdateMode, scroll),
+        {
+          bfcacheIds,
+          bfcacheVersion:
+            bfcacheIds === null ? undefined : this.#restorableClientState.currentBfcacheVersion,
+          previousNextUrl,
+          traversalIndex: navigationHistoryIndex,
+        },
+      ),
+      true,
     );
 
     if (historyUpdateMode === "replace") {
       this.#replaceHistoryState(nextHistoryState, href);
     } else {
       this.#pushHistoryState(nextHistoryState, href);
+    }
+    const treeSnapshotId = readHistoryStateTreeSnapshotId(nextHistoryState);
+    if (navigationHistoryIndex !== null && treeSnapshotId !== null) {
+      this.#claimTreeSnapshotAtHistoryIndex(navigationHistoryIndex, treeSnapshotId);
     }
     this.commitHistoryTraversalIndex(navigationHistoryIndex);
   }
@@ -233,10 +404,16 @@ export class AppBrowserHistoryController {
     historyUpdateMode: HistoryUpdateMode,
     scroll: boolean,
   ): unknown {
-    if (historyUpdateMode !== "replace") {
-      return null;
-    }
     const historyState = this.#readHistoryState();
+    if (historyUpdateMode !== "replace") {
+      const treeState = createHistoryStateWithTreeSnapshotId(
+        null,
+        readHistoryStateTreeSnapshotId(historyState),
+      );
+      return isExternalHistoryState(historyState)
+        ? createExternalHistoryStatePreservingMetadata(treeState, historyState)
+        : treeState;
+    }
     return scroll ? stripVinextScrollState(historyState) : historyState;
   }
 
@@ -249,31 +426,49 @@ export class AppBrowserHistoryController {
    */
   commitNavigationHistory(options: CommitNavigationHistoryOptions): void {
     const currentHref = this.#readCurrentHref();
+    const currentHistoryState = this.#readHistoryState();
     const origin = new URL(currentHref).origin;
     const targetHref = new URL(options.href, origin).href;
     const preserveExistingState = options.historyUpdateMode === "replace";
+    const replacesClaimedOrExternalTree =
+      preserveExistingState &&
+      (isExternalHistoryState(currentHistoryState) ||
+        isHistoryStateTreeSnapshotClaimed(currentHistoryState));
     const navigationHistoryIndex =
       options.targetHistoryIndex !== undefined
         ? options.targetHistoryIndex
         : this.allocateNavigationHistoryTraversalIndex(options.historyUpdateMode);
-    const historyState = createHistoryStateWithNavigationMetadata(
-      preserveExistingState ? this.#readHistoryState() : null,
-      {
-        bfcacheIds: options.bfcacheIds,
-        bfcacheVersion: this.#restorableClientState.currentBfcacheVersion,
-        previousNextUrl: options.previousNextUrl,
-        traversalIndex: navigationHistoryIndex,
-      },
+    const historyState = clearHistoryStateTreeSnapshotId(
+      createAppOwnedHistoryState(
+        createHistoryStateWithNavigationMetadata(
+          preserveExistingState ? currentHistoryState : null,
+          {
+            bfcacheIds: options.bfcacheIds,
+            bfcacheVersion: this.#restorableClientState.currentBfcacheVersion,
+            previousNextUrl: options.previousNextUrl,
+            traversalIndex: navigationHistoryIndex,
+          },
+        ),
+      ),
     );
 
     let wroteHistoryState = false;
-    if (options.historyUpdateMode === "replace" && currentHref !== targetHref) {
+    if (
+      options.historyUpdateMode === "replace" &&
+      (currentHref !== targetHref || replacesClaimedOrExternalTree)
+    ) {
       options.stageClientParams();
+      const currentHistoryIndex =
+        readHistoryStateTraversalIndex(currentHistoryState) ?? this.#currentHistoryTraversalIndex;
+      if (currentHistoryIndex !== null) {
+        this.#releaseTreeSnapshotClaimAtHistoryIndex(currentHistoryIndex);
+      }
       this.#replaceHistoryState(historyState, options.href);
       wroteHistoryState = true;
       this.commitHistoryTraversalIndex(navigationHistoryIndex);
     } else if (options.historyUpdateMode === "push" && currentHref !== targetHref) {
       options.stageClientParams();
+      this.#releaseForwardTreeSnapshotClaims();
       this.#pushHistoryState(historyState, options.href);
       wroteHistoryState = true;
       this.commitHistoryTraversalIndex(navigationHistoryIndex);
@@ -351,10 +546,14 @@ export class AppBrowserHistoryController {
   /** Initial history write performed before hydration starts. */
   writeBootstrapHistoryMetadata(): void {
     this.#replaceHistoryState(
-      createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
-        previousNextUrl: null,
-        traversalIndex: this.#currentHistoryTraversalIndex,
-      }),
+      clearHistoryStateTreeSnapshotId(
+        createAppOwnedHistoryState(
+          createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
+            previousNextUrl: null,
+            traversalIndex: this.#currentHistoryTraversalIndex,
+          }),
+        ),
+      ),
       createCanonicalBrowserHistoryHref(this.#readCurrentHref()),
     );
   }
@@ -365,12 +564,14 @@ export class AppBrowserHistoryController {
     previousNextUrl: string | null;
   }): void {
     this.#replaceHistoryState(
-      createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
-        bfcacheIds: options.bfcacheIds,
-        bfcacheVersion: this.#restorableClientState.currentBfcacheVersion,
-        previousNextUrl: options.previousNextUrl,
-        traversalIndex: this.#currentHistoryTraversalIndex,
-      }),
+      createAppOwnedHistoryState(
+        createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
+          bfcacheIds: options.bfcacheIds,
+          bfcacheVersion: this.#restorableClientState.currentBfcacheVersion,
+          previousNextUrl: options.previousNextUrl,
+          traversalIndex: this.#currentHistoryTraversalIndex,
+        }),
+      ),
     );
   }
 
@@ -386,11 +587,29 @@ export class AppBrowserHistoryController {
    * not approved.
    */
   restoreHistorySnapshot(options: RestoreHistorySnapshotOptions): boolean {
+    const restoreTreeSnapshot = (): boolean => {
+      const treeSnapshotId = readHistoryStateTreeSnapshotId(options.historyState);
+      const state = treeSnapshotId === null ? undefined : this.#treeSnapshots.get(treeSnapshotId);
+      if (!state) return false;
+
+      return options.approveVisibleRestore({
+        state,
+        beforeCommit: () => {
+          this.commitTraversalIndexFromHistoryState(options.historyState);
+          options.stageClientParams(state.navigationSnapshot.params);
+        },
+      });
+    };
+
+    if (options.preferExternalSnapshot) {
+      return restoreTreeSnapshot();
+    }
+
     const decision = this.#restorableClientState.resolveHistoryStateSnapshotRestore(
       options.historyState,
     );
     if (decision.kind === "skip") {
-      return false;
+      return restoreTreeSnapshot();
     }
 
     return options.approveVisibleRestore({

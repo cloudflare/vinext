@@ -118,6 +118,7 @@ import {
   createInitialBfcacheIdMap,
   isCacheRestorableAppPayloadMetadata,
   isCompleteAppPayloadMetadata,
+  isExternalHistoryState,
   readHistoryStatePreviousNextUrl,
   resolveInterceptionContextFromPreviousNextUrl,
   type AppNavigationPayloadOrigin,
@@ -136,6 +137,7 @@ import {
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
+  shouldCommitPopstateUrlWithoutNavigation,
 } from "./app-browser-popstate.js";
 import {
   DevRecoveryBoundary,
@@ -370,14 +372,17 @@ function restoreHistoryStateSnapshot(
   historyState: unknown,
   navId: number,
   onApprovedBeforeCommit?: () => void,
+  restoreCopiedExternalHistoryEntry = false,
 ): boolean {
   let restored = false;
   flushSync(() => {
     restored = historyController.restoreHistorySnapshot({
       historyState,
+      preferExternalSnapshot: restoreCopiedExternalHistoryEntry,
       stageClientParams,
       approveVisibleRestore: ({ state, beforeCommit }) =>
         browserNavigationController.restoreHistorySnapshotVisibleState({
+          restoreCopiedExternalHistoryEntry,
           beforeCommit: () => {
             onApprovedBeforeCommit?.();
             beforeCommit();
@@ -2420,6 +2425,10 @@ function bootstrapHydration(
     navigate: navigateRsc,
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
+    claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) =>
+      historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
+    commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
+      historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).
@@ -2454,18 +2463,31 @@ function bootstrapHydration(
     // Notify the transition start so observers still see the URL change, then
     // restore scroll directly and skip the RSC dispatch.
     const href = window.location.href;
-    if (isSameAppRoutePopstateTarget(href)) {
+    const isExternalHistoryEntry = isExternalHistoryState(event.state);
+    if (
+      shouldCommitPopstateUrlWithoutNavigation({
+        historyState: event.state,
+        isCurrentExternalHistoryTree: historyController.isCurrentExternalHistoryTree(event.state),
+        isSameAppRouteTarget: isSameAppRoutePopstateTarget(href),
+      })
+    ) {
       notifyAppRouterTransitionStart(href, "traverse");
       historyController.commitTraversalIndexFromHistoryState(event.state);
+      commitClientNavigationState();
       restorePopstateScrollPosition(event.state);
       return;
     }
     const snapshotNavigationId = browserNavigationController.beginNavigation();
     if (
-      restoreHistoryStateSnapshot(event.state, snapshotNavigationId, () => {
-        abortSupersededNavigation();
-        notifyAppRouterTransitionStart(href, "traverse");
-      })
+      restoreHistoryStateSnapshot(
+        event.state,
+        snapshotNavigationId,
+        () => {
+          abortSupersededNavigation();
+          notifyAppRouterTransitionStart(href, "traverse");
+        },
+        isExternalHistoryEntry,
+      )
     ) {
       window.__VINEXT_RSC_PENDING__ = null;
       restoreSynchronousPopstateScrollPosition(

@@ -76,6 +76,14 @@ export type NavigationRuntimeFunctions = {
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
+  claimCurrentHistoryTreeSnapshot?: (
+    historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+    previousHistoryState: unknown,
+  ) => void;
+  commitAppOwnedHistoryStateWrite?: (
+    historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+    previousHistoryState: unknown,
+  ) => void;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -131,7 +139,9 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRouterState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse"))
+    isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite"))
   );
 }
 
