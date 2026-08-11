@@ -67,7 +67,7 @@ export const SUITE_SUPPORT_POLICY = {
     status: "unsupported",
     feature: "Next.js experimental React channel selection",
     reason:
-      "Vinext should support portable React APIs rather than Next.js package-channel selection.",
+      "Next.js swaps React, ReactDOM, and the RSC flight runtime to coordinated private next/dist/compiled experimental builds when selected flags are enabled. Vinext uses the app's installed React packages and does not silently replace them; portable experimental React APIs need separate Vite-native coverage.",
   },
   "test/e2e/app-dir/scss/npm-import-tilde/npm-import-tilde.test.ts": NEXT_BUNDLER_SPECIFIC,
   "test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts": DEFERRED_SEGMENT_CACHE,

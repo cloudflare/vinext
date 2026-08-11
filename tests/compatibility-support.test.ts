@@ -45,6 +45,19 @@ describe("compatibility suite support policy", () => {
       expect(getSuiteSupport(suite).reason).toBeTruthy();
     }
   });
+
+  it("classifies Next.js vendored experimental React channel selection as unsupported", () => {
+    const support = getSuiteSupport(
+      "test/e2e/app-dir/rsc-basic/rsc-basic-react-experimental.test.ts",
+    );
+
+    expect(support).toMatchObject({
+      status: "unsupported",
+      feature: "Next.js experimental React channel selection",
+    });
+    expect(support.reason).toContain("private next/dist/compiled experimental builds");
+    expect(support.reason).toContain("app's installed React packages");
+  });
 });
 
 describe("compatibility rate buckets", () => {
