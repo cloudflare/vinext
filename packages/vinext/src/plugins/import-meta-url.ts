@@ -71,8 +71,8 @@ export function createDynamicImportUrlPlugin(): Plugin {
         },
         code: /\bimport\s*\(\s*new\s+URL\s*\(/,
       },
-      handler(code) {
-        return rewriteDynamicImportUrls(code);
+      handler(code, id) {
+        return rewriteDynamicImportUrls(code, id);
       },
     },
   };
@@ -166,10 +166,10 @@ export function rewriteImportMetaUrl(
 
 // Test-only entry point. Delegates to the same pre-transform used by the
 // production plugin so tests cover the ordering-sensitive Vite integration.
-export function rewriteDynamicImportUrls(code: string): RewriteResult | null {
+export function rewriteDynamicImportUrls(code: string, id: string): RewriteResult | null {
   let ast: unknown;
   try {
-    ast = parseAst(code);
+    ast = parseAst(code, { lang: parserLanguageForModuleId(id) });
   } catch {
     return null;
   }
@@ -189,6 +189,14 @@ export function rewriteDynamicImportUrls(code: string): RewriteResult | null {
     code: output.toString(),
     map: output.generateMap({ hires: "boundary" }),
   };
+}
+
+function parserLanguageForModuleId(id: string): "jsx" | "ts" | "tsx" {
+  const cleanId = cleanModuleId(id).toLowerCase();
+  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) {
+    return "ts";
+  }
+  return cleanId.endsWith(".tsx") ? "tsx" : "jsx";
 }
 
 // Test-only entry point. Mirrors the plugin's server eligibility checks and

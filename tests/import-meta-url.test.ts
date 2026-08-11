@@ -94,10 +94,23 @@ describe("vinext:import-meta-url plugin", () => {
   it("normalizes literal module URLs used as dynamic import specifiers", () => {
     const result = rewriteDynamicImportUrls(
       `const dependency = import(new URL("./style.css", import.meta.url).href);\n`,
+      "/ROOT/pages/api/url-dependency.js",
     );
 
     expect(result?.code).toContain(`import("./style.css")`);
     expect(result?.code).not.toContain("new URL");
+  });
+
+  it.each([
+    ["ts", `import type { NextApiRequest } from "next";`],
+    ["tsx", `import type { ReactNode } from "react";\nconst element = <div />;`],
+  ])("normalizes module URL imports in raw %s source", (extension, prefix) => {
+    const result = rewriteDynamicImportUrls(
+      `${prefix}\nvoid import(new URL("./style.css", import.meta.url).href);\n`,
+      `/ROOT/pages/api/url-dependency.${extension}`,
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
   });
 
   it("preserves non-literal and absolute dynamic import URLs", () => {
@@ -107,6 +120,7 @@ describe("vinext:import-meta-url plugin", () => {
         `const dynamic = import(new URL(relative, import.meta.url).href);`,
         `const absolute = import(new URL("/style.css", import.meta.url).href);`,
       ].join("\n"),
+      "/ROOT/pages/api/url-dependency.js",
     );
 
     expect(result).toBeNull();
