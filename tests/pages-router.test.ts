@@ -762,9 +762,7 @@ describe("Pages Router integration", () => {
 
     const html = await res.text();
     expect(html).toContain("styled-jsx streaming");
-    expect(html).toMatch(
-      /data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/,
-    );
+    expect(html).toMatch(/data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/);
     expect(html).toMatch(/color:\s*(?:blue|#00f)/);
     expect(html).toContain("late styled-jsx content");
     expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
@@ -776,9 +774,7 @@ describe("Pages Router integration", () => {
     expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
 
     const html = await res.text();
-    expect(html).toMatch(
-      /data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/,
-    );
+    expect(html).toMatch(/data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/);
     expect(html).toMatch(/color:\s*rgb\(4,\s*5,\s*6\)/);
   });
 
@@ -8038,9 +8034,7 @@ export default class CustomDocument extends Document {
     const firstHtml = await firstResponse.text();
     const firstTimestamp = firstHtml.match(/id="document-isr-timestamp"[^>]*>(\d+)</)?.[1];
     expect(firstTimestamp).toBeDefined();
-    expect(firstHtml).toMatch(
-      /<title[^>]*data-next-head=""[^>]*>Document ISR Styled<\/title>/,
-    );
+    expect(firstHtml).toMatch(/<title[^>]*data-next-head=""[^>]*>Document ISR Styled<\/title>/);
     expect(firstHtml).toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
 
     await new Promise((resolve) => setTimeout(resolve, 1_100));
@@ -8053,9 +8047,7 @@ export default class CustomDocument extends Document {
     for (let attempt = 0; attempt < 40; attempt++) {
       const response = await fetch(`${prodUrl}/document-isr-styled`);
       regeneratedHtml = await response.text();
-      regeneratedTimestamp = regeneratedHtml.match(
-        /id="document-isr-timestamp"[^>]*>(\d+)</,
-      )?.[1];
+      regeneratedTimestamp = regeneratedHtml.match(/id="document-isr-timestamp"[^>]*>(\d+)</)?.[1];
       if (
         response.headers.get("x-vinext-cache") === "HIT" &&
         regeneratedTimestamp !== firstTimestamp
@@ -8233,9 +8225,7 @@ describe("Production Pages Router SSR streaming", () => {
 
     const html = await res.text();
     expect(html).toContain("styled-jsx streaming");
-    expect(html).toMatch(
-      /data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/,
-    );
+    expect(html).toMatch(/data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/);
     expect(html).toMatch(/color:\s*(?:blue|#00f)/);
     expect(html).toContain("late styled-jsx content");
     expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
@@ -8247,9 +8237,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(res.headers.get("x-vinext-cache")).toBe("MISS");
 
     const html = await res.text();
-    expect(html).toMatch(
-      /data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/,
-    );
+    expect(html).toMatch(/data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/);
     expect(html).toMatch(/color:\s*rgb\(4,\s*5,\s*6\)/);
   });
 
