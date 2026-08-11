@@ -72,7 +72,7 @@ function reorderClientReferenceCss(css: string[], clientManifest: ClientBuildMan
   return css;
 }
 
-export function normalizeRscAssetsManifestCssOrderSource(
+function normalizeRscAssetsManifestCssOrderSource(
   source: string,
   clientManifest: ClientBuildManifest,
 ): string {

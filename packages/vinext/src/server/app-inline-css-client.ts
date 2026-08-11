@@ -52,7 +52,7 @@ export function removeStylesheetLinksCoveredByInlineCss(): void {
   }
 }
 
-export function dedupeGlobalCssOwnerStylesheetLinks(): void {
+function dedupeGlobalCssOwnerStylesheetLinks(): void {
   const owners = new Map<string, HTMLLinkElement>();
   const links = document.head.querySelectorAll<HTMLLinkElement>("link[rel~='stylesheet'][href]");
 
