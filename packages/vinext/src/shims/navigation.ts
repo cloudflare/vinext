@@ -62,7 +62,10 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
+import {
+  getPprFallbackShellState,
+  markPprFallbackShellDynamicBoundary,
+} from "./ppr-fallback-shell.js";
 import { BailoutToCSRError as NavigationBailoutToCSRError } from "./navigation-errors.js";
 import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
@@ -2185,7 +2188,11 @@ export function usePathname(): string {
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
     const ctx = getNavigationContext();
-    if (ctx?.isStaticGeneration === true && ctx.isForceStatic !== true) {
+    if (
+      ctx?.isStaticGeneration === true &&
+      ctx.isForceStatic !== true &&
+      getPprFallbackShellState() === null
+    ) {
       // Next.js treats a client component reading useSearchParams during a
       // static render as a client-render boundary. Throwing its canonical
       // control-flow error lets React render the nearest Suspense fallback

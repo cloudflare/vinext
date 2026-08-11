@@ -24179,6 +24179,31 @@ describe("next/navigation enhancements", () => {
     }
   });
 
+  it("useSearchParams preserves fallback-shell tracking during static generation", async () => {
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    const { setNavigationContext, useSearchParams } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/blog/:slug",
+    });
+
+    try {
+      setNavigationContext({
+        pathname: "/blog/[slug]",
+        searchParams: new URLSearchParams(),
+        params: { slug: "[slug]" },
+        isStaticGeneration: true,
+      });
+
+      expect(() => runWithPprFallbackShellState(state, useSearchParams)).not.toThrow();
+      expect(state.hasDynamicBoundary).toBe(true);
+    } finally {
+      setNavigationContext(null);
+    }
+  });
+
   it("useSearchParams returns empty values for force-static generation", async () => {
     const { setNavigationContext, useSearchParams } =
       await import("../packages/vinext/src/shims/navigation.js");
