@@ -67,7 +67,7 @@ export function createDynamicImportUrlPlugin(): Plugin {
       filter: {
         id: {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
-          exclude: [/[\\/]node_modules[\\/]/, VIRTUAL_MODULE_ID_RE],
+          exclude: VIRTUAL_MODULE_ID_RE,
         },
         code: /\bimport\s*\(\s*new\s+URL\s*\(/,
       },

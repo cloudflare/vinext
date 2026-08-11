@@ -2,12 +2,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { build } from "vite";
 import {
+  createDynamicImportUrlPlugin,
   createImportMetaUrlPlugin,
   rewriteDynamicImportUrls,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
+import { createIgnoreDynamicRequestsPlugin } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { toSlash } from "pathslash";
 
 function unwrapHook(hook: any): Function {
@@ -124,6 +127,39 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it("normalizes module URL imports in dependencies before the dynamic-request fallback", async () => {
+    const packageRoot = path.join(realRoot, "node_modules", "url-dependency");
+    const packageEntry = path.join(packageRoot, "index.js");
+    await fsp.mkdir(packageRoot, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "url-dependency", type: "module" }),
+    );
+    await fsp.writeFile(
+      packageEntry,
+      `export const dependency = import(new URL("./dependency.js", import.meta.url).href);`,
+    );
+    await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
+
+    const result = await build({
+      root: realRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [createDynamicImportUrlPlugin(), createIgnoreDynamicRequestsPlugin()],
+      build: { write: false, ssr: packageEntry },
+    });
+    if (Array.isArray(result) || !("output" in result)) {
+      throw new Error("Expected a single build output");
+    }
+    const output = result.output
+      .filter((entry) => entry.type === "chunk")
+      .map((entry) => entry.code)
+      .join("\n");
+
+    expect(output).toContain("loaded");
+    expect(output).not.toContain("Cannot find module as expression is too dynamic");
   });
 
   it("rewrites optional chained import.meta.url reads", () => {
