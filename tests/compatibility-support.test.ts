@@ -30,11 +30,11 @@ describe("compatibility suite support policy", () => {
     );
 
     expect(counts).toEqual({
-      deferred: 25,
+      deferred: 26,
       "needs-vite-equivalent": 3,
       unsupported: 5,
     });
-    expect(NON_SUPPORTED_SUITES).toHaveLength(33);
+    expect(NON_SUPPORTED_SUITES).toHaveLength(34);
     expect(CLASSIFIED_SUITES).toHaveLength(69);
     expect(new Set(CLASSIFIED_SUITES).size).toBe(69);
   });
@@ -44,6 +44,14 @@ describe("compatibility suite support policy", () => {
       expect(suite).toMatch(/^test\/e2e\/.+\.test\.[jt]sx?$/);
       expect(getSuiteSupport(suite).reason).toBeTruthy();
     }
+  });
+
+  it("defers Next.js-specific next/head serialization whitespace", () => {
+    expect(getSuiteSupport("test/e2e/next-head/index.test.ts")).toEqual({
+      status: "deferred",
+      feature: "Pages Router HTML serialization",
+      reason: "Next.js internal HTML serialization whitespace; charset order is already correct",
+    });
   });
 });
 
