@@ -328,6 +328,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "app-basepath": {
+    testDir: "./tests/e2e/app-basepath",
+    use: { baseURL: "http://localhost:4190" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/app-basic/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../../../packages/vinext/dist/cli.js start --port 4190",
+      cwd: "./tests/e2e/app-basepath/fixture",
+      port: 4190,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "pages-router-basepath-dev": {
     testDir: "./tests/e2e/pages-router-basepath-dev",
     use: { baseURL: "http://localhost:4189" },

@@ -1,0 +1,5 @@
+{
+  "name": "app-basepath-fixture",
+  "private": true,
+  "type": "module"
+}
