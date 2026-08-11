@@ -256,8 +256,15 @@ function parseModule(code: string, id: string): AstRecord | null {
  * only the value passed to `fetch()`, preserving file-URL semantics for other
  * consumers such as `fileURLToPath()` and `.pathname`.
  */
-export function createAssetImportMetaUrlPlugin(options: { isWorkerTarget: () => boolean }): Plugin {
-  const ownership = new OgAssetOwnership();
+export function createAssetImportMetaUrlPlugin(options: {
+  isWorkerTarget: () => boolean;
+  ownership?: OgAssetOwnership;
+}): Plugin {
+  const ownership = options.ownership ?? new OgAssetOwnership();
+  // The main vinext plugin shares the OG transform's ownership tracker so
+  // package imports are resolved and indexed once. Standalone instances still
+  // manage their own tracker for unit tests and direct plugin use.
+  const managesOwnership = options.ownership === undefined;
   const cache = new Map<string, string>();
   let isBuild = false;
 
@@ -269,19 +276,26 @@ export function createAssetImportMetaUrlPlugin(options: { isWorkerTarget: () => 
     },
     configResolved(config) {
       isBuild = config.command === "build";
-      ownership.configure(config.root, config.resolve.alias);
+      if (managesOwnership) ownership.configure(config.root, config.resolve.alias);
     },
     buildStart() {
-      ownership.reset();
+      if (managesOwnership) ownership.reset();
       if (isBuild) cache.clear();
     },
-    async resolveId(source, importer, resolveOptions) {
-      if (!ownership.shouldTrackImport(source)) return null;
-      const resolved = await this.resolve(source, importer, { ...resolveOptions, skipSelf: true });
-      if (resolved === null || resolved.external) return null;
-      await ownership.recordResolvedImport(source, resolved.id);
-      return null;
-    },
+    ...(managesOwnership
+      ? {
+          async resolveId(source, importer, resolveOptions) {
+            if (!ownership.shouldTrackImport(source)) return null;
+            const resolved = await this.resolve(source, importer, {
+              ...resolveOptions,
+              skipSelf: true,
+            });
+            if (resolved === null || resolved.external) return null;
+            await ownership.recordResolvedImport(source, resolved.id);
+            return null;
+          },
+        }
+      : {}),
     transform: {
       filter: {
         id: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,

@@ -1,9 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Plugin } from "vite";
 import { createAssetImportMetaUrlPlugin } from "../packages/vinext/src/plugins/asset-import-meta-url.js";
+import { createOgInlineFetchAssetsPlugin } from "../packages/vinext/src/plugins/og-assets.js";
+import { OgAssetOwnership } from "../packages/vinext/src/plugins/og-asset-ownership.js";
 
 function hookHandler(hook: unknown): (...args: any[]) => any {
   return typeof hook === "function"
@@ -94,6 +96,32 @@ describe("vinext:asset-import-meta-url", () => {
       await fsp.realpath(path.join(root, "src", "text-file.txt")),
       await fsp.realpath(packageAssetPath),
     ]);
+  });
+
+  it("shares ownership tracking without installing a second resolver pass", async () => {
+    const ownership = new OgAssetOwnership();
+    const configure = vi.spyOn(ownership, "configure");
+    const reset = vi.spyOn(ownership, "reset");
+    const ogPlugin = createOgInlineFetchAssetsPlugin(ownership);
+    const plugin = createAssetImportMetaUrlPlugin({
+      isWorkerTarget: () => false,
+      ownership,
+    });
+    const config = { command: "build", root, resolve: { alias: [] } };
+
+    await hookHandler(ogPlugin.configResolved).call(null, config);
+    await hookHandler(plugin.configResolved).call(null, config);
+    await hookHandler(ogPlugin.buildStart).call(null);
+    await hookHandler(plugin.buildStart).call(null);
+
+    expect(configure).toHaveBeenCalledOnce();
+    expect(reset).toHaveBeenCalledOnce();
+    expect(ogPlugin.resolveId).toBeTypeOf("function");
+    expect(plugin.resolveId).toBeUndefined();
+
+    const source = `fetch(new URL("../../src/text-file.txt", import.meta.url));`;
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it("replaces a direct fetch input in a plain Node build", async () => {
