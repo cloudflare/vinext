@@ -893,6 +893,7 @@ describe("app browser entry navigation scheduling", () => {
 
   it("keeps runtime-prefetch and visited-cache deadlines independent after commit", () => {
     const now = 1_000_000;
+    const preparedElements = { "layout:/": "merged shell layout" } as unknown as AppElements;
     const publication = prepareConsumedPrefetchResponseForPublication(
       {
         buffer: new ArrayBuffer(0),
@@ -901,6 +902,7 @@ describe("app browser entry navigation scheduling", () => {
         dynamicStaleTimeSeconds: 30,
         expiresAt: now + 240_000,
         paramsHeader: null,
+        preparedElements,
         renderedPathAndSearch: null,
         serverStaleTime: { kind: "resolved", seconds: 240 },
         url: "/runtime-prefetch",
@@ -910,6 +912,7 @@ describe("app browser entry navigation scheduling", () => {
     const prefetchSnapshot = preserveCommittedPrefetchExpiry(
       publication.snapshot,
       publication.expiresAt,
+      publication.preparedElements,
     );
     const visited = createVisitedResponseCacheEntry({
       now,
@@ -918,6 +921,7 @@ describe("app browser entry navigation scheduling", () => {
     });
 
     expect(prefetchSnapshot.expiresAt).toBe(now + 240_000);
+    expect(prefetchSnapshot.preparedElements).toBe(preparedElements);
     expect(publication.snapshot).not.toHaveProperty("expiresAt");
     expect(visited.expiresAt).toBe(now + 30_000);
   });

@@ -10,6 +10,8 @@ const ROOT = "/nextjs-compat/segment-cache-metadata";
 
 type RscResponseRecord = {
   body: string | null;
+  bodySettled: boolean;
+  method: string;
   pathname: string;
   prefetchHeader: string | undefined;
   renderModeHeader: string | undefined;
@@ -92,6 +94,8 @@ function trackRscResponses(page: Page): RscResponseRecord[] {
     if (!url.searchParams.has("_rsc") || request.headers()["rsc"] !== "1") return;
     const record = {
       body: null,
+      bodySettled: false,
+      method: request.method(),
       pathname: url.pathname,
       prefetchHeader: request.headers()["next-router-prefetch"],
       renderModeHeader: request.headers()["x-vinext-rsc-render-mode"],
@@ -106,6 +110,8 @@ function trackRscResponses(page: Page): RscResponseRecord[] {
       record.body = await response.text();
     } catch {
       // Ignore aborted responses; successful RSC responses are what the assertions observe.
+    } finally {
+      record.bodySettled = true;
     }
   });
   return responses;
@@ -129,8 +135,7 @@ function hasExpectedResponseSequence(
   let nextExpectedIndex = 0;
 
   for (const response of responses) {
-    if (response.pathname !== href) continue;
-    if (response.body === null) continue;
+    if (response.pathname !== href || response.body === null) continue;
 
     let remainingBody = response.body;
     while (nextExpectedIndex < expected.length) {
@@ -147,7 +152,33 @@ function hasExpectedResponseSequence(
   return false;
 }
 
-async function revealAndExpectShellPrefetchOnly(
+async function waitForResponseActivityToSettle(
+  responses: RscResponseRecord[],
+  startIndex: number,
+): Promise<void> {
+  let lastSignature = "";
+  let stableSince = Date.now();
+  await expect
+    .poll(
+      () => {
+        const current = responses.slice(startIndex);
+        const signature = `${current.length}:${current.filter((response) => response.bodySettled).length}`;
+        if (signature !== lastSignature) {
+          lastSignature = signature;
+          stableSince = Date.now();
+        }
+        return (
+          current.length > 0 &&
+          current.every((response) => response.bodySettled) &&
+          Date.now() - stableSince >= 500
+        );
+      },
+      { intervals: [50], timeout: 5_000 },
+    )
+    .toBe(true);
+}
+
+async function revealAndExpectIdentityProbeOnly(
   page: Page,
   href: string,
   responses: RscResponseRecord[],
@@ -155,19 +186,19 @@ async function revealAndExpectShellPrefetchOnly(
 ) {
   const before = responses.length;
   await page.locator(`input[data-link-accordion="${href}"]`).click();
-  await expect
-    .poll(() =>
-      responses
-        .slice(before)
-        .some(
-          (response) =>
-            response.pathname === href &&
-            response.prefetchHeader === "1" &&
-            response.renderModeHeader === "prefetch-loading-shell",
-        ),
-    )
-    .toBe(true);
+  await waitForResponseActivityToSettle(responses, before);
   const newResponses = responses.slice(before).filter((response) => response.pathname === href);
+  expect(newResponses).toEqual([
+    expect.objectContaining({
+      bodySettled: true,
+      method: "HEAD",
+      prefetchHeader: "1",
+      renderModeHeader: "prefetch-empty",
+    }),
+  ]);
+  expect(
+    newResponses.some((response) => response.renderModeHeader === "prefetch-loading-shell"),
+  ).toBe(false);
   for (const text of blocked) {
     expect(newResponses.some((response) => response.body?.includes(text))).toBe(false);
   }
@@ -195,7 +226,7 @@ test.describe("Next.js compat: segment-cache metadata", () => {
       ]);
       expect(requests).toContain(`${ROOT}/page-with-dynamic-head`);
 
-      await revealAndExpectShellPrefetchOnly(
+      await revealAndExpectIdentityProbeOnly(
         page,
         `${ROOT}/rewrite-to-page-with-dynamic-head`,
         responses,
@@ -235,7 +266,7 @@ test.describe("Next.js compat: segment-cache metadata", () => {
       );
       expect(requests).toContain(`${ROOT}/page-with-runtime-prefetchable-head`);
 
-      await revealAndExpectShellPrefetchOnly(
+      await revealAndExpectIdentityProbeOnly(
         page,
         `${ROOT}/rewrite-to-page-with-runtime-prefetchable-head`,
         responses,

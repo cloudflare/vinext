@@ -82,7 +82,7 @@ function interceptTargetsRoute(interceptTargetPattern: string, route: AppRoute):
   );
 }
 
-function hasLoadingBoundary(route: AppRoute, hasSiblingInterceptLoading: boolean): boolean {
+function hasDirectLoadingBoundary(route: AppRoute): boolean {
   return (
     route.loadingPath !== null ||
     (route.loadingPaths?.some((_, index) => (route.loadingTreePositions?.[index] ?? 0) > 0) ??
@@ -91,30 +91,59 @@ function hasLoadingBoundary(route: AppRoute, hasSiblingInterceptLoading: boolean
     // slot or intercepted subtree it is that subtree's local root and must
     // still be advertised as a loading shell.
     route.parallelSlots.some(
-      (slot) =>
-        slot.loadingPath !== null ||
-        (slot.loadingPaths?.length ?? 0) > 0 ||
-        slot.interceptingRoutes.some(
-          (intercept) =>
-            interceptTargetsRoute(intercept.targetPattern, route) &&
-            (intercept.loadingPaths?.length ?? 0) > 0,
-        ),
-    ) ||
-    hasSiblingInterceptLoading
+      (slot) => slot.loadingPath !== null || (slot.loadingPaths?.length ?? 0) > 0,
+    )
   );
+}
+
+function addUniquePattern(target: string[][], pattern: string[]): void {
+  if (!target.some((candidate) => patternsStructurallyEquivalent(candidate, pattern))) {
+    target.push(pattern);
+  }
+}
+
+function getLoadingShellInterceptionSourcePatterns(
+  route: AppRoute,
+  siblingInterceptLoadingSourcePatterns: readonly string[][],
+): string[][] {
+  const sourcePatterns: string[][] = [];
+  for (const slot of route.parallelSlots) {
+    for (const intercept of slot.interceptingRoutes) {
+      if (
+        interceptTargetsRoute(intercept.targetPattern, route) &&
+        (intercept.loadingPaths?.length ?? 0) > 0
+      ) {
+        addUniquePattern(sourcePatterns, splitPatternParts(intercept.sourceMatchPattern));
+      }
+    }
+  }
+  for (const sourcePattern of siblingInterceptLoadingSourcePatterns) {
+    addUniquePattern(sourcePatterns, [...sourcePattern]);
+  }
+  return sourcePatterns;
 }
 
 /** Project an `AppRoute` down to the public `VinextLinkPrefetchRoute` shape. */
 export function toLinkPrefetchRoute(
   route: AppRoute,
-  hasSiblingInterceptLoading = route.siblingIntercepts.some(
-    (intercept) =>
-      interceptTargetsRoute(intercept.targetPattern, route) &&
-      (intercept.loadingPaths?.length ?? 0) > 0,
-  ),
+  siblingInterceptLoadingSourcePatterns = route.siblingIntercepts
+    .filter(
+      (intercept) =>
+        interceptTargetsRoute(intercept.targetPattern, route) &&
+        (intercept.loadingPaths?.length ?? 0) > 0,
+    )
+    .map((intercept) => splitPatternParts(intercept.sourceMatchPattern)),
 ): VinextLinkPrefetchRoute {
+  const canPrefetchLoadingShell = hasDirectLoadingBoundary(route);
+  const loadingShellInterceptionSourcePatterns = getLoadingShellInterceptionSourcePatterns(
+    route,
+    siblingInterceptLoadingSourcePatterns,
+  );
   return {
-    canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
+    canPrefetchLoadingShell,
+    ...(!canPrefetchLoadingShell && loadingShellInterceptionSourcePatterns.length > 0
+      ? { loadingShellInterceptionSourcePatterns }
+      : {}),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
@@ -124,11 +153,17 @@ export function toLinkPrefetchRoute(
 
 /** Project App routes together so sibling-intercept loading is applied to its target route. */
 export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPrefetchRoute[] {
-  const siblingInterceptLoadingTargets: string[][] = [];
+  const siblingInterceptLoadingTargets: Array<{
+    sourcePatternParts: string[];
+    targetPatternParts: string[];
+  }> = [];
   for (const route of routes) {
     for (const intercept of route.siblingIntercepts) {
       if ((intercept.loadingPaths?.length ?? 0) > 0) {
-        siblingInterceptLoadingTargets.push(splitPatternParts(intercept.targetPattern));
+        siblingInterceptLoadingTargets.push({
+          sourcePatternParts: splitPatternParts(intercept.sourceMatchPattern),
+          targetPatternParts: splitPatternParts(intercept.targetPattern),
+        });
       }
     }
   }
@@ -137,9 +172,11 @@ export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPre
     isLinkPrefetchRoute(route)
       ? toLinkPrefetchRoute(
           route,
-          siblingInterceptLoadingTargets.some((targetParts) =>
-            patternsStructurallyEquivalent(targetParts, route.patternParts),
-          ),
+          siblingInterceptLoadingTargets
+            .filter(({ targetPatternParts }) =>
+              patternsStructurallyEquivalent(targetPatternParts, route.patternParts),
+            )
+            .map(({ sourcePatternParts }) => sourcePatternParts),
         )
       : toDocumentOnlyAppRoute(route),
   );

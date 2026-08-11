@@ -9,7 +9,14 @@ import type { NEXT_DATA } from "vinext/shims/internal/utils";
 import { isUnknownRecord } from "../utils/record.js";
 
 export type VinextLinkPrefetchRoute = {
+  /** Loading shell available for a normal, non-intercepted request. */
   canPrefetchLoadingShell: boolean;
+  /**
+   * Interception source patterns whose target subtree has its own loading
+   * boundary. Omitted when no interception-specific shell is available or a
+   * direct loading boundary already covers every request context.
+   */
+  loadingShellInterceptionSourcePatterns?: string[][];
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];

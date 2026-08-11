@@ -69,7 +69,11 @@ import {
   type PendingLinkSetter,
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
-import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
+import {
+  promoteAppPrefetchFetch,
+  scheduleAppPrefetchFetch,
+} from "./internal/app-prefetch-fetch-queue.js";
+import type { AppElements } from "../server/app-elements.js";
 
 type NavigateEvent = {
   url: URL;
@@ -145,7 +149,7 @@ export type LinkProps<_RouteInferType = unknown> = {
   children?: React.ReactNode;
 } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
 
-type LinkPrefetchMode = "disabled" | "auto" | "full" | "full-after-shell";
+type LinkPrefetchMode = "disabled" | "auto" | "auto-shell" | "full" | "full-after-shell";
 
 declare global {
   // Window is an ambient interface from lib.dom; interface merging is required
@@ -421,7 +425,10 @@ function prefetchUrl(
           { AppElementsWire },
           rscCacheBusting,
           {
+            APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
             APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+            APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+            APP_RSC_RENDER_MODE_PREFETCH_FULL,
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           },
           headersModule,
@@ -451,6 +458,7 @@ function prefetchUrl(
           hasPrefetchCacheEntryForNavigation,
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
+          deletePrefetchResponseSnapshot,
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
@@ -458,6 +466,7 @@ function prefetchUrl(
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+          VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
           VINEXT_MOUNTED_SLOTS_HEADER,
         } = headersModule;
         // Hybrid ownership: skip the App RSC prefetch when Pages owns the
@@ -477,13 +486,27 @@ function prefetchUrl(
           ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
           : null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
+        const interceptionContext = getPrefetchInterceptionContext(fullHref);
+        const routePrefetchPolicy = resolveAutoAppRoutePrefetch(
+          prefetchPolicyHref,
+          interceptionContext,
+        );
         const autoPrefetch =
           mode === "auto"
-            ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
-            : resolveFullAppRoutePrefetch();
+            ? routePrefetchPolicy
+            : mode === "auto-shell"
+              ? {
+                  ...routePrefetchPolicy,
+                  cacheForNavigation: false,
+                  // This response contains only the static shell. A dynamic
+                  // page's zero stale time applies to its data, not to the
+                  // prerequisite shell that the hover upgrade reuses.
+                  honorDynamicStaleTime: false,
+                  prefetchShellFirst: true,
+                }
+              : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
-        const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
@@ -502,11 +525,15 @@ function prefetchUrl(
           prefetchKind: mode === "full" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
             ? hasSearchAgnosticShell
-              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+              ? APP_RSC_RENDER_MODE_PREFETCH_EMPTY
               : isAutomaticSearchParamShell
                 ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
                 : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-            : undefined,
+            : mode === "full-after-shell"
+              ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL
+              : mode === "full"
+                ? APP_RSC_RENDER_MODE_PREFETCH_FULL
+                : undefined,
         });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
@@ -555,11 +582,19 @@ function prefetchUrl(
               }),
             priority,
           );
-        const fetchLoadingShellForReuse = async (): Promise<void> => {
+        const fetchLoadingShellForReuse = async (
+          requireFresh = false,
+        ): Promise<AppElements | null> => {
           const shellHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
-            renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            // Ordinary full prefetches only need route/rewrite identity before
+            // the complete response. Reserve the deep loading shell for the
+            // dynamic-on-hover path that actually merges and reuses it.
+            renderMode:
+              requireFresh || routePrefetchPolicy.canPrefetchLoadingShell
+                ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+                : APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
           });
           shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
@@ -570,6 +605,20 @@ function prefetchUrl(
           const shellCacheKey = AppElementsWire.encodeCacheKey(shellRscUrl, interceptionContext);
           const shellCache = getPrefetchCache();
           let shellEntry = shellCache.get(shellCacheKey);
+          if (
+            shellEntry !== undefined &&
+            shellEntry.pending === undefined &&
+            shellEntry.snapshot !== undefined &&
+            shellEntry.expiresAt !== undefined &&
+            shellEntry.expiresAt <= Date.now()
+          ) {
+            // Next's Segment Cache refetches an expired route tree before a
+            // Full hover upgrade. Drop our equivalent prerequisite shell so
+            // the branch below does the same instead of abandoning the
+            // dynamic request because an expired entry still occupies the key.
+            deletePrefetchResponseSnapshot(shellRscUrl, shellEntry.snapshot, interceptionContext);
+            shellEntry = undefined;
+          }
           if (shellEntry === undefined) {
             getPrefetchedUrls().add(shellCacheKey);
             prefetchRscResponse(
@@ -597,13 +646,46 @@ function prefetchUrl(
             );
             shellEntry = shellCache.get(shellCacheKey);
           }
+          if (requireFresh) {
+            promoteAppPrefetchFetch(shellEntry?.fetchPromise);
+          }
           await shellEntry?.pending?.catch(() => {});
+          if (!requireFresh) return null;
+
+          const settledShellEntry = shellCache.get(shellCacheKey);
+          if (
+            settledShellEntry?.outcome !== "cache-seeded" ||
+            settledShellEntry.expiresAt === undefined ||
+            settledShellEntry.expiresAt <= Date.now()
+          ) {
+            throw new Error("Unable to upgrade prefetch without a fresh shell payload");
+          }
+          if (settledShellEntry.preparedElements) {
+            return settledShellEntry.preparedElements;
+          }
+          if (!settledShellEntry.snapshot) return null;
+          try {
+            const preparedElements = await prepareNavigationPrefetchSnapshot(
+              settledShellEntry.snapshot,
+            );
+            if (shellCache.get(shellCacheKey) === settledShellEntry) {
+              settledShellEntry.preparedElements = preparedElements;
+            }
+            return preparedElements;
+          } catch {
+            // Without a decoded shell, do not ask the server to omit layouts.
+            // The dynamic response remains complete and independently usable.
+            return null;
+          }
         };
         const fetchAliasCacheHitProbe = async (): Promise<Response> => {
           const probeHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
             fetchPriority: priority,
-            renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            // This HEAD only learns the source URL's rewrite identity. Avoid
+            // executing the deeper loading-shell page render whose body would
+            // be discarded anyway.
+            renderMode: APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
           });
           probeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           probeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
@@ -665,11 +747,26 @@ function prefetchUrl(
         const gateViaLoadingShell =
           (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
           autoPrefetch.prefetchShellFirst;
+        let prerequisiteShellElements: AppElements | null = null;
         const fetchPromise =
           autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
                 if (gateViaLoadingShell) {
-                  await fetchLoadingShellForReuse();
+                  prerequisiteShellElements = await fetchLoadingShellForReuse(
+                    mode === "full-after-shell",
+                  );
+                  if (prerequisiteShellElements) {
+                    const { createClientReuseManifestHeaderFromVisibleAppState } =
+                      await import("../server/app-browser-client-reuse-manifest.js");
+                    const clientReuseManifestHeader =
+                      createClientReuseManifestHeaderFromVisibleAppState({
+                        elements: prerequisiteShellElements,
+                        visibleCommitVersion: 0,
+                      });
+                    if (clientReuseManifestHeader) {
+                      headers.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+                    }
+                  }
                   return fetchFullRscPayload();
                 }
                 return fetchRouteTreeGatedPrefetch({
@@ -720,7 +817,13 @@ function prefetchUrl(
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
             prepareSnapshot: autoPrefetch.cacheForNavigation
-              ? prepareNavigationPrefetchSnapshot
+              ? async (snapshot) => {
+                  const dynamicElements = await prepareNavigationPrefetchSnapshot(snapshot);
+                  if (!prerequisiteShellElements) return dynamicElements;
+                  const { mergeDynamicPrefetchWithShell } =
+                    await import("../server/app-prefetch-shell-merge.js");
+                  return mergeDynamicPrefetchWithShell(prerequisiteShellElements, dynamicElements);
+                }
               : undefined,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
           },
@@ -1219,11 +1322,13 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (!observer) return;
 
     registerVisibleLinkPing();
+    const viewportPrefetchMode =
+      unstable_dynamicOnHover && prefetchMode === "auto" ? "auto-shell" : prefetchMode;
     const instance: LinkPrefetchInstance = {
       href: hrefToPrefetch,
       isVisible: false,
       locale,
-      mode: prefetchMode,
+      mode: viewportPrefetchMode,
       pagesRouteHref:
         normalizedRouteHref === normalizedHref
           ? undefined
@@ -1245,7 +1350,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       visibleLinkPrefetches.delete(instance);
       instance.isVisible = false;
     };
-  }, [shouldViewportPrefetch, prefetchMode, normalizedHref, normalizedRouteHref, locale]);
+  }, [
+    shouldViewportPrefetch,
+    prefetchMode,
+    normalizedHref,
+    normalizedRouteHref,
+    locale,
+    unstable_dynamicOnHover,
+  ]);
 
   const prefetchOnIntent = useCallback(() => {
     if (

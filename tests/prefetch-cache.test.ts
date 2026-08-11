@@ -26,6 +26,10 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import {
+  prepareConsumedPrefetchResponseForPublication,
+  preserveCommittedPrefetchExpiry,
+} from "../packages/vinext/src/server/app-browser-prefetch-response.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
@@ -2392,6 +2396,61 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse("/prepared", null, null)?.preparedElements).toBe(
       preparedElements,
     );
+  });
+
+  it("preserves merged hover elements across click, away, and revisit", () => {
+    // Regression for the dynamic-on-hover lifecycle:
+    // viewport shell -> hover payload -> click -> navigate away -> revisit.
+    // The raw hover buffer is skip-pruned; only preparedElements contains the
+    // shell-merged layout tree. The visited entry uses dynamic staleTime 0, but
+    // the explicit-full prefetch deadline remains reusable for the revisit.
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/dynamic?_rsc=hover";
+    const mergedElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dynamic"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/dynamic",
+      }),
+      [AppElementsWire.keys.layoutFlags]: {
+        "layout:/": "s",
+        "layout:/dynamic": "s",
+      },
+      "layout:/": "root shell layout",
+      "layout:/dynamic": "dynamic shell layout",
+      "page:/dynamic": "dynamic hover page",
+    } as const;
+    const publication = prepareConsumedPrefetchResponseForPublication(
+      {
+        buffer: new TextEncoder().encode("skip-pruned hover flight").buffer,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 0,
+        expiresAt: now + 30_000,
+        paramsHeader: null,
+        preparedElements: mergedElements,
+        renderedPathAndSearch: null,
+        url: rscUrl,
+      },
+      rscUrl,
+    );
+
+    const committedPrefetch = preserveCommittedPrefetchExpiry(
+      publication.snapshot,
+      publication.expiresAt,
+      publication.preparedElements,
+    );
+    seedPrefetchResponseSnapshot(rscUrl, committedPrefetch);
+
+    // Simulate navigating away after the dynamic visited entry has expired.
+    vi.spyOn(Date, "now").mockReturnValue(now + 1);
+    const revisited = consumePrefetchResponse("/dynamic", null, null);
+
+    expect(revisited?.preparedElements).toBe(mergedElements);
+    expect(revisited?.preparedElements?.["layout:/"]).toBe("root shell layout");
+    expect(revisited?.preparedElements?.["layout:/dynamic"]).toBe("dynamic shell layout");
+    expect(revisited?.expiresAt).toBe(now + 30_000);
   });
 
   it("preserves the original expiry when consuming a prefetched response", () => {

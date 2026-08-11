@@ -333,6 +333,12 @@ describe("Link App Router prefetch mode", () => {
         },
         {
           canPrefetchLoadingShell: false,
+          loadingShellInterceptionSourcePatterns: [["slow-intercept"]],
+          patternParts: ["slow-intercept", "photo"],
+          isDynamic: false,
+        },
+        {
+          canPrefetchLoadingShell: false,
           patternParts: ["teams", ":team", "dashboard"],
           isDynamic: true,
           requiresDynamicNavigationRequest: true,
@@ -344,6 +350,7 @@ describe("Link App Router prefetch mode", () => {
     vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
+        canPrefetchLoadingShell: false,
         cacheForNavigation: true,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -351,6 +358,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -358,6 +366,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -365,16 +374,32 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
+        canPrefetchLoadingShell: false,
         cacheForNavigation: true,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
+      expect(resolveAutoAppRoutePrefetch("/slow-intercept/photo")).toMatchObject({
+        canPrefetchLoadingShell: false,
+        cacheForNavigation: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/slow-intercept/photo", "/other-source")).toMatchObject({
+        canPrefetchLoadingShell: false,
+        cacheForNavigation: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/slow-intercept/photo", "/slow-intercept")).toMatchObject(
+        {
+          canPrefetchLoadingShell: true,
+          cacheForNavigation: false,
+        },
+      );
       // Ported from Next.js:
       // test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
+        canPrefetchLoadingShell: false,
         cacheForNavigation: true,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -382,6 +407,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: true,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -390,6 +416,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa?q=1")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -398,6 +425,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
+        canPrefetchLoadingShell: false,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -405,6 +433,7 @@ describe("Link App Router prefetch mode", () => {
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
+        canPrefetchLoadingShell: false,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,
@@ -441,6 +470,7 @@ describe("Link App Router prefetch mode", () => {
 
     try {
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
+        canPrefetchLoadingShell: true,
         cacheForNavigation: false,
         fallbackTtl: "static",
         honorDynamicStaleTime: true,

@@ -1,4 +1,11 @@
-import { Fragment, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
+import {
+  Fragment,
+  Suspense,
+  createElement,
+  isValidElement,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
@@ -27,6 +34,7 @@ import {
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_FULL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
@@ -244,6 +252,27 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
       createElement(Slot, { id: routeId }),
     ),
   );
+}
+
+async function renderRouteEntryFirstChunk(elements: AppElements, routeId: string): Promise<string> {
+  const { renderToReadableStream } = await import("react-dom/server.edge");
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  const stream = await renderToReadableStream(
+    createElement(
+      ElementsContext.Provider,
+      { value: elements },
+      createElement(Slot, { id: routeId }),
+    ),
+    {
+      onError(error: unknown) {
+        throw error instanceof Error ? error : new Error(String(error));
+      },
+    },
+  );
+  const reader = stream.getReader();
+  const { value } = await reader.read();
+  await reader.cancel().catch(() => {});
+  return new TextDecoder().decode(value);
 }
 
 async function renderRouteDocument(elements: AppElements, routeId: string): Promise<string> {
@@ -1528,9 +1557,16 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+  it("includes static page content in loading-shell prefetches without loading.tsx", async () => {
+    // Cache Components route prefetches render as deeply as possible. A fully
+    // static leaf is part of the reusable shell rather than an eager dynamic
+    // render:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+    function StaticPage() {
+      return createElement("main", null, "Fully static page content");
+    }
     const elements = buildAppPageElements({
-      element: createElement(PageProbe),
+      element: createElement(StaticPage),
       makeThenableParams(params) {
         return Promise.resolve(params);
       },
@@ -1545,20 +1581,67 @@ describe("app page route wiring helpers", () => {
         loading: null,
         notFound: null,
         notFounds: [null],
-        routeSegments: ["dashboard"],
+        routeSegments: ["static"],
         templateTreePositions: [],
         templates: [],
       },
-      routePath: "/dashboard",
+      routePath: "/static",
       rootNotFoundModule: null,
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements["page:/static"]).not.toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
-    const html = await renderRouteEntry(elements, "route:/dashboard");
+    const html = await renderRouteEntry(elements, "route:/static");
+    expect(html).toContain("Fully static page content");
+  });
 
-    expect(html).not.toContain("Page");
+  it("renders a page Suspense fallback in loading-shell prefetches without loading.tsx", async () => {
+    function StaticLayout({ children }: { children?: ReactNode }) {
+      return createElement("section", null, "Static content in layout of dynamic page", children);
+    }
+    function DynamicContent(): ReactNode {
+      throw new Promise<never>(() => {});
+    }
+    function SuspensePage() {
+      return createElement(
+        Suspense,
+        { fallback: createElement("div", null, "Loading dynamic data...") },
+        createElement(DynamicContent),
+      );
+    }
+    const elements = buildAppPageElements({
+      element: createElement(SuspensePage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: StaticLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dynamic"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dynamic",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    expect(elements["layout:/dynamic"]).not.toBeUndefined();
+    expect(elements["page:/dynamic"]).not.toBeNull();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
+    const html = await renderRouteEntryFirstChunk(elements, "route:/dynamic");
+
+    expect(html).toContain("Static content in layout of dynamic page");
+    expect(html).toContain("Loading dynamic data...");
   });
 
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
@@ -3625,6 +3708,56 @@ describe("app page route wiring helpers", () => {
 
     expect(html).toContain("slot:de");
     expect(html).not.toContain("slot:en");
+  });
+
+  it("yields to full-prefetch page continuations before serializing streaming metadata", async () => {
+    const pageRenderDependency = createAppPageRenderDependency();
+    const elements = buildAppPageElements({
+      element: createElement("main", null, "Target page"),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      pageRenderDependency,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_FULL,
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["metadata"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/metadata",
+      rootNotFoundModule: null,
+      streamingMetadata: Promise.resolve({ title: "Prefetched title" }),
+    });
+
+    const streamingMetadataBodyId = "__vinext_streaming_metadata_body:route:/metadata";
+    let metadataRenderSettled = false;
+    const metadataHtmlPromise = renderHtml(readChildren(elements[streamingMetadataBodyId])).then(
+      (html) => {
+        metadataRenderSettled = true;
+        return html;
+      },
+    );
+
+    await Promise.resolve();
+    expect(metadataRenderSettled).toBe(false);
+
+    pageRenderDependency.release();
+    await Promise.resolve();
+    expect(metadataRenderSettled).toBe(false);
+
+    const html = await withTimeout(metadataHtmlPromise, 1_000);
+    expect(html).toContain("Prefetched title");
   });
 
   it("preserves parent-before-child execution under an ancestor loading boundary", async () => {

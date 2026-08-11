@@ -363,7 +363,7 @@ describe("App Router generated manifest construction", () => {
     );
   });
 
-  it("advertises loading-shell prefetch for intercept-only loading boundaries", () => {
+  it("advertises intercept-only loading boundaries separately from direct boundaries", () => {
     const route = {
       ...minimalAppRoutes[0],
       pattern: "/slow-intercept/photo",
@@ -403,7 +403,10 @@ describe("App Router generated manifest construction", () => {
       routeSegments: ["slow-intercept", "photo"],
     } satisfies AppRoute;
 
-    expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+    expect(toLinkPrefetchRoute(route)).toMatchObject({
+      canPrefetchLoadingShell: false,
+      loadingShellInterceptionSourcePatterns: [["slow-intercept"]],
+    });
     expect(
       toLinkPrefetchRoute({
         ...route,
@@ -525,7 +528,10 @@ describe("App Router generated manifest construction", () => {
       unrelatedRoute,
     ]);
     expect(source.canPrefetchLoadingShell).toBe(false);
-    expect(target.canPrefetchLoadingShell).toBe(true);
+    expect(target).toMatchObject({
+      canPrefetchLoadingShell: false,
+      loadingShellInterceptionSourcePatterns: [["feed"]],
+    });
     expect(unrelated.canPrefetchLoadingShell).toBe(false);
   });
 

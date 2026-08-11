@@ -22,6 +22,10 @@ import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+  type AppRscRenderMode,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
   type ClientReuseManifestSkipDisposition,
@@ -1702,6 +1706,7 @@ describe("layoutFlags injection into RSC payload", () => {
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
     routePattern?: string;
+    renderMode?: AppRscRenderMode;
     skipDisposition?: ClientReuseManifestSkipDisposition;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
@@ -1747,6 +1752,7 @@ describe("layoutFlags injection into RSC payload", () => {
         return createStream(["flight-data"]);
       },
       routePattern: overrides.routePattern ?? "/test",
+      renderMode: overrides.renderMode,
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
@@ -1966,6 +1972,66 @@ describe("layoutFlags injection into RSC payload", () => {
       "layout:/": "s",
       "layout:/blog": "s",
     });
+  });
+
+  it("only omits dynamic-on-hover layouts actually present in the shell", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/dynamic-on-hover/dynamic-on-hover.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/dynamic-on-hover/dynamic-on-hover.test.ts
+    const originalBuildId = process.env.__VINEXT_BUILD_ID;
+    process.env.__VINEXT_BUILD_ID = "deploy-test";
+    const tracker = createAppLayoutParamAccessTracker();
+    const clientReuseManifest = createVerifiedStaticLayoutManifest({
+      deploymentVersion: "deploy-test",
+      layoutId: "layout:/",
+      rootBoundaryId: "/",
+      routeId: "route:/dynamic",
+      routePattern: "/dynamic",
+    });
+    const { options, getCapturedElement } = createRscOptions({
+      cleanPathname: "/dynamic",
+      clientReuseManifest,
+      element: {
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [AppElementsWire.keys.route]: "route:/dynamic",
+        "layout:/": "root-layout",
+        "layout:/dynamic": "layout-below-shell-cutoff",
+        "page:/dynamic": "dynamic-page",
+      },
+      layoutCount: 2,
+      layoutParamAccess: tracker,
+      probeLayoutAt(index) {
+        const layoutId = index === 0 ? "layout:/" : "layout:/dynamic";
+        return tracker.runLayoutProbe(layoutId, () => null);
+      },
+      classification: {
+        getLayoutId(index: number) {
+          return index === 0 ? "layout:/" : "layout:/dynamic";
+        },
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+      routePattern: "/dynamic",
+    });
+
+    try {
+      await renderAppPageLifecycle(options);
+    } finally {
+      if (originalBuildId === undefined) {
+        delete process.env.__VINEXT_BUILD_ID;
+      } else {
+        process.env.__VINEXT_BUILD_ID = originalBuildId;
+      }
+    }
+
+    expect(Object.hasOwn(getCapturedElement(), "layout:/")).toBe(false);
+    expect(getCapturedElement()["layout:/dynamic"]).toBe("layout-below-shell-cutoff");
+    expect(getCapturedElement()["page:/dynamic"]).toBe("dynamic-page");
+    expect(getCapturedElement()[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/"]);
   });
 
   it("does not apply skip transport while producing an HTML response", async () => {

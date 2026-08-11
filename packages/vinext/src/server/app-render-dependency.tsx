@@ -161,6 +161,29 @@ export function renderAfterAppDependencies(
   return <AwaitAppRenderDependencies />;
 }
 
+export function renderAfterAppDependenciesInNextTask(
+  children: ReactNode,
+  dependencies: readonly AppRenderDependency[],
+): ReactNode {
+  if (dependencies.length === 0) {
+    return children;
+  }
+
+  // A page can release its initialization dependency while one of its own
+  // Suspense children is ready to resume. Yielding a task gives those queued
+  // continuations a chance to serialize before an already-resolved sibling.
+  const pendingDependencies = Promise.all(
+    dependencies.map((dependency) => dependency.promise),
+  ).then(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+  function AwaitAppRenderDependenciesInNextTask() {
+    use(pendingDependencies);
+    return children;
+  }
+
+  return <AwaitAppRenderDependenciesInNextTask />;
+}
+
 export function renderAppComponentWithDependencyBarrier(
   component: ComponentType<Record<string, unknown>>,
   props: Readonly<Record<string, unknown>>,

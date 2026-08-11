@@ -11,6 +11,8 @@
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
+import { matchRoutePatternPrefix } from "../../routing/route-pattern.js";
+import { splitPathnameForRouteMatch } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
 declare global {
@@ -34,6 +36,7 @@ const ENCODED_PATH_DELIMITER_RE = /%(?:2f|5c)/i;
  * cache TTL family applies.
  */
 export type AppRoutePrefetchPolicy = {
+  canPrefetchLoadingShell: boolean;
   cacheForNavigation: boolean;
   fallbackTtl: "dynamic" | "static";
   /**
@@ -67,6 +70,7 @@ function toSameOriginRouteHref(href: string): string | null {
 
 /** Href the manifest does not cover: no request, nothing reusable. */
 const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
+  canPrefetchLoadingShell: false,
   cacheForNavigation: false,
   fallbackTtl: "static",
   honorDynamicStaleTime: true,
@@ -78,7 +82,10 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }
 
-export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolicy {
+export function resolveAutoAppRoutePrefetch(
+  href: string,
+  interceptionContext: string | null = null,
+): AppRoutePrefetchPolicy {
   if (typeof window === "undefined") return NO_APP_ROUTE_PREFETCH;
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
@@ -91,6 +98,16 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
   const route = match.route;
+  const canPrefetchLoadingShell =
+    route.canPrefetchLoadingShell ||
+    (interceptionContext !== null &&
+      (route.loadingShellInterceptionSourcePatterns?.some((sourcePatternParts) =>
+        matchRoutePatternPrefix(
+          splitPathnameForRouteMatch(interceptionContext),
+          sourcePatternParts,
+        ),
+      ) ??
+        false));
   const requiresRouteTreePrefetch =
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
   // A search-param href renders query-specific output, so its payload can only
@@ -115,6 +132,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
       (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
   return {
+    canPrefetchLoadingShell,
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
     // commit loading.js immediately. Dynamic routes without loading-shell
@@ -124,7 +142,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
       !hasSearchParams &&
       !hasCacheComponentsLearningOnlyDynamicPath &&
       (requiresRouteTreePrefetch ||
-        (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true)),
+        (!canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true)),
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
@@ -135,6 +153,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
 
 export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
   return {
+    canPrefetchLoadingShell: false,
     cacheForNavigation: true,
     fallbackTtl: "static",
     honorDynamicStaleTime: false,

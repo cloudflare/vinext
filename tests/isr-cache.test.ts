@@ -24,7 +24,10 @@ import {
   getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
@@ -298,6 +301,14 @@ describe("App Router ISR cache key primitives", () => {
     expect(
       appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
     ).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
+  });
+
+  it("keys dynamic-after-shell variants separately from shells and navigation", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    expect(appIsrRscKey("/dynamic", null, APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL)).toBe(
+      "app:/dynamic:rsc:prefetch-dynamic-after-shell",
+    );
   });
 });
 

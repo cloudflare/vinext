@@ -94,6 +94,12 @@ export function prepareConsumedPrefetchResponseForPublication(
 export function preserveCommittedPrefetchExpiry(
   snapshot: CachedRscResponse,
   expiresAt: number | undefined,
+  preparedElements?: CachedRscResponse["preparedElements"],
 ): CachedRscResponse {
-  return expiresAt === undefined ? snapshot : { ...snapshot, expiresAt };
+  if (expiresAt === undefined && preparedElements === undefined) return snapshot;
+  return {
+    ...snapshot,
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    ...(preparedElements === undefined ? {} : { preparedElements }),
+  };
 }
