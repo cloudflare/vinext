@@ -114,6 +114,221 @@ function buildNavHtml(
 
 const PAGE_MODULE_URL = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
 
+// Router-shaped history state as Next.js writes it on push/replace
+// (`{ url, as, options, __N, key }`). `url` is the route, `as` the address bar;
+// a masked entry has `url !== as`.
+type MaskedHistoryState = {
+  url: string;
+  as: string;
+  options: { locale?: string; shallow?: boolean };
+  __N: true;
+  key: string;
+};
+
+// The popstate handler the runtime registers via `addEventListener`. The tests
+// only ever drive it with a `{ state }` payload, so this is the honest surface.
+type PopStateListener = (event: { state: unknown }) => void;
+
+// Ported from Next.js:
+// test/e2e/ignore-invalid-popstateevent/without-i18n.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/ignore-invalid-popstateevent/without-i18n.test.ts
+describe("Pages Router popstate stale-state filter (non-i18n parity)", () => {
+  async function installRuntime(win: ReturnType<typeof createNavWindow>["win"]) {
+    const listeners = new Map<string, PopStateListener>();
+    win.addEventListener = vi.fn((type: string, handler: PopStateListener) => {
+      listeners.set(type, handler);
+    }) as any;
+    (globalThis as any).window = win;
+    vi.resetModules();
+    await import("../packages/vinext/src/shims/router.js");
+    const { installPagesRouterRuntime } =
+      await import("../packages/vinext/src/shims/pages-router-runtime.js");
+    installPagesRouterRuntime();
+    return listeners;
+  }
+
+  async function expectFirstStalePopstateIgnoredThenSecondUsesStateUrl({
+    initialPath,
+    state,
+    expectedFetchUrl,
+  }: {
+    initialPath: string;
+    state: MaskedHistoryState;
+    expectedFetchUrl: string;
+  }) {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const { win } = createNavWindow();
+    const initialUrl = new URL(initialPath, "http://localhost");
+    win.location.pathname = initialUrl.pathname;
+    win.location.search = initialUrl.search;
+    win.location.href = initialUrl.href;
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/static",
+      __vinext: { pageModuleUrl: "/@fs/pages/static.js" },
+    };
+
+    let routeChangeStartCount = 0;
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response(buildNavHtml("/[dynamic]", PAGE_MODULE_URL), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    try {
+      const listeners = await installRuntime(win);
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      routerModule.default.events.on("routeChangeStart", () => {
+        routeChangeStartCount += 1;
+      });
+
+      popstateHandler!({ state });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(routeChangeStartCount).toBe(0);
+      expect(win.__NEXT_DATA__.page).toBe("/static");
+
+      popstateHandler!({ state });
+      await vi.waitFor(() => expect(win.__NEXT_DATA__.page).toBe("/[dynamic]"));
+      expect(routeChangeStartCount).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![0]).toBe(expectedFetchUrl);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  }
+
+  it("ignores the first stale event without query params and processes the second", async () => {
+    await expectFirstStalePopstateIgnoredThenSecondUsesStateUrl({
+      initialPath: "/static",
+      state: {
+        url: "/[dynamic]?",
+        as: "/static",
+        options: {},
+        __N: true,
+        key: "",
+      },
+      // Next stores the route href verbatim (`/[dynamic]?` with a bare empty
+      // query); the handler threads `state.url` through unchanged, so the HTML
+      // fetch keeps the trailing `?`. It is harmless (empty search) and matches
+      // the value Next writes into history state.
+      expectedFetchUrl: "/[dynamic]?",
+    });
+  });
+
+  it("ignores the first stale event with query params and processes the second", async () => {
+    await expectFirstStalePopstateIgnoredThenSecondUsesStateUrl({
+      initialPath: "/static?param=1",
+      state: {
+        url: "/[dynamic]?param=1",
+        as: "/static?param=1",
+        options: {},
+        __N: true,
+        key: "",
+      },
+      expectedFetchUrl: "/[dynamic]?param=1",
+    });
+  });
+});
+
+// End-to-end producer→consumer regression. The hand-built-state tests above
+// isolate the popstate consumer; this one closes the loop through the real
+// state *writer*: a masked `Router.push(href, as)` produces history state via
+// `updateHistory`, and that exact captured object is replayed through popstate.
+// It guards against drift between the two sides — if `updateHistory` ever
+// stopped writing `url` distinct from `as`, or the popstate handler stopped
+// keying the fetch off `state.url`, this fails where the isolated tests would
+// not. It also reproduces the PR's bug through the real write path: after a
+// push the visible browser URL is unchanged and has no hash delta, so the
+// masked entry must not be swallowed by the hash-only fast path.
+describe("Pages Router masked popstate (producer→consumer integration)", () => {
+  it("replays a Router.push-produced masked entry and fetches state.url, not state.as", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const { win } = createNavWindow();
+    win.location.pathname = "/";
+    win.location.href = "http://localhost/";
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response(buildNavHtml("/dynamic-route", PAGE_MODULE_URL), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    const listeners = new Map<string, PopStateListener>();
+    win.addEventListener = vi.fn((type: string, handler: PopStateListener) => {
+      listeners.set(type, handler);
+    }) as any;
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      // Producer: masked navigation. `href` is the route, `as` the address bar.
+      // `updateHistory` writes `{ url: "/dynamic-route", as: "/static", … }`.
+      await Router.push("/dynamic-route", "/static");
+      await vi.waitFor(() => expect(win.__NEXT_DATA__.page).toBe("/dynamic-route"));
+
+      // Capture the state the producer actually wrote — no hand-built shape.
+      const produced = win.history.state as MaskedHistoryState;
+      expect(produced.__N).toBe(true);
+      expect(produced.url).toBe("/dynamic-route");
+      expect(produced.as).toBe("/static");
+      expect(win.location.pathname).toBe("/static");
+
+      // Consumer: replay that exact entry. The visible URL is unchanged from
+      // the push (`/static`) and carries no hash, so hash-only classification
+      // must fall through to a full fetch. A single popstate suffices because
+      // the push already set `routerDidNavigate`, disabling the replay filter.
+      fetchMock.mockClear();
+      win.__NEXT_DATA__ = {
+        ...win.__NEXT_DATA__,
+        page: "/static",
+      };
+
+      popstateHandler!({ state: produced });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      // The fetch targets the route behind the mask, not the address bar.
+      expect(fetchMock.mock.calls[0]![0]).toBe("/dynamic-route");
+      await vi.waitFor(() => expect(win.__NEXT_DATA__.page).toBe("/dynamic-route"));
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+});
+
 // Ported from Next.js test/e2e/ignore-invalid-popstateevent — Next.js writes
 // `{ url, as, options, __N: true, key }` on every pushState/replaceState so
 // the popstate handler can detect stale or non-Next events.
@@ -272,8 +487,8 @@ describe("Pages Router history state shape", () => {
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts (around L935-942)
 describe("Pages Router popstate stale-state filter (i18n parity)", () => {
   async function installRuntime(win: ReturnType<typeof createNavWindow>["win"]) {
-    const listeners = new Map<string, (event: any) => void>();
-    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+    const listeners = new Map<string, PopStateListener>();
+    win.addEventListener = vi.fn((type: string, handler: PopStateListener) => {
       listeners.set(type, handler);
     }) as any;
     (globalThis as any).window = win;
@@ -342,6 +557,94 @@ describe("Pages Router popstate stale-state filter (i18n parity)", () => {
       await new Promise((r) => setTimeout(r, 0));
       expect(fetchMock).not.toHaveBeenCalled();
       expect(routeChangeStartCount).toBe(0);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
+  it("processes the second masked popstate under a sticky locale and fetches state.url", async () => {
+    // With-i18n companion to the non-i18n parity block above. Mirrors
+    // test/e2e/ignore-invalid-popstateevent/with-i18n.test.ts: a stale masked
+    // entry (`url` = route, `as` = address bar) carrying `options.locale`. The
+    // locale-aware stale filter must drop only the first replay; the second
+    // event must navigate and fetch the route (`state.url`), not the masked
+    // address bar (`state.as`). Guards the locale + masked-route interaction
+    // that the non-i18n test does not exercise (issue #1336 listed both).
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const { win } = createNavWindow();
+    win.location.pathname = "/static";
+    win.location.href = "http://localhost/static";
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/static",
+      __vinext: { pageModuleUrl: "/@fs/pages/static.js" },
+    };
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "sv",
+      __VINEXT_LOCALES__: ["en", "sv"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+
+    let routeChangeStartCount = 0;
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/[dynamic]",
+            PAGE_MODULE_URL,
+            {},
+            { locale: "sv", locales: ["en", "sv"], defaultLocale: "en" },
+          ),
+          { status: 200 },
+        ),
+    );
+    globalThis.fetch = fetchMock;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    const state: MaskedHistoryState = {
+      url: "/[dynamic]?",
+      as: "/static",
+      options: { locale: "sv" },
+      __N: true,
+      key: "",
+    };
+
+    try {
+      const listeners = await installRuntime(win);
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      routerModule.default.events.on("routeChangeStart", () => {
+        routeChangeStartCount += 1;
+      });
+
+      // 1st event: matching locale + as → Safari-replay, ignored.
+      popstateHandler!({ state });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(routeChangeStartCount).toBe(0);
+      expect(win.__NEXT_DATA__.page).toBe("/static");
+
+      // 2nd event: not ignored; masked → fetch the route, keeping the locale.
+      // `sv` is non-default, so the fetch URL is the route as-is (no `/sv`
+      // root rewrite, which only applies to default-locale root navigations).
+      popstateHandler!({ state });
+      await vi.waitFor(() => expect(win.__NEXT_DATA__.page).toBe("/[dynamic]"));
+      expect(routeChangeStartCount).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![0]).toBe("/[dynamic]?");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -472,6 +775,93 @@ describe("Pages Router popstate stale-state filter (i18n parity)", () => {
   });
 });
 
+// Ported from Next.js test/e2e/ignore-invalid-popstateevent — basePath variant.
+// A masked popstate under a configured basePath must fetch the route URL with
+// basePath applied exactly once. vinext stores app-relative history state
+// (no basePath), so the handler composes basePath back on via `withBasePath`;
+// this guards against a double-prefix regression on the masked path.
+describe("Pages Router popstate masked route under basePath", () => {
+  it("fetches the basePath-prefixed route URL for the second masked popstate", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    // `__basePath` is read from this env var at module load, so set it before
+    // the reset-and-import below.
+    process.env.__NEXT_ROUTER_BASEPATH = "/base";
+
+    const { win } = createNavWindow();
+    // The browser shows the basePath-prefixed address bar; history state stays
+    // app-relative (`as: "/static"`, `url: "/[dynamic]?"`).
+    win.location.pathname = "/base/static";
+    win.location.href = "http://localhost/base/static";
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/static",
+      __vinext: { pageModuleUrl: "/@fs/pages/static.js" },
+    };
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response(buildNavHtml("/[dynamic]", PAGE_MODULE_URL), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    const listeners = new Map<string, PopStateListener>();
+    win.addEventListener = vi.fn((type: string, handler: PopStateListener) => {
+      listeners.set(type, handler);
+    }) as any;
+    (globalThis as any).window = win;
+
+    const state: MaskedHistoryState = {
+      url: "/[dynamic]?",
+      as: "/static",
+      options: {},
+      __N: true,
+      key: "",
+    };
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      // 1st event: `withBasePath(state.as)` === tracker ("/base/static") → ignored.
+      popstateHandler!({ state });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(win.__NEXT_DATA__.page).toBe("/static");
+
+      // 2nd event: masked → fetch the route with basePath applied once.
+      popstateHandler!({ state });
+      await vi.waitFor(() => expect(win.__NEXT_DATA__.page).toBe("/[dynamic]"));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![0]).toBe("/base/[dynamic]?");
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+});
+
 // Ported from Next.js test/e2e/i18n-preferred-locale-detection — clicking a
 // Link with no `locale` prop must keep the active locale; on the server,
 // Router.push must carry the active locale through state for the popstate
@@ -532,8 +922,8 @@ describe("Pages Router locale stickiness on programmatic navigation", () => {
 // to close that gap.
 describe("Pages Router initial-entry history state", () => {
   async function installRuntime(win: ReturnType<typeof createNavWindow>["win"]) {
-    const listeners = new Map<string, (event: any) => void>();
-    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+    const listeners = new Map<string, PopStateListener>();
+    win.addEventListener = vi.fn((type: string, handler: PopStateListener) => {
       listeners.set(type, handler);
     }) as any;
     (globalThis as any).window = win;

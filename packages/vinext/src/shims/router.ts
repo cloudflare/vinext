@@ -433,6 +433,7 @@ type PagesRouterRuntimeState = {
   cancelPendingRenderCommit: (() => void) | null;
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
+  lastBrowserUrl: string;
   lastHash: string;
   isFirstPopStateEvent: boolean;
   routerDidNavigate: boolean;
@@ -461,6 +462,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     cancelPendingRenderCommit: null,
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
+    lastBrowserUrl: typeof window !== "undefined" ? window.location.href : "",
     lastHash: typeof window !== "undefined" ? window.location.hash : "",
     isFirstPopStateEvent: true,
     routerDidNavigate: false,
@@ -492,6 +494,13 @@ function getPagesRouterRuntimeState(): PagesRouterRuntimeState {
 
 const routerRuntimeState = getPagesRouterRuntimeState();
 const routerEvents = routerRuntimeState.events;
+
+function updateBrowserUrlTrackers(pathnameAndSearch?: string): void {
+  routerRuntimeState.lastPathnameAndSearch =
+    pathnameAndSearch ?? window.location.pathname + window.location.search;
+  routerRuntimeState.lastBrowserUrl = window.location.href;
+  routerRuntimeState.lastHash = window.location.hash;
+}
 
 function getPagesRouterRuntimeComponents(): PagesRouterRuntimeComponents {
   const existing = routerRuntimeState.components;
@@ -1339,7 +1348,7 @@ function getPathnameAndQuery(): {
 
 function getCurrentHistoryAsPath(): string | null {
   const state = window.history?.state;
-  if (!isNextRouterState(state) || typeof state.as !== "string") return null;
+  if (!isNextRouterState(state)) return null;
 
   try {
     const browserUrl = new URL(window.location.href);
@@ -2247,8 +2256,7 @@ async function navigateClientData(
     }
 
     window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
-    routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
-    routerRuntimeState.lastHash = window.location.hash;
+    updateBrowserUrlTrackers();
     await navigateClientHtml(redirectedUrl, redirectedUrl, controller, navId, assertStillCurrent);
     return;
   }
@@ -2486,8 +2494,7 @@ async function navigateClientHtml(
   // Next.js's client Root callback without remounting the page tree.
   if (pendingRedirectHistoryUrl) {
     window.history.replaceState(window.history.state ?? {}, "", pendingRedirectHistoryUrl);
-    routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
-    routerRuntimeState.lastHash = window.location.hash;
+    updateBrowserUrlTrackers();
   }
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
@@ -2647,9 +2654,7 @@ async function navigateClient(
           scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
         }
         window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
-        routerRuntimeState.lastPathnameAndSearch =
-          window.location.pathname + window.location.search;
-        routerRuntimeState.lastHash = window.location.hash;
+        updateBrowserUrlTrackers();
         browserUrl = redirectedUrl;
         htmlFetchUrl = redirectedUrl;
       } else if (middlewareEffect) {
@@ -2876,8 +2881,7 @@ function updateHistory(
   if (mode === "push") window.history.pushState(state, "", fullUrl);
   else window.history.replaceState(state, "", fullUrl);
   routerRuntimeState.currentHistoryKey = key;
-  routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
-  routerRuntimeState.lastHash = window.location.hash;
+  updateBrowserUrlTrackers();
   routerRuntimeState.routerDidNavigate = true;
 }
 
@@ -3459,10 +3463,10 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
     : content;
 }
 
-// `routerRuntimeState.lastPathnameAndSearch` tracks pathname+search for
-// detecting hash-only back/forward in the popstate handler. It is updated after
-// every pushState/replaceState so popstate can compare the previous value with
-// the already-changed window.location.
+// `routerRuntimeState.lastPathnameAndSearch` tracks pathname+search for the
+// Safari-replay filter and push->replace coercion. It deliberately stays
+// hash-stripped. `lastBrowserUrl` tracks the full browser href separately so
+// popstate hash-only detection can compare against the previous hash-aware URL.
 //
 // `routerRuntimeState.isFirstPopStateEvent` mirrors Next.js's first-popstate
 // Safari replay filter (packages/next/src/shared/lib/router/router.ts around
@@ -3560,11 +3564,31 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     }
   }
 
-  // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
-  const currentHash = window.location.hash;
-  const isHashOnly =
-    browserUrl === routerRuntimeState.lastPathnameAndSearch &&
-    (currentHash !== routerRuntimeState.lastHash || currentHash !== "");
+  // When the restored history entry carries a `state.url` that differs from
+  // `state.as`, the entry was written by a `<Link href="/route" as="/mask">`
+  // navigation. Resolve the route URL (page module / data target) from
+  // `state.url`, not `state.as` (the address bar) — otherwise forward
+  // navigation to such an entry would re-render the masked page instead of the
+  // routed one. Mirrors Next.js's popstate handler around router.ts:971-995,
+  // which keys page resolution off `state.url` (`href`) rather than the browser
+  // URL. Defaults to `browserUrl` for non-masked entries, making the rest of
+  // the handler a no-op for ordinary back/forward navigation.
+  const stateRouteUrl =
+    isNextRouterState(state) && state.url !== state.as
+      ? normalizePathTrailingSlash(withBasePath(state.url, __basePath), __trailingSlash)
+      : browserUrl;
+
+  // Detect hash-only back/forward against the previous full browser URL. The
+  // pathname+search tracker is hash-stripped for other router comparisons, so
+  // using it here would misclassify identical no-hash URLs as hash-only. This
+  // mirrors Next.js's `onlyAHashChange`, which requires a real hash delta (or
+  // a hash-bearing destination for same-hash scrolling) and therefore lets
+  // masked same-URL popstates fetch `state.url`.
+  const isHashOnly = isHashOnlyBrowserUrlChange(
+    window.location.href,
+    routerRuntimeState.lastBrowserUrl,
+    __basePath,
+  );
   const targetKey = getRouterStateKey(state);
   let forcedScroll: ScrollPosition | undefined;
 
@@ -3609,14 +3633,13 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
 
   // Update trackers only after beforePopState confirms navigation proceeds.
   // If beforePopState cancels, the app stays on the previous history entry,
-  // so both must retain their previous values: `lastPathnameAndSearch` so the
-  // next popstate compares against the correct baseline, and `currentHistoryKey`
-  // so subsequent scroll bookkeeping keys off the entry the app is actually on.
+  // so the URL trackers must retain their previous values for the next
+  // popstate baseline, and `currentHistoryKey` must keep pointing at the entry
+  // the app is actually on for subsequent scroll bookkeeping.
   if (targetKey !== undefined) {
     routerRuntimeState.currentHistoryKey = targetKey;
   }
-  routerRuntimeState.lastPathnameAndSearch = browserUrl;
-  routerRuntimeState.lastHash = currentHash;
+  updateBrowserUrlTrackers(browserUrl);
 
   if (isHashOnly) {
     // Hash-only back/forward — no page fetch needed.
@@ -3668,25 +3691,6 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     const scrollTarget = manualScrollRestoration
       ? (forcedScroll ?? readScrollPosition(state) ?? { x: 0, y: 0 })
       : readScrollPosition(state);
-    // When the restored history entry carries a `state.url` that differs
-    // from `state.as`, the entry was written by a `<Link href="/route" as="/mask">`
-    // navigation. Fetch the page module / data by `state.url` (the route),
-    // not `state.as` (the address bar) — otherwise forward navigation to
-    // such an entry would re-render the masked page instead of the routed
-    // one. Mirrors Next.js's popstate handler around router.ts:971-995,
-    // which keys page resolution off `state.url` (`href`) rather than the
-    // browser URL.
-    const stateRouteUrl = (() => {
-      if (
-        isNextRouterState(state) &&
-        typeof state.url === "string" &&
-        typeof state.as === "string" &&
-        state.url !== state.as
-      ) {
-        return normalizePathTrailingSlash(withBasePath(state.url, __basePath), __trailingSlash);
-      }
-      return browserUrl;
-    })();
     const result = await runNavigateClient(
       browserUrl,
       fullAppUrl,

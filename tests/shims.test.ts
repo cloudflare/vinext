@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PAGES_FIXTURE_DIR, aliasEntriesToRecord } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
+import { isHashOnlyBrowserUrlChange } from "../packages/vinext/src/shims/url-utils.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
 import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
@@ -16895,6 +16896,32 @@ describe("Pages Router router helpers", () => {
     });
   });
 
+  describe("isHashOnlyBrowserUrlChange", () => {
+    it("returns false for identical no-hash URLs", () => {
+      expect(isHashOnlyBrowserUrlChange("http://localhost/about", "http://localhost/about")).toBe(
+        false,
+      );
+    });
+
+    it("returns true when browser back removes a hash on the same path and search", () => {
+      expect(
+        isHashOnlyBrowserUrlChange(
+          "http://localhost/about?tab=1",
+          "http://localhost/about?tab=1#section",
+        ),
+      ).toBe(true);
+    });
+
+    it("returns true for same-hash anchor scrolling", () => {
+      expect(
+        isHashOnlyBrowserUrlChange(
+          "http://localhost/about#section",
+          "http://localhost/about#section",
+        ),
+      ).toBe(true);
+    });
+  });
+
   describe("applyNavigationLocale", () => {
     it("does not prefix absolute https:// URLs", async () => {
       const { applyNavigationLocale } = await import("../packages/vinext/src/shims/router.js");
@@ -18709,6 +18736,7 @@ describe("Pages Router concurrent navigation", () => {
   // snapshot stays in sessionStorage for a later non-hash popstate.
   it("hash-only popstate scrolls to the hash anchor and leaves the entry snapshot for later", async () => {
     const previousWindow = (globalThis as any).window;
+    const previousDocument = (globalThis as any).document;
     const originalFetch = globalThis.fetch;
     const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
     const listeners = new Map<string, (event: any) => void>();
@@ -18736,6 +18764,10 @@ describe("Pages Router concurrent navigation", () => {
     };
 
     (globalThis as any).window = win;
+    (globalThis as any).document = {
+      getElementById: vi.fn(() => null),
+      getElementsByName: vi.fn(() => []),
+    };
     globalThis.fetch = vi.fn();
     process.env.__NEXT_SCROLL_RESTORATION = "true";
 
@@ -18758,9 +18790,11 @@ describe("Pages Router concurrent navigation", () => {
       win.scrollX = 5;
       win.scrollY = 500;
 
-      // Hash-only push mints a new history entry ("#top" avoids the
-      // document-dependent getElementById branch of scrollToHashTarget).
-      await (win as any).next.router.push("/#top");
+      // Hash-only push mints a router-owned hash entry and, more importantly,
+      // records a real previous full browser URL for the later popstate
+      // comparison. Use a non-top hash so the popstate below has a real hash
+      // delta while still staying on the same pathname+search.
+      await (win as any).next.router.push("/#departed");
       expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 5, y: 500 }));
       const pushedKey = pushState.mock.calls.at(-1)![0].key as string;
       expect(typeof pushedKey).toBe("string");
@@ -18773,40 +18807,50 @@ describe("Pages Router concurrent navigation", () => {
         hashEvents.push("hashChangeComplete"),
       );
 
-      // The live position on the hash entry, snapshotted on departure.
+      const hashKey = "key-hash";
+      sessionStore.set(`__next_scroll_${hashKey}`, JSON.stringify({ x: 12, y: 345 }));
+      // The live position on the departed hash entry, snapshotted on
+      // traversal away from `pushedKey`.
       win.scrollX = 7;
       win.scrollY = 70;
       win.scrollTo.mockClear();
 
-      // Back to the initial entry: same pathname+search, only the hash
+      // Forward to another hash entry: same pathname+search, only the hash
       // differs, so this is a hash-only popstate.
-      win.location.hash = "";
+      win.location.hash = "#top";
       win.location.pathname = "/";
-      win.location.href = "http://localhost/";
+      win.location.href = "http://localhost/#top";
       popstateHandler!({
-        state: { __N: true, url: "/", as: "/", options: {}, key: "key-initial" },
+        state: { __N: true, url: "/", as: "/", options: {}, key: hashKey },
       });
 
       // Hash-only: no page fetch, hash events fired in order.
       expect(globalThis.fetch).not.toHaveBeenCalled();
       expect(hashEvents).toEqual(["hashChangeStart", "hashChangeComplete"]);
 
-      // Only the hash anchor is honored (empty hash scrolls to top); the
-      // target entry's saved {x: 5, y: 500} is not applied (upstream parity).
+      // Only the hash anchor is honored; the target entry's saved {x: 12, y: 345}
+      // is not applied (upstream parity).
       expect(win.scrollTo).toHaveBeenCalledWith(0, 0);
       expect(win.scrollTo).not.toHaveBeenCalledWith(5, 500);
+      expect(win.scrollTo).not.toHaveBeenCalledWith(12, 345);
 
-      // The departed hash entry's live position was snapshotted under its
-      // key, and the unconsumed target snapshot survives for a later
-      // non-hash popstate to this entry.
-      expect(sessionStore.get(`__next_scroll_${pushedKey}`)).toBe(JSON.stringify({ x: 7, y: 70 }));
+      // The departed hash entry's live position was snapshotted under its key,
+      // and the unconsumed target snapshot survives for a later non-hash
+      // popstate to this entry.
       expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 5, y: 500 }));
+      expect(sessionStore.get(`__next_scroll_${pushedKey}`)).toBe(JSON.stringify({ x: 7, y: 70 }));
+      expect(sessionStore.get(`__next_scroll_${hashKey}`)).toBe(JSON.stringify({ x: 12, y: 345 }));
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
         (globalThis as any).window = previousWindow;
+      }
+      if (previousDocument === undefined) {
+        delete (globalThis as any).document;
+      } else {
+        (globalThis as any).document = previousDocument;
       }
       globalThis.fetch = originalFetch;
       if (originalScrollRestorationEnv === undefined) {
