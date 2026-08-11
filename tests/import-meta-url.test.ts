@@ -153,6 +153,7 @@ describe("vinext:import-meta-url plugin", () => {
     ["line comments ending in CR", `// webpackMode: eager\r`, "line-cr"],
     ["line comments ending in U+2028", `// webpackMode: eager\u2028`, "line-u2028"],
     ["line comments ending in U+2029", `// webpackMode: eager\u2029`, "line-u2029"],
+    ["mixed repeated comments", `/* first */ // second\u2028/* third **/ `, "mixed-comments"],
   ])(
     "normalizes module URL imports with %s in dependencies before the dynamic-request fallback",
     async (_description, comment, suffix) => {

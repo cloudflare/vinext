@@ -69,7 +69,7 @@ export function createDynamicImportUrlPlugin(): Plugin {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
           exclude: VIRTUAL_MODULE_ID_RE,
         },
-        code: /\bimport\s*\(\s*(?:\/(?:\*[^*]*\*+(?:[^/*][^*]*\*+)*\/|\/[^\r\n\u2028\u2029]*(?:\r\n|[\r\n\u2028\u2029]|$))\s*)*new\s+URL\s*\(/,
+        code: /\bimport\s*\(\s*(?:new\s+URL\s*\(|\/[\s\S]*\bnew\s+URL\s*\()/,
       },
       handler(code, id) {
         return rewriteDynamicImportUrls(code, id);
