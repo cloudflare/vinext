@@ -22,10 +22,11 @@ const LateStyledContent = lazy(
     }),
 );
 
-export default function StyledJsxStreamingPage() {
+export default function StyledJsxStreamingPage({ source }: { source: string }) {
   return (
     <main>
       <p>styled-jsx streaming</p>
+      <p data-testid="styled-jsx-data-source">{source}</p>
       <style jsx>{`
         p {
           color: blue;
@@ -39,5 +40,5 @@ export default function StyledJsxStreamingPage() {
 }
 
 export function getServerSideProps() {
-  return { props: {} };
+  return { props: { source: "getServerSideProps" } };
 }

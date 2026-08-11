@@ -227,6 +227,7 @@ describe("pages page data", () => {
     });
 
     expect(html).toContain(freshStyle);
+    expect(html).toContain('<meta charSet="utf-8" data-next-head="" />');
     expect(html).not.toContain("__jsx-stale-head");
     expect(html).not.toContain("__jsx-stale-late");
     expect(html).toContain("<p>fresh-body</p>");
@@ -236,7 +237,7 @@ describe("pages page data", () => {
     const cachedHead = '<title data-next-head="">cached</title>';
     const html = await renderPagesIsrHtml({
       buildId: "build-123",
-      cachedHtml: `<!DOCTYPE html><html><head>${cachedHead}</head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
+      cachedHtml: `<!DOCTYPE html><html><head>${cachedHead}<style id="__jsx-stale">p{color:red}</style></head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
       collectIsrHeadHTML: vi.fn(() => ""),
       createPageElement(_pageProps: Record<string, unknown>) {
         return "page";
@@ -260,6 +261,7 @@ describe("pages page data", () => {
     });
 
     expect(html).toContain(cachedHead);
+    expect(html).not.toContain("__jsx-stale");
     expect(html).toContain("<div>fresh-body</div>");
   });
 

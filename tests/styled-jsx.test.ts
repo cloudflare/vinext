@@ -153,11 +153,33 @@ describe("styled-jsx compatibility plugin", () => {
       expect.any(String),
       expect.objectContaining({
         filename: "/app/component.js",
+        disableNextSsg: true,
         styledJsx: { useLightningcss: false },
         jsc: expect.objectContaining({ parser: { syntax: "ecmascript", jsx: true } }),
       }),
     );
     expect(result.code).toContain("styled-jsx/style");
+  });
+
+  it("preserves Pages data exports while transforming styled-jsx", async () => {
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<{ code: string }>;
+    };
+
+    const gssp = await transformHook.handler(
+      "export function getServerSideProps() { return { props: { source: 'gssp' } }; } export default function Page() { return <p>GSSP<style jsx>{`p { color: red; }`}</style></p>; }",
+      "/app/pages/gssp.tsx",
+    );
+    const gsp = await transformHook.handler(
+      "export function getStaticProps() { return { props: { source: 'gsp' } }; } export default function Page() { return <p>GSP<style jsx>{`p { color: blue; }`}</style></p>; }",
+      "/app/pages/gsp.tsx",
+    );
+
+    expect(gssp.code).toContain("getServerSideProps");
+    expect(gssp.code).not.toContain("__N_SSP");
+    expect(gsp.code).toContain("getStaticProps");
+    expect(gsp.code).not.toContain("__N_SSG");
   });
 
   it("skips styled-jsx transforms for dependency files", async () => {

@@ -215,6 +215,11 @@ export function createStyledJsxPlugin(
           filename: id.split("?")[0],
           sourceMaps: true,
           module: { type: "es6" },
+          // Vinext's server and client entries inspect these exports directly.
+          // Next's client-page compilation replaces them with __N_SSG/__N_SSP,
+          // but running that tree-shaker here would also affect vinext's server
+          // module graph and make the data functions disappear at runtime.
+          disableNextSsg: true,
           styledJsx: { useLightningcss: false },
           jsc: {
             parser: parserOptions(id),

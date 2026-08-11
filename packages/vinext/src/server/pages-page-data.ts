@@ -1095,36 +1095,45 @@ const STYLED_JSX_STYLE_PATTERN = /<style\b(?=[^>]*\bid=["']__jsx-)[^>]*>[\s\S]*?
  * never re-renders `_document` — refreshing those means running the full
  * document pipeline on regeneration the way Next.js does.
  */
-function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
-  // An empty collection means the render produced no head at all; leave the
-  // cached head alone rather than deleting the tags we do have.
-  if (!freshHead) return cachedHtml;
-
+function refreshCachedHeadTags(
+  cachedHtml: string,
+  freshHead: string,
+  freshStyledJsxHTML: string,
+): string {
   // styled-jsx styles are request-derived just like next/head. Remove both
   // initial head styles and any late-Suspense styles emitted before </body>
-  // so regeneration can replace them without retaining stale rules.
+  // on every regeneration, including when the fresh render has no styles.
   cachedHtml = cachedHtml.replace(STYLED_JSX_STYLE_PATTERN, "");
 
-  // Blank out raw-text/RCDATA elements before locating the boundary so a
-  // `</head>` string inside one is not mistaken for the closing tag — that
-  // would truncate the scan and leave stale tags behind the fresh head. The
-  // replacement is length-preserving, so the index still maps onto
-  // `cachedHtml`.
+  // An empty next/head collection leaves the cached metadata run intact. It
+  // must not prevent the independently collected styled-jsx run from being
+  // removed or refreshed.
+  if (freshHead) {
+    // Blank out raw-text/RCDATA elements before locating the boundary so a
+    // `</head>` string inside one is not mistaken for the closing tag. The
+    // replacement is length-preserving, so the index maps onto `cachedHtml`.
+    const headEnd = cachedHtml
+      .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
+      .indexOf("</head>");
+    if (headEnd >= 0) {
+      const matches = [...cachedHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
+      const first = matches[0];
+      const last = matches[matches.length - 1];
+      if (first && last && first.index !== undefined && last.index !== undefined) {
+        cachedHtml =
+          cachedHtml.slice(0, first.index) +
+          freshHead +
+          cachedHtml.slice(last.index + last[0].length);
+      }
+    }
+  }
+
+  if (!freshStyledJsxHTML) return cachedHtml;
   const headEnd = cachedHtml
     .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
     .indexOf("</head>");
   if (headEnd < 0) return cachedHtml;
-
-  const matches = [...cachedHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
-  const first = matches[0];
-  const last = matches[matches.length - 1];
-  if (!first || !last || first.index === undefined || last.index === undefined) {
-    return cachedHtml;
-  }
-
-  return (
-    cachedHtml.slice(0, first.index) + freshHead + cachedHtml.slice(last.index + last[0].length)
-  );
+  return `${cachedHtml.slice(0, headEnd)}  ${freshStyledJsxHTML}\n${cachedHtml.slice(headEnd)}`;
 }
 
 function rewritePagesCachedHtml(
@@ -1164,11 +1173,12 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
   const renderProps = options.props ?? { pageProps: options.pageProps };
   const collectHead = options.collectIsrHeadHTML;
   let freshHead = "";
+  let freshStyledJsxHTML = "";
   const freshBody = await options.renderIsrPassToStringAsync(
     options.createPageElement(renderProps),
     async (styledJsxHTML) => {
       freshHead = collectHead?.() ?? "";
-      if (styledJsxHTML) freshHead += `\n  ${styledJsxHTML}`;
+      freshStyledJsxHTML = styledJsxHTML;
     },
   );
   const nextDataScript = buildPagesNextDataScript({
@@ -1187,7 +1197,7 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
   });
 
   return rewritePagesCachedHtml(
-    refreshCachedHeadTags(options.cachedHtml, freshHead),
+    refreshCachedHeadTags(options.cachedHtml, freshHead, freshStyledJsxHTML),
     freshBody,
     nextDataScript,
   );

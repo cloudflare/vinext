@@ -756,12 +756,30 @@ describe("Pages Router integration", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
     const res = await fetch(`${baseUrl}/styled-jsx-streaming`);
     expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
 
     const html = await res.text();
     expect(html).toContain("styled-jsx streaming");
+    expect(html).toMatch(
+      /data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/,
+    );
     expect(html).toMatch(/color:\s*(?:blue|#00f)/);
     expect(html).toContain("late styled-jsx content");
     expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
+  });
+
+  it("preserves getStaticProps exports on styled-jsx pages in dev", async () => {
+    const res = await fetch(`${baseUrl}/styled-jsx-static-props`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+
+    const html = await res.text();
+    expect(html).toMatch(
+      /data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/,
+    );
+    expect(html).toMatch(/color:\s*rgb\(4,\s*5,\s*6\)/);
   });
 
   // Refs #1463: Pages Router should reject non-GET/HEAD methods to static
@@ -7791,6 +7809,17 @@ export default function StaticGspPage() {
 `,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "document-isr-styled.tsx"),
+      `import Head from "next/head";
+export function getStaticProps() {
+  return { props: { timestamp: Date.now() }, revalidate: 1 };
+}
+export default function DocumentIsrStyled({ timestamp }: { timestamp: number }) {
+  return <><Head><title>Document ISR Styled</title></Head><p id="document-isr-timestamp">{timestamp}</p><style jsx>{\`p { z-index: \${timestamp}; }\`}</style></>;
+}
+`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_error.tsx"),
       `import { renderCounts } from "../render-counts";
 function ErrorPage({ message }: { message: string }) {
@@ -8002,6 +8031,49 @@ export default class CustomDocument extends Document {
     },
   );
 
+  it("refreshes styled-jsx without replacing next/head metadata during custom-document ISR", async () => {
+    const firstResponse = await fetch(`${prodUrl}/document-isr-styled`);
+    expect(firstResponse.status).toBe(200);
+    expect(firstResponse.headers.get("x-vinext-cache")).toBe("MISS");
+    const firstHtml = await firstResponse.text();
+    const firstTimestamp = firstHtml.match(/id="document-isr-timestamp"[^>]*>(\d+)</)?.[1];
+    expect(firstTimestamp).toBeDefined();
+    expect(firstHtml).toMatch(
+      /<title[^>]*data-next-head=""[^>]*>Document ISR Styled<\/title>/,
+    );
+    expect(firstHtml).toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const staleResponse = await fetch(`${prodUrl}/document-isr-styled`);
+    expect(staleResponse.headers.get("x-vinext-cache")).toBe("STALE");
+    await staleResponse.text();
+
+    let regeneratedHtml = "";
+    let regeneratedTimestamp: string | undefined;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const response = await fetch(`${prodUrl}/document-isr-styled`);
+      regeneratedHtml = await response.text();
+      regeneratedTimestamp = regeneratedHtml.match(
+        /id="document-isr-timestamp"[^>]*>(\d+)</,
+      )?.[1];
+      if (
+        response.headers.get("x-vinext-cache") === "HIT" &&
+        regeneratedTimestamp !== firstTimestamp
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    expect(regeneratedTimestamp).toBeDefined();
+    expect(regeneratedTimestamp).not.toBe(firstTimestamp);
+    expect(regeneratedHtml).toMatch(
+      /<title[^>]*data-next-head=""[^>]*>Document ISR Styled<\/title>/,
+    );
+    expect(regeneratedHtml).toMatch(new RegExp(`z-index:\\s*${regeneratedTimestamp}`));
+    expect(regeneratedHtml).not.toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
+  });
+
   it.each(["dev", "prod"] as const)(
     "honors _document.getInitialProps responses that end early in %s",
     async (mode) => {
@@ -8155,12 +8227,30 @@ describe("Production Pages Router SSR streaming", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
     const res = await fetch(`${prodUrl}/styled-jsx-streaming`);
     expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
 
     const html = await res.text();
     expect(html).toContain("styled-jsx streaming");
+    expect(html).toMatch(
+      /data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/,
+    );
     expect(html).toMatch(/color:\s*(?:blue|#00f)/);
     expect(html).toContain("late styled-jsx content");
     expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
+  });
+
+  it("preserves getStaticProps exports on styled-jsx pages in production", async () => {
+    const res = await fetch(`${prodUrl}/styled-jsx-static-props`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-vinext-cache")).toBe("MISS");
+
+    const html = await res.text();
+    expect(html).toMatch(
+      /data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/,
+    );
+    expect(html).toMatch(/color:\s*rgb\(4,\s*5,\s*6\)/);
   });
 
   it("streams Pages SSR responses incrementally in production with br compression", async () => {
