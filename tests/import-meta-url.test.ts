@@ -147,16 +147,16 @@ describe("vinext:import-meta-url plugin", () => {
   });
 
   it.each([
-    ["block comments", `/* webpackMode: ** "eager" ** */ `],
-    ["line comments", `// webpackMode: eager\n`],
+    ["block comments", `/* webpackMode: ** "eager" ** */ `, "block"],
+    ["line comments ending in LF", `// webpackMode: eager\n`, "line-lf"],
+    ["line comments ending in CRLF", `// webpackMode: eager\r\n`, "line-crlf"],
+    ["line comments ending in CR", `// webpackMode: eager\r`, "line-cr"],
+    ["line comments ending in U+2028", `// webpackMode: eager\u2028`, "line-u2028"],
+    ["line comments ending in U+2029", `// webpackMode: eager\u2029`, "line-u2029"],
   ])(
     "normalizes module URL imports with %s in dependencies before the dynamic-request fallback",
-    async (_description, comment) => {
-      const packageRoot = path.join(
-        realRoot,
-        "node_modules",
-        `url-dependency-${comment.startsWith("/*") ? "block" : "line"}`,
-      );
+    async (_description, comment, suffix) => {
+      const packageRoot = path.join(realRoot, "node_modules", `url-dependency-${suffix}`);
       const packageEntry = path.join(packageRoot, "index.js");
       await fsp.mkdir(packageRoot, { recursive: true });
       await fsp.writeFile(
