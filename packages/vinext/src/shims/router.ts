@@ -1646,11 +1646,17 @@ function resolveLocalRedirectUrl(location: string): string | null {
 
   if (appPath === null) return null;
   // Stripping an origin or basePath can expose a leading `//` that the browser
-  // would reinterpret as a different authority. Keep the original same-origin
-  // target instead; absolute and basePath-prefixed forms are both safe inputs
-  // to history navigation.
+  // would reinterpret as a different authority. Resolve the original target
+  // to a validated same-origin absolute URL; recursive navigation retains its
+  // `//` app path as route state but uses this absolute form for browser I/O.
   if (appPath.startsWith("//")) {
-    return normalizePathTrailingSlash(location, __trailingSlash);
+    try {
+      const browserUrl = new URL(location, window.location.href);
+      if (browserUrl.origin !== getWindowOrigin()) return null;
+      return normalizePathTrailingSlash(browserUrl.href, __trailingSlash);
+    } catch {
+      return null;
+    }
   }
   // Internal redirects are re-dispatched through performNavigation(), whose
   // input contract is app-relative. Keep basePath stripped here so the fresh
@@ -3135,6 +3141,18 @@ async function performNavigation(
     toBrowserNavigationHref(resolved, window.location.href, __basePath),
     __trailingSlash,
   );
+  let browserEventUrl = full;
+  if (redirectBrowserHref !== undefined) {
+    try {
+      const parsed = new URL(redirectBrowserHref);
+      if (parsed.origin === getWindowOrigin()) {
+        browserEventUrl = parsed.pathname + parsed.search + parsed.hash;
+      }
+    } catch {
+      // redirectBrowserHref was validated before recursion; keep the local
+      // fallback if the browser rejects it unexpectedly.
+    }
+  }
   // When the (now concrete) route differs from the display URL, fetch HTML/
   // data by the route URL — not the masked address — so the page module that
   // actually renders is the one fetched. When they match (no mask) this is a
@@ -3235,9 +3253,13 @@ async function performNavigation(
     // departed entry.
     // Mirrors Next.js: packages/next/src/shared/lib/router/router.ts:1034-1046.
     if (mode === "push") saveScrollPosition();
-    const eventUrl = resolveHashUrl(full);
+    const eventUrl = resolveHashUrl(browserEventUrl);
     routerEvents.emit("hashChangeStart", eventUrl, { shallow });
-    updateHistory(mode, resolved.startsWith("#") ? resolved : full, navState);
+    updateHistory(
+      mode,
+      resolved.startsWith("#") ? resolved : (redirectBrowserHref ?? full),
+      navState,
+    );
     if (doScroll) scrollToHashTarget(extractHash(resolved));
     onStateUpdate?.();
     routerEvents.emit("hashChangeComplete", eventUrl, { shallow });
@@ -3296,24 +3318,24 @@ async function performNavigation(
     ? undefined
     : {
         cancellationEmitted: false,
-        url: full,
+        url: browserEventUrl,
       };
   if (eventContext) routerRuntimeState.activeNavigationEvent = eventContext;
   if (!isQueryUpdating) {
-    routerEvents.emit("routeChangeStart", full, { shallow });
+    routerEvents.emit("routeChangeStart", browserEventUrl, { shallow });
   }
   let beforeHistoryChangeEmitted = false;
   const emitBeforeHistoryChange = () => {
     if (beforeHistoryChangeEmitted) return;
     beforeHistoryChangeEmitted = true;
-    routerEvents.emit("beforeHistoryChange", full, { shallow });
+    routerEvents.emit("beforeHistoryChange", browserEventUrl, { shallow });
     updateHistory(mode, redirectBrowserHref ?? full, navState);
   };
   if (!shallow) {
     navigateOptions.beforeHistoryChange = emitBeforeHistoryChange;
     const result = await runNavigateClient(
       full,
-      full,
+      browserEventUrl,
       redirectBrowserHref ?? htmlFetchUrl,
       navigateOptions,
       // When href and as differ, the data fetch must target the route URL
@@ -3352,7 +3374,7 @@ async function performNavigation(
   }
   onStateUpdate?.();
   if (!isQueryUpdating) {
-    routerEvents.emit("routeChangeComplete", full, { shallow });
+    routerEvents.emit("routeChangeComplete", browserEventUrl, { shallow });
     if (eventContext) clearActiveNavigationEvent(eventContext);
   }
   // Hash scrolling after routeChangeComplete, matching Next.js ordering:

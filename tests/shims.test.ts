@@ -19614,6 +19614,107 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("normalizes basePath-prefixed double-slash middleware redirects", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win, pushState, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const redirectHeader = "/docs//evil.example/steal?token=secret#fragment";
+    const target = `http://localhost${redirectHeader}`;
+    Object.assign(win.location, {
+      origin: "http://localhost",
+      pathname: "/docs",
+      href: "http://localhost/docs",
+    });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/docs/_next/data/build-1/old-home.json") {
+        return new Response("{}", {
+          headers: { "x-nextjs-redirect": redirectHeader },
+          status: 200,
+        });
+      }
+      if (href === target) {
+        return new Response(buildNavHtml("//evil.example/steal", pageModuleUrl));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    const events: Array<[string, string]> = [];
+    const record = (name: string) =>
+      function (...args: unknown[]) {
+        events.push([name, String(args[0])]);
+      };
+    const onStart = record("routeChangeStart");
+    const onBefore = record("beforeHistoryChange");
+    const onComplete = record("routeChangeComplete");
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeComplete", onComplete);
+
+      const result = await Router.push("/old-home", undefined, { scroll: false });
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/docs/_next/data/build-1/old-home.json",
+        expect.any(Object),
+      );
+      expect(fetch).toHaveBeenNthCalledWith(2, target, expect.any(Object));
+      expect(fetch).not.toHaveBeenCalledWith(
+        "http://localhost/docs/docs//evil.example/steal?token=secret#fragment",
+        expect.any(Object),
+      );
+      expect(pushState).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenCalledWith(expect.any(Object), "", target);
+      expect(win.history.state).toMatchObject({
+        url: "//evil.example/steal?token=secret",
+        as: "//evil.example/steal?token=secret",
+        __N: true,
+      });
+      expect(events).toEqual([
+        ["routeChangeStart", "/docs/old-home"],
+        ["routeChangeStart", redirectHeader],
+        ["beforeHistoryChange", redirectHeader],
+        ["routeChangeComplete", redirectHeader],
+      ]);
+      expect(win.location.href).toBe(target);
+      expect(win.location.assign).not.toHaveBeenCalled();
+      expect(render).toHaveBeenCalled();
+
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeComplete", onComplete);
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("hydrates middleware rewrites to fallback pages from the data response", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
