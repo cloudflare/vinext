@@ -90,6 +90,13 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Ported from Next.js v16.2.6:
+      // test/e2e/app-dir/rsc-query-routing/next.config.js
+      {
+        source: "/nextjs-compat/rsc-query-routing/redirect/source",
+        destination: "/nextjs-compat/rsc-query-routing/redirect/dest",
+        permanent: true,
+      },
     ];
   },
 
@@ -170,6 +177,12 @@ const nextConfig: NextConfig = {
         {
           source: "/rewritten-use-pathname",
           destination: "/nextjs-compat/hooks-search",
+        },
+        // Ported from Next.js v16.2.6:
+        // test/e2e/app-dir/rsc-query-routing/next.config.js
+        {
+          source: "/nextjs-compat/rsc-query-routing/rewrite/source",
+          destination: "/nextjs-compat/rsc-query-routing/rewrite/dest",
         },
       ],
       fallback: [

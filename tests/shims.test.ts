@@ -9633,6 +9633,7 @@ describe("double-encoded path handling in middleware", () => {
           "next-router-prefetch": "1",
           "next-router-segment-prefetch": "/dashboard",
           "next-hmr-refresh": "1",
+          "x-vinext-rsc-state-fingerprint": "state-a",
           "x-user-visible": "keep",
         },
       }),
@@ -9643,6 +9644,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(capturedHeaders?.get("next-router-state-tree")).toBeNull();
     expect(capturedHeaders?.get("next-router-prefetch")).toBeNull();
     expect(capturedHeaders?.get("next-router-segment-prefetch")).toBeNull();
+    expect(capturedHeaders?.get("x-vinext-rsc-state-fingerprint")).toBeNull();
     expect(capturedHeaders?.get("next-hmr-refresh")).toBeNull();
     expect(capturedHeaders?.get("x-user-visible")).toBe("keep");
   });
