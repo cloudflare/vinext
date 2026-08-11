@@ -98,6 +98,19 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     await page.close();
   });
 
+  it("preserves a CSS module imported after a global owner boundary", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/straddled`, { waitUntil: "networkidle" });
+
+    await expect
+      .poll(() =>
+        page.locator("#straddled-order").evaluate((element) => getComputedStyle(element).color),
+      )
+      .toBe("rgb(0, 0, 255)");
+
+    await page.close();
+  });
+
   it("gives relative and extensionless alias imports of one global CSS file one owner", () => {
     const cssDir = path.join(DIST_DIR, "client", "_next", "static", "css");
     const matchingAssets = fs.readdirSync(cssDir).filter((file) => {
