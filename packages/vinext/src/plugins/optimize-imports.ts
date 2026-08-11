@@ -22,6 +22,8 @@ import { getAstName } from "./ast-utils.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
+const SCRIPT_MODULE_ID_RE = /\.(tsx?|jsx?|mjs)(?:[?#]|$)/;
+
 /**
  * Read a file's contents, returning null on any error.
  * Module-level so a single function instance is shared across all transform calls.
@@ -720,7 +722,7 @@ export function createOptimizeImportsPlugin(
     transform: {
       filter: {
         id: {
-          include: /\.(tsx?|jsx?|mjs)$/,
+          include: SCRIPT_MODULE_ID_RE,
           exclude: VIRTUAL_MODULE_ID_RE,
         },
         code: /\bimport\b[\s\S]*\bfrom\b/,
