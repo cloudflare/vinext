@@ -10,7 +10,11 @@ async function expectPageConditions(
   pathname: string,
   expected: ReactConditions["react"],
 ) {
-  await page.goto(pathname);
+  const response = await page.goto(pathname);
+  expect(response?.status()).toBe(200);
+  const html = await response!.text();
+  expect(html).toContain(`data-testid="react-condition">${expected}</p>`);
+  expect(html).toContain(`data-testid="react-dom-condition">${expected}</p>`);
   await expect(page.getByTestId("react-condition")).toHaveText(expected);
   await expect(page.getByTestId("react-dom-condition")).toHaveText(expected);
 }
