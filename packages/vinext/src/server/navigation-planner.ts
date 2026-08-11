@@ -249,7 +249,7 @@ export type EarlyNavigationIntentFacts = {
 export type EarlyNavigationIntentDecision =
   | {
       kind: "sameDocumentScroll";
-      // Always non-empty: same-document scroll is only chosen for a hash target.
+      // Empty when removing the current hash; otherwise the new hash target.
       hash: string;
       mode: "push" | "replace";
       scroll: boolean;
@@ -654,9 +654,8 @@ function classifyEarlyNavigationIntent(
   // Compare serialised search params rather than raw search strings, matching the
   // previous same-page-search predicate, so encoding differences that parse to
   // the same query (e.g. "%20" vs "+") are not read as a search change. App
-  // Router snapshots reach currentHref through createSnapshotPathAndSearch();
-  // reparsing and serialising that canonical query is idempotent and preserves
-  // key order. We intentionally do not sort, since query order can be observable.
+  // Router snapshots retain the raw search spelling separately from parsed
+  // params. We intentionally do not sort, since query order can be observable.
   const sameSearch = current.searchParams.toString() === next.searchParams.toString();
 
   // A Link to the exact current URL still invalidates the page segment in
@@ -671,9 +670,9 @@ function classifyEarlyNavigationIntent(
     };
   }
 
-  // Only a change to a non-empty hash is a same-document scroll. An unchanged
-  // hash reached exact identity above and refreshes the page segment.
-  if (samePathname && sameSearch && current.hash !== next.hash && next.hash !== "") {
+  // Any hash change is same-document, including removing the current hash. An
+  // unchanged hash reached exact identity above and refreshes the page segment.
+  if (samePathname && sameSearch && current.hash !== next.hash) {
     return {
       hash: next.hash,
       kind: "sameDocumentScroll",

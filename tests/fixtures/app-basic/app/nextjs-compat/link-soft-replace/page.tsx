@@ -6,12 +6,26 @@ export default function Page() {
   return (
     <>
       <h1 data-testid="soft-replace-render-id">{crypto.randomUUID()}</h1>
-      <Link href="/nextjs-compat/link-soft-replace" replace data-testid="soft-replace-link">
+      <Link
+        href="/nextjs-compat/link-soft-replace"
+        replace
+        prefetch={false}
+        data-testid="soft-replace-link"
+      >
         Refresh
+      </Link>
+      <Link
+        href="/nextjs-compat/link-soft-replace?q=%20"
+        replace
+        prefetch={false}
+        data-testid="soft-replace-encoded-link"
+      >
+        Encoded query
       </Link>
       <Link
         href="/nextjs-compat/link-soft-replace#section"
         replace
+        prefetch={false}
         data-testid="soft-replace-section-link"
       >
         Section
@@ -19,6 +33,7 @@ export default function Page() {
       <Link
         href="/nextjs-compat/link-soft-replace#other"
         replace
+        prefetch={false}
         data-testid="soft-replace-other-link"
       >
         Other

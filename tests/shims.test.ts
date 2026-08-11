@@ -225,6 +225,23 @@ describe("next/navigation shim", () => {
     expect(typeof nav.useRouter).toBe("function");
   });
 
+  it("preserves raw search spelling in client navigation snapshots", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+    const percentEncoded = nav.createClientNavigationRenderSnapshot(
+      "https://example.com/search?q=%20",
+      {},
+    );
+    const plusEncoded = nav.createClientNavigationRenderSnapshot(
+      "https://example.com/search?q=+",
+      {},
+    );
+
+    expect(nav.createSnapshotPathAndSearch(percentEncoded)).toBe("/search?q=%20");
+    expect(nav.createSnapshotPathAndSearch(plusEncoded)).toBe("/search?q=+");
+    expect(percentEncoded.searchParams.toString()).toBe(plusEncoded.searchParams.toString());
+  });
+
   // Next.js parity: next/navigation's useRouter reads AppRouterContext and
   // throws when it is rendered outside the App Router provider.
   // Ported from Next.js:

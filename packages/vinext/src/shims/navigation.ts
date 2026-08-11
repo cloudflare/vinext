@@ -2000,6 +2000,10 @@ const _EMPTY_PARAMS: Record<string, string | string[]> = {};
 
 export type ClientNavigationRenderSnapshot = {
   pathname: string;
+  // Preserve the browser URL's raw query spelling for exact navigation
+  // identity. ReadonlyURLSearchParams intentionally canonicalizes `%20` to `+`
+  // when serialized, so it cannot reconstruct the href used for a commit.
+  search: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
 };
@@ -2043,14 +2047,14 @@ export function createClientNavigationRenderSnapshot(
 
   return {
     pathname: stripBasePath(url.pathname, __basePath),
+    search: url.search,
     searchParams: new ReadonlyURLSearchParams(url.search),
     params,
   };
 }
 
 export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
+  return snapshot.pathname + snapshot.search;
 }
 
 // Module-level fallback for environments without window (tests, SSR).

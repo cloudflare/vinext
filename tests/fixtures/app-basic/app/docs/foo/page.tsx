@@ -6,7 +6,7 @@ export default function Page() {
   return (
     <>
       <h1 data-testid="prefix-collision-render-id">{crypto.randomUUID()}</h1>
-      <Link href="/docs/foo" replace data-testid="prefix-collision-link">
+      <Link href="/docs/foo" replace prefetch={false} data-testid="prefix-collision-link">
         Refresh
       </Link>
     </>

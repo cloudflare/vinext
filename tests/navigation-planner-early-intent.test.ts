@@ -191,24 +191,35 @@ describe("navigationPlanner early navigation intent classification", () => {
     });
   });
 
-  it("keeps encoded search spelling significant for app-relative exact identity", () => {
+  it("refreshes an app-relative exact URL that preserves %20 spelling", () => {
     const decision = classify({
       basePath: "/docs",
       currentUrlSpace: "appRelativeSnapshot",
-      currentHref: "https://example.com/docs/foo?q=+",
+      currentHref: "https://example.com/docs/foo?q=%20",
       targetHref: "https://example.com/docs/docs/foo?q=%20",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+  });
+
+  it("keeps %20 and + as distinct raw spellings for app-relative exact identity", () => {
+    const decision = classify({
+      basePath: "/docs",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs/foo?q=%20",
+      targetHref: "https://example.com/docs/docs/foo?q=+",
     });
 
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
-  it("treats hash removal as a flight navigation, not a same-document scroll", () => {
+  it("treats hash removal as a same-document navigation", () => {
     const decision = classify({
       currentHref: "https://example.com/docs#section",
       targetHref: "https://example.com/docs",
     });
 
-    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+    expect(decision).toMatchObject({ kind: "sameDocumentScroll", hash: "" });
   });
 
   it("does not treat a cross-origin same-path hash target as a same-document scroll", () => {
