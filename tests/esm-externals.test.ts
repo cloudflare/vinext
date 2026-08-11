@@ -5,9 +5,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import { createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { createPagesNodeExternalsPlugin } from "../packages/vinext/src/plugins/pages-node-externals.js";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
 
 const WORKSPACE_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
@@ -289,6 +290,34 @@ export default function Page() { return <p>{defaultTranspiled}+{optimized}+{expl
 }
 
 describe("ESM externals", () => {
+  it("skips canonical ownership work in App-only builds", async () => {
+    const realpathSpy = vi.spyOn(fs.realpathSync, "native");
+    const resolve = vi.fn();
+    const plugin = createPagesNodeExternalsPlugin({
+      getRoot: () => "/project",
+      getPagesDir: () => null,
+      getAliases: () => ({}),
+      getTsconfigAliases: () => ({}),
+      getBundledPackages: () => new Set(),
+      isEnabled: () => true,
+    });
+    const context = { environment: { name: "rsc" }, resolve } as any;
+
+    try {
+      const transform = plugin.transform as { handler: (code: string, id: string) => unknown };
+      const resolveId = plugin.resolveId as {
+        handler: (id: string, importer: string) => unknown;
+      };
+      await transform.handler.call(context, 'import value from "some-package";', "/app/page.js");
+      await resolveId.handler.call(context, "some-package", "/app/page.js");
+
+      expect(realpathSpy).not.toHaveBeenCalled();
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      realpathSpy.mockRestore();
+    }
+  });
+
   it("builds and renders the mixed App and Pages Router fixture with import conditions", async () => {
     const root = createFixture();
     const builder = await createBuilder({

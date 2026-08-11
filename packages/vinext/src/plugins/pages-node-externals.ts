@@ -205,8 +205,10 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
         if (!options.isEnabled() || !environment || environment.name === "client") return null;
 
         const pagesDir = options.getPagesDir();
+        if (!pagesDir) return null;
+
         const cleanId = canonicalFile(id);
-        if (!pagesDir || !path.isAbsolute(cleanId) || cleanId.includes("/node_modules/")) {
+        if (!path.isAbsolute(cleanId) || cleanId.includes("/node_modules/")) {
           return null;
         }
 
@@ -238,15 +240,14 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
           return null;
         }
 
-        const pagesOwnedModules = pagesOwnedModulesFor(environment.name);
-
         const pagesDir = options.getPagesDir();
+        if (!pagesDir) return null;
+
+        const pagesOwnedModules = pagesOwnedModulesFor(environment.name);
         const cleanImporter = canonicalFile(importer);
-        const importerIsPagesOwned = Boolean(
-          pagesDir &&
+        const importerIsPagesOwned =
           path.isAbsolute(cleanImporter) &&
-          (isInsideDirectory(pagesDir, cleanImporter) || pagesOwnedModules.has(cleanImporter)),
-        );
+          (isInsideDirectory(pagesDir, cleanImporter) || pagesOwnedModules.has(cleanImporter));
         if (!importerIsPagesOwned) {
           return null;
         }
