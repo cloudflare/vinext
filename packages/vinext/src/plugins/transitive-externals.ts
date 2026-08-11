@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { createIdResolver, type Plugin, type Rollup } from "vite";
 
 type ExternalModuleMode = "import" | "require";
@@ -10,9 +10,9 @@ const BARE_PACKAGE_SPECIFIER_RE =
 
 function realpath(resolvedPath: string): string {
   try {
-    return fs.realpathSync(resolvedPath);
+    return toSlash(fs.realpathSync.native(resolvedPath));
   } catch {
-    return resolvedPath;
+    return toSlash(resolvedPath);
   }
 }
 
@@ -71,12 +71,18 @@ function resolveTransitiveExternal(
 }
 
 /**
- * Mirrors Next.js's `baseResolveCheck` for `serverExternalPackages`.
+ * Mirrors the path-equality portion of Next.js's `baseResolveCheck` for
+ * `serverExternalPackages`.
  *
  * A bare external imported by a dependency is only safe to leave external
  * when resolving it from the dependency selects the same installed package as
  * resolving it from the project root. Otherwise this hook returns the
  * importer's absolute resolution, forcing Vite to bundle that nested copy.
+ *
+ * Next.js separately compares its resolver's CommonJS/ESM classification.
+ * Vite instead selects an import- or require-configured resolver up front;
+ * once both contexts select the same absolute file, its format follows that
+ * file and package scope rather than the importer context.
  *
  * Reference: packages/next/src/build/handle-externals.ts in Next.js.
  */
