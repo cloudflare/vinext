@@ -198,7 +198,13 @@ describe("vinext:import-meta-url plugin", () => {
       path.join(packageRoot, "package.json"),
       JSON.stringify({ name: "ordinary-dynamic-import", type: "module" }),
     );
-    await fsp.writeFile(packageEntry, `export const dependency = import("./dependency.js");`);
+    await fsp.writeFile(
+      packageEntry,
+      [
+        `export const dependency = import("./dependency.js");`,
+        `export const unrelated = new URL("./dependency.js", import.meta.url);`,
+      ].join("\n"),
+    );
     await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
 
     const dynamicImportUrlPlugin = createDynamicImportUrlPlugin();
