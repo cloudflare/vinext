@@ -70,19 +70,24 @@ export default function Page() { return <p>{depA}, {depB}</p>; }\n`,
     "3.10.1",
     `export default "3.10.1";\n`,
   );
+  writePackage(root, "node_modules/pg", "pg", "8.0.0", `export default "8.0.0";\n`);
   writePackage(
     root,
     "packages/dep-a",
     "dep-a",
     "1.0.0",
-    `import version from "shared-version"; export default "depA:" + version;\n`,
+    `import version from "shared-version";
+import pgVersion from "pg";
+export default "depA:" + version + ":pg@" + pgVersion;\n`,
   );
   writePackage(
     root,
     "packages/dep-b",
     "dep-b",
     "1.0.0",
-    `import version from "shared-version"; export default "depB:" + version;\n`,
+    `import version from "shared-version";
+import pgVersion from "pg";
+export default "depB:" + version + ":pg@" + pgVersion;\n`,
   );
   writePackage(
     root,
@@ -91,6 +96,7 @@ export default function Page() { return <p>{depA}, {depB}</p>; }\n`,
     "4.17.21",
     `export default "4.17.21";\n`,
   );
+  writePackage(root, "packages/dep-b/node_modules/pg", "pg", "9.0.0", `export default "9.0.0";\n`);
   fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
   linkPackage(root, "dep-a");
   linkPackage(root, "dep-b");
@@ -141,6 +147,6 @@ describe("transitive server externals", () => {
     const response = await fetch(`http://127.0.0.1:${address.port}/`);
     const html = (await response.text()).replaceAll("<!-- -->", "");
     expect(response.status, html).toBe(200);
-    expect(html).toContain("depA:3.10.1, depB:4.17.21");
+    expect(html).toContain("depA:3.10.1:pg@8.0.0, depB:4.17.21:pg@9.0.0");
   }, 30_000);
 });
